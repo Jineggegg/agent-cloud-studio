@@ -1923,3 +1923,183 @@ export type StudioBuildRunner = {
 };
 // ---------------------------
 // ── v6 track: memory — server types below this line ──
+//----------------- STUDIO SHARED MEMORY (basic-memory MCP) ------------
+/**
+ * The calls the Studio memory service makes on its MCP session with the shared basic-memory server.
+ *
+ * Implemented by the streamable-HTTP adapter (studio/memory/memory-client.adapter.ts) and by fakes in tests.
+ * `call` resolves to the tool's decoded result (its `structuredContent.result`, else the JSON text, else the
+ * raw text). Both methods reject with an AppError: `MEMORY_UNAVAILABLE` (503) when the server cannot be
+ * reached, `MEMORY_TOOL_ERROR` (502) when a tool reports an error, `MEMORY_TIMEOUT` (504) when a connected
+ * server answers too slowly (the server is not marked down for that; after two initialize timeouts in a row the
+ * adapter fails fast with MEMORY_TIMEOUT for a few seconds instead of waiting again). An aborted `signal` rejects with the
+ * abort reason instead and never marks the server as down.
+ */
+export type StudioMemoryToolCaller = {
+  call(name: string, args: Record<string, unknown>, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<unknown>;
+  ping(options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void>;
+};
+
+/**
+ * Which agent wrote a shared-memory note, taken from the note's frontmatter tags (or `source`).
+ * The conventions ask Claude Code and Codex to tag their notes; Studio tags DeepSeek's notes itself.
+ */
+export type StudioMemorySource = 'claude' | 'codex' | 'deepseek';
+
+/**
+ * One note in a memory listing or search result, as the memory routes send it to the browser.
+ * `id` is the basic-memory permalink (e.g. `studio/agent-cloud-studio/部署`) and the only identifier the
+ * routes accept back. `folder` is the first path segment: a project folder or `global`. `updatedAt` is
+ * ISO-8601 or null; `snippet` is plain text (empty for recent-notes listings).
+ */
+export type StudioMemoryNoteSummary = {
+  id: string;
+  title: string;
+  folder: string;
+  source: StudioMemorySource | null;
+  updatedAt: string | null;
+  snippet: string;
+};
+
+/**
+ * An opened note: its Markdown body without frontmatter, capped in size (`truncated` reports the cap).
+ * The body was written by a model or a person and is untrusted: render it as escaped Markdown only.
+ */
+export type StudioMemoryNoteDetail = StudioMemoryNoteSummary & { content: string; tags: string[]; truncated: boolean };
+
+/**
+ * A top-level folder of the memory project, with the Studio hub project whose workspace it belongs to
+ * (matched by folder name) so the 记忆 app can show that project's icon; null for `global` and others.
+ */
+export type StudioMemoryFolder = {
+  name: string;
+  project: { id: string; name: string; tone: string; glyph: string } | null;
+};
+
+/**
+ * One agent installation the memory status reports: Claude Code or Codex inside WSL (the Linux home Studio runs
+ * in) or on Windows (the desktop apps' configs under C:\Users\<name>, read from WSL through /mnt/c).
+ */
+export type StudioMemoryAgentId = 'claude-wsl' | 'codex-wsl' | 'claude-windows' | 'codex-windows';
+
+/**
+ * The one step that wires an agent to the shared memory: where to run it (a short Chinese phrase such as
+ * 「在 WSL 的仓库目录运行」) and the exact command. Shown verbatim on the status card.
+ */
+export type StudioMemoryAgentFix = { where: string; command: string };
+
+/**
+ * A setting that keeps an agent from using the shared server even when its config names it, as the memory status
+ * reports it (the 记忆 app shows it instead of 「已接入」):
+ * - 'invalid-config': the config does not parse (JSON for Claude Code; TOML for Codex, e.g. a duplicated table), so
+ *   the agent loads none of it.
+ * - 'disabled': Codex has `enabled = false` on the entry, or a Claude Code project lists it in `disabledMcpServers`.
+ * - 'project-override': a Claude Code project declares its own `studio-memory` that is not the shared server.
+ * - 'ipv6-loopback': the URL uses `[::1]`, which the server (listening on 127.0.0.1 only) never answers.
+ */
+export type StudioMemoryAgentIssue = 'invalid-config' | 'disabled' | 'project-override' | 'ipv6-loopback';
+
+/**
+ * How one agent installation is wired, read from its own config files (only presence and the URL; nothing is
+ * printed). Claude Code: the user-scope `mcpServers` of `.claude.json` and the delimited block in
+ * `.claude/CLAUDE.md`; Codex: `[mcp_servers.studio-memory]` in `.codex/config.toml` and the block in
+ * `.codex/AGENTS.md`.
+ * - `installed`: the agent's config or config directory exists; an absent agent is not a fault.
+ * - `registered`/`transport`: a `studio-memory` entry exists, over 'http', 'stdio' (its own process) or another type.
+ * - `shared`: registered over HTTP at the URL Studio uses, i.e. the one shared server (localhost = 127.0.0.1).
+ * - `conventions`: the current usage rules (the whole block, untrusted-data rule included) are between the markers
+ *   in that agent's global instructions.
+ * - `issue`: a setting that keeps the agent from using the server anyway (see StudioMemoryAgentIssue), or null.
+ * - `config`: where the registration lives, as the owner finds it (`~/.claude.json`, `C:\Users\…\.codex\config.toml`).
+ * - `fix`: the step that completes the wiring, or null when the agent is wired, not installed, or only fixable by
+ *   hand (an `issue` other than 'ipv6-loopback').
+ */
+export type StudioMemoryAgentStatus = {
+  id: StudioMemoryAgentId;
+  installed: boolean;
+  registered: boolean;
+  transport: string | null;
+  shared: boolean;
+  conventions: boolean;
+  issue: StudioMemoryAgentIssue | null;
+  config: string;
+  fix: StudioMemoryAgentFix | null;
+};
+
+/**
+ * GET /api/studio/memory/status: whether the shared server answers (`slow`: it accepted the connection but did
+ * not answer the ping in time, so `reachable` is false without the server being stopped), where its notes live,
+ * and how each agent is wired: the WSL Claude Code and Codex always, the Windows ones when Studio runs under WSL
+ * and finds the Windows home. `deepseek` is Studio's own bridge (STUDIO_MEMORY_DEEPSEEK); it only works while the
+ * server is reachable.
+ */
+export type StudioMemoryStatus = {
+  reachable: boolean;
+  slow: boolean;
+  url: string;
+  project: string | null;
+  notesPath: string | null;
+  agents: StudioMemoryAgentStatus[];
+  deepseek: { enabled: boolean };
+};
+
+//----------------- STUDIO DEEPSEEK CHAT WIRE SHAPES ------------
+/**
+ * A function call DeepSeek asked for (OpenAI-compatible chat completions). `arguments` is a JSON string the
+ * model wrote; it is untrusted and must be parsed and validated before use.
+ */
+export type StudioDeepseekToolCall = { id: string; type: 'function'; function: { name: string; arguments: string } };
+
+/**
+ * One chat-completions message as Studio sends it to and reads it from DeepSeek. `tool_calls` only appears on
+ * assistant messages, `tool_call_id` only on tool results; `reasoning_content` is echoed back on assistant
+ * messages inside a tool loop because thinking models require it there.
+ */
+export type StudioDeepseekMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  tool_calls?: StudioDeepseekToolCall[];
+  tool_call_id?: string;
+  reasoning_content?: string;
+};
+
+/** A function tool offered to DeepSeek; `parameters` is a JSON Schema object. */
+export type StudioDeepseekTool = {
+  type: 'function';
+  function: { name: string; description: string; parameters: Record<string, unknown> };
+};
+
+/**
+ * One DeepSeek completion request made by the Studio service (model, limits, key and timeouts are its
+ * business). Resolves to the first choice's message, or null when DeepSeek returned none; rejects with an
+ * AppError for HTTP failures.
+ */
+export type StudioDeepseekCompletion = (body: {
+  messages: StudioDeepseekMessage[];
+  tools?: StudioDeepseekTool[];
+  tool_choice?: 'auto' | 'none';
+}) => Promise<StudioDeepseekMessage | null>;
+
+/**
+ * The shared-memory bridge the Studio service hands each DeepSeek reply to (studio/memory/memory-chat.service.ts).
+ * It adds relevant notes to the system prompt as framed, untrusted background data, offers note tools in a
+ * bounded loop through `complete`, and resolves to the final assistant text (null when there is none). When the
+ * memory server is down it degrades to one plain completion; it only rejects with errors from `complete` or
+ * an aborted `signal`.
+ */
+export type StudioDeepseekMemoryBridge = {
+  reply(input: {
+    userId: number;
+    // The conversation space ('deepseek' or 'project:<id>'), which decides the memory folder.
+    space: string;
+    // The user's new message, used as the memory search.
+    query: string;
+    // Studio's own system prompt; the bridge appends the memory context to it.
+    system: string;
+    // Prior turns plus the new user message, without a system message.
+    messages: StudioDeepseekMessage[];
+    complete: StudioDeepseekCompletion;
+    signal: AbortSignal;
+  }): Promise<string | null>;
+};
+// ---------------------------

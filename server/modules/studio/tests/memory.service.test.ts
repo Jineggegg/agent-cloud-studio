@@ -1,0 +1,445 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { test } from 'node:test';
+
+import { createMemoryService, memoryFolderName } from '../memory/memory.service.js';
+
+import { createFakeMemory } from './memory-fakes.js';
+
+const NOTES = [
+  { permalink: 'studio/agent-cloud-studio/部署', title: '部署', content: '部署使用 systemd 用户服务，端口 3002。\n\n关键词：部署 端口 systemd', tags: ['claude'] },
+  { permalink: 'studio/global/语言偏好', title: '语言偏好', content: '- 回答使用简体中文\n\n关键词：语言 中文 偏好', tags: ['deepseek'] },
+  { permalink: 'studio/snr3-lab/回放', title: '回放', content: 'K 线回放只读，不交易。', tags: ['codex'] },
+];
+
+// `files` are readable text files; `dirs` list directory entries (a directory not named here is missing).
+function fixture(files: Record<string, string> = {}, notes: Parameters<typeof createFakeMemory>[0] = NOTES, options: { windowsHome?: string; dirs?: Record<string, string[]> } = {}) {
+  const fake = createFakeMemory(notes);
+  let clock = 1_000_000;
+  const service = createMemoryService({
+    client: fake.client,
+    url: 'http://127.0.0.1:8770/mcp',
+    deepseekEnabled: true,
+    home: '/home/owner',
+    windowsHome: options.windowsHome ?? null,
+    readText: async file => files[file] ?? null,
+    listDir: dir => options.dirs?.[dir] ?? [],
+    now: () => clock,
+    projects: userId => (userId === 1 ? [{ id: 'p1', name: 'Agent Cloud Studio', tone: 'slate', glyph: 'terminal', folder: 'agent-cloud-studio' }] : []),
+  });
+  return { fake, service, advance: (ms: number) => { clock += ms; } };
+}
+
+test('memory folders follow the workspace directory name, lowercased and slugged', () => {
+  assert.equal(memoryFolderName(['/home/owner/projects/Agent-Cloud-Studio/', '', 'x'], 'id'), 'agent-cloud-studio');
+  assert.equal(memoryFolderName(['', '~/projects/super-professor', '超级教授'], 'id'), 'super-professor');
+  assert.equal(memoryFolderName(['', '', '超级 教授'], 'id'), '超级-教授');
+  assert.equal(memoryFolderName(['', '', '!!!'], 'AB-12'), 'project-ab-12');
+});
+
+test('search sends the typed text and, for Chinese, prefix keywords; filters folders and adds the writer', async () => {
+  const { fake, service } = fixture();
+  const notes = await service.search('部署端口怎么改', { folders: ['agent-cloud-studio', 'global'] });
+  const queries = fake.callsNamed('search_notes').filter(item => typeof item.args.query === 'string').map(item => item.args.query);
+  assert.equal(queries[0], '部署端口怎么改');
+  assert.ok(String(queries[1]).includes('部署*'), `keywords query: ${queries[1]}`);
+  assert.ok(String(queries[1]).includes('端口*'), 'split single characters are joined back into one word');
+  assert.ok(!String(queries[1]).includes('怎么'), 'stop words are dropped');
+  assert.deepEqual(notes.map(note => note.id), ['studio/agent-cloud-studio/部署']);
+  assert.equal(notes[0].folder, 'agent-cloud-studio');
+  assert.equal(notes[0].source, 'claude');
+  assert.ok(notes[0].snippet.startsWith('部署使用'));
+  // Every search ran on notes only, never on observations or relations.
+  assert.ok(fake.callsNamed('search_notes').every(item => JSON.stringify(item.args.entity_types) === '["entity"]'));
+});
+
+test('terms mode skips the raw text, and writer lookups are cached briefly', async () => {
+  const { fake, service, advance } = fixture();
+  await service.search('请帮我回忆一下语言偏好是什么', { mode: 'terms' });
+  const textQueries = () => fake.callsNamed('search_notes').filter(item => typeof item.args.query === 'string');
+  assert.equal(textQueries().length, 1);
+  assert.match(String(textQueries()[0].args.query), /^\S+\*( OR \S+\*)*$/);
+  const tagLookups = () => fake.callsNamed('search_notes').filter(item => Array.isArray(item.args.tags)).length;
+  assert.equal(tagLookups(), 3);
+  await service.search('回放');
+  assert.equal(tagLookups(), 3, 'served from the cache');
+  advance(16_000);
+  await service.search('回放');
+  assert.equal(tagLookups(), 6);
+  assert.deepEqual(await service.search('   '), []);
+});
+
+test('recent lists the newest notes first with decorated folders', async () => {
+  const { service } = fixture();
+  const all = await service.recent({ userId: 1 });
+  assert.deepEqual(all.notes.map(note => note.title), ['回放', '语言偏好', '部署']);
+  assert.deepEqual(all.notes.map(note => note.source), ['codex', 'deepseek', 'claude']);
+  assert.equal(all.total, 3);
+  assert.deepEqual(all.folders.map(folder => folder.name), ['global', 'agent-cloud-studio', 'snr3-lab']);
+  assert.deepEqual(all.folders[1].project, { id: 'p1', name: 'Agent Cloud Studio', tone: 'slate', glyph: 'terminal' });
+  assert.equal(all.folders[0].project, null);
+  const scoped = await service.recent({ userId: 2, folder: 'global' });
+  assert.deepEqual(scoped.notes.map(note => note.id), ['studio/global/语言偏好']);
+  assert.equal(scoped.total, 1, 'the total counts the selected folder only');
+  assert.equal(scoped.folders[1].project, null, 'another user sees no project icons');
+});
+
+test('recent stays right past one listing page: quiet folders, deep notes and exact totals', async () => {
+  // 230 fresh notes in one folder would fill the first 200-node page; the older notes elsewhere must still show.
+  const busy = Array.from({ length: 230 }, (_, index) => ({
+    permalink: `studio/busy/n${index}`, title: `n${index}`, updatedAt: `2026-10-02T${String(10 + Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}:00Z`,
+  }));
+  const quiet = [
+    { permalink: 'studio/quiet/old', title: 'old', updatedAt: '2026-01-01T10:00:00Z' },
+    { permalink: 'studio/quiet/older', title: 'older', updatedAt: '2025-06-01T10:00:00Z' },
+    { permalink: 'studio/quiet/a/b/c/deep', title: 'deep', filePath: 'quiet/a/b/c/deep.md', updatedAt: '2025-01-01T10:00:00Z' },
+  ];
+  const { fake, service } = fixture({}, [...busy, ...quiet]);
+  const all = await service.recent({ limit: 40 });
+  assert.equal(all.total, 233, 'every note counts, not just one page');
+  assert.equal(all.notes.length, 40);
+  assert.equal(all.notes[0].title, 'n229', 'newest first');
+  assert.deepEqual(all.folders.map(folder => folder.name), ['busy', 'quiet'], 'a folder whose notes are all old keeps its chip');
+  const scoped = await service.recent({ folder: 'quiet' });
+  assert.deepEqual(scoped.notes.map(note => note.title), ['old', 'older', 'deep'], 'notes in subfolders are listed too');
+  assert.equal(scoped.total, 3);
+  // The folder is listed on the server, never filtered out of a capped global page.
+  assert.ok(fake.callsNamed('list_directory').some(item => item.args.dir_name === '/quiet' && item.args.file_name_glob === '*.md'));
+});
+
+test('read returns the body without frontmatter and refuses title fallbacks', async () => {
+  const { service } = fixture();
+  const note = await service.read('studio/global/语言偏好');
+  assert.equal(note.title, '语言偏好');
+  assert.equal(note.folder, 'global');
+  assert.equal(note.source, 'deepseek');
+  assert.deepEqual(note.tags, ['deepseek']);
+  assert.ok(note.content.startsWith('- 回答使用简体中文'));
+  assert.equal(note.truncated, false);
+  // basic-memory would resolve a bare title to some note; Studio only accepts the exact permalink.
+  await assert.rejects(service.read('语言偏好'), (error: { statusCode?: number }) => error.statusCode === 404);
+  await assert.rejects(service.read('studio/global/missing'), /不存在/);
+});
+
+test('remove deletes only a verified note', async () => {
+  const { fake, service } = fixture();
+  await assert.rejects(service.remove('部署'), /不存在/);
+  assert.equal(fake.callsNamed('delete_note').length, 0, 'a title is never passed to delete_note');
+  assert.deepEqual(await service.remove('studio/agent-cloud-studio/部署'), { deleted: true });
+  assert.equal(fake.store.has('studio/agent-cloud-studio/部署'), false);
+});
+
+test('writes are validated, tagged with the writer and keep keywords searchable', async () => {
+  const { fake, service } = fixture();
+  const saved = await service.write({
+    title: '  部署  端口 ', content: '服务改到 3003 端口。', folder: 'agent-cloud-studio', tags: ['ops', 'bad tag!', 'deepseek'],
+    keywords: ['部署', '端口', '部署', 'x'.repeat(40)], overwrite: false, source: 'deepseek',
+  });
+  assert.equal(saved.action, 'created');
+  const write = fake.callsNamed('write_note')[0].args;
+  assert.equal(write.title, '部署 端口');
+  assert.equal(write.directory, 'agent-cloud-studio');
+  assert.deepEqual(write.tags, ['deepseek', 'ops'], 'the writer comes first; invalid and repeated tags are dropped');
+  assert.equal(write.content, '服务改到 3003 端口。\n\n关键词：部署 端口');
+  assert.equal(write.overwrite, false);
+
+  const input = { title: '部署 端口', content: '新内容', folder: 'agent-cloud-studio', tags: [], keywords: [], overwrite: false, source: 'deepseek' as const };
+  await assert.rejects(service.write(input), (error: { statusCode?: number; message: string }) => error.statusCode === 409 && /overwrite/.test(error.message));
+  assert.equal((await service.write({ ...input, overwrite: true })).action, 'updated');
+
+  await assert.rejects(service.write({ ...input, title: 'a/b' }), /斜杠/);
+  await assert.rejects(service.write({ ...input, title: '' }), /标题/);
+  await assert.rejects(service.write({ ...input, content: '  ' }), /不能为空/);
+  await assert.rejects(service.write({ ...input, content: 'x'.repeat(8001) }), /8000/);
+  await assert.rejects(service.write({ ...input, folder: '../etc' }), /文件夹/);
+});
+
+test('secret-looking content is rejected without echoing the value', async () => {
+  const { fake, service } = fixture();
+  const base = { title: '凭据', folder: 'global', tags: [], keywords: [], overwrite: false, source: 'deepseek' as const };
+  const secrets = [
+    'DeepSeek key sk-0123456789abcdefABCDEF',
+    'token ghp_0123456789abcdefghijABCDEFGHIJ0123456789',
+    '-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----',
+    'password = hunter2-hunter2',
+    'API_KEY: "a1b2c3d4e5f6"',
+    '数据库密码：Zx9!pass',
+    'Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345',
+    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
+    'postgres://owner:s3cretpass@localhost:5432/db',
+    'AKIAIOSFODNN7EXAMPLE',
+    'x9F2kQ7pL0vB3nM8zR4tY6wE1aS5dG7hJ2kL9',
+    // Natural-language forms a model copies from the user's words.
+    'my password is Hunter2xyz',
+    'the api key is 9f8e7d6c5b4a',
+    '密码 Hunter2xyz',
+    'wifi password Hunter2xyz!',
+    // Forms the earlier rules let through.
+    'router pw: Hunter2',
+    'password => Hunter2',
+    'DB_PASSWORD=Hunter2xyz',
+    'wifi pass is Hunter2!',
+    'the passcode is 4829',
+    'passcode: 4829',
+    'my password is correcthorse.',
+    'The password was "batterystaple"',
+    '密码 correcthorse。',
+    'api key: k3y9',
+    'the api key is a1b2',
+    'OPENAI_API_KEY=a1b2c',
+  ];
+  for (const content of secrets) {
+    await assert.rejects(service.write({ ...base, content }), (error: { statusCode?: number; message: string }) => {
+      assert.equal(error.statusCode, 422, content);
+      assert.ok(!error.message.includes(content.slice(-8)), 'the refusal never repeats the value');
+      return true;
+    });
+  }
+  assert.equal(fake.callsNamed('write_note').length, 0);
+  // Ordinary technical notes still pass: hex hashes, paths, the word password in prose.
+  const harmless = 'commit 0baef82c4f9e1a2b3c4d5e6f7a8b9c0d1e2f3a4b；文件 server/modules/studio/memory/memory-chat.service.ts；'
+    + '密码由 1Password 管理，不写在这里。端口 8770。The token is stored in the vault; token budget 4096; '
+    + 'SSH private key ed25519 lives at private key ~/.ssh/id_ed25519；私钥 放在 ~/.ssh 里。';
+  assert.equal((await service.write({ ...base, title: '约定', content: harmless })).action, 'created');
+  // Key algorithms, plain descriptions of a password, and words that only contain "pass" or "token" are not secrets.
+  const prose = [
+    'the private key is ed25519.', 'The private key is ed25519', 'private_key: ed25519', 'token: sha256', 'secret key is aes-256-gcm',
+    'the password is required.', 'The password is case-sensitive!', 'The password is stored in the vault.', 'password is managed elsewhere.',
+    '密码 manager 里有记录。', 'boarding pass is ready', 'pass: true', 'bypass: abc123', 'token: 4096', 'max_tokens: 4096',
+    'pass the tests before merging', 'the token was rotated.',
+  ];
+  for (const content of prose) {
+    assert.equal((await service.write({ ...base, title: `约定 ${prose.indexOf(content)}`, content })).action, 'created', content);
+  }
+});
+
+test('a model may only overwrite its own notes', async () => {
+  const notes = [
+    { permalink: 'studio/global/部署约定', title: '部署约定', content: 'Claude 记下的约定。', tags: ['claude'] },
+    { permalink: 'studio/global/手写', title: '手写', content: '主人自己写的。', tags: [] },
+    { permalink: 'studio/global/回答风格', title: '回答风格', content: '简洁。', tags: ['deepseek'] },
+  ];
+  const { fake, service } = fixture({}, notes);
+  const base = { content: '改写后的内容', folder: 'global', tags: [], keywords: [], overwrite: true, source: 'deepseek' as const };
+  await assert.rejects(service.write({ ...base, title: '部署约定' }), (error: { statusCode?: number; code?: string; message: string }) =>
+    error.statusCode === 409 && error.code === 'MEMORY_NOTE_PROTECTED' && /Claude Code/.test(error.message));
+  await assert.rejects(service.write({ ...base, title: '手写' }), /别人/);
+  const overwrites = () => fake.callsNamed('write_note').filter(call => call.args.overwrite === true);
+  assert.equal(overwrites().length, 0, 'protected notes are never written with overwrite');
+  assert.equal(fake.store.get('studio/global/部署约定')?.content, 'Claude 记下的约定。');
+  assert.equal((await service.write({ ...base, title: '回答风格' })).action, 'updated', 'its own note can be replaced');
+  assert.equal((await service.write({ ...base, title: '新主题' })).action, 'created', 'overwrite without a namesake just creates');
+});
+
+test('titles that basic-memory maps to the same file cannot overwrite someone else\'s note', async () => {
+  const notes = [
+    { permalink: 'studio/global/部署约定', title: '部署约定', content: 'Claude 记下的约定。', tags: ['claude'] },
+    { permalink: 'studio/global/a-b', title: 'a-b', content: 'Codex 记下的。', tags: ['codex'] },
+    { permalink: 'studio/global/回答风格', title: '回答风格', content: '简洁。', tags: ['deepseek'] },
+  ];
+  const { fake, service } = fixture({}, notes);
+  const base = { content: '改写后的内容', folder: 'global', tags: [], keywords: [], overwrite: true, source: 'deepseek' as const };
+  // sanitize_for_filename strips leading/trailing '.' and '-' and turns :|?*<>" into '-', so each of these is the
+  // file of an existing note.
+  for (const title of ['部署约定.', '-部署约定', '.-部署约定-.', '部署约定...', 'a:b', 'a|b', 'a?b', 'a*b', 'a<b', 'a>b', 'a"b', 'a--b', 'a::b']) {
+    await assert.rejects(service.write({ ...base, title }), (error: { code?: string }) => error.code === 'MEMORY_NOTE_PROTECTED', title);
+  }
+  assert.equal(fake.callsNamed('write_note').filter(call => call.args.overwrite === true).length, 0);
+  assert.equal(fake.store.get('studio/global/部署约定')?.content, 'Claude 记下的约定。');
+  assert.equal(fake.store.get('studio/global/a-b')?.content, 'Codex 记下的。');
+  // Its own note stays replaceable under such a title, and a title that maps to no file at all is refused.
+  assert.equal((await service.write({ ...base, title: '回答风格.' })).action, 'updated');
+  assert.equal(fake.store.get('studio/global/回答风格')?.content, '改写后的内容');
+  await assert.rejects(service.write({ ...base, title: '.-.' }), (error: { statusCode?: number }) => error.statusCode === 400);
+  // A conflict (here from a case-folding file system) is resolved to one file or refused: a single case-folded match
+  // is that note; several, or none, cannot be attributed and count as someone else's.
+  const folding = (files: Array<{ id: string; filePath: string }>) => {
+    const { fake: folded, service: unsure } = fixture({}, files.map(file => ({ permalink: file.id, title: 'x', filePath: file.filePath, tags: ['deepseek'] })));
+    const call = folded.client.call;
+    folded.client.call = (name, args, options) => (name === 'write_note' && args.overwrite !== true ? Promise.resolve({ action: 'conflict' }) : call(name, args, options));
+    return unsure.write({ ...base, title: 'ab' });
+  };
+  assert.ok((await folding([{ id: 'studio/global/ab', filePath: 'global/AB.md' }])).id, 'its own note, found case-folded, is let through');
+  await assert.rejects(folding([{ id: 'studio/global/ab', filePath: 'global/Ab.md' }, { id: 'studio/global/ab-1', filePath: 'global/aB.md' }]),
+    (error: { code?: string }) => error.code === 'MEMORY_NOTE_PROTECTED');
+  await assert.rejects(folding([]), (error: { code?: string }) => error.code === 'MEMORY_NOTE_PROTECTED');
+});
+
+const MEMORY_URL = 'http://127.0.0.1:8770/mcp';
+// The conventions exactly as scripts/wsl/install-memory.sh writes them (its shell variables and escapes resolved).
+const INSTALL_SCRIPT = readFileSync(new URL('../../../../scripts/wsl/install-memory.sh', import.meta.url), 'utf8');
+const BLOCK = (/^CONVENTIONS="(\$BEGIN_MARK\n[\s\S]*?\n\$END_MARK)"$/m.exec(INSTALL_SCRIPT)?.[1] ?? '')
+  .replace('$BEGIN_MARK', '<!-- studio-memory:begin -->').replace('$END_MARK', '<!-- studio-memory:end -->')
+  .replaceAll('$NAME', 'studio-memory').replaceAll('\\`', '`');
+const MARKED = `# 语言\n\n${BLOCK}\n`;
+const WIN = '/mnt/c/Users/owner';
+
+test('status reports reachability, the notes path and each WSL agent', async () => {
+  const files = {
+    '/home/owner/.claude.json': JSON.stringify({ oauthAccount: { secret: 'x' }, mcpServers: { 'studio-memory': { type: 'http', url: MEMORY_URL } } }),
+    '/home/owner/.codex/config.toml': `[mcp_servers.other]\ncommand = "x"\n\n[mcp_servers.studio-memory]\nurl = "${MEMORY_URL}"\n`,
+    '/home/owner/.claude/CLAUDE.md': MARKED,
+  };
+  const { fake, service } = fixture(files);
+  const status = await service.status();
+  assert.deepEqual(status, {
+    reachable: true, slow: false, url: MEMORY_URL, project: 'studio', notesPath: '~/studio-memory',
+    agents: [
+      { id: 'claude-wsl', installed: true, registered: true, transport: 'http', shared: true, conventions: true, issue: null, config: '~/.claude.json', fix: null },
+      {
+        id: 'codex-wsl', installed: true, registered: true, transport: 'http', shared: true, conventions: false, issue: null, config: '~/.codex/config.toml',
+        fix: { where: '在 WSL 的仓库目录运行', command: 'bash scripts/wsl/install-memory.sh' },
+      },
+    ],
+    deepseek: { enabled: true },
+  });
+  assert.ok(!JSON.stringify(status).includes('oauthAccount'));
+
+  fake.state.down = true;
+  const offline = await fixture({}).service.status();
+  assert.equal(offline.agents[0].installed, false, 'an agent without any config is not installed');
+  assert.equal(offline.agents[0].fix, null, 'and is not asked to be fixed');
+  const down = await service.status();
+  assert.equal(down.reachable, false);
+  assert.equal(down.slow, false);
+  assert.equal(down.notesPath, null);
+  assert.equal(down.agents[0].shared, true, 'agent checks do not need the server');
+});
+
+test('status checks the Windows desktop apps from their own configs, and is only green when they share the server', async () => {
+  const files = {
+    [`${WIN}/.claude.json`]: JSON.stringify({ projects: {}, mcpServers: {} }),
+    [`${WIN}/.claude/CLAUDE.md`]: '# 语言\n',
+    // localhost and 127.0.0.1 name the same server (Windows reaches WSL's loopback through localhost forwarding).
+    [`${WIN}/.codex/config.toml`]: '[mcp_servers.node_repl]\ncommand = "node"\n\n[mcp_servers.studio-memory]\nurl = "http://localhost:8770/mcp/"\n',
+    [`${WIN}/.codex/AGENTS.md`]: MARKED,
+  };
+  // The Store app's %APPDATA% is virtualized: WSL finds its CLI under Packages\Claude_*\LocalCache\Roaming.
+  const bundled = `${WIN}/AppData/Local/Packages/Claude_pzs8/LocalCache/Roaming/Claude/claude-code`;
+  const dirs = {
+    [`${WIN}/AppData/Local/Packages`]: ['Microsoft.Photos_8wek', 'Claude_pzs8'],
+    [bundled]: ['2.1.286'], [`${bundled}/2.1.286`]: ['635c'], [`${bundled}/2.1.286/635c`]: ['claude.exe'],
+  };
+  const { service } = fixture(files, NOTES, { windowsHome: WIN, dirs });
+  const status = await service.status();
+  assert.deepEqual(status.agents.map(agent => agent.id), ['claude-wsl', 'codex-wsl', 'claude-windows', 'codex-windows']);
+  const [, , claude, codex] = status.agents;
+  // Windows Claude Code is registered through its own CLI on Windows (here the desktop app's bundled one, which is
+  // not on PATH), never by editing its .claude.json.
+  assert.deepEqual(claude, {
+    id: 'claude-windows', installed: true, registered: false, transport: null, shared: false, conventions: false, issue: null,
+    config: 'C:\\Users\\owner\\.claude.json',
+    fix: {
+      where: '在 Windows PowerShell 运行',
+      command: String.raw`$claude = (Get-ChildItem "$env:LOCALAPPDATA\Packages\Claude_*\LocalCache\Roaming\Claude\claude-code\*\*\claude.exe", `
+        + String.raw`"$env:APPDATA\Claude\claude-code\*\*\claude.exe" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1).FullName; `
+        + `& $claude mcp add -s user -t http studio-memory ${MEMORY_URL}`,
+    },
+  });
+  assert.deepEqual(codex, {
+    id: 'codex-windows', installed: true, registered: true, transport: 'http', shared: true, conventions: true, issue: null,
+    config: 'C:\\Users\\owner\\.codex\\config.toml', fix: null,
+  });
+
+  // No CLI at all: install one first. A wrong entry is removed before the right one is added.
+  const wrong = { ...files, [`${WIN}/.claude.json`]: JSON.stringify({ mcpServers: { 'studio-memory': { type: 'stdio', command: 'basic-memory' } } }) };
+  const manual = await fixture(wrong, NOTES, { windowsHome: WIN }).service.status();
+  assert.deepEqual(manual.agents[2].fix, {
+    where: '先在 Windows 安装 Claude Code 命令行，再在 PowerShell 运行',
+    command: `claude mcp remove studio-memory -s user; claude mcp add -s user -t http studio-memory ${MEMORY_URL}`,
+  });
+  // Registered and shared, only the conventions missing: the WSL script writes them through /mnt/c.
+  const registered = { ...files, [`${WIN}/.claude.json`]: JSON.stringify({ mcpServers: { 'studio-memory': { type: 'http', url: MEMORY_URL } } }) };
+  assert.equal((await fixture(registered, NOTES, { windowsHome: WIN }).service.status()).agents[2].fix?.command, 'bash scripts/wsl/install-memory.sh');
+});
+
+test('a registration that is not the shared server is not reported as wired', async () => {
+  const { service } = fixture({
+    '/home/owner/.claude.json': JSON.stringify({ mcpServers: { 'studio-memory': { type: 'http', url: 'http://127.0.0.1:9999/mcp' } } }),
+    '/home/owner/.claude/CLAUDE.md': MARKED,
+    '/home/owner/.codex/config.toml': '[mcp_servers."studio-memory"]\ncommand = "basic-memory"\nargs = ["mcp"]\n[mcp_servers.next]\nurl = "x"\n',
+    '/home/owner/.codex/AGENTS.md': MARKED,
+  });
+  const [claude, codex] = (await service.status()).agents;
+  assert.equal(claude.registered, true);
+  assert.equal(claude.shared, false, 'another port is another server');
+  assert.notEqual(claude.fix, null);
+  assert.equal(codex.transport, 'stdio');
+  assert.equal(codex.shared, false, 'a stdio registration runs its own basic-memory process');
+  assert.notEqual(codex.fix, null);
+});
+
+test('a server that answers the ping but is slow with its tools is still reported as running', async () => {
+  const { fake, service } = fixture();
+  fake.state.slowTools = ['list_memory_projects'];
+  const status = await service.status();
+  assert.equal(status.reachable, true);
+  assert.equal(status.project, null);
+  assert.equal(status.notesPath, null);
+});
+
+test('a server that does not answer the ping in time is reported as slow, not stopped', async () => {
+  const { fake, service } = fixture();
+  fake.state.slowPing = true;
+  const status = await service.status();
+  assert.equal(status.reachable, false);
+  assert.equal(status.slow, true);
+});
+
+test('the conventions count only when the whole current block sits between the markers', async () => {
+  assert.ok(BLOCK.includes('不可信的数据') && BLOCK.endsWith('<!-- studio-memory:end -->'), 'the block is read from the install script');
+  const registered = JSON.stringify({ mcpServers: { 'studio-memory': { type: 'http', url: MEMORY_URL } } });
+  const conventions = async (instructions: string) =>
+    (await fixture({ '/home/owner/.claude.json': registered, '/home/owner/.claude/CLAUDE.md': instructions }).service.status()).agents[0].conventions;
+  assert.equal(await conventions(MARKED), true);
+  assert.equal(await conventions(`前文\r\n${BLOCK.replace(/\n/g, '  \r\n')}\r\n后文`), true, 'CRLF and trailing spaces are tolerated');
+  // The older block without the untrusted-data rule, only the begin marker, a placeholder, or the block outside the
+  // markers are all outdated.
+  const withoutRule = BLOCK.split('\n').filter(line => !line.includes('不可信的数据') && !line.includes('外发数据')).join('\n');
+  assert.equal(await conventions(withoutRule), false);
+  assert.equal(await conventions('<!-- studio-memory:begin -->\n'), false);
+  assert.equal(await conventions('<!-- studio-memory:begin -->\n...\n<!-- studio-memory:end -->\n'), false);
+  assert.equal(await conventions(`<!-- studio-memory:end -->\n${BLOCK.replace('<!-- studio-memory:end -->', '')}`), false);
+  assert.equal(await conventions(BLOCK.replace('拿不准就先问用户', '')), false);
+});
+
+test('a registration that a setting blocks is never reported as working', async () => {
+  const shared = { type: 'http', url: MEMORY_URL };
+  const statusOf = async (files: Record<string, string>) => {
+    const agents = (await fixture({ '/home/owner/.claude/CLAUDE.md': MARKED, '/home/owner/.codex/AGENTS.md': MARKED, ...files }).service.status()).agents;
+    return { claude: agents[0], codex: agents[1] };
+  };
+  const claude = async (config: unknown) => (await statusOf({ '/home/owner/.claude.json': typeof config === 'string' ? config : JSON.stringify(config) })).claude;
+  const codex = async (config: string) => (await statusOf({ '/home/owner/.codex/config.toml': config })).codex;
+
+  // Claude Code: disabled in a project, overridden by a project entry that is not the shared server, invalid JSON.
+  const disabled = await claude({ mcpServers: { 'studio-memory': shared }, projects: { '/home/owner/x': { disabledMcpServers: ['studio-memory'] } } });
+  assert.equal(disabled.issue, 'disabled');
+  assert.equal(disabled.fix, null, 'fixed by hand: re-enable it in that project');
+  const override = await claude({ mcpServers: { 'studio-memory': shared }, projects: { '/home/owner/x': { mcpServers: { 'studio-memory': { type: 'stdio', command: 'basic-memory' } } } } });
+  assert.equal(override.issue, 'project-override');
+  const sameProject = await claude({ mcpServers: { 'studio-memory': shared }, projects: { '/home/owner/x': { mcpServers: { 'studio-memory': { type: 'http', url: 'http://localhost:8770/mcp' } }, disabledMcpServers: ['other'] } } });
+  assert.equal(sameProject.issue, null, 'a project entry that is the shared server is fine');
+  assert.equal((await claude('{"mcpServers": {"studio-memory": ')).issue, 'invalid-config');
+
+  // Codex: enabled = false, invalid TOML (duplicate table, a header that only exists inside a multi-line string).
+  const url = `url = "${MEMORY_URL}"`;
+  const off = await codex(`[mcp_servers.studio-memory]\n${url}\nenabled = false\n`);
+  assert.equal(off.registered, true);
+  assert.equal(off.issue, 'disabled');
+  assert.equal(off.fix, null);
+  assert.equal((await codex(`[mcp_servers.studio-memory]\n${url}\nenabled = true\n`)).issue, null);
+  const duplicate = await codex(`[mcp_servers.studio-memory]\n${url}\n\n[mcp_servers.studio-memory]\n${url}\n`);
+  assert.equal(duplicate.issue, 'invalid-config');
+  assert.equal(duplicate.registered, false);
+  const inString = await codex(`notes = """\n[mcp_servers.studio-memory]\n${url}\n"""\n`);
+  assert.deepEqual([inString.registered, inString.shared, inString.issue], [false, false, null], 'a header inside a string is not a table');
+  assert.equal((await codex(`[mcp_servers.'studio-memory']\n${url}\n`)).shared, true, 'quoted keys are the same table');
+
+  // [::1] is another address than the 127.0.0.1 the server listens on; localhost still counts as the same.
+  const ipv6 = await claude({ mcpServers: { 'studio-memory': { type: 'http', url: 'http://[::1]:8770/mcp' } } });
+  assert.deepEqual([ipv6.shared, ipv6.issue], [false, 'ipv6-loopback']);
+  assert.notEqual(ipv6.fix, null, 'the install script re-registers it');
+  assert.equal((await codex(`[mcp_servers.studio-memory]\nurl = "http://[::1]:8770/mcp"\n`)).issue, 'ipv6-loopback');
+  assert.equal((await claude({ mcpServers: { 'studio-memory': { type: 'http', url: 'http://localhost:8770/mcp' } } })).shared, true);
+});

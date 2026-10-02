@@ -263,6 +263,14 @@ export const api = {
       cancel: (id: string) => post(`/api/studio/builds/${encodeURIComponent(id)}/cancel`),
     },
     // ── v6 track: memory — endpoints below this line ──
+    // The shared basic-memory server (Claude Code, Codex, DeepSeek) through Studio's MCP client; ids are permalinks.
+    memory: {
+      status: () => get('/api/studio/memory/status'),
+      recent: (folder?: string, signal?: AbortSignal) => get(`/api/studio/memory/notes${query({ folder })}`, { signal }),
+      search: (q: string, folder?: string, signal?: AbortSignal) => get(`/api/studio/memory/search${query({ q, folder })}`, { signal }),
+      note: (id: string, signal?: AbortSignal) => get(`/api/studio/memory/note${query({ id })}`, { signal }),
+      remove: (id: string) => del(`/api/studio/memory/note${query({ id })}`),
+    },
     status: () => get('/api/studio/status'),
     snr: () => get('/api/studio/snr'),
     snrAccess: () => post('/api/studio/snr/access'),

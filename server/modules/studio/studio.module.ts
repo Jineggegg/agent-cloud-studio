@@ -35,6 +35,10 @@ import { createQuotaService } from './quota/quota.service.js';
 import { createQuotaRouter } from './quota/quota.routes.js';
 import { createWorkbenchService } from './workbench.service.js';
 import { createWorkbenchRouter } from './workbench.routes.js';
+import { createMemoryMcpClient } from './memory/memory-client.adapter.js';
+import { createMemoryService, findWindowsHome, memoryFolderName } from './memory/memory.service.js';
+import { createMemoryChatBridge } from './memory/memory-chat.service.js';
+import { createMemoryRouter } from './memory/memory.routes.js';
 
 const linkChecker = createLinkChecker();
 
@@ -218,5 +222,41 @@ export function createStudioModule() {
   // session per build (STUDIO_BUILDS_ROOT, STUDIO_BUILDS_MAX_PARALLEL, STUDIO_BUILD_MODEL; see builds.module.ts).
   routes.use('/builds', createStudioBuildsRoutes(hub));
   // ── v6 track: memory — create its service and mount its router below this line ──
+  // One MCP session with the shared basic-memory server (scripts/wsl/install-memory.sh, docs/memory.md) serves the
+  // 记忆 app and the DeepSeek bridge. STUDIO_MEMORY_URL overrides the endpoint; STUDIO_MEMORY_DEEPSEEK=0 keeps
+  // DeepSeek replies away from memory. A hub project's notes live in the folder named after its workspace.
+  // The status card also checks the Windows Claude Code and Codex apps: their home is found under /mnt/c/Users,
+  // or named by STUDIO_MEMORY_WINDOWS_HOME (empty or 0 turns the Windows checks off).
+  const memoryUrl = process.env.STUDIO_MEMORY_URL?.trim() || 'http://127.0.0.1:8770/mcp';
+  const memoryOff = (value: string) => ['0', 'false', 'off', 'no'].includes(value.trim().toLowerCase());
+  const memoryForDeepseek = !memoryOff(process.env.STUDIO_MEMORY_DEEPSEEK ?? '');
+  const memoryWindowsSetting = process.env.STUDIO_MEMORY_WINDOWS_HOME;
+  const memoryWindowsHome = memoryWindowsSetting === undefined ? findWindowsHome()
+    : memoryOff(memoryWindowsSetting) || !memoryWindowsSetting.trim() ? null : memoryWindowsSetting.trim();
+  const memoryFolder = (item: { id: string; name: string; workspacePath: string; remoteDir: string }) =>
+    memoryFolderName([item.workspacePath, item.remoteDir, item.name], item.id);
+  const memory = createMemoryService({
+    client: createMemoryMcpClient({ url: memoryUrl }),
+    url: memoryUrl,
+    deepseekEnabled: memoryForDeepseek,
+    windowsHome: memoryWindowsHome,
+    projects: userId => hub.list(userId).map(item => ({ id: item.id, name: item.name, tone: item.tone, glyph: item.glyph, folder: memoryFolder(item) })),
+  });
+  if (memoryForDeepseek) {
+    service.attachMemory(createMemoryChatBridge({
+      memory,
+      scope(userId, space) {
+        const projectId = /^project:(.+)$/.exec(space)?.[1];
+        if (!projectId) return { folder: null, project: null };
+        try {
+          const project = hub.get(userId, projectId);
+          return { folder: memoryFolder(project), project: project.name };
+        } catch {
+          return { folder: null, project: null };
+        }
+      },
+    }));
+  }
+  routes.use('/memory', createMemoryRouter(memory));
   return { routes, snrRoutes: createSnrGatewayRouter(gateway), mailCallbackRoutes: createProjectMailCallbackRouter(mail) };
 }

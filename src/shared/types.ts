@@ -2181,4 +2181,50 @@ export type StudioBuildCreated = { build: StudioBuild; project: HubProject };
  */
 export type StudioBuildEnvironment = { mode: 'sandbox' | 'restricted'; missing: string[]; available: boolean };
 // ── v6 track: memory — types below this line ──
+/** Which agent wrote a shared-memory note (from its tags); null when the note is untagged. */
+export type StudioMemorySource = 'claude' | 'codex' | 'deepseek';
+/**
+ * One note in the 记忆 app's lists. `id` is the basic-memory permalink and the only identifier the memory API
+ * accepts back; `folder` is a project folder or `global`; `snippet` is plain text (empty in recent lists).
+ */
+export type StudioMemoryNote = {
+  id: string; title: string; folder: string; source: StudioMemorySource | null; updatedAt: string | null; snippet: string;
+};
+/** An opened note: Markdown without frontmatter, written by a model or a person; render it escaped, never as HTML. */
+export type StudioMemoryNoteDetail = StudioMemoryNote & { content: string; tags: string[]; truncated: boolean };
+/** A top-level memory folder, with the hub project it belongs to (for its icon) when one matches. */
+export type StudioMemoryFolder = { name: string; project: { id: string; name: string; tone: string; glyph: string } | null };
+/**
+ * GET /api/studio/memory/notes: the newest notes (optionally of one folder), every folder, and `total`, the number
+ * of notes in the listed scope (the selected folder, or the whole memory).
+ */
+export type StudioMemoryRecent = { notes: StudioMemoryNote[]; folders: StudioMemoryFolder[]; total: number };
+/** Which agent installation a status row describes: Claude Code or Codex, inside WSL or on Windows. */
+export type StudioMemoryAgentId = 'claude-wsl' | 'codex-wsl' | 'claude-windows' | 'codex-windows';
+/**
+ * A setting that keeps an agent from using the shared server although its config names it: an unparsable config,
+ * a disabled entry (Codex `enabled = false`, a Claude Code project's `disabledMcpServers`), a Claude Code project
+ * entry of the same name that is not the shared server, or a `[::1]` URL the server (127.0.0.1 only) never answers.
+ */
+export type StudioMemoryAgentIssue = 'invalid-config' | 'disabled' | 'project-override' | 'ipv6-loopback';
+/**
+ * How one agent installation is wired, read from its own config: `shared` means registered over HTTP at the
+ * shared server's URL; `conventions` means the current usage rules are in its global instructions; `issue` is a
+ * setting that blocks it anyway; `config` is where the registration lives; `fix` is the exact step (where to run
+ * it and the command) that completes it, or null (also when the issue must be fixed by hand).
+ */
+export type StudioMemoryAgentStatus = {
+  id: StudioMemoryAgentId; installed: boolean; registered: boolean; transport: string | null; shared: boolean;
+  conventions: boolean; issue: StudioMemoryAgentIssue | null; config: string; fix: { where: string; command: string } | null;
+};
+/**
+ * GET /api/studio/memory/status: whether the shared server answers (`slow`: connected but no answer in time),
+ * where the notes live, each agent's wiring (Windows rows only when Studio runs under WSL) and whether Studio's
+ * own DeepSeek bridge is on.
+ */
+export type StudioMemoryStatus = {
+  reachable: boolean; slow: boolean; url: string; project: string | null; notesPath: string | null;
+  agents: StudioMemoryAgentStatus[];
+  deepseek: { enabled: boolean };
+};
 // ---------------------------
