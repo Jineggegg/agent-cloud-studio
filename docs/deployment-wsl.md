@@ -86,6 +86,8 @@ bash scripts/wsl/install-studio-service.sh
 
   只有 Claude 订阅账号（Pro / Max）才有 5 小时 / 每周限额；用 API 密钥登录时小组件会显示「暂无数据」。快照超过 6 小时未更新，或者重置时间已过，会标为过期。
 
+`STUDIO_CLAUDE_RATE_FILE` 和 `STUDIO_CODEX_SESSIONS_DIRS` 里的 `~` 会展开成你的主目录，相对路径也按主目录解析（不按当前目录），所以在 systemd 的 `Environment=` 里写 `~/.claude/x.json` 也能用；服务和 statusLine 脚本会落到同一个文件。修改后需要重启服务才会生效。
+
 ## 7. SNR 实验室（可选）
 
 Studio 通过同源网关 `/api/studio/snr-site/*` 内嵌 SNR，目标固定为 `STUDIO_SNR_BASE_URL`（默认 `http://127.0.0.1:8768`，只接受回环地址）。网关另外只读放行 `GET /api/integration/v1/manifest` 和 `/api/integration/v1/sessions/<uuid>/context`，Studio 的 SNR 状态会显示 manifest 里截短、过滤后的名称、版本和能力列表。

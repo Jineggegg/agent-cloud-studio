@@ -95,25 +95,65 @@ test('a throwing key lookup degrades to an unavailable DeepSeek snapshot', async
   assert.match(deepseek.note ?? '', /DeepSeek 密钥/);
 });
 
-test('quota router requires a signed-in user and returns uncached snapshots', async () => {
-  const snapshots: StudioQuotaSnapshot[] = [
-    { provider: 'claude', available: false, windows: [], balances: [], source: 'unavailable', observedAt: null, stale: false, note: 'n' },
-  ];
-  const users: number[] = [];
+test('a load that never settles times out, is cached like a failure and is retried after a minute', async () => {
+  let clock = START;
+  let requests = 0;
+  const service = createQuotaService({
+    now: () => clock,
+    loadTimeoutMs: 30,
+    deepseekKey: () => 'stuck-key',
+    // Ignores its abort signal and never answers, like a read blocked on a FIFO.
+    request: (() => { requests++; return new Promise<Response>(() => {}); }) as unknown as typeof fetch,
+    codexRateLimits: null,
+    files: { claudeSnapshot: path.join(os.tmpdir(), 'quota-missing-snapshot.json'), codexSessionDirectories: [] },
+  });
+  const [claude, , first] = await service.snapshots(1);
+  assert.equal(claude.available, false, 'the other providers are not held up');
+  assert.equal(first.available, false);
+  assert.match(first.note ?? '', /超时/);
+  assert.equal(requests, 1);
+
+  const [, , cachedFailure] = await service.snapshots(1);
+  assert.match(cachedFailure.note ?? '', /超时/);
+  assert.equal(requests, 1, 'the timed-out result is cached instead of re-requested at once');
+
+  clock += 61_000;
+  await service.snapshots(1);
+  assert.equal(requests, 2, 'a stuck load does not occupy the cache forever');
+});
+
+// Signs a request in as the user named by x-test-user, the way authenticateToken sets req.user.
+function appWithTestUser(mount: (app: express.Express) => void) {
   const app = express();
   app.use((req, _res, next) => {
     const id = Number(req.get('x-test-user'));
     if (id) (req as express.Request & { user?: { id: number } }).user = { id };
     next();
   });
-  app.use('/quota', createQuotaRouter({ snapshots: async (userId: number) => { users.push(userId); return snapshots; } }));
+  mount(app);
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(error instanceof AppError ? error.statusCode : 500).json({ error: error instanceof Error ? error.message : 'error' });
   });
+  return app;
+}
+
+async function withServer(app: express.Express, run: (base: string) => Promise<void>) {
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.once('listening', resolve));
-  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
+    await run(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+}
+
+test('quota router requires a signed-in user and returns uncached snapshots', async () => {
+  const snapshots: StudioQuotaSnapshot[] = [
+    { provider: 'claude', available: false, windows: [], balances: [], source: 'unavailable', observedAt: null, stale: false, note: 'n' },
+  ];
+  const users: number[] = [];
+  const app = appWithTestUser(target => {
+    target.use('/quota', createQuotaRouter({ snapshots: async (userId: number) => { users.push(userId); return snapshots; } }));
+  });
+  await withServer(app, async base => {
     const anonymous = await fetch(`${base}/quota`);
     assert.equal(anonymous.status, 401);
     const signedIn = await fetch(`${base}/quota`, { headers: { 'x-test-user': '7' } });
@@ -121,5 +161,43 @@ test('quota router requires a signed-in user and returns uncached snapshots', as
     assert.equal(signedIn.headers.get('cache-control'), 'no-store');
     assert.deepEqual(await signedIn.json(), snapshots);
     assert.deepEqual(users, [7]);
-  } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+  });
+});
+
+test('GET /api/studio/quota serves all three providers through the real service as studio.module wires it', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'quota-wiring-test-'));
+  const claudeSnapshot = path.join(directory, 'studio-rate-limits.json');
+  writeFileSync(claudeSnapshot, JSON.stringify({
+    observedAt: new Date().toISOString(), source: 'sdk-event',
+    five_hour: { used_percentage: 100, resets_at: Math.round(Date.now() / 1000) + 3600 },
+  }));
+  const signals: unknown[] = [];
+  const keyRequests: number[] = [];
+  // Mirrors the wiring studio.module needs: a sub-router at /quota under the /api/studio routes.
+  const routes = express.Router();
+  routes.use('/quota', createQuotaRouter(createQuotaService({
+    deepseekKey: userId => { keyRequests.push(userId); return userId === 3 ? 'user-three-key' : null; },
+    codexRateLimits: async ({ signal }) => {
+      signals.push(signal);
+      return { rateLimits: { primary: { usedPercent: 9, windowDurationMins: 300, resetsAt: null }, secondary: null } };
+    },
+    request: (async () => Response.json({ is_available: true, balance_infos: [{ currency: 'USD', total_balance: '2.50' }] })) as unknown as typeof fetch,
+    files: { claudeSnapshot, codexSessionDirectories: [path.join(directory, 'sessions')] },
+  })));
+  const app = appWithTestUser(target => { target.use('/api/studio', routes); });
+  try {
+    await withServer(app, async base => {
+      assert.equal((await fetch(`${base}/api/studio/quota`)).status, 401);
+      const response = await fetch(`${base}/api/studio/quota`, { headers: { 'x-test-user': '3' } });
+      assert.equal(response.status, 200);
+      const [claude, codex, deepseek] = await response.json() as StudioQuotaSnapshot[];
+      assert.deepEqual([claude.provider, codex.provider, deepseek.provider], ['claude', 'codex', 'deepseek']);
+      assert.equal(claude.windows[0].usedPercent, 100);
+      assert.equal(codex.source, 'official');
+      assert.equal(signals.length, 1);
+      assert.ok(signals[0] instanceof AbortSignal, 'the official Codex reader gets a signal it can stop its child with');
+      assert.deepEqual(deepseek.balances, [{ currency: 'USD', total: 2.5, granted: 0, toppedUp: 0 }]);
+      assert.deepEqual(keyRequests, [3]);
+    });
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });

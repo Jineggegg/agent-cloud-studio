@@ -4,7 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { readEpochMilliseconds, recordClaudeRateLimitEvent, resolveClaudeRateSnapshotPath } from '@/shared/utils.js';
+import {
+  readEpochMilliseconds,
+  readSmallRegularFile,
+  recordClaudeRateLimitEvent,
+  resolveClaudeRateSnapshotPath,
+  resolveHomeRelativePath,
+} from '@/shared/utils.js';
 
 const NOW = Date.parse('2026-10-02T12:00:00.000Z');
 
@@ -15,17 +21,63 @@ test('epoch readings accept Unix seconds, milliseconds and ISO strings', () => {
   for (const invalid of [0, -5, Number.NaN, 'soon', null, undefined, {}]) assert.equal(readEpochMilliseconds(invalid), null);
 });
 
-test('the snapshot path honours STUDIO_CLAUDE_RATE_FILE', () => {
+test('configured paths are anchored at the home directory, never at the working directory', () => {
+  const home = os.homedir();
+  assert.equal(resolveHomeRelativePath('~'), home);
+  assert.equal(resolveHomeRelativePath('~/.claude/x.json'), path.join(home, '.claude', 'x.json'));
+  assert.equal(resolveHomeRelativePath('studio-rate.json'), path.join(home, 'studio-rate.json'));
+  assert.equal(resolveHomeRelativePath('./a/../b.json'), path.join(home, 'b.json'));
+  assert.equal(resolveHomeRelativePath('/tmp/custom-rate.json'), path.resolve('/tmp/custom-rate.json'));
+});
+
+test('the snapshot path honours STUDIO_CLAUDE_RATE_FILE, expanding ~ and relative values', () => {
   const previous = process.env.STUDIO_CLAUDE_RATE_FILE;
   try {
     process.env.STUDIO_CLAUDE_RATE_FILE = '/tmp/custom-rate.json';
-    assert.equal(resolveClaudeRateSnapshotPath(), '/tmp/custom-rate.json');
+    assert.equal(resolveClaudeRateSnapshotPath(), path.resolve('/tmp/custom-rate.json'));
+    // A systemd Environment= line passes ~ through literally.
+    process.env.STUDIO_CLAUDE_RATE_FILE = ' ~/.claude/x.json ';
+    assert.equal(resolveClaudeRateSnapshotPath(), path.join(os.homedir(), '.claude', 'x.json'));
+    process.env.STUDIO_CLAUDE_RATE_FILE = 'studio-rate.json';
+    assert.equal(resolveClaudeRateSnapshotPath(), path.join(os.homedir(), 'studio-rate.json'));
     delete process.env.STUDIO_CLAUDE_RATE_FILE;
     assert.equal(resolveClaudeRateSnapshotPath(), path.join(os.homedir(), '.claude', 'studio-rate-limits.json'));
   } finally {
     if (previous === undefined) delete process.env.STUDIO_CLAUDE_RATE_FILE;
     else process.env.STUDIO_CLAUDE_RATE_FILE = previous;
   }
+});
+
+test('small regular files are read and special or oversized files are refused without blocking', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'small-regular-file-'));
+  const file = path.join(directory, 'snapshot.json');
+  try {
+    writeFileSync(file, '{"ok":true}');
+    assert.equal(await readSmallRegularFile(file, 64), '{"ok":true}');
+    writeFileSync(file, 'x'.repeat(65));
+    await assert.rejects(readSmallRegularFile(file, 64), { code: 'FILE_TOO_LARGE' });
+    await assert.rejects(readSmallRegularFile(directory, 64), { code: 'NOT_A_REGULAR_FILE' });
+    await assert.rejects(readSmallRegularFile(path.join(directory, 'missing.json'), 64), { code: 'ENOENT' });
+    // A character device reports size 0 and never ends; a plain readFile would read it forever.
+    if (process.platform !== 'win32') {
+      await assert.rejects(readSmallRegularFile('/dev/zero', 64), { code: 'NOT_A_REGULAR_FILE' });
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('SDK utilization is always a fraction: over-limit readings become 100%, not 1%', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'claude-rate-utilization-'));
+  const file = path.join(directory, 'studio-rate-limits.json');
+  const usedFor = async (info: Record<string, unknown>) => {
+    await recordClaudeRateLimitEvent({ rateLimitType: 'five_hour', ...info }, { filePath: file, now: () => NOW });
+    return JSON.parse(readFileSync(file, 'utf8')).five_hour.used_percentage;
+  };
+  try {
+    assert.equal(await usedFor({ status: 'rejected', utilization: 1.04 }), 100);
+    assert.equal(await usedFor({ status: 'allowed_warning', utilization: 1 }), 100);
+    assert.equal(await usedFor({ status: 'allowed', utilization: 0.009 }), 0.9);
+    assert.equal(await usedFor({ status: 'allowed', utilization: 0 }), 0);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
 test('SDK rate limit events merge atomically into the snapshot and never throw', async () => {

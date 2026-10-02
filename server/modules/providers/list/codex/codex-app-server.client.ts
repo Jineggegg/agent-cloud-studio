@@ -69,10 +69,18 @@ function resolveCodexLauncher(): string {
  * and a shared child would need lifecycle handling — restarts, back-pressure,
  * a crash taking every pending fork with it — for no measurable gain next to
  * the model turn that follows.
+ *
+ * `signal` lets a caller with its own deadline end the exchange early: on
+ * abort the child is killed at once and pending requests fail, instead of the
+ * process living on until the per-request timeout.
  */
 async function withAppServer<T>(
   run: (call: (method: string, params: unknown) => Promise<unknown>) => Promise<T>,
+  options: { signal?: AbortSignal } = {},
 ): Promise<T> {
+  const { signal } = options;
+  // Never spawn for a caller that has already given up.
+  signal?.throwIfAborted();
   const launcher = resolveCodexLauncher();
   const child = spawn(process.execPath, [launcher, 'app-server'], {
     env: process.env,
@@ -131,6 +139,14 @@ async function withAppServer<T>(
   child.stdout?.on('error', (error) => failPending(error.message));
   child.stderr?.on('error', () => {});
 
+  // Fail what is pending before killing, so the rejection names the cancel
+  // rather than the exit it causes.
+  const abort = () => {
+    failPending('the caller cancelled the request');
+    child.kill();
+  };
+  signal?.addEventListener('abort', abort, { once: true });
+
   const call = (method: string, params: unknown): Promise<unknown> =>
     new Promise((resolve, reject) => {
       if (exitReason) {
@@ -186,6 +202,7 @@ async function withAppServer<T>(
     }
     throw error;
   } finally {
+    signal?.removeEventListener('abort', abort);
     reader.close();
     child.kill();
   }
@@ -199,11 +216,18 @@ async function withAppServer<T>(
  * field. `excludeResetCreditDetails` skips the reset-credit detail lookup the
  * protocol documents as unnecessary for background usage polls.
  *
+ * Aborting `options.signal` kills the spawned app-server immediately and
+ * rejects; a poll with a deadline must pass one, or a slow start keeps the
+ * child alive for up to two request timeouts after the caller stopped waiting.
+ *
  * Exported through the providers barrel for the Studio module's quota service
  * (home-screen widgets), because only this module may spawn the Codex CLI.
  */
-export async function readCodexAccountRateLimits(): Promise<unknown> {
-  return withAppServer((call) => call('account/rateLimits/read', { excludeResetCreditDetails: true }));
+export async function readCodexAccountRateLimits(options: { signal?: AbortSignal } = {}): Promise<unknown> {
+  return withAppServer(
+    (call) => call('account/rateLimits/read', { excludeResetCreditDetails: true }),
+    { signal: options.signal },
+  );
 }
 
 export const codexAppServer = {

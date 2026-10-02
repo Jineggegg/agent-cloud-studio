@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 
-import { resolveClaudeRateSnapshotPath } from '@/shared/utils.js';
+import { resolveClaudeRateSnapshotPath, resolveHomeRelativePath } from '@/shared/utils.js';
 import type { StudioQuotaSnapshot } from '@/shared/types.js';
 
 import { readClaudeQuota } from './claude-quota.adapter.js';
@@ -11,32 +11,35 @@ import { readDeepSeekQuota } from './deepseek-quota.adapter.js';
 
 // Widgets poll; one minute keeps app-server spawns and balance calls rare without feeling stale.
 const CACHE_MS = 60_000;
+// Upper bound on any one load. It sits above Codex's 12 s official read plus its log fallback, so
+// it only fires for a load that is truly stuck; without it a hung load would be shared forever.
+const DEFAULT_LOAD_TIMEOUT_MS = 20_000;
 
 type Provider = StudioQuotaSnapshot['provider'];
 type CacheEntry = { version: string; settledAt: number | null; value: Promise<StudioQuotaSnapshot> };
 type QuotaDependencies = {
   // The user's decrypted DeepSeek key or null (studio service `deepseekApiKey`); it never leaves the server.
   deepseekKey: (userId: number) => string | null;
+  // Official Codex `account/rateLimits/read`: pass the providers barrel's `readCodexAccountRateLimits`.
+  // Required on purpose so wiring cannot silently drop it; pass null to use the rollout logs only.
+  codexRateLimits: Parameters<typeof readCodexQuota>[0]['readRateLimits'];
   request?: typeof fetch;
   now?: () => number;
-  // Official Codex `account/rateLimits/read` (providers barrel `readCodexAccountRateLimits`); null or omitted uses logs only.
-  codexRateLimits?: (() => Promise<unknown>) | null;
+  // Per-load deadline, mainly for tests.
+  loadTimeoutMs?: number;
   // Overrides for STUDIO_CLAUDE_RATE_FILE and STUDIO_CODEX_SESSIONS_DIRS, mainly for tests.
   files?: { claudeSnapshot?: string; codexSessionDirectories?: string[] };
 };
 
-function failed(provider: Provider): StudioQuotaSnapshot {
-  return { provider, available: false, windows: [], balances: [], source: 'unavailable', observedAt: null, stale: false, note: '读取用量时出错，请稍后重试' };
+function failed(provider: Provider, note = '读取用量时出错，请稍后重试'): StudioQuotaSnapshot {
+  return { provider, available: false, windows: [], balances: [], source: 'unavailable', observedAt: null, stale: false, note };
 }
 
-function expandHome(entry: string) {
-  return entry === '~' || entry.startsWith('~/') ? path.join(os.homedir(), entry.slice(1)) : entry;
-}
-
-// STUDIO_CODEX_SESSIONS_DIRS is a path-delimiter list; Codex itself writes under $CODEX_HOME/sessions.
+// STUDIO_CODEX_SESSIONS_DIRS is a path-delimiter list (`~` and relative entries are home-based);
+// Codex itself writes under $CODEX_HOME/sessions.
 function codexSessionDirectoriesFromEnv() {
   const configured = (process.env.STUDIO_CODEX_SESSIONS_DIRS ?? '').split(path.delimiter).map(entry => entry.trim()).filter(Boolean);
-  if (configured.length) return configured.map(expandHome);
+  if (configured.length) return configured.map(resolveHomeRelativePath);
   return [path.join(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex'), 'sessions')];
 }
 
@@ -46,20 +49,35 @@ function codexSessionDirectoriesFromEnv() {
  * Returns Claude, Codex and DeepSeek snapshots in that order. Claude and Codex describe this
  * machine's CLI accounts and are shared by every user; DeepSeek uses the requesting user's key.
  * Each settles independently, is cached for a minute and is loaded at most once at a time
- * (concurrent callers share the pending load). A changed DeepSeek key invalidates its entry.
+ * (concurrent callers share the pending load). A load that has not settled after 20 s resolves to
+ * an unavailable snapshot, which is cached like any other result, so a stuck source cannot hold
+ * the endpoint. A changed DeepSeek key invalidates its entry. File locations come from the
+ * environment once, when the service is created.
  */
 export function createQuotaService(deps: QuotaDependencies) {
   const now = deps.now ?? Date.now;
   const request = deps.request ?? fetch;
+  const loadTimeoutMs = deps.loadTimeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS;
   const claudeSnapshot = deps.files?.claudeSnapshot ?? resolveClaudeRateSnapshotPath();
   const codexSessionDirectories = deps.files?.codexSessionDirectories ?? codexSessionDirectoriesFromEnv();
   const cache = new Map<string, CacheEntry>();
+
+  // The abandoned load keeps running in the background; the Codex reader stops its own child
+  // process at its deadline, and file reads cannot block because special files are refused.
+  function loadWithDeadline(provider: Provider, load: () => Promise<StudioQuotaSnapshot>) {
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<StudioQuotaSnapshot>(resolve => {
+      timer = setTimeout(() => resolve(failed(provider, '读取用量超时，请稍后重试')), loadTimeoutMs);
+    });
+    const settled = Promise.resolve().then(load).catch(() => failed(provider));
+    return Promise.race([settled, deadline]).finally(() => clearTimeout(timer));
+  }
 
   function cached(key: string, version: string, provider: Provider, load: () => Promise<StudioQuotaSnapshot>) {
     const hit = cache.get(key);
     if (hit && hit.version === version && (hit.settledAt === null || now() - hit.settledAt < CACHE_MS)) return hit.value;
     const entry: CacheEntry = { version, settledAt: null, value: Promise.resolve(failed(provider)) };
-    entry.value = Promise.resolve().then(load).catch(() => failed(provider)).then(snapshot => {
+    entry.value = loadWithDeadline(provider, load).then(snapshot => {
       entry.settledAt = now();
       return snapshot;
     });
@@ -72,7 +90,7 @@ export function createQuotaService(deps: QuotaDependencies) {
     try {
       apiKey = deps.deepseekKey(userId);
     } catch {
-      return Promise.resolve({ ...failed('deepseek'), note: '无法读取已保存的 DeepSeek 密钥，请重新设置' });
+      return Promise.resolve(failed('deepseek', '无法读取已保存的 DeepSeek 密钥，请重新设置'));
     }
     const key = `deepseek:${userId}`;
     if (!apiKey) {
@@ -88,7 +106,7 @@ export function createQuotaService(deps: QuotaDependencies) {
     async snapshots(userId: number): Promise<StudioQuotaSnapshot[]> {
       return Promise.all([
         cached('claude', '', 'claude', () => readClaudeQuota({ snapshotFile: claudeSnapshot, now: now() })),
-        cached('codex', '', 'codex', () => readCodexQuota({ readRateLimits: deps.codexRateLimits ?? null, sessionDirectories: codexSessionDirectories, now: now() })),
+        cached('codex', '', 'codex', () => readCodexQuota({ readRateLimits: deps.codexRateLimits, sessionDirectories: codexSessionDirectories, now: now() })),
         deepseek(userId),
       ]);
     },
