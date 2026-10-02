@@ -65,6 +65,27 @@ bash scripts/wsl/install-studio-service.sh
 
 开发工具（`/workspace`）里的 Claude / Codex 会话就是原来 CloudCLI 的功能，替换后不会丢失。
 
+## 6. 首页的模型额度小组件（可选）
+
+主屏幕的额度小组件显示 Claude、Codex 的 5 小时 / 每周用量和 DeepSeek 余额，每分钟最多刷新一次。数据来源不同，可信度也不同，小组件会标出来源和「可能已过期」：
+
+- **Codex**：自动读取。优先用 Codex 官方接口（`codex app-server` 的 `account/rateLimits/read`，需要 Codex 已登录 ChatGPT 账号）；失败时退回到最近几个 Codex 会话日志（默认 `~/.codex/sessions`，可用 `STUDIO_CODEX_SESSIONS_DIRS` 指定多个目录，用 `:` 分隔）。日志只在你使用 Codex 时更新，超过 15 分钟会标为过期。
+- **DeepSeek**：用你在「连接」中保存的密钥查询官方余额接口，不需要额外配置。
+- **Claude**：Claude 没有公开的额度查询接口，Studio 读取一个快照文件 `~/.claude/studio-rate-limits.json`（可用 `STUDIO_CLAUDE_RATE_FILE` 改位置），里面只有用量百分比和重置时间，没有任何密钥。快照有两个来源：
+  1. 在 Studio 里进行的 Claude 对话会自动更新它。
+  2. 在终端直接用 Claude Code 时，需要把状态栏（statusLine）指向仓库里的脚本。请你自己编辑 `~/.claude/settings.json`，加入：
+
+     ```json
+     "statusLine": {
+       "type": "command",
+       "command": "node /home/laosong/projects/agent-cloud-studio/scripts/claude-statusline-snapshot.mjs"
+     }
+     ```
+
+     如果已经配置过其他 statusLine，这会替换它。之后 Claude Code 底部会显示类似 `Opus · 5h 42% · 周 18%` 的一行，同时写入快照。脚本出错时只会显示模型名，不会影响 Claude Code。
+
+  只有 Claude 订阅账号（Pro / Max）才有 5 小时 / 每周限额；用 API 密钥登录时小组件会显示「暂无数据」。快照超过 6 小时未更新，或者重置时间已过，会标为过期。
+
 ## 安全说明
 
 - 只通过 Tailscale 暴露，不要把 3002 端口开放到公网。你的 tailnet 列表里有其他人共享的设备，建议在 Tailscale ACL 中只允许你自己的设备访问 443 / 8443。

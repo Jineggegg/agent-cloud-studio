@@ -191,6 +191,21 @@ async function withAppServer<T>(
   }
 }
 
+/**
+ * Reads the signed-in account's plan usage through `account/rateLimits/read`.
+ *
+ * The raw JSON-RPC result (`rateLimits`, `rateLimitsByLimitId`, ...) is
+ * returned unparsed: the caller owns the mapping and must validate every
+ * field. `excludeResetCreditDetails` skips the reset-credit detail lookup the
+ * protocol documents as unnecessary for background usage polls.
+ *
+ * Exported through the providers barrel for the Studio module's quota service
+ * (home-screen widgets), because only this module may spawn the Codex CLI.
+ */
+export async function readCodexAccountRateLimits(): Promise<unknown> {
+  return withAppServer((call) => call('account/rateLimits/read', { excludeResetCreditDetails: true }));
+}
+
 export const codexAppServer = {
   /**
    * Copies a thread into a new one that ends at `lastTurnId`, or copies the
