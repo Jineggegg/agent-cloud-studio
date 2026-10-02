@@ -4,6 +4,7 @@ import {
   access,
   lstat,
   mkdir,
+  open,
   readFile,
   readdir,
   readlink,
@@ -1366,11 +1367,98 @@ export function readEpochMilliseconds(value: unknown): number | null {
 }
 
 /**
+ * Turns a user-configured path (an environment variable) into an absolute one
+ * anchored at the home directory.
+ *
+ * - `~` and `~/...` are expanded, because systemd `Environment=` lines and
+ *   quoted shell values pass a literal `~` through.
+ * - Any other relative path is taken relative to the home directory, never to
+ *   the current working directory: a file shared by several processes (for
+ *   example a Claude Code statusLine command, which runs in whichever project
+ *   is open, and this server, which runs in its service directory) must
+ *   resolve to the same place in all of them.
+ * - Absolute paths are only normalised. `~user/...` is not supported and is
+ *   treated as an ordinary relative name.
+ *
+ * Used by `resolveClaudeRateSnapshotPath` below and by the Studio module's
+ * quota service for `STUDIO_CODEX_SESSIONS_DIRS`. Callers trim and skip empty
+ * values first; an empty string resolves to the home directory itself.
+ */
+export function resolveHomeRelativePath(configured: string): string {
+  const home = os.homedir();
+  if (configured === '~') {
+    return home;
+  }
+  const expanded = configured.startsWith('~/') ? configured.slice(2) : configured;
+  return path.resolve(home, expanded);
+}
+
+/**
+ * Reads a small regular file as UTF-8 without ever blocking on a special file.
+ *
+ * The file is opened non-blocking and checked through its own descriptor, so
+ * a FIFO, socket or device placed at the path (which `readFile` would wait on,
+ * or read forever) is refused instead of holding a libuv thread. Throws:
+ * - the native error for a missing or unreadable path (`code` `ENOENT`, ...);
+ * - an `AppError` with code `NOT_A_REGULAR_FILE` for anything but a regular file;
+ * - an `AppError` with code `FILE_TOO_LARGE` when it holds more than `maxBytes`.
+ * At most `maxBytes + 1` bytes are read even if the file grows meanwhile.
+ *
+ * Used by `recordClaudeRateLimitEvent` below and by the Studio module's Claude
+ * quota adapter, which both read the plan-usage snapshot named by an
+ * environment variable.
+ */
+export async function readSmallRegularFile(filePath: string, maxBytes: number): Promise<string> {
+  // O_NONBLOCK makes opening a FIFO return at once; O_NOCTTY keeps a terminal
+  // device from becoming this process's controlling terminal. Both are absent
+  // (and unnecessary) on Windows.
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0) | (fs.constants.O_NOCTTY ?? 0);
+  const handle = await open(filePath, flags);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) {
+      throw new AppError('Not a regular file.', { code: 'NOT_A_REGULAR_FILE' });
+    }
+    if (info.size > maxBytes) {
+      throw new AppError('File is too large.', { code: 'FILE_TOO_LARGE' });
+    }
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+      if (bytesRead === 0) {
+        break;
+      }
+      length += bytesRead;
+    }
+    if (length > maxBytes) {
+      throw new AppError('File is too large.', { code: 'FILE_TOO_LARGE' });
+    }
+    return buffer.toString('utf8', 0, length);
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Upper bound for the Claude plan-usage snapshot. The real file is a few
+ * hundred bytes; anything far larger is not one of ours and is ignored.
+ *
+ * Used by `recordClaudeRateLimitEvent` below and by the Studio module's Claude
+ * quota adapter, so the writer and the reader agree on what they will read.
+ */
+export const CLAUDE_RATE_SNAPSHOT_MAX_BYTES = 64 * 1024;
+
+/**
  * Path of the Claude plan-usage snapshot shown by Studio's home-screen quota widget.
  *
  * `STUDIO_CLAUDE_RATE_FILE` overrides the default
- * `~/.claude/studio-rate-limits.json`. The variable is read on every call so a
- * changed environment (or a test) is honoured without re-importing.
+ * `~/.claude/studio-rate-limits.json`; it goes through
+ * `resolveHomeRelativePath`, so `~` is expanded and a relative value is
+ * anchored at the home directory exactly as the statusLine script does it.
+ * This function reads the environment each time it is called: the SDK writer
+ * below calls it on every write, while the quota service calls it once when
+ * it is created (the server's environment does not change while it runs).
  *
  * The file holds usage percentages and reset times only, never credentials:
  * `{ observedAt, source: "statusline" | "sdk-event", five_hour?, seven_day? }`
@@ -1384,7 +1472,9 @@ export function readEpochMilliseconds(value: unknown): number | null {
  */
 export function resolveClaudeRateSnapshotPath(): string {
   const configured = process.env.STUDIO_CLAUDE_RATE_FILE?.trim();
-  return configured || path.join(os.homedir(), '.claude', 'studio-rate-limits.json');
+  return configured
+    ? resolveHomeRelativePath(configured)
+    : path.join(os.homedir(), '.claude', 'studio-rate-limits.json');
 }
 
 // Writes are chained so parallel sessions in this process cannot interleave
@@ -1402,8 +1492,10 @@ function claudeRateWindowFromSdkInfo(info: unknown) {
   const utilization = record.utilization;
   let usedPercentage: number | null = null;
   if (typeof utilization === 'number' && Number.isFinite(utilization) && utilization >= 0) {
-    // The SDK reports a 0..1 fraction; larger values are already percentages.
-    usedPercentage = utilization <= 1 ? utilization * 100 : utilization;
+    // Always a fraction, and it can pass 1 once a window is over its limit:
+    // Claude Code's own statusLine maps it as `utilization * 100` without a cap.
+    // Clamping here keeps the file in the 0..100 range the statusLine writer uses.
+    usedPercentage = Math.min(100, utilization * 100);
   } else if (record.status === 'rejected') {
     usedPercentage = 100;
   }
@@ -1426,9 +1518,12 @@ function claudeRateWindowFromSdkInfo(info: unknown) {
  *
  * - Only the `five_hour` and `seven_day` windows are recorded; per-model weekly
  *   and overage types have no slot in the snapshot and are ignored.
- * - `utilization` is a 0..1 fraction in the SDK (values above 1 are taken as
- *   percentages). An event without it is recorded as 100% only when its status
- *   is `rejected`; otherwise it is skipped because it says nothing new.
+ * - `utilization` is a fraction in the SDK that exceeds 1 once a window is
+ *   over its limit; it is stored as `utilization * 100` capped at 100. An
+ *   event without it is recorded as 100% only when its status is `rejected`;
+ *   otherwise it is skipped because it says nothing new.
+ * - An existing file that is not a small regular file (a FIFO, a device, a
+ *   huge file) is never read; the snapshot then starts afresh.
  * - The other window from earlier writes is kept, and every window carries its
  *   own `observed_at` so a reader can tell an old weekly figure from a fresh
  *   5-hour one. Top-level `observedAt`/`source` describe the latest write.
@@ -1459,9 +1554,10 @@ export function recordClaudeRateLimitEvent(
     const observedAt = new Date((options.now ?? Date.now)()).toISOString();
     let existing: AnyRecord = {};
     try {
-      existing = readObjectRecord(JSON.parse(await readFile(filePath, 'utf8'))) ?? {};
+      existing = readObjectRecord(JSON.parse(await readSmallRegularFile(filePath, CLAUDE_RATE_SNAPSHOT_MAX_BYTES))) ?? {};
     } catch {
-      // Missing or unreadable: start a fresh snapshot.
+      // Missing, unreadable or not a plain file: start a fresh snapshot. A
+      // blocking read here would stall this queue and every later write.
     }
     const next: AnyRecord = { observedAt, source: 'sdk-event' };
     for (const other of ['five_hour', 'seven_day']) {

@@ -5,7 +5,7 @@ import { readEpochMilliseconds, readObjectRecord } from '@/shared/utils.js';
 import type { StudioQuotaSnapshot, StudioQuotaWindow } from '@/shared/types.js';
 
 // The app-server answers within a second or two once started; a slow start must not hold the widget.
-const OFFICIAL_TIMEOUT_MS = 12_000;
+const DEFAULT_OFFICIAL_TIMEOUT_MS = 12_000;
 // A rollout log only updates while Codex is in use, so older readings are shown but flagged.
 const LOG_STALE_MS = 15 * 60_000;
 // Bounds on log scanning: files stat'ed per directory, files opened, and bytes read from each tail.
@@ -16,6 +16,8 @@ const LOG_TAIL_BYTES = 256 * 1024;
 type RateWindow = { usedPercent: number; windowMinutes: number | null; resetsAtMs: number | null };
 type RateBucket = { id: string; name: string | null; primary: RateWindow | null; secondary: RateWindow | null };
 type LogReading = { observedMs: number; rateLimits: unknown };
+// The providers barrel's `readCodexAccountRateLimits`, or a fake; it must stop work once `signal` aborts.
+type OfficialRateLimitReader = (options: { signal: AbortSignal }) => Promise<unknown>;
 
 function finiteNumber(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -97,12 +99,19 @@ function officialBuckets(result: unknown): RateBucket[] {
   return buckets;
 }
 
-function withTimeout<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error('timeout')), milliseconds);
+// The deadline aborts the signal handed to the reader, which is what lets the real reader kill
+// its app-server child; the race still returns on time if a reader ignores the signal.
+async function readOfficialBeforeDeadline(read: OfficialRateLimitReader, milliseconds: number): Promise<unknown> {
+  const controller = new AbortController();
+  const abandoned = new Promise<never>((_resolve, reject) => {
+    controller.signal.addEventListener('abort', () => reject(new Error('timeout')), { once: true });
   });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  const timer = setTimeout(() => controller.abort(), milliseconds);
+  try {
+    return await Promise.race([read({ signal: controller.signal }), abandoned]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Codex nests rollouts as YYYY/MM/DD/rollout-*.jsonl. Names are visited newest first and the
@@ -194,18 +203,21 @@ function resetPassed(windows: StudioQuotaWindow[], now: number) {
  *
  * Tries the official app-server `account/rateLimits/read` first (`readRateLimits`, null to skip),
  * then the newest `token_count` event in recent rollout logs under `sessionDirectories`.
+ * The official read gets `officialTimeoutMs` (12 s by default; tests shorten it); when that
+ * passes, the signal given to `readRateLimits` is aborted and the logs are used instead.
  * Never throws: every failure ends in a snapshot whose `note` explains what is missing.
  */
 export async function readCodexQuota(input: {
-  readRateLimits: (() => Promise<unknown>) | null;
+  readRateLimits: OfficialRateLimitReader | null;
   sessionDirectories: string[];
   now: number;
+  officialTimeoutMs?: number;
 }): Promise<StudioQuotaSnapshot> {
   const { now } = input;
   let officialFailed = false;
   if (input.readRateLimits) {
     try {
-      const result = await withTimeout(input.readRateLimits(), OFFICIAL_TIMEOUT_MS);
+      const result = await readOfficialBeforeDeadline(input.readRateLimits, input.officialTimeoutMs ?? DEFAULT_OFFICIAL_TIMEOUT_MS);
       const windows = quotaWindows(officialBuckets(result));
       if (windows.length) {
         const exhausted = readObjectRecord(result)?.ordinaryUsageAllowed === false;

@@ -7,7 +7,10 @@
 // the figures are saved for Studio's home-screen quota widget:
 //   ~/.claude/studio-rate-limits.json   (override: STUDIO_CLAUDE_RATE_FILE)
 //   { observedAt, source: "statusline", five_hour?, seven_day? }
-//   each window { used_percentage, resets_at (Unix seconds), observed_at }
+//   each window { used_percentage (0..100), resets_at (Unix seconds), observed_at }
+// A relative or ~ override is anchored at the home directory, never at the
+// current directory: this script runs in whichever project Claude Code has
+// open, while the server reads from its own directory (resolveHomeRelativePath).
 // The Studio server writes the same file from its own Claude sessions, so the
 // shape must match server/shared/utils.ts (recordClaudeRateLimitEvent).
 //
@@ -16,7 +19,18 @@
 //
 // It must never break Claude Code: every failure is swallowed and a minimal
 // line is still printed. Only percentages and reset times are stored.
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -26,10 +40,15 @@ const WINDOWS = [
 ];
 // The status line refreshes often; an unchanged reading is rewritten at most this often.
 const REWRITE_UNCHANGED_MS = 60_000;
+// Same bound as the server (CLAUDE_RATE_SNAPSHOT_MAX_BYTES); the real file is a few hundred bytes.
+const MAX_SNAPSHOT_BYTES = 64 * 1024;
 
+// Mirrors resolveHomeRelativePath in server/shared/utils.ts.
 function snapshotPath() {
   const configured = process.env.STUDIO_CLAUDE_RATE_FILE?.trim();
-  return configured || path.join(os.homedir(), '.claude', 'studio-rate-limits.json');
+  if (!configured) return path.join(os.homedir(), '.claude', 'studio-rate-limits.json');
+  if (configured === '~') return os.homedir();
+  return path.resolve(os.homedir(), configured.startsWith('~/') ? configured.slice(2) : configured);
 }
 
 function readInput() {
@@ -42,8 +61,9 @@ function readInput() {
   }
 }
 
+// Claude Code reports `utilization * 100` uncapped, so an over-limit window can exceed 100.
 function percentage(value) {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value * 10) / 10 : null;
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.min(100, Math.round(value * 10) / 10) : null;
 }
 
 // Unix seconds as documented; milliseconds and ISO strings are tolerated.
@@ -56,9 +76,30 @@ function resetSeconds(value) {
   return Math.round(value > 1e12 ? value / 1000 : value);
 }
 
+// Opened non-blocking and checked through the descriptor, so a FIFO or device at
+// the path is skipped instead of hanging the status line (mirrors the server's
+// readSmallRegularFile).
+function readSmallRegularFile(file) {
+  const descriptor = openSync(file, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOCTTY ?? 0));
+  try {
+    const info = fstatSync(descriptor);
+    if (!info.isFile() || info.size > MAX_SNAPSHOT_BYTES) return '';
+    const buffer = Buffer.alloc(MAX_SNAPSHOT_BYTES + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const bytesRead = readSync(descriptor, buffer, length, buffer.length - length, length);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    return length > MAX_SNAPSHOT_BYTES ? '' : buffer.toString('utf8', 0, length);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
 function readExisting(file) {
   try {
-    const parsed = JSON.parse(readFileSync(file, 'utf8'));
+    const parsed = JSON.parse(readSmallRegularFile(file));
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
   } catch {
     return {};

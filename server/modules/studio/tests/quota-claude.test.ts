@@ -32,6 +32,21 @@ test('a missing snapshot explains how to enable it and a malformed one is unavai
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('oversized files and anything but a regular file are refused without being read', async () => {
+  const { directory, file } = snapshotFile();
+  try {
+    writeFileSync(file, `{"observedAt":"x","pad":"${'x'.repeat(70 * 1024)}"}`);
+    assert.match((await readClaudeQuota({ snapshotFile: file, now: NOW })).note ?? '', /过大/);
+    assert.match((await readClaudeQuota({ snapshotFile: directory, now: NOW })).note ?? '', /不是普通文件/);
+    // A FIFO or device at the configured path used to hang the read (and the shared cache) forever.
+    if (process.platform !== 'win32') {
+      const device = await readClaudeQuota({ snapshotFile: '/dev/zero', now: NOW });
+      assert.equal(device.available, false);
+      assert.match(device.note ?? '', /不是普通文件/);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('statusline snapshots map to 5-hour and weekly windows with staleness rules', async () => {
   const { directory, file } = snapshotFile();
   try {
@@ -70,5 +85,10 @@ test('snapshots written from SDK rate_limit_event are read back as sdk-event win
     assert.equal(snapshot.source, 'sdk-event');
     assert.equal(snapshot.stale, false);
     assert.deepEqual(snapshot.windows.map(window => [window.id, window.usedPercent]), [['five_hour', 25], ['seven_day', 81]]);
+
+    // An account already over its 5-hour limit reports utilization above 1.
+    await recordClaudeRateLimitEvent({ status: 'rejected', rateLimitType: 'five_hour', utilization: 1.04, resetsAt: seconds(NOW + 600_000) }, { filePath: file, now: () => NOW });
+    const limited = await readClaudeQuota({ snapshotFile: file, now: NOW + 1000 });
+    assert.equal(limited.windows.find(window => window.id === 'five_hour')?.usedPercent, 100);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

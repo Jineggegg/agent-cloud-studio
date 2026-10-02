@@ -1,12 +1,13 @@
-import { readFile, stat } from 'node:fs/promises';
-
-import { readEpochMilliseconds, readObjectRecord } from '@/shared/utils.js';
+import {
+  CLAUDE_RATE_SNAPSHOT_MAX_BYTES,
+  readEpochMilliseconds,
+  readObjectRecord,
+  readSmallRegularFile,
+} from '@/shared/utils.js';
 import type { StudioQuotaSnapshot, StudioQuotaWindow } from '@/shared/types.js';
 
 // The snapshot only refreshes while Claude is in use; after this it is shown but flagged.
 const OBSERVATION_STALE_MS = 6 * 60 * 60_000;
-// The real file is a few hundred bytes; anything far larger is not ours.
-const MAX_SNAPSHOT_BYTES = 64 * 1024;
 const SNAPSHOT_WINDOWS = [
   { key: 'five_hour', label: '5 小时', minutes: 300 },
   { key: 'seven_day', label: '每周', minutes: 10080 },
@@ -22,16 +23,20 @@ function unavailable(note: string): StudioQuotaSnapshot {
  *
  * Reads the snapshot written by the Claude Code statusLine script or by Studio's own Agent SDK
  * sessions (`{ observedAt, source, five_hour?, seven_day? }`, `resets_at` in Unix seconds, optional
- * per-window `observed_at`). A missing file explains how to enable it. The snapshot is stale once a
- * window's reset time has passed or any window was observed more than six hours ago. Never throws.
+ * per-window `observed_at`). A missing file explains how to enable it; an oversized file or
+ * anything but a regular file (a FIFO would block a plain read forever) is refused without being
+ * read. The snapshot is stale once a window's reset time has passed or any window was observed
+ * more than six hours ago. Never throws.
  */
 export async function readClaudeQuota(input: { snapshotFile: string; now: number }): Promise<StudioQuotaSnapshot> {
   let record: Record<string, unknown> | null;
   try {
-    if ((await stat(input.snapshotFile)).size > MAX_SNAPSHOT_BYTES) return unavailable('Claude 用量快照文件过大，已忽略');
-    record = readObjectRecord(JSON.parse(await readFile(input.snapshotFile, 'utf8')));
+    record = readObjectRecord(JSON.parse(await readSmallRegularFile(input.snapshotFile, CLAUDE_RATE_SNAPSHOT_MAX_BYTES)));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return unavailable(`尚未记录 Claude 用量。${ENABLE_HINT}`);
+    const code = (error as { code?: unknown } | null)?.code;
+    if (code === 'ENOENT') return unavailable(`尚未记录 Claude 用量。${ENABLE_HINT}`);
+    if (code === 'FILE_TOO_LARGE') return unavailable('Claude 用量快照文件过大，已忽略');
+    if (code === 'NOT_A_REGULAR_FILE') return unavailable('Claude 用量快照路径不是普通文件，已忽略');
     return unavailable('无法读取 Claude 用量快照文件');
   }
   if (!record) return unavailable('Claude 用量快照文件格式无效');

@@ -58,6 +58,34 @@ test('official app-server limits map to labelled windows and win over local logs
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test('a slow app-server read is cancelled through its signal at the deadline and the logs are used', async () => {
+  const { root, day } = sessionsDirectory();
+  try {
+    writeFileSync(path.join(day, 'rollout-a.jsonl'), `${tokenCount('2026-10-02T11:59:00.000Z', { primary: { used_percent: 33, window_minutes: 300 } })}\n`);
+    // Behaves like readCodexAccountRateLimits: it only stops (killing its child) when the signal aborts.
+    let cancelled = false;
+    const cooperative = await readCodexQuota({
+      now: NOW, sessionDirectories: [root], officialTimeoutMs: 20,
+      readRateLimits: ({ signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => { cancelled = true; reject(new Error('cancelled')); }, { once: true });
+      }),
+    });
+    assert.equal(cancelled, true, 'the reader is told to stop instead of being abandoned');
+    assert.equal(cooperative.source, 'local-log');
+    assert.equal(cooperative.windows[0].usedPercent, 33);
+    assert.match(cooperative.note ?? '', /官方接口/);
+
+    // A reader that ignores the signal still cannot hold the widget past the deadline.
+    const started = Date.now();
+    const ignoring = await readCodexQuota({
+      now: NOW, sessionDirectories: [root], officialTimeoutMs: 20,
+      readRateLimits: () => new Promise(() => {}),
+    });
+    assert.equal(ignoring.source, 'local-log');
+    assert.ok(Date.now() - started < 5_000);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('a failing app-server falls back to the newest token_count in the most recent rollout logs', async () => {
   const { root, day } = sessionsDirectory();
   try {
