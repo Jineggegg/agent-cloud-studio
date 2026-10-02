@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -17,7 +17,8 @@ vi.mock('sonner', () => ({ toast: mocks.toast }));
 
 import { StudioGitHub } from '@/modules/studio/StudioGitHub';
 import { StudioWidgets } from '@/modules/studio/StudioWidgets';
-import type { StudioGitHubInbox, StudioGitHubPull, StudioGitHubPullDetail, StudioGitHubStatus } from '@/shared/types';
+import { forgetMergedGitHubPull, hideMergedGitHubPulls } from '@/modules/studio/hooks/useGitHubReading';
+import type { StudioGitHubInbox, StudioGitHubMergeRecord, StudioGitHubPull, StudioGitHubPullDetail, StudioGitHubStatus } from '@/shared/types';
 
 const HEAD = '6a86614f929c0d67be9d4124b066832715d7d698';
 const STATUS: StudioGitHubStatus = { installed: true, authenticated: true, login: 'Jineggegg', scopes: ['repo'], canMerge: true, message: null, checkedAt: '2026-10-02T12:00:00Z' };
@@ -48,7 +49,7 @@ function detail(overrides: Partial<StudioGitHubPullDetail> = {}): StudioGitHubPu
     ...pull(), state: 'open', body: 'Adds the inbox.', bodyTruncated: false, createdAt: recent(5),
     checkItems: [{ name: 'Unit tests', workflow: 'CI', state: 'passing', required: true, url: 'https://github.com/x/actions' }],
     checksTruncated: false, files: [{ path: 'src/modules/studio/StudioGitHub.tsx', additions: 400, deletions: 0, change: 'added' }], filesTotal: 1,
-    mergeMethods: ['squash', 'merge'], deleteBranchOnMerge: false, isCrossRepository: false, viewerCanMerge: true, blockers: [], mergeCommitSha: null,
+    mergeMethods: ['squash', 'merge'], deleteBranchOnMerge: false, isCrossRepository: false, viewerCanMerge: true, mergeQueue: false, blockers: [], mergeCommitSha: null,
     ...overrides,
   };
 }
@@ -58,6 +59,8 @@ const json = (value: unknown, status = 200) => () => Promise.resolve(Response.js
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
+  // Merged ids live for the tab; an inbox that no longer lists them makes the module forget them between tests.
+  hideMergedGitHubPulls({ ...INBOX, pulls: [] });
   mocks.github.status.mockImplementation(json(STATUS));
   mocks.github.pulls.mockImplementation(json(INBOX));
   mocks.github.merges.mockImplementation(json([]));
@@ -196,5 +199,131 @@ test('the GitHub widget shows the open PR count and CI state when small, and the
   expect(medium.textContent).toContain('claudecodeui #512');
   expect(medium.textContent).toContain('共 3 个');
   // One request feeds both widgets.
+  expect(mocks.github.pulls).toHaveBeenCalledTimes(1);
+});
+
+// ------------------------------------------------------------------ review fixes
+
+test('a finished merge takes the PR out of the inbox and the home widget at once, even if a stale list comes back', async () => {
+  localStorage.setItem('studio-widgets-v1', JSON.stringify([{ id: 'w-gh-m', type: 'github', size: 'medium' }]));
+  mocks.github.merge.mockImplementation(json({ outcome: 'merged', mergeCommitSha: null, message: '已压缩合并 #42 到 main' }));
+  // GitHub's search keeps listing #42 for a while, so every later read still returns it.
+  render(<>
+    <StudioWidgets editing={false} snr={null} onEnterEdit={vi.fn()} galleryOpen={false} onGalleryClose={vi.fn()} />
+    <StudioGitHub />
+  </>);
+  const card = await screen.findByRole('article', { name: 'GitHub' });
+  await waitFor(() => expect(card.textContent).toContain('GitHub PR inbox'));
+  fireEvent.click(await screen.findByRole('button', { name: /GitHub PR inbox/ }));
+  const sheet = await screen.findByRole('dialog');
+  fireEvent.click(await within(sheet).findByRole('button', { name: '合并…' }));
+  fireEvent.click(await within(sheet).findByRole('button', { name: '合并 #42' }));
+  fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '合并' }));
+  expect(await within(sheet).findByText('#42 已合并')).toBeTruthy();
+  // The widget polls with no argument and the app reads with a refresh flag.
+  const widgetReads = () => mocks.github.pulls.mock.calls.filter(call => call[0] === undefined).length;
+  const readsBefore = widgetReads();
+  await waitFor(() => expect(card.textContent).not.toContain('GitHub PR inbox'));
+  expect(card.textContent).toContain('共 2 个');
+  await waitFor(() => expect(mocks.github.pulls).toHaveBeenLastCalledWith(true));
+  await waitFor(() => expect(screen.queryByRole('button', { name: /GitHub PR inbox/ })).toBeNull());
+  // Neither view waited for another widget poll, and the stale refresh did not bring the row back.
+  expect(widgetReads()).toBe(readsBefore);
+  expect(screen.getByRole('button', { name: /Session export/ })).toBeTruthy();
+});
+
+test('the sheet reloads a stale cached head, has a refresh in its header, and re-reads while checks run', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const running = detail({
+      checkItems: [{ name: 'Unit tests', workflow: 'CI', state: 'pending', required: true, url: null }],
+      blockers: [{ code: 'REQUIRED_CHECKS_PENDING', message: '必需检查还在运行：Unit tests' }],
+    });
+    // The server's cached copy is from before the latest push; the row already shows the new head.
+    mocks.github.pull.mockImplementation((_owner: string, _repo: string, _number: number, refresh: boolean) =>
+      Promise.resolve(Response.json(refresh ? running : detail({ headSha: '1111111111111111111111111111111111111111' }))));
+    const sheet = await openPull('GitHub PR inbox');
+    await waitFor(() => expect(mocks.github.pull).toHaveBeenLastCalledWith('Jineggegg', 'agent-cloud-studio', 42, true));
+    expect(await within(sheet).findByText('必需检查还在运行：Unit tests')).toBeTruthy();
+    expect((within(sheet).getByRole('button', { name: '合并' }) as HTMLButtonElement).disabled).toBe(true);
+
+    // CI finishes while the sheet stays open: the poll picks it up and 合并 unlocks in place.
+    mocks.github.pull.mockImplementation(json(detail()));
+    const before = mocks.github.pull.mock.calls.length;
+    await act(async () => { vi.advanceTimersByTime(15_000); });
+    await waitFor(() => expect(mocks.github.pull.mock.calls.length).toBe(before + 1));
+    expect(await within(sheet).findByRole('button', { name: '合并…' })).toBeTruthy();
+
+    fireEvent.click(within(sheet).getByRole('button', { name: '刷新 PR' }));
+    await waitFor(() => expect(mocks.github.pull.mock.calls.length).toBe(before + 2));
+    expect(mocks.github.pull).toHaveBeenLastCalledWith('Jineggegg', 'agent-cloud-studio', 42, true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('delete-branch starts off, and a repository that auto-deletes shows a note instead of a switch', async () => {
+  mocks.github.pull.mockImplementation(json(detail({ deleteBranchOnMerge: true })));
+  // Queued rather than merged, so #42 stays in the inbox for the second sheet below.
+  mocks.github.merge.mockImplementation(json({ outcome: 'queued', mergeCommitSha: null, message: 'ok' }));
+  const sheet = await openPull('GitHub PR inbox');
+  fireEvent.click(await within(sheet).findByRole('button', { name: '合并…' }));
+  expect(await within(sheet).findByText(/GitHub 会在合并后自动删除/)).toBeTruthy();
+  expect(within(sheet).queryByRole('switch', { name: /合并后删除/ })).toBeNull();
+  fireEvent.click(within(sheet).getByRole('button', { name: '合并 #42' }));
+  fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '合并' }));
+  await waitFor(() => expect(mocks.github.merge).toHaveBeenCalledWith('Jineggegg', 'agent-cloud-studio', 42, expect.objectContaining({ deleteBranch: false })));
+  cleanup();
+
+  mocks.github.pull.mockImplementation(json(detail()));
+  const plain = await openPull('GitHub PR inbox');
+  fireEvent.click(await within(plain).findByRole('button', { name: '合并…' }));
+  expect((await within(plain).findByRole('switch', { name: /合并后删除/ }) as HTMLInputElement).checked).toBe(false);
+});
+
+test('GitHub reporting UNSTABLE needs the acknowledgement even when no listed check fails', async () => {
+  mocks.github.pull.mockImplementation(json(detail({ mergeState: 'unstable' })));
+  mocks.github.merge.mockImplementation(json({ outcome: 'merged', mergeCommitSha: null, message: 'ok' }));
+  const sheet = await openPull('GitHub PR inbox');
+  expect(await within(sheet).findByText('有检查未通过')).toBeTruthy();
+  fireEvent.click(await within(sheet).findByRole('button', { name: '合并…' }));
+  const merge = await within(sheet).findByRole('button', { name: '合并 #42' });
+  expect((merge as HTMLButtonElement).disabled).toBe(true);
+  expect(within(sheet).getByText('检查没有全部通过')).toBeTruthy();
+  fireEvent.click(within(sheet).getByRole('switch', { name: '我已了解，仍要合并' }));
+  fireEvent.click(merge);
+  fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '合并' }));
+  await waitFor(() => expect(mocks.github.merge).toHaveBeenCalledWith('Jineggegg', 'agent-cloud-studio', 42, expect.objectContaining({ acknowledgeFailing: true })));
+});
+
+test('a branch that is behind shows the reason up front and 合并 stays disabled', async () => {
+  mocks.github.pull.mockImplementation(json(detail({
+    mergeState: 'behind', blockers: [{ code: 'HEAD_BEHIND', message: 'wip6/github 落后于 main，仓库要求先更新分支：请在 GitHub 上更新后再合并' }],
+  })));
+  const sheet = await openPull('GitHub PR inbox');
+  expect(await within(sheet).findByText(/wip6\/github 落后于 main/)).toBeTruthy();
+  expect(within(sheet).getByText('落后于目标分支')).toBeTruthy();
+  expect((within(sheet).getByRole('button', { name: '合并' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test('the merge log shows a request the server rejected', async () => {
+  const invalid: StudioGitHubMergeRecord = {
+    id: 9, owner: 'Jineggegg', repo: 'agent-cloud-studio', number: 42, method: null, headSha: '', deleteBranch: false,
+    outcome: 'invalid', code: 'INVALID_SHA', message: '缺少有效的头提交 SHA', createdAt: recent(1), finishedAt: recent(1),
+  };
+  mocks.github.merges.mockImplementation(json([invalid]));
+  render(<StudioGitHub />);
+  expect(await screen.findByText('无效请求')).toBeTruthy();
+  expect(screen.getByText(/未执行 · 缺少有效的头提交 SHA/)).toBeTruthy();
+});
+
+test('forgetting a merged PR updates a widget that is already showing it', async () => {
+  localStorage.setItem('studio-widgets-v1', JSON.stringify([{ id: 'w-gh-m', type: 'github', size: 'medium' }]));
+  render(<StudioWidgets editing={false} snr={null} onEnterEdit={vi.fn()} galleryOpen={false} onGalleryClose={vi.fn()} />);
+  const card = await screen.findByRole('article', { name: 'GitHub' });
+  await waitFor(() => expect(card.textContent).toContain('Session export'));
+  act(() => forgetMergedGitHubPull('siteboon/claudecodeui#512'));
+  await waitFor(() => expect(card.textContent).not.toContain('Session export'));
+  expect(card.textContent).toContain('共 2 个');
   expect(mocks.github.pulls).toHaveBeenCalledTimes(1);
 });

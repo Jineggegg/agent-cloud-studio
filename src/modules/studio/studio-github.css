@@ -187,7 +187,8 @@
 }
 :is(.studio, .studio-layer) .gh-sheet-header h2 { font-size: 17px; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; }
 :is(.studio, .studio-layer) .gh-sheet-nav { justify-self: start; display: inline-flex; align-items: center; gap: 2px; min-height: 44px; padding: 0 6px; font-size: 17px; color: var(--ios-tint); }
-:is(.studio, .studio-layer) .gh-sheet-link { justify-self: end; }
+:is(.studio, .studio-layer) .gh-sheet-actions { justify-self: end; display: flex; align-items: center; gap: 2px; }
+:is(.studio, .studio-layer) .gh-sheet-refresh.refreshing svg { animation: studio-spin .9s linear infinite; }
 :is(.studio, .studio-layer) .gh-sheet-body {
   flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 18px 18px 22px;
   /* A thin scrollbar in the sheet's own greys instead of the browser's default gutter. */
@@ -307,9 +308,11 @@
 :is(.studio, .studio-layer) .gh-segmented button::before { content: ""; position: absolute; inset: -2px 0; }
 :is(.studio, .studio-layer) .gh-merge-hint { margin-top: -4px; padding: 0 16px 12px; font-size: 13px; line-height: 1.45; color: var(--ios-label-2); }
 :is(.studio, .studio-layer) .gh-switch-row { cursor: pointer; }
-:is(.studio, .studio-layer) .gh-switch-row::before { content: ""; position: absolute; top: 0; right: 0; left: 16px; height: .5px; background: var(--ios-separator); }
-:is(.studio, .studio-layer) .gh-switch-row > span { min-width: 0; overflow-wrap: anywhere; }
-:is(.studio, .studio-layer) .gh-switch-row code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; color: var(--ios-label-2); }
+:is(.studio, .studio-layer) :is(.gh-switch-row, .gh-fixed-row)::before { content: ""; position: absolute; top: 0; right: 0; left: 16px; height: .5px; background: var(--ios-separator); }
+:is(.studio, .studio-layer) :is(.gh-switch-row, .gh-fixed-row) > span { min-width: 0; overflow-wrap: anywhere; }
+:is(.studio, .studio-layer) :is(.gh-switch-row, .gh-fixed-row) code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; color: var(--ios-label-2); }
+/* A setting the repository decides: read-only, so it sits a step quieter than the switch row it replaces. */
+:is(.studio, .studio-layer) .gh-fixed-row { min-height: 48px; font-size: 15px; color: var(--ios-label-2); }
 :is(.studio, .studio-layer) .gh-acknowledge { display: inline-flex; align-items: center; gap: 10px; min-height: 44px; margin-top: 2px; font-size: 15px; font-weight: 500; color: var(--ios-label); cursor: pointer; }
 :is(.studio, .studio-layer) .gh-note { padding: 0 6px; font-size: 13px; line-height: 1.5; color: var(--ios-label-2); }
 :is(.studio, .studio-layer) .gh-merge-facts {
@@ -357,6 +360,7 @@
     top: auto; bottom: 0; width: 100%; height: 92dvh; max-height: none; transform: translateX(-50%);
     border-radius: 28px 28px 0 0; animation-name: gh-sheet-up;
   }
+  /* The sheet unmounts on this animation's end (StudioGitHubSheet), so the slide always finishes off-screen. */
   :is(.studio, .studio-layer).closing .gh-sheet { animation: gh-sheet-down var(--dur-base) var(--ease-out) forwards; }
   :is(.studio, .studio-layer) .gh-sheet-grabber { display: block; width: 36px; height: 5px; margin: 8px auto 0; border-radius: 3px; background: var(--ios-fill-pressed); }
   :is(.studio, .studio-layer) .gh-sheet-header { min-height: 50px; padding-top: 2px; }

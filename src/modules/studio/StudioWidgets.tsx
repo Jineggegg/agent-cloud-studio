@@ -8,9 +8,9 @@ import { DndContext, DragOverlay, useDndContext } from '@dnd-kit/core';
 import { SortableContext } from '@dnd-kit/sortable';
 
 import { api, readApiJson } from '@/shared/api';
-import { readableErrorMessage } from '@/shared/utils';
 import type { StudioGitHubInbox, StudioQuotaSnapshot, StudioQuotaWindow, StudioSnr, T212Overview, T212Point } from '@/shared/types';
 import { StudioTileIcon } from '@/modules/studio/StudioTileIcon';
+import { useGitHubReading } from '@/modules/studio/hooks/useGitHubReading';
 import { useHomeSortableItem, useHomeSortableList } from '@/modules/studio/hooks/useHomeSortable';
 import '@/modules/studio/studio-home.css';
 import '@/modules/studio/studio-github.css';
@@ -37,8 +37,6 @@ const CATALOG: { type: WidgetType; name: string; caption: string; tone: string; 
 ];
 const QUOTA_REFRESH_MS = 60_000;
 const T212_REFRESH_MS = 5 * 60_000;
-// The server caches the inbox for 45 s, so a two-minute poll costs GitHub at most one search per poll.
-const GITHUB_REFRESH_MS = 2 * 60_000;
 // Enter and exit of a whole widget (added from the gallery or removed in edit mode).
 const PRESENCE_SPRING = { type: 'spring', stiffness: 260, damping: 26 } as const;
 
@@ -193,41 +191,9 @@ function TradingWidget({ size, reading: { overview, points }, still }: { size: W
   </>;
 }
 
-// The PR inbox (null until it first loads) and why the latest read failed (gh signed out, GitHub unreachable).
-type GitHubReading = { inbox: StudioGitHubInbox | null; problem: string };
-
-/**
- * Loads the GitHub inbox once for the whole grid while a GitHub widget is placed. Polling stops while an app covers
- * the home screen or the tab is hidden; coming back reads again (a merge made in the app has already cleared the
- * server cache, so the widget catches up at once).
- */
-function useGitHubReading(enabled: boolean, paused: boolean): GitHubReading {
-  // The latest reading; a failed poll keeps the last inbox and only adds the problem.
-  const [reading, setReading] = useState<GitHubReading>({ inbox: null, problem: '' });
-  useEffect(() => {
-    if (!enabled || paused) return;
-    let active = true;
-    const load = async () => {
-      if (document.hidden) return;
-      try {
-        const inbox = await api.studio.github.pulls().then(readApiJson<StudioGitHubInbox>);
-        if (active) setReading({ inbox, problem: '' });
-      } catch (failure) {
-        if (active) setReading(previous => ({ inbox: previous.inbox, problem: readableErrorMessage(failure, 'GitHub 暂时读不到') }));
-      }
-    };
-    const tick = () => { void load(); };
-    tick();
-    const timer = window.setInterval(tick, GITHUB_REFRESH_MS);
-    document.addEventListener('visibilitychange', tick);
-    return () => { active = false; window.clearInterval(timer); document.removeEventListener('visibilitychange', tick); };
-  }, [enabled, paused]);
-  return reading;
-}
-
 const CI_LABEL: Record<StudioGitHubInbox['pulls'][number]['checks']['state'], string> = { passing: '检查通过', failing: '检查失败', pending: '检查中', none: '没有检查' };
 
-function GitHubWidget({ size, reading: { inbox, problem }, still }: { size: WidgetSize; reading: GitHubReading; still: boolean }) {
+function GitHubWidget({ size, reading: { inbox, problem }, still }: { size: WidgetSize; reading: ReturnType<typeof useGitHubReading>; still: boolean }) {
   const pulls = inbox?.pulls ?? [];
   const failing = pulls.filter(pull => pull.checks.state === 'failing').length;
   const pending = pulls.filter(pull => pull.checks.state === 'pending').length;

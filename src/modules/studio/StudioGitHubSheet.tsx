@@ -23,12 +23,19 @@ const METHOD_COPY: Record<StudioGitHubMergeMethod, { label: string; hint: (base:
 // The last method chosen per repository, so a repository that always squashes opens on 压缩合并.
 const METHOD_STORAGE_KEY = 'studio-github-merge-method-v1';
 const FILES_PREVIEW = 8;
-// Matches the sheet's CSS exit animation.
-const EXIT_MS = 220;
+// The sheet unmounts when one of its CSS exit animations ends (iPad fade, phone slide-down).
+const EXIT_ANIMATIONS = new Set(['gh-sheet-out', 'gh-sheet-down']);
+// In case animationend never arrives; longer than the slowest exit (the phone's 380 ms slide).
+const EXIT_FALLBACK_MS = 480;
+// While a check runs, the open sheet re-reads the pull request this often so 合并 unlocks without closing it.
+const PENDING_POLL_MS = 15_000;
 // What Tab can reach inside the sheet (disabled buttons and hidden inputs are skipped).
 const FOCUSABLE = 'a[href], button:not(:disabled), input:not(:disabled):not([type="hidden"]), [tabindex]:not([tabindex="-1"])';
 // Server refusals that mean the sheet shows an outdated pull request; they offer 重新载入 instead of 重试.
-const STALE_CODES = new Set(['HEAD_MOVED', 'CHECKS_FAILING', 'REQUIRED_CHECKS_FAILED', 'REQUIRED_CHECKS_PENDING', 'PR_NOT_OPEN', 'PR_DRAFT', 'MERGE_CONFLICT', 'MERGE_OUTCOME_UNKNOWN']);
+const STALE_CODES = new Set([
+  'HEAD_MOVED', 'BASE_MOVED', 'HEAD_BEHIND', 'MERGE_BLOCKED', 'CHECKS_FAILING', 'REQUIRED_CHECKS_FAILED', 'REQUIRED_CHECKS_PENDING',
+  'PR_NOT_OPEN', 'PR_DRAFT', 'MERGE_CONFLICT', 'MERGE_OUTCOME_UNKNOWN', 'DELETE_BRANCH_UNSUPPORTED', 'GH_PARTIAL_RESPONSE',
+]);
 const CHANGE_MARK: Record<string, { letter: string; label: string }> = {
   added: { letter: 'A', label: '新增' }, modified: { letter: 'M', label: '修改' }, deleted: { letter: 'D', label: '删除' },
   renamed: { letter: 'R', label: '重命名' }, copied: { letter: 'C', label: '复制' }, changed: { letter: 'M', label: '变更' },
@@ -53,8 +60,17 @@ function writeMethod(repoKey: string, method: StudioGitHubMergeMethod) {
     localStorage.setItem(METHOD_STORAGE_KEY, JSON.stringify({ ...saved, [repoKey]: method }));
   } catch { /* Private mode: the choice lasts for this sheet only. */ }
 }
-function exitDelay() {
-  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 0 : EXIT_MS;
+function exitFallback() {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 0 : EXIT_FALLBACK_MS;
+}
+// GitHub's mergeability in words for the 可合并 row, with the tone it is drawn in.
+function mergeability(detail: StudioGitHubPullDetail): { label: string; tone: '' | 'ci-failing' | 'ci-pending' } {
+  if (detail.state !== 'open') return { label: detail.state === 'merged' ? '已合并' : '已关闭', tone: '' };
+  if (detail.mergeable === 'conflicting' || detail.mergeState === 'dirty') return { label: '有冲突', tone: 'ci-failing' };
+  if (detail.mergeState === 'behind') return { label: '落后于目标分支', tone: 'ci-failing' };
+  if (detail.mergeState === 'blocked') return { label: '被分支保护阻止', tone: 'ci-failing' };
+  if (detail.mergeState === 'unstable') return { label: '有检查未通过', tone: 'ci-pending' };
+  return { label: detail.mergeable === 'mergeable' ? '没有冲突' : 'GitHub 正在计算', tone: '' };
 }
 // The server's machine-readable error code (ApiRequestError.code), or '' when there is none.
 function errorCode(reason: unknown) {
@@ -151,10 +167,11 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
   const [direction, setDirection] = useState(1);
   // The method the user picked; null follows the repository's last choice or its first allowed method.
   const [methodChoice, setMethodChoice] = useState<StudioGitHubMergeMethod | null>(() => readMethod(repoKey));
-  // Delete the head branch after merging; null follows the repository's own auto-delete setting.
-  const [deleteChoice, setDeleteChoice] = useState<boolean | null>(null);
-  // The user accepted failing checks that branch protection does not require.
-  const [acknowledged, setAcknowledged] = useState(false);
+  // Delete the head branch after merging; off until the user turns it on (offered only where it changes something).
+  const [deleteChoice, setDeleteChoice] = useState(false);
+  // The head commit whose failing checks the user accepted (branch protection does not require them); a new head
+  // commit has new checks, so the acknowledgement lapses with it.
+  const [acknowledgedSha, setAcknowledgedSha] = useState<string | null>(null);
   // The destructive confirmation alert is open.
   const [confirming, setConfirming] = useState(false);
   // The merge request is in flight; the sheet cannot be closed meanwhile.
@@ -169,18 +186,37 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
   const [bodyOpen, setBodyOpen] = useState(false);
   // The exit animation runs before the sheet unmounts.
   const [closing, setClosing] = useState(false);
+  // The header's refresh is reading the pull request again; its icon spins meanwhile.
+  const [refreshing, setRefreshing] = useState(false);
   const sheet = useRef<HTMLDivElement>(null);
   const body = useRef<HTMLDivElement>(null);
+  // onClose runs once, from whichever comes first: the exit animation's end or its fallback timer.
+  const closed = useRef(false);
 
-  const load = useCallback(async (refresh: boolean) => {
+  // Resolves with the pull request, or null when the read failed. A quiet read (the background poll) keeps the
+  // current error line rather than adding one.
+  const load = useCallback(async (refresh: boolean, quiet = false) => {
     try {
-      setDetail(await api.studio.github.pull(pull.owner, pull.repo, pull.number, refresh).then(readApiJson<StudioGitHubPullDetail>));
+      const next = await api.studio.github.pull(pull.owner, pull.repo, pull.number, refresh).then(readApiJson<StudioGitHubPullDetail>);
+      setDetail(next);
       setLoadError('');
+      return next;
     } catch (failure) {
-      setLoadError(readableErrorMessage(failure, '读取 PR 失败'));
+      if (!quiet) setLoadError(readableErrorMessage(failure, '读取 PR 失败'));
+      return null;
     }
   }, [pull.owner, pull.repo, pull.number]);
-  useEffect(() => { void load(false); }, [load]);
+  useEffect(() => {
+    // The server may hold a copy older than the inbox row; a different head commit means it is stale.
+    void load(false).then(loaded => { if (loaded && loaded.headSha !== pull.headSha) void load(true); });
+  }, [load, pull.headSha]);
+  // While a check runs, keep the detail current so a finished required check unlocks 合并 in place.
+  const checksRunning = Boolean(detail?.checkItems.some(check => check.state === 'pending'));
+  useEffect(() => {
+    if (!checksRunning || step !== 'detail' || merging || closing) return;
+    const timer = window.setInterval(() => { if (!document.hidden) void load(true, true); }, PENDING_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [checksRunning, step, merging, closing, load]);
 
   useEffect(() => {
     // Focus moves into the sheet and returns to the row that opened it.
@@ -189,10 +225,22 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
     return () => previous?.focus?.();
   }, []);
 
+  const finishClose = () => {
+    if (closed.current) return;
+    closed.current = true;
+    onClose();
+  };
   const close = () => {
     if (merging || closing) return;
     setClosing(true);
-    window.setTimeout(onClose, exitDelay());
+    window.setTimeout(finishClose, exitFallback());
+  };
+  const refresh = async () => {
+    // Ignored while one runs; the button stays enabled so keyboard focus does not fall out of the sheet.
+    if (refreshing) return;
+    setRefreshing(true);
+    await load(true);
+    setRefreshing(false);
   };
   // Each screen starts at its top, like a navigation push.
   const go = (next: Step, towards: 1 | -1) => {
@@ -221,13 +269,18 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
 
   const shown = detail;
   const method = shown ? (methodChoice && shown.mergeMethods.includes(methodChoice) ? methodChoice : shown.mergeMethods[0]) : undefined;
-  const offerDelete = shown ? !shown.isCrossRepository : false;
-  const deleteBranch = offerDelete && (deleteChoice ?? shown?.deleteBranchOnMerge ?? false);
+  // Deleting is offered only where the flag changes something: GitHub already deletes on auto-delete, a fork's
+  // branch is out of reach, and a merge queue cannot delete.
+  const offerDelete = shown ? !shown.isCrossRepository && !shown.deleteBranchOnMerge && !shown.mergeQueue : false;
+  const deleteBranch = offerDelete && deleteChoice;
   const failing = shown?.checkItems.filter(check => check.state === 'failing') ?? [];
   const pending = shown?.checkItems.filter(check => check.state === 'pending') ?? [];
+  // GitHub's UNSTABLE covers checks that do not pass even when none is listed as failing; both need the user's word.
+  const needsAcknowledgement = failing.length > 0 || shown?.mergeState === 'unstable';
   const blockers = [...(shown?.blockers ?? []), ...(canMerge ? [] : [{ code: 'NO_SCOPE', message: 'gh 令牌缺少 repo 权限：在服务器上运行 gh auth refresh -s repo' }])];
   const short = (shown?.headSha ?? pull.headSha).slice(0, 7);
-  const ready = Boolean(shown && method && !blockers.length && (!failing.length || acknowledged));
+  const acknowledged = Boolean(shown && acknowledgedSha === shown.headSha);
+  const ready = Boolean(shown && method && !blockers.length && (!needsAcknowledgement || acknowledged));
   const phase: Phase = result ? (result.outcome === 'merged' ? 'merged' : 'queued') : merging ? 'merging' : 'idle';
 
   const submit = async () => {
@@ -236,7 +289,7 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
     setMergeError(null);
     try {
       const merged = await api.studio.github.merge(pull.owner, pull.repo, pull.number, {
-        method, expectedHeadSha: shown.headSha, deleteBranch, acknowledgeFailing: failing.length > 0 && acknowledged,
+        method, expectedHeadSha: shown.headSha, deleteBranch, acknowledgeFailing: needsAcknowledgement && acknowledged,
       }).then(readApiJson<StudioGitHubMergeResult>);
       writeMethod(repoKey, method);
       setResult(merged);
@@ -252,7 +305,7 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
   };
   const reload = async () => {
     setMergeError(null);
-    setAcknowledged(false);
+    setAcknowledgedSha(null);
     await load(true);
     go('detail', -1);
   };
@@ -262,9 +315,15 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
       ? <button type="button" className="gh-sheet-nav" disabled={merging} onClick={() => go('detail', -1)}><ChevronLeft size={22} aria-hidden="true" />返回</button>
       : <button type="button" className="gh-sheet-nav" disabled={merging} onClick={close}>关闭</button>}
     <h2 id="gh-sheet-title">{step === 'merge' ? '合并' : step === 'done' ? (result?.outcome === 'queued' ? '已排队' : '已合并') : `#${pull.number}`}</h2>
-    <a className="gh-sheet-link icon-button" href={pull.url} target="_blank" rel="noreferrer" aria-label="在 GitHub 上打开" title="在 GitHub 上打开">
-      <ExternalLink size={19} aria-hidden="true" />
-    </a>
+    <div className="gh-sheet-actions">
+      {step === 'detail' && shown && <button type="button" className={`icon-button gh-sheet-refresh ${refreshing ? 'refreshing' : ''}`}
+        aria-busy={refreshing || undefined} aria-label="刷新 PR" title="刷新" onClick={() => void refresh()}>
+        <RotateCw size={19} aria-hidden="true" />
+      </button>}
+      <a className="icon-button" href={pull.url} target="_blank" rel="noreferrer" aria-label="在 GitHub 上打开" title="在 GitHub 上打开">
+        <ExternalLink size={19} aria-hidden="true" />
+      </a>
+    </div>
   </header>;
 
   const loading = <div className="gh-sheet-step" role="status" aria-label="正在读取 PR">
@@ -300,9 +359,7 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
       </span></li>
       <li><span>审查</span><span className="gh-fact-value">{shown.reviewDecision ? <GitHubReviewBadge decision={shown.reviewDecision} /> : '不需要审查'}</span></li>
       <li><span>改动</span><span className="gh-fact-value"><span className="gh-diff mono"><ins>+{number(shown.additions)}</ins><del>−{number(shown.deletions)}</del></span><DiffBlocks additions={shown.additions} deletions={shown.deletions} /></span></li>
-      <li><span>可合并</span><span className={`gh-fact-value ${shown.mergeable === 'conflicting' ? 'ci-failing' : ''}`}>
-        {shown.state !== 'open' ? (shown.state === 'merged' ? '已合并' : '已关闭') : shown.mergeable === 'conflicting' ? '有冲突' : shown.mergeState === 'behind' ? '落后于目标分支' : shown.mergeable === 'mergeable' ? '没有冲突' : 'GitHub 正在计算'}
-      </span></li>
+      <li><span>可合并</span><span className={`gh-fact-value ${mergeability(shown).tone}`}>{mergeability(shown).label}</span></li>
     </ul>
 
     {shown.checkItems.length > 0 && <section className="gh-sheet-section" aria-labelledby="gh-checks-title">
@@ -351,22 +408,27 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
         <span>合并后删除 <code>{shown.headRef}</code></span>
         <input type="checkbox" role="switch" className="ios-switch" checked={deleteBranch} disabled={merging} onChange={event => setDeleteChoice(event.target.checked)} />
       </label>}
+      {!shown.isCrossRepository && shown.deleteBranchOnMerge && <div className="gh-merge-row gh-fixed-row">
+        <span>GitHub 会在合并后自动删除 <code>{shown.headRef}</code></span>
+      </div>}
     </div>
-    {failing.length > 0 && <div className="gh-callout warn">
+    {needsAcknowledgement && <div className="gh-callout warn">
       <TriangleAlert size={18} aria-hidden="true" />
       <div>
-        <strong>{failing.length} 项检查没有通过</strong>
-        <span>{failing.slice(0, 4).map(check => check.name).join('、')}{failing.length > 4 ? ' 等' : ''} 没有通过；分支保护不要求这些检查，GitHub 仍允许合并。</span>
+        <strong>{failing.length ? `${failing.length} 项检查没有通过` : '检查没有全部通过'}</strong>
+        <span>{failing.length
+          ? <>{failing.slice(0, 4).map(check => check.name).join('、')}{failing.length > 4 ? ' 等' : ''} 没有通过；分支保护不要求这些检查，GitHub 仍允许合并。</>
+          : 'GitHub 报告这个 PR 有检查没有通过或还在运行，可能不在上面的列表里；分支保护不要求它们，GitHub 仍允许合并。'}</span>
         <label className="gh-acknowledge">
-          <input type="checkbox" role="switch" className="ios-switch" checked={acknowledged} disabled={merging} onChange={event => setAcknowledged(event.target.checked)} />
+          <input type="checkbox" role="switch" className="ios-switch" checked={acknowledged} disabled={merging} onChange={event => setAcknowledgedSha(event.target.checked ? shown.headSha : null)} />
           我已了解，仍要合并
         </label>
       </div>
     </div>}
     {pending.length > 0 && <p className="gh-note">{pending.length} 项检查还在运行，合并不会等待它们。</p>}
+    {shown.mergeQueue && <p className="gh-note">这个仓库使用合并队列：PR 会进入队列，由 GitHub 按顺序检查并合并。</p>}
     {shown.reviewDecision === 'review_required' && <p className="gh-note">这个 PR 还没有通过审查；如果分支保护要求审查，GitHub 会拒绝合并。</p>}
     {shown.reviewDecision === 'changes_requested' && <p className="gh-note">审查者要求修改；如果分支保护要求审查，GitHub 会拒绝合并。</p>}
-    {shown.mergeState === 'behind' && <p className="gh-note">{shown.headRef} 落后于 {shown.baseRef}；仓库若要求分支保持最新，需要先更新分支。</p>}
     <dl className="gh-merge-facts">
       <div><dt>仓库</dt><dd>{shown.owner}/{shown.repo}</dd></div>
       <div><dt>PR</dt><dd>#{shown.number}</dd></div>
@@ -405,7 +467,8 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
   return createPortal(
     <div className={`studio-layer ${closing ? 'closing' : ''}`} onKeyDown={onKeyDown}>
       <div className="sheet-scrim" aria-hidden="true" onClick={close} />
-      <div ref={sheet} tabIndex={-1} className="gh-sheet" role="dialog" aria-modal="true" aria-labelledby="gh-sheet-title" aria-busy={merging || undefined}>
+      <div ref={sheet} tabIndex={-1} className="gh-sheet" role="dialog" aria-modal="true" aria-labelledby="gh-sheet-title" aria-busy={merging || undefined}
+        onAnimationEnd={event => { if (closing && event.target === event.currentTarget && EXIT_ANIMATIONS.has(event.animationName)) finishClose(); }}>
         <div className="gh-sheet-grabber" aria-hidden="true" />
         {header}
         <div ref={body} className="gh-sheet-body">

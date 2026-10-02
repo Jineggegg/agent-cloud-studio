@@ -2092,13 +2092,15 @@ export type StudioGitHubFile = { path: string; additions: number; deletions: num
 /**
  * GET /api/studio/github/prs/:owner/:repo/:number: a pull request with its checks, up to 100 files, a plain-text
  * description excerpt (render as text, never as HTML), the merge methods the repository allows and the server's
- * blockers, which the merge endpoint enforces whatever the sheet shows.
+ * blockers, which the merge endpoint enforces whatever the sheet shows. `mergeQueue` means the base branch requires a
+ * merge queue: the merge queues the PR and cannot delete its branch. A `mergeState` of 'unstable' needs the same
+ * acknowledgement as a failing check, since GitHub sees checks that do not pass.
  */
 export type StudioGitHubPullDetail = StudioGitHubPull & {
   state: 'open' | 'closed' | 'merged'; body: string; bodyTruncated: boolean; createdAt: string;
   checkItems: StudioGitHubCheck[]; checksTruncated: boolean; files: StudioGitHubFile[]; filesTotal: number;
   mergeMethods: StudioGitHubMergeMethod[]; deleteBranchOnMerge: boolean; isCrossRepository: boolean; viewerCanMerge: boolean;
-  blockers: { code: string; message: string }[]; mergeCommitSha: string | null;
+  mergeQueue: boolean; blockers: { code: string; message: string }[]; mergeCommitSha: string | null;
 };
 /**
  * POST …/merge body. `expectedHeadSha` is the head the user reviewed (GitHub refuses a moved head);
@@ -2107,10 +2109,13 @@ export type StudioGitHubPullDetail = StudioGitHubPull & {
 export type StudioGitHubMergeInput = { method: StudioGitHubMergeMethod; expectedHeadSha: string; deleteBranch: boolean; acknowledgeFailing: boolean };
 /** POST …/merge result: merged, or accepted into a merge queue. */
 export type StudioGitHubMergeResult = { outcome: 'merged' | 'queued'; mergeCommitSha: string | null; message: string };
-/** GET /api/studio/github/merges: one audited merge attempt of the signed-in Studio user, newest first. */
+/**
+ * GET /api/studio/github/merges: one audited merge attempt of the signed-in Studio user, newest first. An 'invalid'
+ * attempt is a request the server rejected before reading the PR; its `method` is null and `headSha` may be ''.
+ */
 export type StudioGitHubMergeRecord = {
-  id: number; owner: string; repo: string; number: number; method: StudioGitHubMergeMethod; headSha: string; deleteBranch: boolean;
-  outcome: 'pending' | 'merged' | 'queued' | 'refused' | 'failed' | 'unknown'; code: string | null; message: string | null;
+  id: number; owner: string; repo: string; number: number; method: StudioGitHubMergeMethod | null; headSha: string; deleteBranch: boolean;
+  outcome: 'pending' | 'merged' | 'queued' | 'refused' | 'failed' | 'unknown' | 'invalid'; code: string | null; message: string | null;
   createdAt: string; finishedAt: string | null;
 };
 // ── v6 track: builder — types below this line ──

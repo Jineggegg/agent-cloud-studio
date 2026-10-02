@@ -33,7 +33,16 @@ export function createGitHubRouter(service: ReturnType<typeof createGitHubServic
   }));
   router.post('/prs/:owner/:repo/:number/merge', asyncHandler(async (req, res) => {
     const userId = user(req);
-    res.json(await service.merge(userId, parseGitHubPullRef(req.params), parseGitHubMergeRequest(req.body)));
+    const ref = parseGitHubPullRef(req.params);
+    let request: ReturnType<typeof parseGitHubMergeRequest>;
+    try {
+      request = parseGitHubMergeRequest(req.body);
+    } catch (error) {
+      // Every merge attempt is audited, including one rejected here for a bad method, SHA or flag.
+      service.recordInvalidMerge(userId, ref, error);
+      throw error;
+    }
+    res.json(await service.merge(userId, ref, request));
   }));
   router.get('/merges', asyncHandler(async (req, res) => { res.json(service.merges(user(req))); }));
   return router;

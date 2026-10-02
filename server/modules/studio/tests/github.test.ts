@@ -246,9 +246,10 @@ test('merge passes --match-head-commit with exact args and records the merged at
   let merged = false;
   const { gh, service, database } = setup({
     merge: () => { merged = true; return ok(''); },
-    detail: () => ok(detailData({ pull: merged ? { state: 'MERGED', mergeCommit: { oid: 'a'.repeat(40) } } : {} })),
+    detail: () => ok(detailData({ repository: { deleteBranchOnMerge: false }, pull: merged ? { state: 'MERGED', mergeCommit: { oid: 'a'.repeat(40) } } : {} })),
+    inbox: () => ok({ data: { authored: { issueCount: 1, nodes: [pullNode()] }, review: { issueCount: 0, nodes: [] }, owned: { issueCount: 0, nodes: [] } } }),
   });
-  await service.pulls();
+  assert.deepEqual((await service.pulls()).pulls.map(pull => pull.id), ['Jineggegg/super-professor#114']);
   const result = await service.merge(7, REF, { ...MERGE, deleteBranch: true });
   assert.deepEqual(gh.of('merge')[0].args, ['pr', 'merge', '114', '--repo', 'Jineggegg/super-professor', '--squash', '--match-head-commit', HEAD, '--delete-branch']);
   assert.equal(gh.of('merge')[0].timeoutMs, 60_000);
@@ -261,10 +262,192 @@ test('merge passes --match-head-commit with exact args and records the merged at
   assert.equal(record.deleteBranch, true);
   assert.ok(record.finishedAt);
   assert.deepEqual(service.merges(8), []);
-  // The inbox cache was dropped, so the merged PR disappears on the next read.
-  await service.pulls();
-  assert.equal(gh.of('inbox').length, 2);
+  // The merged PR leaves the cached inbox at once, without another search.
+  assert.deepEqual((await service.pulls()).pulls, []);
+  assert.equal(gh.of('inbox').length, 1);
   assert.equal((database.prepare('SELECT COUNT(*) AS total FROM studio_github_merges').get() as { total: number }).total, 1);
+});
+
+// ------------------------------------------------------------------ review fixes: merge refusals, merge state, caches
+
+const ADVICE_AUTO = 'To have the pull request merged after all the requirements have been met, add the `--auto` flag.';
+const ADVICE_ADMIN = 'To use administrator privileges to immediately merge the pull request, add the `--admin` flag.';
+// What gh 2.101 prints to stderr when its own mergeStateStatus check refuses (BLOCKED, BEHIND, DIRTY).
+const ghRefusal = (reason: string, ...advice: string[]) =>
+  failed([`\u001b[31mX\u001b[0m Pull request Jineggegg/super-professor#114 is not mergeable: ${reason}.`, ...advice].join('\n'));
+
+test('gh merge refusals give the real reason in Chinese and never surface the --admin or --auto advice', async () => {
+  const cases: Array<{ name: string; result: StudioGhResult; code: string; message: RegExp }> = [
+    { name: 'blocked', result: ghRefusal('the base branch policy prohibits the merge', ADVICE_AUTO, ADVICE_ADMIN), code: 'MERGE_BLOCKED', message: /^分支保护规则不允许合并：可能还缺少必需的审查或检查$/ },
+    { name: 'behind', result: ghRefusal('the head branch is not up to date with the base branch', ADVICE_AUTO, ADVICE_ADMIN), code: 'HEAD_BEHIND', message: /分支落后于目标分支/ },
+    {
+      name: 'dirty',
+      result: ghRefusal('the merge commit cannot be cleanly created', ADVICE_AUTO, 'Run the following to resolve the merge conflicts locally:', '  gh pr checkout 114 && git fetch origin main && git merge origin/main'),
+      code: 'MERGE_CONFLICT', message: /^有合并冲突/,
+    },
+    { name: 'required check', result: failed('GraphQL: Required status check "build" is expected. (mergePullRequest)'), code: 'MERGE_BLOCKED', message: /^必需检查「build」还没有结果，分支保护不允许合并$/ },
+    { name: 'review', result: failed('GraphQL: At least 1 approving review is required by reviewers with write access. (mergePullRequest)'), code: 'MERGE_BLOCKED', message: /^分支保护要求先通过审查/ },
+    { name: 'rules', result: failed('GraphQL: Repository rule violations found\n\nCommits must have verified signatures. (mergePullRequest)'), code: 'MERGE_BLOCKED', message: /签名提交/ },
+    { name: 'base moved', result: failed('GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)'), code: 'BASE_MOVED', message: /目标分支刚刚有了新提交/ },
+    { name: 'generic', result: failed('GraphQL: Pull Request is not mergeable (mergePullRequest)'), code: 'MERGE_BLOCKED', message: /^GitHub 认为这个 PR 现在不能合并/ },
+    { name: 'queue', result: failed('Cannot use `-d` or `--delete-branch` when merge queue enabled'), code: 'DELETE_BRANCH_UNSUPPORTED', message: /合并队列/ },
+    { name: 'old gh', result: failed('unknown flag: --match-head-commit\n\nUsage:  gh pr merge [<number> | <url> | <branch>] [flags]'), code: 'GH_OUTDATED', message: /gh 版本过旧/ },
+  ];
+  for (const item of cases) {
+    const { service } = setup({ merge: () => item.result });
+    await assert.rejects(service.merge(3, REF, MERGE), (error: unknown) => {
+      assert.ok(error instanceof AppError, item.name);
+      assert.equal(error.code, item.code, item.name);
+      assert.match(error.message, item.message, `${item.name}: ${error.message}`);
+      assert.doesNotMatch(error.message, /--admin|--auto|administrator|To use|gh pr checkout|\u001b/, item.name);
+      return true;
+    });
+    const [record] = service.merges(3);
+    assert.equal(record.code, item.code, item.name);
+    assert.doesNotMatch(record.message ?? '', /--admin|--auto/, item.name);
+  }
+});
+
+test('mergeStateStatus BEHIND, BLOCKED and DIRTY block before gh runs, and UNSTABLE needs an acknowledgement', async () => {
+  const blocked: Array<{ name: string; pull: Record<string, unknown>; checks?: Check[]; blockers: string[]; message?: RegExp }> = [
+    { name: 'behind', pull: { mergeStateStatus: 'BEHIND' }, blockers: ['HEAD_BEHIND'], message: /^feat\/lotus 落后于 main，仓库要求先更新分支/ },
+    { name: 'blocked by review', pull: { mergeStateStatus: 'BLOCKED', reviewDecision: 'REVIEW_REQUIRED' }, blockers: ['MERGE_BLOCKED'], message: /^分支保护要求先通过审查才能合并$/ },
+    { name: 'blocked by changes', pull: { mergeStateStatus: 'BLOCKED', reviewDecision: 'CHANGES_REQUESTED' }, blockers: ['MERGE_BLOCKED'], message: /审查者要求修改/ },
+    { name: 'blocked otherwise', pull: { mergeStateStatus: 'BLOCKED' }, blockers: ['MERGE_BLOCKED'], message: /^分支保护规则不允许合并/ },
+    // A required check already explains BLOCKED, so it is not listed twice.
+    { name: 'blocked by a check', pull: { mergeStateStatus: 'BLOCKED' }, checks: [{ name: 'unit', status: 'QUEUED', conclusion: null, required: true }], blockers: ['REQUIRED_CHECKS_PENDING'] },
+    { name: 'dirty', pull: { mergeStateStatus: 'DIRTY' }, blockers: ['MERGE_CONFLICT'] },
+  ];
+  for (const item of blocked) {
+    const { gh, service } = setup({ detail: () => ok(detailData({ pull: item.pull, checks: item.checks })) });
+    const detail = await service.pull(REF);
+    assert.deepEqual(detail.blockers.map(blocker => blocker.code), item.blockers, item.name);
+    if (item.message) assert.match(detail.blockers[0].message, item.message, item.name);
+    await rejectsWith(service.merge(3, REF, { ...MERGE, acknowledgeFailing: true }), item.blockers[0], 409);
+    assert.equal(gh.of('merge').length, 0, item.name);
+    assert.equal(service.merges(3)[0].outcome, 'refused', item.name);
+  }
+
+  const unstable = setup({ detail: () => ok(detailData({ pull: { mergeStateStatus: 'UNSTABLE' } })) });
+  assert.deepEqual((await unstable.service.pull(REF)).blockers, []);
+  await rejectsWith(unstable.service.merge(3, REF, MERGE), 'CHECKS_FAILING', 409);
+  assert.equal(unstable.gh.of('merge').length, 0);
+  assert.match(unstable.service.merges(3)[0].message ?? '', /GitHub 报告有检查没有通过/);
+  await unstable.service.merge(3, REF, { ...MERGE, acknowledgeFailing: true });
+  assert.equal(unstable.gh.of('merge').length, 1);
+});
+
+test('with a merge queue, BLOCKED and BEHIND do not block, --delete-branch is never sent and the PR is queued', async () => {
+  const { gh, service } = setup({
+    detail: () => ok(detailData({ repository: { deleteBranchOnMerge: false }, pull: { mergeStateStatus: 'BLOCKED', isMergeQueueEnabled: true } })),
+  });
+  assert.deepEqual((await service.pull(REF)).blockers, []);
+  assert.equal((await service.pull(REF)).mergeQueue, true);
+  const result = await service.merge(3, REF, { ...MERGE, deleteBranch: true });
+  assert.equal(result.outcome, 'queued');
+  assert.ok(!gh.of('merge')[0].args.includes('--delete-branch'));
+  assert.equal(service.merges(3)[0].deleteBranch, false);
+});
+
+test('--delete-branch is only sent when it changes something: not with auto-delete or for a fork', async () => {
+  for (const item of [
+    { name: 'auto-delete', detail: detailData() },
+    { name: 'fork', detail: detailData({ repository: { deleteBranchOnMerge: false }, pull: { isCrossRepository: true } }) },
+  ]) {
+    const { gh, service } = setup({ detail: () => ok(item.detail) });
+    await service.merge(3, REF, { ...MERGE, deleteBranch: true });
+    assert.ok(!gh.of('merge')[0].args.includes('--delete-branch'), item.name);
+  }
+});
+
+test('a merged PR leaves the inbox at once, even when an older search lands later or the search index lags', async () => {
+  let merged = false;
+  let hold = false;
+  let release: () => void = () => {};
+  const listed = () => ok({ data: {
+    authored: { issueCount: 2, nodes: [pullNode(), pullNode({ number: 9, updatedAt: '2026-10-01T08:00:00Z' })] },
+    review: { issueCount: 0, nodes: [] }, owned: { issueCount: 0, nodes: [] },
+  } });
+  const { gh, service, advance } = setup({
+    // GitHub's search keeps listing #114 as open for a while after the merge.
+    inbox: () => hold ? new Promise(resolve => { release = () => resolve(listed()); }) : listed(),
+    merge: () => { merged = true; return ok(''); },
+    detail: () => ok(detailData({ pull: merged ? { state: 'MERGED' } : {} })),
+  });
+  const ids = (inbox: { pulls: Array<{ id: string }> }) => inbox.pulls.map(pull => pull.id);
+  assert.deepEqual(ids(await service.pulls()), ['Jineggegg/super-professor#9', 'Jineggegg/super-professor#114']);
+  advance(6_000);
+  // A widget poll or another device starts a search that is still running when the merge finishes.
+  hold = true;
+  const older = service.pulls(true);
+  await new Promise(resolve => setImmediate(resolve));
+  hold = false;
+  assert.equal((await service.merge(3, REF, MERGE)).outcome, 'merged');
+  release();
+  assert.deepEqual(ids(await older), ['Jineggegg/super-professor#9'], 'the older search answers without the merged PR');
+  // The sheet's refresh right after the merge searches again; the index still lists #114.
+  advance(1_000);
+  assert.deepEqual(ids(await service.pulls(true)), ['Jineggegg/super-professor#9']);
+  assert.equal(gh.of('inbox').length, 3);
+  // The widget's next poll reads the cache, which the older search never overwrote.
+  advance(31_000);
+  assert.deepEqual(ids(await service.pulls()), ['Jineggegg/super-professor#9']);
+  assert.equal(gh.of('inbox').length, 3);
+  advance(60_000);
+  assert.deepEqual(ids(await service.pulls()), ['Jineggegg/super-professor#9']);
+  assert.equal(gh.of('inbox').length, 4);
+
+  // A merge GitHub refused drops the cache instead, so the next read searches again.
+  const refused = setup({ merge: () => failed('GraphQL: Pull Request is not mergeable (mergePullRequest)') });
+  await refused.service.pulls();
+  await assert.rejects(refused.service.merge(3, REF, MERGE));
+  await refused.service.pulls();
+  assert.equal(refused.gh.of('inbox').length, 2);
+});
+
+test('the merge-time read rejects partial GraphQL data, while the detail sheet keeps it', async () => {
+  const partial = detailData({ checks: [{ name: 'unit', conclusion: 'FAILURE', required: true }] });
+  const rollup = partial.data.repository.pullRequest.commits.nodes[0].commit;
+  (rollup as { statusCheckRollup: unknown }).statusCheckRollup = null;
+  const withErrors = failed('gh: Something went wrong while executing your query.', JSON.stringify({ ...partial, errors: [{ message: 'Something went wrong while executing your query.' }] }));
+  const { gh, service } = setup({ detail: () => withErrors });
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    assert.deepEqual((await service.pull(REF)).checkItems, [], 'the sheet shows what GitHub returned');
+  } finally {
+    console.warn = warn;
+  }
+  await rejectsWith(service.merge(3, REF, { ...MERGE, acknowledgeFailing: true }), 'GH_PARTIAL_RESPONSE', 502);
+  assert.equal(gh.of('merge').length, 0);
+
+  const nullCheck = detailData({ checks: [{ name: 'unit' }] });
+  (nullCheck.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes as unknown[]).push(null);
+  const holes = setup({ detail: () => ok(nullCheck) });
+  await rejectsWith(holes.service.merge(3, REF, MERGE), 'GH_PARTIAL_RESPONSE', 502);
+  assert.equal(holes.gh.of('merge').length, 0);
+});
+
+test('every attempt is audited: a second tap, a request the router rejected, and a timed-out merge settled later', async () => {
+  const { service } = setup();
+  service.recordInvalidMerge(3, REF, new AppError('缺少有效的头提交 SHA', { statusCode: 400, code: 'INVALID_SHA' }));
+  assert.deepEqual({ ...service.merges(3)[0], createdAt: '', finishedAt: '' }, {
+    id: 1, owner: 'Jineggegg', repo: 'super-professor', number: 114, method: null, headSha: '', deleteBranch: false,
+    outcome: 'invalid', code: 'INVALID_SHA', message: '缺少有效的头提交 SHA', createdAt: '', finishedAt: '',
+  });
+
+  let merged = false;
+  const slow = setup({
+    merge: () => ({ ok: false, reason: 'timeout', stdout: '', stderr: '', exitCode: null }),
+    detail: () => ok(detailData({ pull: merged ? { state: 'MERGED' } : {} })),
+  });
+  await rejectsWith(slow.service.merge(3, { ...REF, owner: 'jineggegg' }, MERGE), 'MERGE_OUTCOME_UNKNOWN', 504);
+  assert.equal(slow.service.merges(3)[0].outcome, 'unknown');
+  // GitHub did merge it; the next read of the PR (the sheet's 重新载入) settles the row.
+  merged = true;
+  await slow.service.pull(REF, true);
+  assert.equal(slow.service.merges(3)[0].outcome, 'merged');
+  assert.match(slow.service.merges(3)[0].message ?? '', /已合并/);
 });
 
 test('merge refuses a moved head, failing required checks, drafts, conflicts and disabled methods without calling gh pr merge', async () => {
@@ -340,6 +523,8 @@ test('a second merge of the same pull request while one runs is refused', async 
   await rejectsWith(service.merge(3, REF, MERGE), 'MERGE_IN_PROGRESS', 409);
   release();
   assert.equal((await first).outcome, 'queued');
+  // The refused second tap is in the audit log too.
+  assert.deepEqual(service.merges(3).map(record => [record.outcome, record.code]), [['refused', 'MERGE_IN_PROGRESS'], ['queued', null]]);
 });
 
 test('path and body validation reject anything that could become a gh flag or a bad value', () => {

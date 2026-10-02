@@ -35,11 +35,15 @@ type PullDetail = PullSummary & {
   state: 'open' | 'closed' | 'merged'; body: string; bodyTruncated: boolean; createdAt: string;
   checkItems: CheckItem[]; checksTruncated: boolean; files: FileItem[]; filesTotal: number;
   mergeMethods: MergeMethod[]; deleteBranchOnMerge: boolean; isCrossRepository: boolean; viewerCanMerge: boolean;
+  // The base branch requires a merge queue: gh then queues the PR instead of merging it (and refuses --delete-branch).
+  mergeQueue: boolean;
   blockers: Blocker[]; mergeCommitSha: string | null;
 };
-type MergeOutcome = 'pending' | 'merged' | 'queued' | 'refused' | 'failed' | 'unknown';
+// 'invalid' marks a merge request the router rejected (bad method, SHA or flags) after the PR address parsed.
+type MergeOutcome = 'pending' | 'merged' | 'queued' | 'refused' | 'failed' | 'unknown' | 'invalid';
 type MergeRow = {
-  id: number; owner: string; repo: string; number: number; method: MergeMethod; head_sha: string; delete_branch: number;
+  // An invalid request stores '' for a method or SHA it did not carry in a valid form.
+  id: number; owner: string; repo: string; number: number; method: MergeMethod | ''; head_sha: string; delete_branch: number;
   outcome: MergeOutcome; code: string | null; message: string | null; created_at: string; finished_at: string | null;
 };
 type Refusal = Blocker & { status: number };
@@ -57,6 +61,9 @@ const MERGE_TIMEOUT_MS = 60_000;
 const MAX_DETAIL_CACHE = 64;
 const BODY_EXCERPT_LENGTH = 1600;
 const MAX_ERROR_LENGTH = 160;
+// A merged pull request stays out of the inbox this long, because GitHub's search index lists it as open for a while
+// after the merge. Merged pull requests can never be reopened, so hiding one is always safe.
+const MERGED_HIDE_MS = 5 * 60_000;
 
 // GitHub logins and organisation names never start with "-", so no owner can be read as a gh flag.
 const OWNER = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
@@ -73,6 +80,9 @@ const METHOD_SETTING: Record<MergeMethod, string> = { merge: 'mergeCommitAllowed
 const WRITE_PERMISSIONS = new Set(['ADMIN', 'MAINTAIN', 'WRITE']);
 const TOKEN_PATTERN = /\b(?:gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{20,})\b/g;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]+/g;
+// gh's advice printed after it refuses a merge. Never shown: Studio offers neither --auto nor --admin (which bypasses
+// branch protection), and the local conflict recipe does not apply on the server.
+const GH_ADVICE = /--admin|--auto\b|administrator privileges|run the following to resolve|^gh pr checkout /i;
 
 // CheckRun conclusions and StatusContext states, as GitHub's GraphQL enums spell them.
 const FAILING_STATES = new Set(['FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'STALE', 'ERROR']);
@@ -101,7 +111,7 @@ const DETAIL_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
     nameWithOwner viewerPermission mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed deleteBranchOnMerge
     pullRequest(number: $number) {
       number title url state isDraft body createdAt updatedAt headRefName baseRefName headRefOid
-      additions deletions changedFiles mergeable mergeStateStatus reviewDecision isCrossRepository
+      additions deletions changedFiles mergeable mergeStateStatus reviewDecision isCrossRepository isMergeQueueEnabled
       author { login }
       mergeCommit { oid }
       files(first: 100) { totalCount nodes { path additions deletions changeType } }
@@ -188,28 +198,77 @@ function describeFailure(result: GhFailure) {
   return new AppError(summary ? `gh 执行失败：${summary}` : 'gh 执行失败', { statusCode: 502, code: 'GH_FAILED' });
 }
 
-// gh pr merge failures carry GitHub's own reason; the common ones get a precise code for the merge sheet.
+// What gh printed for a failed merge as clean lines: no styling, no token-shaped strings and none of gh's advice.
+function mergeOutputLines(result: GhFailure) {
+  return stripAnsiSequences(`${result.stderr}\n${graphqlMessages(result.stdout)}`).replace(TOKEN_PATTERN, '[已隐藏]').split(/\r?\n/)
+    .map(item => item.replace(CONTROL_CHARACTERS, ' ').replace(/\s+/g, ' ').trim())
+    .filter(item => item && !GH_ADVICE.test(item));
+}
+
+const clip = (value: string) => value.length > MAX_ERROR_LENGTH ? `${value.slice(0, MAX_ERROR_LENGTH - 1)}…` : value;
+const mergeRefusal = (code: string, message: string, statusCode = 409) => new AppError(message, { statusCode, code });
+const HEAD_BEHIND_MESSAGE = '分支落后于目标分支，仓库要求先更新：请在 GitHub 上更新分支后再合并';
+const CONFLICT_MESSAGE = '有合并冲突：请先解决冲突再合并';
+
+// GitHub refusing a required status check, e.g. `Required status check "build" is expected.`, in Chinese.
+function requiredChecksMessage(source: string) {
+  const names = [...source.matchAll(/"([^"]{1,80})"/g)].map(match => line(match[1], 60)).filter(Boolean);
+  const listed = names.length ? `「${names.slice(0, 3).join('、')}${names.length > 3 ? ' 等' : ''}」` : '';
+  const waiting = /expected|pending|in progress|have not|haven't/i.test(source);
+  return `必需检查${listed}${waiting ? '还没有结果' : '没有通过'}，分支保护不允许合并`;
+}
+
+/**
+ * gh pr merge failures as the real reason in Chinese with a precise code for the merge sheet. gh refuses on its own
+ * side with "X Pull request o/r#N is not mergeable: <reason>." followed by advice about --auto and --admin; the
+ * reason line is used and the advice is dropped. GitHub's refusals of the merge mutation are mapped the same way.
+ */
 function describeMergeFailure(result: GhFailure) {
   if (result.reason !== 'failed') return describeFailure(result);
-  const reason = redact(`${result.stderr}\n${graphqlMessages(result.stdout)}`);
-  const output = `${result.stderr}\n${result.stdout}`.toLowerCase();
-  if (/head branch was modified|head commit|match-head-commit|does not match/.test(output)) {
-    return new AppError('PR 在确认期间有了新提交，GitHub 拒绝了合并：请重新查看后再试', { statusCode: 409, code: 'HEAD_MOVED' });
+  const lines = mergeOutputLines(result);
+  const text = lines.join('\n');
+  if (/unknown flag|unknown shorthand/i.test(text)) return mergeRefusal('GH_OUTDATED', 'gh 版本过旧，不支持 --match-head-commit：请在服务器上升级 gh', 502);
+  if (/head branch was modified|head (?:commit|sha|oid)\b[^\n]*(?:does not|doesn't|did not|didn't) match/i.test(text)) {
+    return mergeRefusal('HEAD_MOVED', 'PR 在确认期间有了新提交，GitHub 拒绝了合并：请重新查看后再试');
   }
-  if (/required status check|status checks? (?:are|is) (?:expected|failing|pending)|base branch policy|protected branch|approving review|review is required|changes requested/.test(output)) {
-    return new AppError(`GitHub 拒绝合并：${reason || '不满足分支保护规则'}`, { statusCode: 409, code: 'MERGE_BLOCKED' });
+  if (/base branch was modified/i.test(text)) return mergeRefusal('BASE_MOVED', '目标分支刚刚有了新提交，GitHub 拒绝了合并：请重新载入后再试');
+  // gh's own pre-check, which reads mergeStateStatus: BLOCKED, BEHIND or DIRTY.
+  const ghReason = lines.map(item => /is not mergeable: (.+?)\.?$/i.exec(item)?.[1]).find(Boolean);
+  if (ghReason) {
+    if (/not up to date|behind/i.test(ghReason)) return mergeRefusal('HEAD_BEHIND', HEAD_BEHIND_MESSAGE);
+    if (/cannot be cleanly created|conflict/i.test(ghReason)) return mergeRefusal('MERGE_CONFLICT', CONFLICT_MESSAGE);
+    if (/base branch policy|prohibits/i.test(ghReason)) return mergeRefusal('MERGE_BLOCKED', '分支保护规则不允许合并：可能还缺少必需的审查或检查');
+    return mergeRefusal('MERGE_BLOCKED', `GitHub 拒绝合并：${clip(ghReason)}`);
   }
-  if (/merge conflict|conflicts|not mergeable/.test(output)) {
-    return new AppError('有合并冲突，GitHub 拒绝了合并', { statusCode: 409, code: 'MERGE_CONFLICT' });
+  // GitHub's own refusals of the merge mutation.
+  const checksLine = lines.find(item => /required status checks?/i.test(item));
+  if (checksLine) return mergeRefusal('MERGE_BLOCKED', requiredChecksMessage(checksLine));
+  if (/verified signatures|signed commits/i.test(text)) return mergeRefusal('MERGE_BLOCKED', '分支保护要求签名提交：这个 PR 里有未签名的提交');
+  if (/repository rule violations?|ruleset/i.test(text)) return mergeRefusal('MERGE_BLOCKED', '仓库规则不允许合并：请在 GitHub 上查看具体规则');
+  if (/changes requested|requested changes/i.test(text)) return mergeRefusal('MERGE_BLOCKED', '审查者要求修改，分支保护不允许合并');
+  if (/approving reviews?|reviews? (?:is |are )?required|review required|code owner review/i.test(text)) {
+    return mergeRefusal('MERGE_BLOCKED', '分支保护要求先通过审查：需要有写权限的审查者批准');
   }
-  if (/merging is not allowed|merge method|is not allowed/.test(output)) {
-    return new AppError(`这个仓库不允许这种合并方式：${reason}`, { statusCode: 400, code: 'METHOD_NOT_ALLOWED' });
+  if (/delete-branch[^\n]*merge queue/i.test(text)) {
+    return mergeRefusal('DELETE_BRANCH_UNSUPPORTED', '这个仓库使用合并队列，合并时不能删除分支：请关闭「合并后删除」再试', 400);
   }
-  if (/draft/.test(output)) return new AppError('草稿 PR 不能合并', { statusCode: 409, code: 'PR_DRAFT' });
-  if (/resource not accessible|must have (?:admin|write|push)|permission|http 403/.test(output)) {
-    return new AppError('当前 gh 账号没有合并这个 PR 的权限', { statusCode: 403, code: 'NO_PERMISSION' });
+  if (/merge already in progress|already being merged/i.test(text)) return mergeRefusal('MERGE_IN_PROGRESS', 'GitHub 上已有一次合并在进行中：请稍后刷新');
+  if (/already merged/i.test(text)) return mergeRefusal('PR_NOT_OPEN', '这个 PR 已经合并');
+  if (/(?:merge commits|squash merges|rebase merges) are not allowed|merging is not allowed|merge method/i.test(text)) {
+    return mergeRefusal('METHOD_NOT_ALLOWED', '这个仓库不允许这种合并方式：请换一种方式', 400);
   }
-  return describeFailure(result);
+  if (/(?:can't|cannot|could not) be rebased/i.test(text)) return mergeRefusal('METHOD_NOT_ALLOWED', '这个 PR 不能变基合并：请换一种合并方式', 400);
+  const cleaned: GhFailure = { ...result, stderr: text, stdout: '' };
+  // Sign-in, rate limit, SAML and network failures keep their own messages.
+  const generic = describeFailure(cleaned);
+  if (generic.code !== 'GH_FAILED') return generic;
+  if (/draft/i.test(text)) return mergeRefusal('PR_DRAFT', '草稿 PR 不能合并');
+  if (/resource not accessible|must have (?:admin|write|push)|permission|http 403/i.test(text)) {
+    return mergeRefusal('NO_PERMISSION', '当前 gh 账号没有合并这个 PR 的权限', 403);
+  }
+  if (/merge conflict/i.test(text)) return mergeRefusal('MERGE_CONFLICT', CONFLICT_MESSAGE);
+  if (/not mergeable/i.test(text)) return mergeRefusal('MERGE_BLOCKED', 'GitHub 认为这个 PR 现在不能合并：请重新载入 PR 查看原因');
+  return generic;
 }
 
 // Names of a few checks for a message, e.g. "测试、构建 等 5 项".
@@ -319,11 +378,25 @@ function blockersOf(detail: Omit<PullDetail, 'blockers'>): Refusal[] {
   if (detail.state !== 'open') blockers.push({ code: 'PR_NOT_OPEN', message: detail.state === 'merged' ? '这个 PR 已经合并' : '这个 PR 已关闭', status: 409 });
   if (detail.isDraft) blockers.push({ code: 'PR_DRAFT', message: '草稿 PR 不能合并：请先在 GitHub 上标记为可审查', status: 409 });
   if (!detail.viewerCanMerge) blockers.push({ code: 'NO_PERMISSION', message: '当前 gh 账号对这个仓库没有写权限', status: 403 });
-  if (detail.mergeable === 'conflicting') blockers.push({ code: 'MERGE_CONFLICT', message: '有合并冲突：请先解决冲突再合并', status: 409 });
+  if (detail.mergeable === 'conflicting' || detail.mergeState === 'dirty') blockers.push({ code: 'MERGE_CONFLICT', message: CONFLICT_MESSAGE, status: 409 });
   const requiredFailing = detail.checkItems.filter(check => check.required && check.state === 'failing');
   if (requiredFailing.length) blockers.push({ code: 'REQUIRED_CHECKS_FAILED', message: `必需检查未通过：${checkNames(requiredFailing)}`, status: 409 });
   const requiredPending = detail.checkItems.filter(check => check.required && check.state === 'pending');
   if (requiredPending.length) blockers.push({ code: 'REQUIRED_CHECKS_PENDING', message: `必需检查还在运行：${checkNames(requiredPending)}`, status: 409 });
+  // gh refuses BEHIND and BLOCKED unless --admin is passed, which Studio never does, so the sheet says so up front.
+  // With a merge queue gh skips that check and queues the pull request, so neither state blocks there.
+  if (detail.state === 'open' && !detail.mergeQueue) {
+    if (detail.mergeState === 'behind') {
+      blockers.push({ code: 'HEAD_BEHIND', message: `${detail.headRef} 落后于 ${detail.baseRef}，仓库要求先更新分支：请在 GitHub 上更新后再合并`, status: 409 });
+    }
+    // A blocker above already explains most BLOCKED states; otherwise the review decision usually does.
+    if (detail.mergeState === 'blocked' && !blockers.length) {
+      const message = detail.reviewDecision === 'review_required' ? '分支保护要求先通过审查才能合并'
+        : detail.reviewDecision === 'changes_requested' ? '审查者要求修改，分支保护不允许合并'
+          : '分支保护规则不允许合并：可能缺少必需的审查、检查或签名提交';
+      blockers.push({ code: 'MERGE_BLOCKED', message, status: 409 });
+    }
+  }
   if (!detail.mergeMethods.length) blockers.push({ code: 'NO_MERGE_METHOD', message: '这个仓库没有开启任何合并方式', status: 409 });
   return blockers;
 }
@@ -341,8 +414,12 @@ function refusalFor(detail: PullDetail, request: MergeRequest): Refusal | null {
     return { code: 'METHOD_NOT_ALLOWED', message: `这个仓库没有开启${METHOD_LABEL[request.method]}`, status: 400 };
   }
   const failing = detail.checkItems.filter(check => check.state === 'failing');
-  if (failing.length && !request.acknowledgeFailing) {
-    return { code: 'CHECKS_FAILING', message: `有 ${failing.length} 项检查未通过（${checkNames(failing)}）：确认后才能合并`, status: 409 };
+  // UNSTABLE: GitHub sees non-passing checks that branch protection does not require, including any beyond the 100
+  // listed, so it needs the same explicit acknowledgement as a failing check in the list.
+  if ((failing.length || detail.mergeState === 'unstable') && !request.acknowledgeFailing) {
+    const message = failing.length ? `有 ${failing.length} 项检查未通过（${checkNames(failing)}）：确认后才能合并`
+      : 'GitHub 报告有检查没有通过或还在运行：确认后才能合并';
+    return { code: 'CHECKS_FAILING', message, status: 409 };
   }
   return null;
 }
@@ -372,7 +449,8 @@ export function parseGitHubMergeRequest(body: unknown): MergeRequest {
  * Used by studio.module, behind /api/studio/github: the owner's GitHub through the gh CLI already signed in on the
  * server. Reads (account status, PR inbox, PR detail) are cached and single-flight; a merge re-reads the pull request,
  * refuses on a moved head, failing required checks and other blockers, passes --match-head-commit so GitHub refuses
- * a head that moves afterwards, and records every attempt in studio_github_merges.
+ * a head that moves afterwards, and records every attempt in studio_github_merges (requests the router rejects too,
+ * through recordInvalidMerge). A finished merge hides the pull request from the inbox at once.
  */
 export function createGitHubService({ database, run, now = Date.now }: { database: Database.Database; run: StudioGhRun; now?: () => number }) {
   database.exec(`
@@ -392,6 +470,10 @@ export function createGitHubService({ database, run, now = Date.now }: { databas
   const detailRequests = new Map<string, Promise<PullDetail>>();
   // Pull requests with a merge in flight; a second attempt on the same one is refused rather than queued.
   const merging = new Set<string>();
+  // Bumped by every merge attempt that reached gh: a read that started before it never writes its result to a cache.
+  let cacheGeneration = 0;
+  // Pull requests merged through Studio (refKey → when), hidden from every inbox answer for MERGED_HIDE_MS.
+  const recentlyMerged = new Map<string, number>();
 
   const iso = () => new Date(now()).toISOString();
   const refKey = (ref: PullRef) => `${ref.owner.toLowerCase()}/${ref.repo.toLowerCase()}#${ref.number}`;
@@ -399,12 +481,24 @@ export function createGitHubService({ database, run, now = Date.now }: { databas
   const fresh = (entry: CacheEntry<unknown> | null | undefined, force: boolean) =>
     Boolean(entry) && now() - entry!.at < (force ? FORCE_MIN_INTERVAL_MS : CACHE_TTL_MS);
 
-  async function graphql(query: string, fields: string[]) {
+  // `strict` is for the read a merge decides on: any GraphQL error rejects it, because a field that failed (checks,
+  // isRequired) comes back as null and would silently weaken the merge guard. Other reads keep partial data.
+  async function graphql(query: string, fields: string[], strict = false) {
     const result = await run(['api', 'graphql', '-f', `query=${query}`, ...fields], { timeoutMs: READ_TIMEOUT_MS });
     let parsed: unknown = null;
     try { parsed = JSON.parse(result.stdout); } catch { /* handled below */ }
+    const errors = isRecord(parsed) && Array.isArray(parsed.errors) ? parsed.errors : [];
     // GitHub can answer with partial data and errors (one search failing); gh then exits 1 but the data is usable.
-    if (isRecord(parsed) && isRecord(parsed.data)) return parsed.data;
+    if (isRecord(parsed) && isRecord(parsed.data)) {
+      if (!errors.length) return parsed.data;
+      if (strict) {
+        const failure = describeFailure({ ok: false, reason: 'failed', stdout: result.stdout, stderr: result.ok ? '' : result.stderr, exitCode: 1 });
+        if (failure.code !== 'GH_FAILED') throw failure;
+        fail('GitHub 只返回了部分 PR 数据，为安全起见没有合并：请稍后再试', 502, 'GH_PARTIAL_RESPONSE');
+      }
+      console.warn(`[studio] github: kept partial GraphQL data despite ${errors.length} error(s): ${redact(graphqlMessages(result.stdout))}`);
+      return parsed.data;
+    }
     if (!result.ok) throw describeFailure(result);
     fail('GitHub 返回了无法识别的数据', 502, 'GH_BAD_RESPONSE');
   }
@@ -476,14 +570,18 @@ export function createGitHubService({ database, run, now = Date.now }: { databas
     return { login, pulls: sorted, fetchedAt: iso(), truncated };
   }
 
-  async function readDetail(ref: PullRef): Promise<PullDetail> {
-    const data = await graphql(DETAIL_QUERY, ['-f', `owner=${ref.owner}`, '-f', `repo=${ref.repo}`, '-F', `number=${ref.number}`]);
+  async function readDetail(ref: PullRef, strict: boolean): Promise<PullDetail> {
+    const data = await graphql(DETAIL_QUERY, ['-f', `owner=${ref.owner}`, '-f', `repo=${ref.repo}`, '-F', `number=${ref.number}`], strict);
     const repository = isRecord(data.repository) ? data.repository : null;
     const node = repository && isRecord(repository.pullRequest) ? repository.pullRequest : null;
     if (!repository || !node) fail(`找不到 ${ref.owner}/${ref.repo} 的 #${ref.number}`, 404, 'GITHUB_NOT_FOUND');
     const summary = readPull(node, repository);
     if (!summary) fail('GitHub 返回了无法识别的 PR 数据', 502, 'GH_BAD_RESPONSE');
     const contexts = headContexts(node);
+    // A check GitHub could not resolve arrives as null; the merge guard must see every check or none.
+    if (strict && contexts && Array.isArray(contexts.nodes) && contexts.nodes.some(item => !isRecord(item))) {
+      fail('GitHub 只返回了部分检查数据，为安全起见没有合并：请稍后再试', 502, 'GH_PARTIAL_RESPONSE');
+    }
     const checkItems = readCheckItems(contexts);
     const passing = checkItems.filter(check => check.state === 'passing' || check.state === 'skipped').length;
     const failing = checkItems.filter(check => check.state === 'failing').length;
@@ -509,32 +607,67 @@ export function createGitHubService({ database, run, now = Date.now }: { databas
       deleteBranchOnMerge: repository.deleteBranchOnMerge === true,
       isCrossRepository: node.isCrossRepository === true,
       viewerCanMerge: typeof repository.viewerPermission === 'string' && WRITE_PERMISSIONS.has(repository.viewerPermission),
+      mergeQueue: node.isMergeQueueEnabled === true,
       mergeCommitSha: mergeCommit,
     };
     return { ...withoutBlockers, blockers: blockersOf(withoutBlockers).map(({ code, message }) => ({ code, message })) };
   }
 
-  function getDetail(ref: PullRef, force: boolean) {
+  // A merge whose outcome timed out is settled by the next read that finds the pull request merged at the same head.
+  function settleUnknownMerges(ref: PullRef, detail: PullDetail) {
+    if (detail.state !== 'merged') return;
+    try {
+      database.prepare(`UPDATE studio_github_merges SET outcome = 'merged', code = NULL, message = ?, finished_at = ?
+        WHERE outcome = 'unknown' AND lower(owner) = ? AND lower(repo) = ? AND number = ? AND head_sha = ?`)
+        .run(`GitHub 确认 #${ref.number} 已合并`, iso(), ref.owner.toLowerCase(), ref.repo.toLowerCase(), ref.number, detail.headSha);
+    } catch (error) {
+      console.error('[studio] github merge audit update failed:', error instanceof Error ? error.message : error);
+    }
+  }
+
+  // `strict` is the read a merge decides on: it never reuses a cached copy or joins a read already running (which may
+  // have started before a merge), and it rejects partial GraphQL data.
+  function getDetail(ref: PullRef, { force = false, strict = false }: { force?: boolean; strict?: boolean } = {}) {
     const key = refKey(ref);
     const hit = details.get(key);
-    if (fresh(hit, force)) return Promise.resolve(hit!.value);
+    if (!strict && fresh(hit, force)) return Promise.resolve(hit!.value);
     const running = detailRequests.get(key);
-    if (running) return running;
-    const request = readDetail(ref).then(value => {
-      details.delete(key);
-      details.set(key, { at: now(), value });
-      // Oldest entries go first once the cache is full (Map keeps insertion order).
-      while (details.size > MAX_DETAIL_CACHE) details.delete(details.keys().next().value as string);
+    if (running && !strict) return running;
+    const generation = cacheGeneration;
+    const request: Promise<PullDetail> = readDetail(ref, strict).then(value => {
+      settleUnknownMerges(ref, value);
+      if (generation === cacheGeneration) {
+        details.delete(key);
+        details.set(key, { at: now(), value });
+        // Oldest entries go first once the cache is full (Map keeps insertion order).
+        while (details.size > MAX_DETAIL_CACHE) details.delete(details.keys().next().value as string);
+      }
       return value;
-    }).finally(() => detailRequests.delete(key));
+    }).finally(() => { if (detailRequests.get(key) === request) detailRequests.delete(key); });
     detailRequests.set(key, request);
     return request;
   }
 
-  // Merges change the inbox and the pull request, whatever their outcome.
-  function invalidate(ref: PullRef) {
-    details.delete(refKey(ref));
-    inbox = null;
+  // The inbox without pull requests merged through Studio a moment ago, which GitHub's search may still list as open.
+  function withoutRecentlyMerged(value: Inbox): Inbox {
+    for (const [key, at] of recentlyMerged) if (now() - at >= MERGED_HIDE_MS) recentlyMerged.delete(key);
+    if (!recentlyMerged.size) return value;
+    const pulls = value.pulls.filter(pull => !recentlyMerged.has(pull.id.toLowerCase()));
+    return pulls.length === value.pulls.length ? value : { ...value, pulls };
+  }
+
+  // Every merge attempt that reached gh changes the pull request, and maybe the inbox. Reads already running were
+  // started before it, so they lose the right to fill a cache and new callers no longer join them. After a merge
+  // GitHub finished, the inbox cache is kept but the pull request is hidden from it (and from fresh searches) at once;
+  // otherwise the inbox is read again.
+  function invalidate(ref: PullRef, merged: boolean) {
+    const key = refKey(ref);
+    cacheGeneration += 1;
+    details.delete(key);
+    detailRequests.delete(key);
+    inboxRequest = null;
+    if (merged) recentlyMerged.set(key, now());
+    else inbox = null;
   }
 
   function record(userId: number, ref: PullRef, request: MergeRequest) {
@@ -554,18 +687,25 @@ export function createGitHubService({ database, run, now = Date.now }: { databas
     },
 
     async pulls(force = false) {
-      if (fresh(inbox, force)) return inbox!.value;
-      inboxRequest ??= readInbox().then(value => { inbox = { at: now(), value }; return value; }).finally(() => { inboxRequest = null; });
-      return inboxRequest;
+      if (fresh(inbox, force)) return withoutRecentlyMerged(inbox!.value);
+      if (!inboxRequest) {
+        const generation = cacheGeneration;
+        const request: Promise<Inbox> = readInbox().then(value => {
+          // A search that started before a merge would put the merged pull request back for the whole TTL.
+          if (generation === cacheGeneration) inbox = { at: now(), value };
+          return value;
+        }).finally(() => { if (inboxRequest === request) inboxRequest = null; });
+        inboxRequest = request;
+      }
+      return withoutRecentlyMerged(await inboxRequest);
     },
 
     pull(ref: PullRef, force = false) {
-      return getDetail(ref, force);
+      return getDetail(ref, { force });
     },
 
     async merge(userId: number, ref: PullRef, request: MergeRequest) {
       const key = refKey(ref);
-      if (merging.has(key)) fail('这个 PR 正在合并，请稍候', 409, 'MERGE_IN_PROGRESS');
       let recordId: number;
       try {
         recordId = record(userId, ref, request);
@@ -574,24 +714,31 @@ export function createGitHubService({ database, run, now = Date.now }: { databas
         console.error('[studio] github merge audit insert failed:', error instanceof Error ? error.message : error);
         throw new AppError('无法写入合并记录，已取消合并', { statusCode: 500, code: 'AUDIT_FAILED' });
       }
+      if (merging.has(key)) {
+        const message = '这个 PR 正在合并，请稍候';
+        finish(recordId, 'refused', 'MERGE_IN_PROGRESS', message);
+        fail(message, 409, 'MERGE_IN_PROGRESS');
+      }
       merging.add(key);
       let finished = false;
       const close = (outcome: Exclude<MergeOutcome, 'pending'>, code: string | null, message: string) => { finished = true; finish(recordId, outcome, code, message); };
       try {
-        // Always a fresh read: the decision is made on what GitHub says now, not on what the sheet showed (the cached
-        // copy is dropped first, so even a detail fetched a moment ago is read again).
-        details.delete(key);
-        const detail = await getDetail(ref, true);
-        const refusal = refusalFor(detail, request);
-        if (refusal) {
-          close('refused', refusal.code, refusal.message);
-          throw new AppError(refusal.message, { statusCode: refusal.status, code: refusal.code });
+        // Always a fresh, strict read: the decision is made on what GitHub says now, not on what the sheet showed.
+        const detail = await getDetail(ref, { strict: true });
+        const refused = refusalFor(detail, request);
+        if (refused) {
+          close('refused', refused.code, refused.message);
+          throw new AppError(refused.message, { statusCode: refused.status, code: refused.code });
         }
         const args = ['pr', 'merge', String(ref.number), '--repo', `${ref.owner}/${ref.repo}`, `--${request.method}`, '--match-head-commit', request.expectedHeadSha];
-        if (request.deleteBranch) args.push('--delete-branch');
+        // GitHub already deletes the branch when the repository auto-deletes, Studio cannot delete a fork's branch,
+        // and gh refuses --delete-branch with a merge queue; the flag is only sent when it changes something.
+        const deleteBranch = request.deleteBranch && !detail.deleteBranchOnMerge && !detail.isCrossRepository && !detail.mergeQueue;
+        if (deleteBranch) args.push('--delete-branch');
+        else if (request.deleteBranch) database.prepare('UPDATE studio_github_merges SET delete_branch = 0 WHERE id = ?').run(recordId);
         const result = await run(args, { timeoutMs: MERGE_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
-        invalidate(ref);
         if (!result.ok) {
+          invalidate(ref, false);
           if (result.reason === 'timeout') {
             const message = '合并请求超时：GitHub 可能已经合并，请刷新或在 GitHub 上确认';
             close('unknown', 'MERGE_OUTCOME_UNKNOWN', message);
@@ -602,13 +749,16 @@ export function createGitHubService({ database, run, now = Date.now }: { databas
           throw failure;
         }
         // gh exits 0 once GitHub accepted the merge; a follow-up read tells a finished merge from a merge queue entry.
-        let outcome: 'merged' | 'queued' = 'merged';
+        let outcome: 'merged' | 'queued' = detail.mergeQueue ? 'queued' : 'merged';
         let mergeCommitSha: string | null = null;
+        invalidate(ref, outcome === 'merged');
         try {
-          const after = await getDetail(ref, true);
-          if (after.state === 'merged') mergeCommitSha = after.mergeCommitSha;
+          const after = await getDetail(ref, { strict: true });
+          if (after.state === 'merged') { outcome = 'merged'; mergeCommitSha = after.mergeCommitSha; }
           else if (after.state === 'open') outcome = 'queued';
         } catch { /* The merge itself succeeded; only the confirmation read failed. */ }
+        if (outcome === 'merged') recentlyMerged.set(key, now());
+        else recentlyMerged.delete(key);
         const message = outcome === 'merged'
           ? `已${METHOD_LABEL[request.method]} #${ref.number} 到 ${detail.baseRef}`
           : `#${ref.number} 已交给 GitHub，正在合并队列中等待`;
@@ -625,11 +775,27 @@ export function createGitHubService({ database, run, now = Date.now }: { databas
       }
     },
 
+    /**
+     * A merge request the router rejected after the PR address parsed (bad method, SHA or flags), so the audit log
+     * holds every attempt. Never throws: the request is refused either way.
+     */
+    recordInvalidMerge(userId: number, ref: PullRef, error: unknown) {
+      const failure = error instanceof AppError ? error : null;
+      try {
+        database.prepare(`INSERT INTO studio_github_merges
+          (user_id, owner, repo, number, method, head_sha, delete_branch, outcome, code, message, created_at, finished_at)
+          VALUES (?, ?, ?, ?, '', '', 0, 'invalid', ?, ?, ?, ?)`)
+          .run(userId, ref.owner, ref.repo, ref.number, failure?.code ?? 'INVALID_BODY', failure?.message ?? '请求格式无效', iso(), iso());
+      } catch (insertError) {
+        console.error('[studio] github merge audit insert failed:', insertError instanceof Error ? insertError.message : insertError);
+      }
+    },
+
     // The signed-in Studio user's most recent merge attempts, newest first.
     merges(userId: number, limit = 20) {
       const rows = database.prepare('SELECT * FROM studio_github_merges WHERE user_id = ? ORDER BY id DESC LIMIT ?').all(userId, limit) as MergeRow[];
       return rows.map(row => ({
-        id: row.id, owner: row.owner, repo: row.repo, number: row.number, method: row.method, headSha: row.head_sha,
+        id: row.id, owner: row.owner, repo: row.repo, number: row.number, method: row.method || null, headSha: row.head_sha,
         deleteBranch: row.delete_branch === 1, outcome: row.outcome, code: row.code, message: row.message,
         createdAt: row.created_at, finishedAt: row.finished_at,
       }));

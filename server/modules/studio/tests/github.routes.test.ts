@@ -62,11 +62,13 @@ test('github routes parse input, pass validated values and the signed-in user, a
   }
 });
 
-test('github routes reject malformed paths and bodies before the service runs', async () => {
+test('github routes reject malformed paths and bodies before the service runs, and audit rejected merge bodies', async () => {
   let calls = 0;
+  const invalid: unknown[][] = [];
   const service: Partial<Service> = {
     pull: async () => { calls += 1; return {} as Awaited<ReturnType<Service['pull']>>; },
     merge: async () => { calls += 1; return { outcome: 'merged', mergeCommitSha: null, message: '' }; },
+    recordInvalidMerge: (userId, ref, error) => { invalid.push([userId, ref, error instanceof AppError ? error.code : null]); },
   };
   const server = await serve(service);
   try {
@@ -78,8 +80,13 @@ test('github routes reject malformed paths and bodies before the service runs', 
       const response = await post(url, body);
       assert.equal(response.status, 400, JSON.stringify(body));
     }
+    // A merge whose address does not parse cannot name a pull request, so only the bodies above are audited.
     assert.equal((await post(`${server.origin}/prs/-x/super-professor/114/merge`, { method: 'squash', expectedHeadSha: HEAD })).status, 400);
     assert.equal(calls, 0);
+    const ref = { owner: 'Jineggegg', repo: 'super-professor', number: 114 };
+    assert.deepEqual(invalid, [
+      [7, ref, 'INVALID_METHOD'], [7, ref, 'INVALID_SHA'], [7, ref, 'INVALID_METHOD'], [7, ref, 'INVALID_SHA'], [7, ref, 'INVALID_FLAG'],
+    ]);
   } finally {
     await server.close();
   }

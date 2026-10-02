@@ -4,10 +4,11 @@ import { ChevronRight, GitPullRequest, RotateCw, SquareTerminal, TriangleAlert }
 
 import { api, readApiJson } from '@/shared/api';
 import { readableErrorMessage } from '@/shared/utils';
-import type { StudioGitHubInbox, StudioGitHubMergeRecord, StudioGitHubPull, StudioGitHubStatus } from '@/shared/types';
+import type { StudioGitHubInbox, StudioGitHubMergeRecord, StudioGitHubMergeResult, StudioGitHubPull, StudioGitHubStatus } from '@/shared/types';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 import { StudioGitHubSheet } from '@/modules/studio/StudioGitHubSheet';
 import { GitHubCheckBeads, GitHubPullMark, GitHubReviewBadge, GitHubTime } from '@/modules/studio/StudioGitHubMarks';
+import { forgetMergedGitHubPull, hideMergedGitHubPulls } from '@/modules/studio/hooks/useGitHubReading';
 import '@/modules/studio/studio-github.css';
 
 type Filter = 'all' | 'review' | 'authored' | 'owned';
@@ -23,8 +24,9 @@ const FILTER_STORAGE_KEY = 'studio-github-filter-v1';
 const OUTCOME: Record<StudioGitHubMergeRecord['outcome'], { label: string; tone: string }> = {
   merged: { label: '已合并', tone: 'good' }, queued: { label: '已排队', tone: 'warn' }, refused: { label: '已拒绝', tone: 'warn' },
   failed: { label: '失败', tone: 'bad' }, unknown: { label: '待确认', tone: 'warn' }, pending: { label: '进行中', tone: '' },
+  invalid: { label: '无效请求', tone: 'bad' },
 };
-const METHOD_LABEL: Record<StudioGitHubMergeRecord['method'], string> = { squash: '压缩合并', merge: '合并提交', rebase: '变基合并' };
+const METHOD_LABEL: Record<NonNullable<StudioGitHubMergeRecord['method']>, string> = { squash: '压缩合并', merge: '合并提交', rebase: '变基合并' };
 // Rows leave the list (after a merge) by folding away; they arrive with a short rise.
 const ROW_SPRING = { type: 'spring', stiffness: 380, damping: 34 } as const;
 
@@ -113,7 +115,7 @@ export function StudioGitHub({ refreshing = false }: { refreshing?: boolean }) {
     if (id !== latestLoad.current) return;
     if (account.status === 'fulfilled') setStatus(account.value);
     if (pulls.status === 'fulfilled') {
-      setInbox(pulls.value);
+      setInbox(hideMergedGitHubPulls(pulls.value));
       setError('');
     } else {
       // A missing or signed-out gh gets the setup screen instead of an error line.
@@ -163,6 +165,14 @@ export function StudioGitHub({ refreshing = false }: { refreshing?: boolean }) {
     }
     return [...byRepo.entries()].map(([key, items]) => ({ key, owner: items[0].owner, repo: items[0].repo, items }));
   }, [pulls, filter]);
+  // A merge GitHub finished takes its row out of the list (and out of the home widget) before the refresh answers.
+  const afterMerge = (pull: StudioGitHubPull, result: StudioGitHubMergeResult | null) => {
+    if (result?.outcome === 'merged') {
+      forgetMergedGitHubPull(pull.id);
+      setInbox(previous => previous && hideMergedGitHubPulls(previous));
+    }
+    reload(true);
+  };
   const setupNeeded = status !== null && (!status.installed || !status.authenticated);
   const activeFilter = FILTERS.find(item => item.id === filter) ?? FILTERS[0];
 
@@ -231,7 +241,7 @@ export function StudioGitHub({ refreshing = false }: { refreshing?: boolean }) {
         {merges.slice(0, 6).map(record => <li key={record.id} className="gh-log-row">
           <span className="gh-log-body">
             <strong>{record.repo} <span className="mono">#{record.number}</span></strong>
-            <small>{METHOD_LABEL[record.method]} · <span className="mono">{record.headSha.slice(0, 7)}</span>{record.message ? ` · ${record.message}` : ''}</small>
+            <small>{record.method ? METHOD_LABEL[record.method] : '未执行'}{record.headSha && <> · <span className="mono">{record.headSha.slice(0, 7)}</span></>}{record.message ? ` · ${record.message}` : ''}</small>
           </span>
           <span className={`gh-badge ${OUTCOME[record.outcome].tone}`}>{OUTCOME[record.outcome].label}</span>
           <GitHubTime iso={record.createdAt} />
@@ -240,6 +250,6 @@ export function StudioGitHub({ refreshing = false }: { refreshing?: boolean }) {
     </section>}
 
     {selected && <StudioGitHubSheet pull={selected} canMerge={status?.canMerge ?? false}
-      onClose={() => setSelected(null)} onChanged={() => reload(true)} />}
+      onClose={() => setSelected(null)} onChanged={result => afterMerge(selected, result)} />}
   </div>;
 }
