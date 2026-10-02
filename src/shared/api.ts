@@ -233,6 +233,11 @@ export const api = {
       message: (accountId: string, messageId: string) =>
         get(`/api/studio/mail/messages/${encodeURIComponent(accountId)}/${encodeURIComponent(messageId)}`),
     },
+    // ── v6 track: shell — endpoints below this line ──
+    // ── v6 track: chat — endpoints below this line ──
+    // ── v6 track: github — endpoints below this line ──
+    // ── v6 track: builder — endpoints below this line ──
+    // ── v6 track: memory — endpoints below this line ──
     status: () => get('/api/studio/status'),
     snr: () => get('/api/studio/snr'),
     snrAccess: () => post('/api/studio/snr/access'),

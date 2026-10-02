@@ -187,5 +187,10 @@ export function createStudioModule() {
     },
   });
   routes.use('/mail', createMailRouter(mailAccounts));
+  // ── v6 track: shell — create its service and mount its router below this line ──
+  // ── v6 track: chat — create its service and mount its router below this line ──
+  // ── v6 track: github — create its service and mount its router below this line ──
+  // ── v6 track: builder — create its service and mount its router below this line ──
+  // ── v6 track: memory — create its service and mount its router below this line ──
   return { routes, snrRoutes: createSnrGatewayRouter(gateway), mailCallbackRoutes: createProjectMailCallbackRouter(mail) };
 }

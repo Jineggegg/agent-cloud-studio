@@ -35,7 +35,8 @@ const APP_OPEN_MS = 560;
 const APP_CLOSE_MS = 420;
 // Scrolling past the large title collapses it into the glass navigation bar.
 const LARGE_TITLE_COLLAPSE_AT = 28;
-const SYSTEM_TITLES = { deepseek: 'DeepSeek', connections: '设置' } as const;
+const SYSTEM_TITLES = { deepseek: 'DeepSeek', connections: '设置', github: 'GitHub', memory: '记忆' } as const;
+const isSystemApp = (value: string | undefined): value is keyof typeof SYSTEM_TITLES => Boolean(value && value in SYSTEM_TITLES);
 
 type Target = { kind: 'project'; id: string } | { kind: 'app'; id: keyof typeof SYSTEM_TITLES } | null;
 type Tab = { id: string; label: string };
@@ -60,7 +61,7 @@ export function StudioPage() {
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const target: Target = params.id ? { kind: 'project', id: params.id }
-    : params.app === 'deepseek' || params.app === 'connections' ? { kind: 'app', id: params.app } : null;
+    : isSystemApp(params.app) ? { kind: 'app', id: params.app } : null;
   const chatSpace: StudioChatSpace = target?.kind === 'project' ? `project:${target.id}` : 'deepseek';
   const studio = useStudio(chatSpace);
   const { logout } = useAuth();
@@ -148,6 +149,8 @@ export function StudioPage() {
       status: item.modules.includes('snr-lab') ? (studio.loading ? undefined : snrOnline ? '在线' : '离线')
         : item.modules.includes('trading212') && t212Ready === false ? '未接入' : undefined,
     })),
+    // ── v6 track: github — home tile below this line ──
+    // ── v6 track: memory — home tile below this line ──
     { id: 'deepseek', name: 'DeepSeek', tone: 'slate', glyph: 'sparkles', status: studio.loading || configured ? undefined : '待配置' },
     { id: 'workspace', name: '开发工具', tone: 'graphite', glyph: 'terminal', href: '/workspace' },
     { id: 'connections', name: '设置', tone: 'stone', glyph: 'settings', status: studio.loading || configured ? undefined : '1 项待配置' },
@@ -217,6 +220,8 @@ export function StudioPage() {
               initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8, transition: { duration: 0.14 } }}>
               {!tabs.length && <div className="studio-large-title"><h1>{title}</h1></div>}
               {target.kind === 'app' && target.id === 'connections' && <StudioConnections status={studio.status} onChange={studio.refresh} />}
+              {/* ── v6 track: github — app content below this line ── */}
+              {/* ── v6 track: memory — app content below this line ── */}
               {target.kind === 'project' && !project && (projects === null
                 ? <div className="studio-skeleton" role="status" aria-label="正在加载项目"><div className="skeleton-block" style={{ height: 160 }} /></div>
                 : <div className="ios-empty"><FolderX size={32} strokeWidth={1.5} aria-hidden="true" /><span>这个项目不存在或已被删除</span>

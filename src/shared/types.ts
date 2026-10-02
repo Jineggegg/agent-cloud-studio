@@ -1831,7 +1831,7 @@ export type StudioStatus = {
   snrRemoteUrl: string | null;
 };
 /** Built-in home-screen apps that are not projects; `workspace` routes to the inherited IDE. */
-export type StudioSystemApp = 'deepseek' | 'workspace' | 'connections';
+export type StudioSystemApp = 'deepseek' | 'workspace' | 'connections' | 'github' | 'memory';
 /** Icon glyphs a home-screen tile can show; the server accepts exactly this list. */
 export type StudioGlyph = 'activity' | 'graduation' | 'candles' | 'mail' | 'folder' | 'terminal' | 'sparkles' | 'book' | 'chart' | 'globe';
 /** One icon on the Studio home screen: a project (`project:<id>`) or a system app. */
@@ -1841,7 +1841,11 @@ export type StudioHomeTile = {
   status?: string;
   // Tiles with an href navigate away (the IDE) instead of zooming open inside Studio.
   href?: string;
+  // App Store-style progress while an AI builds this project: the icon dims and a ring fills.
+  progress?: StudioTileProgress;
 };
+/** Build progress drawn on a home tile; `value` runs from 0 to 1 and follows the AI's task list. */
+export type StudioTileProgress = { value: number; state: 'queued' | 'building' | 'done' | 'failed'; label?: string };
 /** A DeepSeek conversation space: the general app or one project; histories never cross spaces. */
 export type StudioChatSpace = 'deepseek' | `project:${string}`;
 /** A persisted Studio conversation summary shared by its history and chat views. */
@@ -2028,4 +2032,32 @@ export type StudioMailInbox = { messages: StudioMailMessage[]; errors: StudioMai
 export type StudioMailDeviceStart = { pollId: string; userCode: string; verificationUri: string; expiresAt: string; interval: number };
 /** One poll of an Outlook device-code sign-in. */
 export type StudioMailDevicePoll = { status: 'pending' | 'connected' | 'expired' | 'error'; account?: StudioMailAccount; message?: string };
+// ---------------------------
+
+//----------------- STUDIO V6: WORKBENCH, GITHUB, AI BUILDS, MEMORY ------------
+/** One row of the workbench sidebar: a Claude Code / Codex session or a DeepSeek conversation of the current project. */
+export type WorkbenchSessionItem = {
+  id: string; kind: 'agent' | 'deepseek'; provider: 'claude' | 'codex' | 'cursor' | 'opencode' | 'deepseek';
+  title: string; updatedAt: string | null; running?: boolean;
+};
+/** What the workbench shell hands its chat column (src/modules/workbench/chat/WorkbenchChat). */
+export type WorkbenchChatProps = {
+  // The IDE project (projectId + filesystem path) the chat runs in.
+  project: Project;
+  // The open session, or null for a new chat.
+  session: WorkbenchSessionItem | null;
+  // Provider preselected for a new chat.
+  provider: 'claude' | 'codex' | 'deepseek';
+  // The Studio hub project with this path, if any (DeepSeek project space, memory scope, icon).
+  hubProjectId: string | null;
+  // Called once a new chat has a real session id, so the shell can list and route to it.
+  onSessionCreated: (item: WorkbenchSessionItem) => void;
+  // Opens a file in the shell's file panel.
+  onOpenFile: (path: string) => void;
+};
+// ── v6 track: shell — types below this line ──
+// ── v6 track: chat — types below this line ──
+// ── v6 track: github — types below this line ──
+// ── v6 track: builder — types below this line ──
+// ── v6 track: memory — types below this line ──
 // ---------------------------

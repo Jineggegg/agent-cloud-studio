@@ -1770,3 +1770,8 @@ export type StudioMailRawMessage = {
  */
 export type StudioOutlookTokens = { accessToken: string; refreshToken: string; expiresAt: number };
 
+// ── v6 track: shell — server types below this line ──
+// ── v6 track: chat — server types below this line ──
+// ── v6 track: github — server types below this line ──
+// ── v6 track: builder — server types below this line ──
+// ── v6 track: memory — server types below this line ──
