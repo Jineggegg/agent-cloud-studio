@@ -124,7 +124,10 @@ export function fixture(options: FixtureOptions = {}) {
     writeFileSync(path.join(directory, 'live.env'), 'TRADING212_API_KEY=fake-live-key\nTRADING212_API_SECRET=fake-live-secret\n');
     writeFileSync(path.join(directory, 'demo.env'), 'TRADING212_API_KEY=fake-demo-key\nTRADING212_API_SECRET=fake-demo-secret\n');
   }
-  const config = parseBrokerConfig(JSON.stringify({ allowedEnvs: ['live', 'demo'], origins: [STUDIO, TAILNET], ...options.config }), directory);
+  // The daily cap and live cooldown are on by default; tests that do not exercise them switch them off.
+  const config = parseBrokerConfig(JSON.stringify({
+    allowedEnvs: ['live', 'demo'], origins: [STUDIO, TAILNET], maxDailyOrderValue: 0, liveOrderCooldownSeconds: 0, ...options.config,
+  }), directory);
   const database = new Database(':memory:');
   const repository = createBrokerRepository(database);
   const calls: Call[] = [];

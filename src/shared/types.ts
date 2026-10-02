@@ -1977,7 +1977,11 @@ export type T212Passkey = {
   aaguid: string; credentialIdPrefix: string; backedUp: boolean; multiDevice: boolean;
   createdAt: string; lastUsedAt: string | null;
 };
-/** The WSL isolation the order broker depends on; when `ok` is false its key protection does not hold. From the broker's GET /v1/status. */
+/**
+ * The WSL isolation the order broker depends on; when `ok` is false its key protection does not hold. `interopBinfmt`: a WSLInterop
+ * binfmt handler is enabled; `interopSocket`: an /run/WSL interop socket is reachable by non-root users; `windowsDrives`: Windows
+ * drives non-root users may write. From the broker's GET /v1/status.
+ */
 export type T212BrokerIsolation = {
   ok: boolean; interopActive: boolean; interopBinfmt: boolean; interopSocket: boolean; windowsDrives: string[]; notes: string[];
 };

@@ -18,6 +18,8 @@ type Io = {
   stdin: NodeJS.ReadableStream & { isTTY?: boolean };
   env: NodeJS.ProcessEnv;
   pid: number;
+  // WSL isolation inspector for `check`; injectable so tests can describe a machine instead of reading this one.
+  isolation?: typeof inspectIsolation;
 };
 
 const DEFAULT_STATE_DIR = '/var/lib/studio-trader';
@@ -162,20 +164,27 @@ export async function runBrokerCommand(argv: string[], io: Io = { stdout: proces
         const { config, db, trading212, service } = openService(stateDir);
         try {
           io.stdout.write(`配置：允许 ${config.allowedEnvs.join(', ') || '（无，下单关闭）'}；单笔上限 ${config.maxOrderValue}；每小时最多 ${config.maxOrdersPerHour} 笔；`
-            + `每日累计上限 ${config.maxDailyOrderValue || '未设置'}；实盘冷却 ${config.liveOrderCooldownSeconds ? `${config.liveOrderCooldownSeconds} 秒` : '关'}；`
+            + `每日累计上限 ${config.maxDailyOrderValue || '关'}；实盘冷却 ${config.liveOrderCooldownSeconds ? `${config.liveOrderCooldownSeconds} 秒` : '关'}；`
             + `模拟盘免通行密钥 ${config.demoConfirm ? '开' : '关'}\n来源：${config.origins.join(', ') || '（无）'}\n`
             + `实盘密钥 ${trading212.keyConfigured('live') ? '有' : '无'}；模拟盘密钥 ${trading212.keyConfigured('demo') ? '有' : '无'}；通行密钥 ${service.passkeys().length} 把\n`);
           // The broker protects nothing if the Studio user can reach root or Windows; report the live isolation state.
-          const guard = inspectIsolation();
-          io.stdout.write(`隔离：${guard.ok ? '有效' : '!! 无效 !!'}（互操作 ${guard.interopActive ? '开（危险）' : '关'}`
-            + `${guard.windowsDrives.length ? `；Windows 盘可访问 ${guard.windowsDrives.join('、')}` : ''}）\n`);
+          const guard = (io.isolation ?? inspectIsolation)();
+          const interop = guard.interopActive
+            ? `开（危险：${[guard.interopBinfmt ? 'binfmt 处理器' : '', guard.interopSocket ? '/run/WSL socket' : ''].filter(Boolean).join('、')}）`
+            : '关';
+          io.stdout.write(`隔离：${guard.ok ? '有效' : '!! 无效 !!'}（互操作 ${interop}`
+            + `${guard.windowsDrives.length ? `；非 root 可写的 Windows 盘 ${guard.windowsDrives.join('、')}` : ''}）\n`);
           for (const note of guard.notes) io.stderr.write(`隔离警告：${note}\n`);
-          if (!guard.ok) io.stderr.write('隔离无效：交易代理保护不了下单密钥，先在 Windows 一侧修好互操作和 Windows 盘访问（安装脚本默认会因此拒绝安装）。\n');
+          let result = 0;
+          if (!guard.ok) {
+            io.stderr.write('隔离无效：交易代理保护不了下单密钥。按 docs/t212-broker.md 第 0 步修好之前，不要写入下单密钥。\n');
+            result = 1;
+          }
           const missing = config.allowedEnvs.filter(env => !trading212.keyConfigured(env));
-          if (missing.length) { io.stderr.write(`缺少下单密钥：${missing.join(', ')}（studio-trader set-key <env>）\n`); return 1; }
-          if (!config.origins.length) { io.stderr.write('config.json 没有 origins：任何网址都不能下单\n'); return 1; }
+          if (missing.length) { io.stderr.write(`缺少下单密钥：${missing.join(', ')}（studio-trader set-key <env>）\n`); result = 1; }
+          if (!config.origins.length) { io.stderr.write('config.json 没有 origins：任何网址都不能下单\n'); result = 1; }
+          return result;
         } finally { db.close(); }
-        return 0;
       }
       default:
         io.stdout.write(`${USAGE}\n`);

@@ -19,11 +19,15 @@ function sink() {
   stream.on('data', chunk => { text += String(chunk); });
   return { stream, text: () => text };
 }
-async function run(stateDir: string, argv: string[], input = '') {
+const HEALTHY_ISOLATION = { ok: true, interopActive: false, interopBinfmt: false, interopSocket: false, windowsDrives: [] as string[], notes: [] as string[] };
+
+// `check` inspects the machine's isolation; the tests describe a healthy one unless they pass their own.
+async function run(stateDir: string, argv: string[], input = '', isolation = HEALTHY_ISOLATION) {
   const stdout = sink();
   const stderr = sink();
   const code = await runBrokerCommand(argv, {
     stdout: stdout.stream, stderr: stderr.stream, stdin: Readable.from([input]), env: { STUDIO_TRADER_STATE_DIR: stateDir }, pid: process.pid,
+    isolation: () => isolation,
   });
   return { code, stdout: stdout.text(), stderr: stderr.text() };
 }
@@ -71,6 +75,33 @@ test('set-key writes the order key file with mode 0600 and check reports what is
     assert.ok(!after.stdout.includes('fake-demo'));
     assert.equal((await run(directory, ['set-key', 'paper'])).code, 2);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('check fails while the isolation is invalid, even with keys and origins in place', async () => {
+  const directory = stateDirectory();
+  try {
+    writeFileSync(path.join(directory, 'demo.env'), 'TRADING212_API_KEY=fake-demo-key-123\nTRADING212_API_SECRET=fake-demo-secret-456\n');
+    assert.equal((await run(directory, ['check'])).code, 0);
+    const broken = await run(directory, ['check'], '', {
+      ok: false, interopActive: true, interopBinfmt: false, interopSocket: true, windowsDrives: ['/mnt/c'], notes: ['socket note'],
+    });
+    assert.equal(broken.code, 1);
+    assert.match(broken.stdout, /隔离：!! 无效 !!（互操作 开（危险：\/run\/WSL socket）；非 root 可写的 Windows 盘 \/mnt\/c）/);
+    assert.match(broken.stderr, /隔离警告：socket note/);
+    assert.match(broken.stderr, /不要写入下单密钥/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('config defaults: daily cap 2000 and live cooldown 60 s unless set, and an explicit 0 turns either off', () => {
+  const defaults = parseBrokerConfig('{}', '/x');
+  assert.deepEqual(
+    [defaults.allowedEnvs, defaults.origins, defaults.maxOrderValue, defaults.maxOrdersPerHour, defaults.maxDailyOrderValue, defaults.liveOrderCooldownSeconds, defaults.demoConfirm],
+    [[], [], 500, 10, 2000, 60, false],
+  );
+  const off = parseBrokerConfig(JSON.stringify({ maxDailyOrderValue: 0, liveOrderCooldownSeconds: 0 }), '/x');
+  assert.deepEqual([off.maxDailyOrderValue, off.liveOrderCooldownSeconds], [0, 0]);
+  assert.throws(() => parseBrokerConfig(JSON.stringify({ maxDailyOrderValue: -1 }), '/x'), /maxDailyOrderValue/);
+  assert.throws(() => parseBrokerConfig(JSON.stringify({ liveOrderCooldownSeconds: 86_401 }), '/x'), /liveOrderCooldownSeconds/);
 });
 
 test('an invalid config is refused instead of falling back to looser settings', async () => {

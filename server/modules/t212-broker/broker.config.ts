@@ -7,8 +7,12 @@ import { BrokerError } from './broker-error.js';
 
 type Environment = StudioT212Environment;
 
+// Defaults for a field that config.json leaves out. scripts/wsl/install-t212-broker.sh writes the same values into a
+// new config.json, and docs/t212-broker.md lists them. allowedEnvs and origins default to empty: trading stays off.
 const DEFAULT_MAX_ORDER_VALUE = 500;
 const DEFAULT_MAX_ORDERS_PER_HOUR = 10;
+const DEFAULT_MAX_DAILY_ORDER_VALUE = 2000;
+const DEFAULT_LIVE_COOLDOWN_SECONDS = 60;
 // Upper bounds keep a typo (an extra zero or three) from silently becoming the limit.
 const MAX_ORDER_VALUE_LIMIT = 100_000;
 const MAX_ORDERS_PER_HOUR_LIMIT = 100;
@@ -39,9 +43,9 @@ function positive(value: unknown, fallback: number, limit: number, field: string
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > limit) invalid(`${field} 必须是 0 到 ${limit} 之间的数字`);
   return value;
 }
-// A non-negative setting where 0 (the default) means "off": no daily cap, no cooldown.
-function nonNegative(value: unknown, limit: number, field: string) {
-  if (value === undefined) return 0;
+// A non-negative setting where an explicit 0 means "off": no daily cap, no cooldown.
+function nonNegative(value: unknown, fallback: number, limit: number, field: string) {
+  if (value === undefined) return fallback;
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > limit) invalid(`${field} 必须是 0 到 ${limit} 之间的数字（0 表示不启用）`);
   return value;
 }
@@ -85,9 +89,11 @@ export function parseBrokerConfig(text: string, stateDir: string) {
     maxOrderValue: positive(input.maxOrderValue, DEFAULT_MAX_ORDER_VALUE, MAX_ORDER_VALUE_LIMIT, 'maxOrderValue'),
     maxOrdersPerHour: Math.floor(positive(input.maxOrdersPerHour, DEFAULT_MAX_ORDERS_PER_HOUR, MAX_ORDERS_PER_HOUR_LIMIT, 'maxOrdersPerHour')),
     // Cumulative value of orders that reached Trading 212 in the last rolling 24 h; 0 means no daily cap.
-    maxDailyOrderValue: nonNegative(input.maxDailyOrderValue, MAX_DAILY_ORDER_VALUE_LIMIT, 'maxDailyOrderValue'),
+    maxDailyOrderValue: nonNegative(input.maxDailyOrderValue, DEFAULT_MAX_DAILY_ORDER_VALUE, MAX_DAILY_ORDER_VALUE_LIMIT, 'maxDailyOrderValue'),
     // Minimum seconds between two live orders that reach Trading 212; 0 means no live cooldown.
-    liveOrderCooldownSeconds: Math.floor(nonNegative(input.liveOrderCooldownSeconds, MAX_LIVE_COOLDOWN_SECONDS, 'liveOrderCooldownSeconds')),
+    liveOrderCooldownSeconds: Math.floor(nonNegative(
+      input.liveOrderCooldownSeconds, DEFAULT_LIVE_COOLDOWN_SECONDS, MAX_LIVE_COOLDOWN_SECONDS, 'liveOrderCooldownSeconds',
+    )),
     origins: origins(input.origins),
     // Demo money only: lets demo orders be confirmed without a passkey. Live orders always need one.
     demoConfirm: input.demoConfirmWithoutPasskey === true,

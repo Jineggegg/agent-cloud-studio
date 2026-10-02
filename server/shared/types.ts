@@ -1763,10 +1763,13 @@ export type StudioT212BrokerPasskey = {
 /**
  * The isolation the order broker depends on, inspected from the running WSL instance. When `ok` is
  * false the Studio OS user can escape to root or to Windows and read the order key, so the broker's
- * protection does not hold. `interopActive` is true while Linux can still launch Windows programs
- * (the binfmt WSLInterop handler is enabled or an /run/WSL interop socket exists); `windowsDrives`
- * lists Windows drives automounted so the Studio user can read or write them. `notes` is short
- * Chinese text for the owner. Part of GET /v1/status; the Settings page shows "隔离无效" when not ok.
+ * protection does not hold. `interopActive` is true while a non-root Linux user may still launch
+ * Windows programs: `interopBinfmt` (a WSLInterop binfmt handler is enabled) or `interopSocket` (an
+ * /run/WSL interop socket is reachable by non-root users, which `/init <program.exe>` uses without
+ * any handler); a state the broker cannot read counts as active. `windowsDrives` lists Windows
+ * drives that non-root users may write (or whose files carry their own modes, `metadata`). `notes`
+ * is short Chinese text for the owner. Part of GET /v1/status; the Settings page shows "隔离无效"
+ * when not ok.
  */
 export type StudioT212BrokerIsolation = {
   ok: boolean;
