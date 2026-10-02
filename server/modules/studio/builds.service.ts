@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import type Database from 'better-sqlite3';
 
 import type {
+  StudioBuildEnvironment,
   StudioBuildInput,
   StudioBuildOutcome,
   StudioBuildRecord,
@@ -41,6 +42,8 @@ type Dependencies = {
   database: Database.Database;
   // Absolute directory new projects are created in (STUDIO_BUILDS_ROOT, default ~/projects).
   root: string;
+  // When set, `root` must lie inside it (the home directory, where the IDE accepts projects).
+  home?: string;
   // The Studio project hub: the build's home-screen icon is an ordinary hub project.
   hub: {
     create(userId: number, input: StudioProjectInput): StudioProjectRecord;
@@ -101,10 +104,10 @@ function initialPrompt(name: string, request: string, directory: string) {
     '',
     '工作方式：',
     '1. 先用 TodoWrite 列出 3 到 8 个具体步骤的计划；每完成一步立刻更新，同一时间只有一步是 in_progress。主屏幕上的进度环按这个清单计算。',
-    `2. 只在当前目录（${directory}）里工作：不读取、不修改这个目录之外的文件，不用 sudo，不全局安装，不 git push，不发布任何东西。命令被拒绝说明越界了，换一种在目录内完成的做法。`,
-    '3. 选择简单、能在这台电脑上直接运行的技术方案；依赖装在项目里（npm 本地依赖；Python 用 uv 或 .venv）。',
+    `2. 只在当前目录（${directory}）里工作：不读取、不修改这个目录之外的文件，不用 sudo，不全局安装，不 git push，不发布任何东西。操作被拒绝说明越界了，换一种在目录内完成的做法。`,
+    '3. 选择简单、能在这台电脑上直接运行的技术方案；需要依赖时装在项目里。',
     '4. 写 README.md：一两句话说明它是什么，以及怎样安装、运行和测试。',
-    '5. 为核心逻辑写测试并运行，直到全部通过。',
+    '5. 为核心逻辑写测试；运行环境允许时运行测试，直到全部通过（见最后的“运行环境”）。',
     '6. 在本地 git 仓库提交成果（git add -A，然后 git commit）。',
     '7. 最后把清单里的步骤全部标为 completed，并用中文简短总结：做了什么、怎么运行、还能怎么改进。',
   ].join('\n');
@@ -114,7 +117,7 @@ function continuePrompt(message: string) {
   return [
     message || '继续完成尚未完成的步骤。',
     '',
-    '（继续遵守之前的工作方式：用 TodoWrite 更新计划和进度，只在当前目录里工作，不 git push；完成后提交到本地仓库，并用中文简短总结。）',
+    '（继续遵守之前的工作方式：用 TodoWrite 更新计划和进度，只在当前目录里工作，不 git push；完成后提交到本地仓库，并用中文简短总结。运行环境以最后的说明为准。）',
   ].join('\n');
 }
 
@@ -138,6 +141,12 @@ function toRecord(row: BuildRow): StudioBuildRecord {
 }
 
 const now = () => new Date().toISOString();
+
+// Whether `directory` is `parent` or lies inside it, compared as resolved paths (either may not exist yet).
+function isWithin(parent: string, directory: string) {
+  const relative = path.relative(path.resolve(parent), path.resolve(directory));
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
 
 /**
  * Used by the Studio builds wiring (and tests) for App Store-style AI builds: each build is a new folder, a hub
@@ -283,6 +292,8 @@ export function createStudioBuildsService(deps: Dependencies) {
       if (!request) fail('请描述想做什么');
       if (request.length > MAX_REQUEST) fail(`描述最多 ${MAX_REQUEST} 个字符`);
       if (!path.isAbsolute(deps.root)) fail('STUDIO_BUILDS_ROOT 必须是绝对路径', 500);
+      // Checked before anything exists: the IDE would refuse the folder only after the icon and folder were made.
+      if (deps.home && !isWithin(deps.home, deps.root)) fail(`STUDIO_BUILDS_ROOT 必须在家目录（${deps.home}）里，现在是 ${deps.root}`, 500);
       mkdirSync(deps.root, { recursive: true });
       const directory = uniqueDirectory(deps.root, slugFor(name));
       // The hub validates the name, tone and glyph before anything touches the disk.
@@ -322,6 +333,10 @@ export function createStudioBuildsService(deps: Dependencies) {
       patch(id, { state: 'queued', prompt: continuePrompt(text), total: 0, completed: 0, current_task: null, error: null, started_at: null, finished_at: null });
       enqueue(id);
       return current(id);
+    },
+    // How the next build turn will be isolated (sandbox or restricted), for the composer's notice.
+    environment(): StudioBuildEnvironment {
+      return deps.runner.environment();
     },
     async cancel(userId: number, id: string): Promise<StudioBuildRecord> {
       const row = owned(userId, id);

@@ -24,6 +24,7 @@ test('build routes validate transport input and ownership and return the build w
     abort: async () => true,
     inspect: () => null,
     readChecklist: async () => null,
+    environment: () => ({ mode: 'restricted', missing: ['bubblewrap', 'socat'] }),
   };
   const hub = createProjectHubService({
     database, resolveWorkspace: async () => ({ projectId: 'unused', path: '/' }), listSessions: () => [], pendingSchedules: () => 0, schedule: () => ({ id: 'x' }),
@@ -57,6 +58,8 @@ test('build routes validate transport input and ownership and return the build w
     const empty = await request('');
     assert.equal(empty.headers.get('Cache-Control'), 'no-store');
     assert.deepEqual(await empty.json(), []);
+    assert.equal((await request('/environment', '')).status, 401);
+    assert.deepEqual(await (await request('/environment')).json(), { mode: 'restricted', missing: ['bubblewrap', 'socat'] });
     assert.equal((await request('', '1', { name: 'Notes', tone: 'sage', glyph: 'book', prompt: 42 })).status, 400);
     assert.equal((await request('', '1', { name: 'Notes', tone: 'sage', prompt: '记事本' })).status, 400);
     assert.equal(turns, 0);

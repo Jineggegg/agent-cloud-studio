@@ -1839,12 +1839,24 @@ export type StudioBuildOutcome = { started: boolean; success: boolean; error: st
 export type StudioBuildRunSnapshot = { running: boolean; startedAt: number; success: boolean | null; todos: StudioBuildTodo[] | null };
 
 /**
+ * How unattended builds run on this server right now (GET /api/studio/builds/environment, and the brief each
+ * build turn is given).
+ *
+ * `sandbox`: Bash runs inside Claude Code's OS sandbox (bubblewrap + socat on Linux, Seatbelt on macOS), which
+ * lets the agent write only its build folder and reach only package registries, so it may install, run and test.
+ * `restricted`: the sandbox is unavailable (or switched off with STUDIO_BUILD_SANDBOX=off), so the agent gets the
+ * file tools inside its folder and a fixed set of plain commands, and can neither install nor run code.
+ * `missing` names the packages to install for `sandbox` (empty when the sandbox was switched off on purpose).
+ */
+export type StudioBuildEnvironment = { mode: 'sandbox' | 'restricted'; missing: string[] };
+
+/**
  * The seam between the builds service and the agent runtime.
  *
  * Implemented in production by the Studio build runner (Claude Code through `runDetachedChatTurn`, with the
  * unattended permission policy) and by fakes in tests. `start` resolves once the turn ends — at its terminal
  * `complete` event, or when the run settles without one — and reports checklist changes through `onChecklist`
- * while it runs. `inspect` and `readChecklist` never start anything.
+ * while it runs. `inspect`, `readChecklist` and `environment` never start anything.
  */
 export type StudioBuildRunner = {
   start(input: {
@@ -1857,6 +1869,8 @@ export type StudioBuildRunner = {
   abort(sessionId: string): Promise<boolean>;
   inspect(sessionId: string): StudioBuildRunSnapshot | null;
   readChecklist(sessionId: string): Promise<StudioBuildTodo[] | null>;
+  // The isolation the next turn would get; read on every call so installing bubblewrap and socat takes effect.
+  environment(): StudioBuildEnvironment;
 };
 // ---------------------------
 // ── v6 track: memory — server types below this line ──

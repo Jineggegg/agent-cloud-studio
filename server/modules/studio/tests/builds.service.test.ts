@@ -26,6 +26,7 @@ function fakeRunner() {
     async abort(sessionId) { aborted.push(sessionId); return true; },
     inspect: () => snapshot,
     readChecklist: async () => history,
+    environment: () => ({ mode: 'restricted', missing: ['socat'] }),
   };
   return {
     runner, starts, aborted,
@@ -34,7 +35,7 @@ function fakeRunner() {
   };
 }
 
-function fixture(options: { maxParallel?: number; failGit?: boolean } = {}) {
+function fixture(options: { maxParallel?: number; failGit?: boolean; home?: (root: string) => string } = {}) {
   const database = new Database(':memory:');
   const root = path.join(realpathSync(mkdtempSync(path.join(os.tmpdir(), 'studio-builds-'))), 'projects');
   const hub = createProjectHubService({
@@ -49,7 +50,7 @@ function fixture(options: { maxParallel?: number; failGit?: boolean } = {}) {
   const sessions: { path: string; title: string }[] = [];
   const registered: string[] = [];
   const deps = {
-    database, root, hub, runner: fake.runner, maxParallel: options.maxParallel, resumeDelayMs: 0,
+    database, root, hub, runner: fake.runner, maxParallel: options.maxParallel, resumeDelayMs: 0, home: options.home?.(root),
     async initRepository(directory: string) {
       if (options.failGit) throw new Error('git is not installed');
       repositories.push(directory);
@@ -129,6 +130,34 @@ test('folder names are unique slugs, names without ASCII words become ai-app, an
     assert.equal(readdirSync(f.root).length, 3);
     assert.equal(f.service.list(1).length, 3);
   } finally { f.cleanup(); }
+});
+
+test('two builds with the same name started together get separate folders', async () => {
+  const f = fixture();
+  try {
+    // Folder choice and creation happen in one synchronous stretch, so concurrent requests cannot pick the same one.
+    const [first, second] = await Promise.all([f.service.create(1, input('Habit Tracker')), f.service.create(1, input('Habit Tracker'))]);
+    assert.deepEqual([first.project.workspacePath, second.project.workspacePath].map(folder => path.basename(folder)), ['habit-tracker', 'habit-tracker-2']);
+    assert.deepEqual(readdirSync(f.root).sort(), ['habit-tracker', 'habit-tracker-2']);
+  } finally { f.cleanup(); }
+});
+
+test('a builds root outside the home directory is a clear configuration error that touches nothing', async () => {
+  const outside = fixture({ home: root => path.join(path.dirname(root), 'home') });
+  try {
+    await assert.rejects(outside.service.create(1, input('Habit Tracker')), (error: Error & { statusCode?: number }) => {
+      assert.match(error.message, /STUDIO_BUILDS_ROOT 必须在家目录/);
+      assert.equal(error.statusCode, 500);
+      return true;
+    });
+    assert.equal(existsSync(outside.root), false, 'no folder was created');
+    assert.deepEqual(outside.hub.list(1).map(project => project.name), ['SNR 3.0', '超级教授', 'Trading 212'], 'no icon was added');
+  } finally { outside.cleanup(); }
+  const inside = fixture({ home: root => path.dirname(root) });
+  try {
+    assert.equal((await inside.service.create(1, input('Habit Tracker'))).build.state, 'building');
+    assert.deepEqual(inside.service.environment(), { mode: 'restricted', missing: ['socat'] });
+  } finally { inside.cleanup(); }
 });
 
 test('a failure after the folder exists rolls back the folder and the icon', async () => {

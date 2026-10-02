@@ -310,6 +310,65 @@ function mapCliOptionsToSDK(options = {}) {
   return sdkOptions;
 }
 
+// ── v6 track: builder — unattended build isolation below this line ──
+// Environment variables a build may set for its commands: package-manager cache locations only.
+const BUILD_ISOLATION_ENV_KEYS = new Set(['npm_config_cache', 'npm_config_store_dir', 'YARN_CACHE_FOLDER', 'PIP_CACHE_DIR', 'UV_CACHE_DIR']);
+
+/**
+ * Applies `options.buildIsolation`, which only the Studio build runner sets
+ * (server/modules/studio/build-runner.service.ts) for unattended AI builds.
+ * Every change narrows what the turn may do:
+ * - no settings files (`settingSources: []`, the SDK's isolation mode) and no
+ *   MCP servers, so allow rules, hooks or MCP servers in the owner's or the
+ *   project's configuration cannot pre-approve anything past the build policy;
+ * - a PreToolUse hook that asks `reviewToolUse(toolName, input)` about every
+ *   tool call (sub-agents included, ahead of Claude Code's own rules and
+ *   auto-approvals) and allows or denies it outright. It fails closed: no
+ *   reviewer, a throwing reviewer or anything but `{ allow: true }` denies;
+ * - Claude Code's OS sandbox for Bash when `sandbox` is given, with package
+ *   caches pointed into the build folder for the sandboxed commands.
+ * Returns whether isolation applies, so the caller never retries without it.
+ * @param {Object} sdkOptions - SDK options being built (after hooks and MCP servers are set)
+ * @param {Object|undefined} isolation - `{ reviewToolUse, sandbox?, env? }`
+ */
+function applyBuildIsolation(sdkOptions, isolation) {
+  if (!isolation || typeof isolation !== 'object') {
+    return false;
+  }
+  sdkOptions.settingSources = [];
+  sdkOptions.strictMcpConfig = true;
+  delete sdkOptions.mcpServers;
+  if (isolation.sandbox && typeof isolation.sandbox === 'object') {
+    sdkOptions.sandbox = isolation.sandbox;
+  }
+  if (isolation.env && typeof isolation.env === 'object') {
+    for (const [key, value] of Object.entries(isolation.env)) {
+      if (BUILD_ISOLATION_ENV_KEYS.has(key) && typeof value === 'string') {
+        sdkOptions.env[key] = value;
+      }
+    }
+  }
+  const review = async (input) => {
+    let verdict = null;
+    try {
+      verdict = typeof isolation.reviewToolUse === 'function' ? isolation.reviewToolUse(input?.tool_name ?? '', input?.tool_input) : null;
+    } catch (error) {
+      console.warn('[Claude SDK] Build policy review failed; denying the tool call:', error?.message || error);
+    }
+    const allowed = verdict?.allow === true;
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: allowed ? 'allow' : 'deny',
+        permissionDecisionReason: allowed ? 'Allowed by the Studio build policy.' : String(verdict?.reason || 'Denied by the Studio build policy.'),
+      },
+    };
+  };
+  sdkOptions.hooks = { ...(sdkOptions.hooks || {}), PreToolUse: [{ matcher: '', hooks: [review] }] };
+  return true;
+}
+// ── end of v6 track: builder ──
+
 /**
  * Adds a session to the active sessions map
  * @param {string} sessionId - Session identifier
@@ -978,6 +1037,9 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       }]
     };
 
+    // ── v6 track: builder — unattended build isolation (applyBuildIsolation) ──
+    const buildIsolated = applyBuildIsolation(sdkOptions, options.buildIsolation);
+
     // Caveat: in 'auto' and 'bypassPermissions' modes the SDK resolves approval
     // at the permission-mode step and skips this callback, so interactive tools
     // (AskUserQuestion, ExitPlanMode) won't reach the UI — the classifier/bypass
@@ -1076,6 +1138,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         options: sdkOptions
       });
     } catch (hookError) {
+      // ── v6 track: builder — a build turn never runs without its policy hook ──
+      if (buildIsolated) {
+        throw hookError;
+      }
       // Older/newer SDK versions may not accept hook shapes yet.
       // Keep notification behavior operational via runtime events even if hook registration fails.
       console.warn('Failed to initialize Claude query with hooks, retrying without hooks:', hookError?.message || hookError);

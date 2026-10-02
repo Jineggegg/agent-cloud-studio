@@ -24,6 +24,11 @@ export function createStudioBuildsRouter(builds: ReturnType<typeof createStudioB
   router.use((_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
   router.get('/', asyncHandler(async (req, res) => { res.json(builds.list(user(req))); }));
   router.post('/', asyncHandler(async (req, res) => { res.status(201).json(await builds.create(user(req), buildInput(req.body ?? {}))); }));
+  // Registered before /:id so "environment" is never read as a build id.
+  router.get('/environment', asyncHandler(async (req, res) => {
+    user(req);
+    res.json(builds.environment());
+  }));
   router.get('/:id', asyncHandler(async (req, res) => { res.json(builds.get(user(req), String(req.params.id))); }));
   router.post('/:id/continue', asyncHandler(async (req, res) => {
     // The follow-up message is optional; without one the agent finishes the steps still open.
