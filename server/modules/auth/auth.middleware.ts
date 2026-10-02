@@ -5,6 +5,7 @@ import { IS_PLATFORM } from '@/shared/utils.js';
 
 import { userDb, appConfigDb } from '../database/index.js';
 
+import { getAuthSecurityStore } from './auth-security.store.js';
 import {
   isTailnetDoorRequest,
   isTailscaleSessionRevoked,
@@ -27,6 +28,13 @@ const isRevokedTailscaleSession = (decoded) =>
 const isTailscaleSessionOffTailnetDoor = (decoded, request) =>
   decoded.tailscale !== undefined
   && !(request && isTailnetDoorRequest(request, parseTailscaleSignInConfig(process.env)));
+
+// Every token carries the user's token version (`ver`) from when it was signed; "退出所有设备"
+// (account-security.service) bumps the stored version, which refuses every older token at once.
+// Tokens signed before versions existed carry none and count as version 0, the starting value.
+const tokenVersionOf = (decoded) => (Number.isSafeInteger(decoded.ver) ? decoded.ver : 0);
+const currentSessionVersion = (userId) => getAuthSecurityStore().sessionVersions.current(Number(userId));
+const isRevokedSessionVersion = (decoded) => tokenVersionOf(decoded) !== currentSessionVersion(decoded.userId);
 
 // Optional API key middleware
 const validateApiKey = (req, res, next) => {
@@ -89,6 +97,14 @@ const authenticateToken = async (req, res, next) => {
       });
     }
 
+    if (isRevokedSessionVersion(decoded)) {
+      res.setHeader('X-Auth-Error', 'invalid-token');
+      return res.status(401).json({
+        error: 'Session revoked. Please sign in again.',
+        code: 'AUTH_TOKEN_REVOKED',
+      });
+    }
+
     if (isRevokedTailscaleSession(decoded)) {
       res.setHeader('X-Auth-Error', 'invalid-token');
       return res.status(401).json({
@@ -142,11 +158,13 @@ const authenticateToken = async (req, res, next) => {
 };
 
 // Generate JWT token. `tailscaleSession` ({ login, node }) is passed only for sessions issued by
-// Tailscale sign-in, and by every refresh of such a session.
+// Tailscale sign-in, and by every refresh of such a session. `ver` is the user's current token
+// version, so "退出所有设备" revokes this token along with every other one.
 const generateToken = (user, tailscaleSession?) => {
   const payload = {
     userId: user.id,
-    username: user.username
+    username: user.username,
+    ver: currentSessionVersion(user.id),
   };
   if (tailscaleSession) {
     payload.tailscale = { login: tailscaleSession.login, node: tailscaleSession.node };
@@ -180,7 +198,12 @@ const authenticateWebSocket = (token, request?) => {
     const decoded = jwt.verify(token, JWT_SECRET);
     // Verify user actually exists in database (matches REST authenticateToken behavior)
     const user = userDb.getUserById(decoded.userId);
-    if (!user || isRevokedTailscaleSession(decoded) || isTailscaleSessionOffTailnetDoor(decoded, request)) {
+    if (
+      !user
+      || isRevokedSessionVersion(decoded)
+      || isRevokedTailscaleSession(decoded)
+      || isTailscaleSessionOffTailnetDoor(decoded, request)
+    ) {
       return null;
     }
     return { userId: user.id, username: user.username };

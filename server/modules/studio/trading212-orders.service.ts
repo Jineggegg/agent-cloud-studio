@@ -9,7 +9,7 @@ import {
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 import type Database from 'better-sqlite3';
 
-import { AppError } from '@/shared/utils.js';
+import { AppError, describePasskeyDevice } from '@/shared/utils.js';
 import type { StudioT212Environment, StudioT212OrderInput, StudioT212TrustedOrigin } from '@/shared/types.js';
 
 import type { createTrading212Service } from './trading212.service.js';
@@ -116,16 +116,6 @@ function money(value: number, currency: string) {
 function quoteUnit(code: string) {
   const upper = code.trim().toUpperCase();
   return upper === 'GBX' ? { currency: 'GBP', scale: 0.01 } : { currency: upper, scale: 1 };
-}
-// A rough device name so two passkeys on the same domain can be told apart; iPadOS Safari reports itself as a Mac.
-function deviceLabel(userAgent: string | undefined) {
-  const agent = userAgent ?? '';
-  if (/iPad/.test(agent)) return 'iPad';
-  if (/iPhone/.test(agent)) return 'iPhone';
-  if (/Android/.test(agent)) return 'Android';
-  if (/Windows/.test(agent)) return 'Windows';
-  if (/Macintosh/.test(agent)) return 'Mac / iPad';
-  return null;
 }
 function text(value: unknown) {
   return typeof value === 'string' || typeof value === 'number' ? String(value) : null;
@@ -457,7 +447,7 @@ export function createTrading212OrdersService(deps: Dependencies) {
       if (db.prepare('SELECT 1 FROM studio_t212_passkeys WHERE credential_id = ?').get(credential.id)) fail('这把通行密钥已经登记过了', 409);
       const row: PasskeyRow = {
         id: randomUUID(), user_id: userId, rp_id: origin.rpId, credential_id: credential.id, public_key: Buffer.from(credential.publicKey),
-        counter: credential.counter, transports: JSON.stringify(credential.transports ?? []), label: deviceLabel(userAgent),
+        counter: credential.counter, transports: JSON.stringify(credential.transports ?? []), label: describePasskeyDevice(userAgent),
         created_at: isoNow(), last_used_at: null,
       };
       db.prepare(`INSERT INTO studio_t212_passkeys (id, user_id, rp_id, credential_id, public_key, counter, transports, label, created_at, last_used_at)

@@ -147,6 +147,25 @@ function canonicalAddressIn(list: BlockList, value: string | undefined): string 
   }
 }
 
+/**
+ * Tells whether a socket peer is this machine (127.0.0.0/8 or ::1, IPv4-mapped spellings too).
+ * Used by request-client.service: only loopback peers (cloudflared, Tailscale Serve) may vouch for
+ * a client address in their proxy headers.
+ */
+export function isLoopbackAddress(value: string | undefined): boolean {
+  return canonicalAddressIn(LOOPBACK_ADDRESSES, value) !== null;
+}
+
+/**
+ * The tailnet peer Tailscale Serve wrote into X-Forwarded-For, in canonical spelling, when the
+ * header holds exactly one tailnet address; null for a list, a public address or garbage.
+ * Used by request-client.service to key tailnet-door clients by device instead of by loopback.
+ */
+export function singleTailnetAddress(forwardedFor: string | undefined): string | null {
+  const value = forwardedFor?.trim();
+  return value && !value.includes(',') ? canonicalAddressIn(TAILNET_ADDRESSES, value) : null;
+}
+
 // Canonical STUDIO_TAILSCALE_NODES entries, or null when any entry is not a tailnet address.
 // A typo must not silently empty the list, because an empty list means "every device".
 function canonicalAllowedNodes(config: TailscaleSignInConfig): string[] | null {
@@ -287,10 +306,7 @@ export function evaluateTailscaleSessionRequest(
   }
   // Exactly one tailnet address, as Serve writes it. A list means another proxy appended a hop,
   // and a missing value means the loopback caller is not Serve.
-  const forwardedFor = request.forwardedFor?.trim();
-  node = forwardedFor && !forwardedFor.includes(',')
-    ? canonicalAddressIn(TAILNET_ADDRESSES, forwardedFor)
-    : null;
+  node = singleTailnetAddress(request.forwardedFor);
   if (node === null) {
     return deny('forwarded-for-not-tailnet');
   }
@@ -324,6 +340,7 @@ export function evaluateTailscaleSessionRequest(
  *
  * Used by auth.middleware for every HTTP request (including POST /api/auth/refresh) and WebSocket
  * upgrade that presents a token with the `tailscale` claim; password sessions are not checked.
+ * Also used by request-client.service to put tailnet traffic in its own throttle and rate-limit door.
  * Like sign-in, this cannot tell Serve from another process on this machine that forges headers.
  */
 export function isTailnetDoorRequest(

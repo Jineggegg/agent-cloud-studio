@@ -128,5 +128,15 @@ export function createHandoffCodeStore(options: HandoffStoreOptions = {}) {
       pending.delete(hash);
       return { status: 'ok', grant: entry.grant };
     },
+
+    /**
+     * Drops every pending code of one user. Called after "退出所有设备", so a code issued by a
+     * session that was just revoked cannot be redeemed for a fresh one.
+     */
+    discardForUser(userId: number): void {
+      for (const [hash, entry] of pending) {
+        if (entry.grant.userId === userId) pending.delete(hash);
+      }
+    },
   };
 }

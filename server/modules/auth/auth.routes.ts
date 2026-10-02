@@ -1,12 +1,12 @@
 import express from 'express';
 import type { RequestHandler } from 'express';
 
-import type { StudioRequestClient } from '@/shared/types.js';
-import { isViaCloudflareEdge } from '@/shared/utils.js';
-
+import type { createAccountSecurityService } from './account-security.service.js';
 import type { createAuthService } from './auth.service.js';
+import { readRequestClient } from './request-client.service.js';
 
 type AuthService = ReturnType<typeof createAuthService>;
+type AccountSecurityService = ReturnType<typeof createAccountSecurityService>;
 
 // Set by authenticateToken: the active user and, for a token issued by Tailscale sign-in, its
 // claim, which the middleware has already verified and re-checked against the allowlist.
@@ -21,24 +21,19 @@ function readHeader(req: express.Request, name: string): string | undefined {
   return Array.isArray(value) ? value.join(', ') : value;
 }
 
-// Who is asking, for the throttles: through Cloudflare the edge's CF-Connecting-IP (which it
-// overwrites), otherwise the raw socket peer, never X-Forwarded-For. Capped so a forged header
-// cannot grow the throttle's memory.
-function readRequestClient(req: express.Request): StudioRequestClient {
-  if (isViaCloudflareEdge(req.headers)) {
-    const connectingIp = readHeader(req, 'cf-connecting-ip')?.trim().slice(0, 64);
-    return { door: 'cloudflare', address: connectingIp || 'unknown' };
-  }
-  return { door: 'direct', address: req.socket.remoteAddress ?? 'unknown' };
+function bodyOf(req: express.Request): Record<string, unknown> {
+  return typeof req.body === 'object' && req.body !== null ? req.body as Record<string, unknown> : {};
 }
 
 /**
- * Creates the Auth transport adapter. Handlers only parse request data and
- * delegate authentication behavior to the injected application service.
+ * Creates the Auth transport adapter. Handlers only parse request data and delegate
+ * authentication behavior to the injected application services. `accountSecurity` adds the
+ * Settings → 安全 routes; tests that only exercise sign-in leave it out.
  */
 export function createAuthRouter(
   service: AuthService,
   authenticateToken: RequestHandler,
+  accountSecurity?: AccountSecurityService,
 ): express.Router {
   const router = express.Router();
 
@@ -50,9 +45,10 @@ export function createAuthRouter(
     }
   });
 
+  // First-run only: the service refuses (403) as soon as an account exists.
   router.post('/register', async (req, res, next) => {
     try {
-      const body = req.body as { username?: unknown; password?: unknown };
+      const body = bodyOf(req);
       res.json(await service.register(body.username, body.password));
     } catch (error) {
       next(error);
@@ -61,8 +57,35 @@ export function createAuthRouter(
 
   router.post('/login', async (req, res, next) => {
     try {
-      const body = req.body as { username?: unknown; password?: unknown };
+      res.setHeader('Cache-Control', 'no-store');
+      const body = bodyOf(req);
       res.json(await service.login(body.username, body.password, readRequestClient(req)));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Public on purpose: "用面容 ID 登录" starts here, before there is a session. The options carry
+  // only a fresh challenge for this door's RP ID; no credential ids, so they name no account.
+  router.post('/passkey/options', async (req, res, next) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(await service.passkeySignInOptions(readHeader(req, 'origin')));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Public on purpose: exchanges a verified passkey assertion for a session; every refusal is the
+  // same 401.
+  router.post('/passkey', async (req, res, next) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(await service.signInWithPasskey({
+        origin: readHeader(req, 'origin'),
+        response: bodyOf(req).response,
+        client: readRequestClient(req),
+      }));
     } catch (error) {
       next(error);
     }
@@ -99,7 +122,7 @@ export function createAuthRouter(
       // The response carries a code worth a session for 60 s.
       res.setHeader('Cache-Control', 'no-store');
       const authenticated = req as AuthenticatedRequest;
-      const body = (req.body ?? {}) as { target?: unknown; password?: unknown };
+      const body = bodyOf(req);
       res.json(await service.issueHandoff(authenticated.user, authenticated.tailscaleSession, {
         target: body.target,
         password: body.password,
@@ -115,9 +138,8 @@ export function createAuthRouter(
   router.post('/handoff/redeem', (req, res, next) => {
     try {
       res.setHeader('Cache-Control', 'no-store');
-      const body = (req.body ?? {}) as { code?: unknown };
       res.json(service.redeemHandoff({
-        code: body.code,
+        code: bodyOf(req).code,
         origin: readHeader(req, 'origin'),
         client: readRequestClient(req),
       }));
@@ -134,12 +156,71 @@ export function createAuthRouter(
   // tailnet door, so the claim passed on here was presented where it is valid.
   router.post('/refresh', authenticateToken, (req, res) => {
     const authenticated = req as AuthenticatedRequest;
+    res.setHeader('Cache-Control', 'no-store');
     res.json(service.refreshSession(authenticated.user, authenticated.tailscaleSession));
   });
 
   router.post('/logout', authenticateToken, (_req, res) => {
     res.json(service.logout());
   });
+
+  if (accountSecurity) {
+    // Settings → 安全. Everything below needs a session; passkey changes also need the password.
+    router.get('/security', authenticateToken, (req, res, next) => {
+      try {
+        res.setHeader('Cache-Control', 'no-store');
+        res.json(accountSecurity.overview((req as AuthenticatedRequest).user));
+      } catch (error) {
+        next(error);
+      }
+    });
+
+    router.post('/security/passkeys/options', authenticateToken, async (req, res, next) => {
+      try {
+        res.setHeader('Cache-Control', 'no-store');
+        res.json(await accountSecurity.passkeyRegistrationOptions((req as AuthenticatedRequest).user, {
+          password: bodyOf(req).password,
+          origin: readHeader(req, 'origin'),
+          client: readRequestClient(req),
+        }));
+      } catch (error) {
+        next(error);
+      }
+    });
+
+    router.post('/security/passkeys', authenticateToken, async (req, res, next) => {
+      try {
+        res.json(await accountSecurity.registerPasskey((req as AuthenticatedRequest).user, {
+          response: bodyOf(req).response,
+          origin: readHeader(req, 'origin'),
+          userAgent: readHeader(req, 'user-agent'),
+          client: readRequestClient(req),
+        }));
+      } catch (error) {
+        next(error);
+      }
+    });
+
+    router.post('/security/passkeys/:id/remove', authenticateToken, async (req, res, next) => {
+      try {
+        res.json(await accountSecurity.removePasskey((req as AuthenticatedRequest).user, {
+          id: req.params.id,
+          password: bodyOf(req).password,
+          client: readRequestClient(req),
+        }));
+      } catch (error) {
+        next(error);
+      }
+    });
+
+    router.post('/security/revoke-all', authenticateToken, (req, res, next) => {
+      try {
+        res.json(accountSecurity.revokeAllSessions((req as AuthenticatedRequest).user, readRequestClient(req)));
+      } catch (error) {
+        next(error);
+      }
+    });
+  }
 
   return router;
 }

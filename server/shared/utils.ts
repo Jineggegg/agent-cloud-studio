@@ -1782,6 +1782,26 @@ export function recordClaudeRateLimitEvent(
 }
 
 // ---------------------------
+//----------------- PASSKEY UTILITIES ------------
+/**
+ * A rough device name for a newly registered passkey, so two passkeys on the same domain can be
+ * told apart in Settings: iPad, iPhone, Android, Windows or "Mac / iPad" (iPadOS Safari reports
+ * itself as a Mac); null when the User-Agent says nothing recognisable. Never used for any
+ * security decision, since the header is client-controlled.
+ *
+ * Used by the Studio module (Trading 212 order passkeys) and the auth module (sign-in passkeys).
+ */
+export function describePasskeyDevice(userAgent: string | undefined): string | null {
+  const agent = userAgent ?? '';
+  if (/iPad/.test(agent)) return 'iPad';
+  if (/iPhone/.test(agent)) return 'iPhone';
+  if (/Android/.test(agent)) return 'Android';
+  if (/Windows/.test(agent)) return 'Windows';
+  if (/Macintosh/.test(agent)) return 'Mac / iPad';
+  return null;
+}
+
+// ---------------------------
 //----------------- STUDIO MAIL UTILITIES ------------
 /**
  * Normalizes a mail date (a Date, or a header / API date string) to ISO-8601, or returns '' when the

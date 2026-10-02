@@ -1671,20 +1671,25 @@ export type StudioIngressOrigins = {
 };
 
 /**
- * Who sent a request, as the auth module's throttles count it (failed passwords, handoff
- * redemptions). Built by auth.routes from the request; consumed by the auth service and the
- * handoff code store through the auth module's client throttle.
- * - `door: 'cloudflare'` means Cloudflare's edge headers are present (the public tunnel door).
- *   Cloudflare overwrites CF-Connecting-IP, so `address` is the real client address there.
- * - `door: 'direct'` is everything else (Tailscale Serve, loopback, LAN); `address` is the raw
- *   socket peer. Serve and cloudflared both dial loopback, so every tailnet request shares one
- *   address, which is why throttles also keep a separate total per door: public traffic can then
- *   never use up the budget of the tailnet door.
- * `address` is 'unknown' when the value is missing; it is only a bucket key, never trusted for
- * authentication.
+ * Who sent a request, as the auth module's throttles and lockout log and the request-guard rate
+ * limiter count it. Built by the auth module's readRequestClient from the socket and headers;
+ * consumed by the auth service, the handoff code store, the security event log and the
+ * request-guard module (per-client and per-door token buckets, WebSocket connection caps).
+ * - `door: 'cloudflare'`: the request reached the loopback socket (cloudflared) carrying
+ *   Cloudflare's edge headers, i.e. the public tunnel door. Cloudflare overwrites
+ *   CF-Connecting-IP, so `address` is the real client address there.
+ * - `door: 'tailnet'`: Tailscale Serve on this machine (loopback socket, *.ts.net Host, no
+ *   Cloudflare headers); `address` is the one tailnet peer address Serve writes into
+ *   X-Forwarded-For.
+ * - `door: 'direct'`: everything else (local programs, LAN, a request whose proxy headers do not
+ *   add up); `address` is the raw socket peer. Cloudflare-looking headers from a non-loopback peer
+ *   land here, so nobody can pick another client's bucket by forging CF-Connecting-IP.
+ * Every limit also keeps a separate total per door, so public traffic can never use up the
+ * budget of the tailnet door. `address` is 'unknown' when the value is missing; it is only a bucket
+ * key, never trusted for authentication.
  */
 export type StudioRequestClient = {
-  door: 'cloudflare' | 'direct';
+  door: 'cloudflare' | 'tailnet' | 'direct';
   address: string;
 };
 
