@@ -25,6 +25,18 @@ afterEach(() => {
   document.documentElement.classList.remove('acs-app-entering');
 });
 
+test('in a hidden tab, which gets no animation frames, the splash leaves at once', () => {
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+  try {
+    const splash = mountSplash();
+    render(<LaunchSplashRelease />);
+    expect(splash.dataset.state).toBe('leaving');
+    expect(window.requestAnimationFrame).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(document.getElementById('launch-splash')).toBeNull();
+  } finally { visibility.mockRestore(); }
+});
+
 test('the splash starts leaving only after the new screen has had a frame to paint, then is removed', () => {
   const splash = mountSplash();
   render(<LaunchSplashRelease />);

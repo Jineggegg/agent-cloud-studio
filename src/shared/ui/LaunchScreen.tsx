@@ -75,6 +75,12 @@ function whenEntryStylesApplied(onApplied: () => void): () => void {
 // Two frames: the first lets the browser paint the new screen under the splash, the second starts
 // the fade from that painted frame, so the crossfade never reveals a blank page. Returns a canceller.
 function releaseAfterNextPaint(): () => void {
+  // A hidden tab gets no animation frames until it is shown, and there is no fade to see, so the
+  // splash goes at once instead of waiting (and later claiming the network is slow).
+  if (document.visibilityState === 'hidden') {
+    releaseLaunchSplash();
+    return () => {};
+  }
   let secondFrame = 0;
   const firstFrame = window.requestAnimationFrame(() => {
     secondFrame = window.requestAnimationFrame(releaseLaunchSplash);
