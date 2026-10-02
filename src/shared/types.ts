@@ -1839,3 +1839,25 @@ export type StudioSnr = {
   connected: boolean; reason?: string; phase?: number;
   tradingEnabled?: boolean; rulesApproved?: boolean; datasetCount?: number;
 };
+//----------------- STUDIO PROJECT CONTRACTS ------------
+/** User-owned modular project; its credentials never travel in this record. */
+export type HubProjectInput = {
+  name: string;
+  description: string;
+  workspacePath: string;
+  modules: ('agents' | 'mail' | 'automations')[];
+  providers: ('claude' | 'codex')[];
+};
+/** Project identity and editable configuration displayed by Studio. */
+export type HubProject = HubProjectInput & { id: string; updatedAt: string };
+/** Saved automation instructions; saving alone never activates a task. */
+export type HubTaskInput = { title: string; prompt: string; provider: 'claude' | 'codex' };
+/** An automation draft returned by the server, not a running job. */
+export type HubTask = HubTaskInput & { id: string; updatedAt: string };
+/** Existing native agent session associated with one project directory. */
+export type HubSession = { id: string; title: string; provider: 'claude' | 'codex' };
+/** Gmail OAuth connection metadata, without access tokens. */
+export type HubMailStatus = { configured: boolean; connected: boolean; email: string | null; access: 'readonly' };
+/** Read-only Gmail search result. Full text is fetched only when opened. */
+export type HubMailMessage = { id: string; subject: string; from: string; date: string; snippet: string };
+// ---------------------------

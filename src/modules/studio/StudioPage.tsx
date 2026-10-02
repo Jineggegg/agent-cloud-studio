@@ -8,6 +8,7 @@ import { useStudio } from '@/modules/studio/hooks/useStudio';
 import { StudioChat } from '@/modules/studio/StudioChat';
 import { StudioConnections } from '@/modules/studio/StudioConnections';
 import { StudioSnrView } from '@/modules/studio/StudioSnrView';
+import { StudioProjectOverview } from '@/modules/studio/StudioProjectOverview';
 import '@/modules/studio/studio.css';
 
 const NAV = [
@@ -58,6 +59,7 @@ export function StudioPage() {
             {!history.length && <div className="studio-empty-row"><MessageSquare size={20} /><span>还没有保存的对话</span><button onClick={() => void openChat()}>新建</button></div>}
           </div>
           <div className="studio-section-heading"><h2>项目</h2><Link className="text-link" to="/workspace">开发工具<ArrowRight size={15} /></Link></div>
+          <StudioProjectOverview />
           <div className="studio-project-row"><span className="project-square"><FolderGit2 size={24} /></span><div><h3>Agent Cloud Studio</h3><p>个人分支 · 开发中</p></div><a className="icon-button" aria-label="打开 GitHub 仓库" title="打开 GitHub 仓库" href="https://github.com/Jineggegg/agent-cloud-studio" target="_blank" rel="noreferrer"><ExternalLink size={18} /></a></div>
           <button className="studio-project-row project-action" onClick={() => setView('snr')}><span className="project-square snr"><Activity size={24} /></span><div><h3>SNR 3.0 Strategy Laboratory</h3><p>HPA / EL / AOI · 研究阶段</p></div><span className={`status-label ${studio.snr?.connected ? 'good' : ''}`}>{studio.snr?.connected ? '在线' : '离线'}</span><ArrowRight size={18} /></button>
         </div>}

@@ -1574,3 +1574,20 @@ export type CliApplication = {
 export type SandboxCommandService = {
   execute(argumentsList: string[]): Promise<number>;
 };
+
+// ---------------------------
+//----------------- STUDIO PROJECT CONTRACTS ------------
+/** Editable project metadata consumed by the Studio project router and service. Modules only expose their own tools; SNR is excluded. */
+export type StudioProjectInput = {
+  name: string;
+  description: string;
+  workspacePath: string;
+  modules: ('agents' | 'mail' | 'automations')[];
+  providers: ('claude' | 'codex')[];
+};
+
+/** Persisted, user-owned project returned to the Studio UI, with no credentials or provider tokens. */
+export type StudioProjectRecord = StudioProjectInput & { id: string; updatedAt: string };
+
+/** An automation draft passed from the Studio router to its service. Saving does not execute or schedule a task. */
+export type StudioTaskInput = { title: string; prompt: string; provider: 'claude' | 'codex' };

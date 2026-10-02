@@ -9,7 +9,7 @@ import { WebSocketProvider } from '@/shared/context/WebSocketContext';
 import { PluginsProvider } from '@/modules/plugins';
 import { ProjectWorkspaceRoute } from '@/modules/project-workspace';
 import { i18n } from '@/modules/i18n';
-import { StudioPage } from '@/modules/studio';
+import { StudioPage, StudioProjectPage } from '@/modules/studio';
 
 const DEPLOYMENT_ASSET_DIRECTORIES = new Set(['assets', 'static', 'icons', 'images']);
 
@@ -123,6 +123,7 @@ export default function App() {
                   <Router basename={routerBasename}>
                     <Routes>
                       <Route path="/" element={<StudioPage />} />
+                      <Route path="/projects/:id" element={<StudioProjectPage />} />
                       <Route path="/workspace" element={<ProjectWorkspaceRoute />} />
                       <Route path="/session/:sessionId" element={<ProjectWorkspaceRoute />} />
                     </Routes>
