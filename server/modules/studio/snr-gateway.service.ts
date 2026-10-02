@@ -115,8 +115,15 @@ export function createSnrGateway({ baseUrl, validUser, request = fetch, authoriz
       const entry = key ? access.get(key) : undefined;
       return Boolean(entry && entry.expires > Date.now() && validUser(entry.id));
     },
+    /** Drops every access cookie of one user; returns how many were still valid. */
     revoke(id: number) {
-      for (const [key, entry] of access) if (entry.id === id) access.delete(key);
+      let revoked = 0;
+      for (const [key, entry] of access) {
+        if (entry.id !== id) continue;
+        if (entry.expires > Date.now()) revoked += 1;
+        access.delete(key);
+      }
+      return revoked;
     },
     async proxy(relative: string, method: string, body: RequestInit['body'], contentType: string | undefined, signal: AbortSignal) {
       const target = new URL(relative, base);

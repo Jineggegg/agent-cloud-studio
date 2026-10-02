@@ -2125,14 +2125,25 @@ export type StudioSignInPasskey = { id: string; rpId: string; label: string | nu
  * passkey changes and "退出所有设备". `client` is already masked ("198.51.*.*"); `detail` is plain text.
  */
 export type StudioSecurityEvent = { id: number; at: string; type: string; door: string; client: string; detail: string | null };
+/** One password lock: whether it holds now and until when (ISO-8601). */
+export type StudioPasswordLock = { locked: boolean; lockedUntil: string | null };
 /** GET /api/auth/security: what Settings → 安全 shows for the signed-in account. */
 export type StudioSecurityOverview = {
   // Origins whose pages may add and use sign-in passkeys (the configured front doors).
   passkeyOrigins: string[];
   passkeys: StudioSignInPasskey[];
-  // Newest first.
+  // Newest first, every kind of event.
   events: StudioSecurityEvent[];
-  // Password sign-in lock after repeated wrong passwords; passkeys and Tailscale still work while locked.
-  passwordLock: { locked: boolean; lockedUntil: string | null };
+  // Newest first: locks, lock lifts, passkey changes and revocations, which a flood of failed
+  // sign-ins can never push out of the log.
+  importantEvents: StudioSecurityEvent[];
+  // Each door locks on its own: the public domain's password sign-in, the Tailscale address's, and
+  // the password a signed-in session re-enters in Settings. Passkeys and Tailscale sign-in still work.
+  passwordLocks: { public: StudioPasswordLock; tailnet: StudioPasswordLock; session: StudioPasswordLock };
+};
+/** POST /api/auth/security/revoke-all: what "退出所有设备" took away, for the confirmation toast. */
+export type StudioRevokeAllResult = {
+  success: boolean;
+  revoked: { sessions: boolean; webSockets: number; apiKeys: number; snrAccess: number; handoffCodes: number };
 };
 // ---------------------------

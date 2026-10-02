@@ -7,6 +7,7 @@ type Dependencies = Parameters<typeof createSettingsService>[0];
 
 function dependencies(overrides: Partial<Dependencies> = {}): Dependencies {
   return {
+    verifyStepUp: async () => undefined,
     apiKeys: { list: () => [], create: () => ({}), remove: () => false, toggle: () => false },
     credentials: { list: () => [], create: () => ({}), remove: () => false, toggle: () => false },
     notifications: {
@@ -51,4 +52,37 @@ test('subscribeToPush persists the subscription and enables Web Push', () => {
     keys: { p256dh: 'key', auth: 'auth' },
   });
   assert.deepEqual(operations, ['save:https://push.example.test', 'preferences', 'notify']);
+});
+
+test('creating an API key or turning one back on needs the password step-up; turning one off does not', async () => {
+  const stepUps: unknown[] = [];
+  const created: string[] = [];
+  const toggled: boolean[] = [];
+  let passwordOk = false;
+  const service = createSettingsService(dependencies({
+    verifyStepUp: async (stepUp) => {
+      stepUps.push(stepUp.password);
+      if (!passwordOk) throw Object.assign(new Error('wrong'), { statusCode: 403 });
+    },
+    apiKeys: {
+      list: () => [],
+      create: (_userId, keyName) => { created.push(keyName); return { keyName }; },
+      remove: () => true,
+      toggle: (_userId, _keyId, isActive) => { toggled.push(isActive); return true; },
+    },
+  }));
+  const client = { door: 'cloudflare', address: '198.51.100.7' } as const;
+
+  await assert.rejects(service.createApiKey(1, 'laptop', { user: { id: 1 }, password: 'guess', client }));
+  assert.deepEqual(created, []);
+  await assert.rejects(service.toggleApiKey(1, 3, true, { user: { id: 1 }, password: 'guess', client }));
+  await service.toggleApiKey(1, 3, false, { user: { id: 1 }, password: undefined, client });
+  assert.deepEqual(toggled, [false]);
+
+  passwordOk = true;
+  await service.createApiKey(1, 'laptop', { user: { id: 1 }, password: 'right', client });
+  await service.toggleApiKey(1, 3, true, { user: { id: 1 }, password: 'right', client });
+  assert.deepEqual(created, ['laptop']);
+  assert.deepEqual(toggled, [false, true]);
+  assert.deepEqual(stepUps, ['guess', 'guess', 'right', 'right']);
 });

@@ -8,21 +8,40 @@ type ApiKeysSectionProps = {
   apiKeys: ApiKeyItem[];
   showNewKeyForm: boolean;
   newKeyName: string;
+  newKeyPassword: string;
+  activatingKeyId: string | null;
+  activationPassword: string;
+  errorMessage: string;
   onShowNewKeyFormChange: (value: boolean) => void;
   onNewKeyNameChange: (value: string) => void;
+  onNewKeyPasswordChange: (value: string) => void;
+  onActivationPasswordChange: (value: string) => void;
+  onConfirmActivation: () => void;
+  onCancelActivation: () => void;
   onCreateApiKey: () => void;
   onCancelCreateApiKey: () => void;
   onToggleApiKey: (keyId: string, isActive: boolean) => void;
   onDeleteApiKey: (keyId: string) => void;
 };
 
-/** Rendered by CredentialsSettingsTab to list, create and revoke CloudCLI API keys. */
+/**
+ * Rendered by CredentialsSettingsTab to list, create and revoke CloudCLI API keys. Creating a key
+ * or turning a disabled one back on asks for the Studio login password, which the server checks.
+ */
 export default function ApiKeysSection({
   apiKeys,
   showNewKeyForm,
   newKeyName,
+  newKeyPassword,
+  activatingKeyId,
+  activationPassword,
+  errorMessage,
   onShowNewKeyFormChange,
   onNewKeyNameChange,
+  onNewKeyPasswordChange,
+  onActivationPasswordChange,
+  onConfirmActivation,
+  onCancelActivation,
   onCreateApiKey,
   onCancelCreateApiKey,
   onToggleApiKey,
@@ -64,8 +83,18 @@ export default function ApiKeysSection({
             onChange={(event) => onNewKeyNameChange(event.target.value)}
             className="mb-2"
           />
+          <Input
+            type="password"
+            autoComplete="current-password"
+            aria-label={t('apiKeys.form.passwordPlaceholder')}
+            placeholder={t('apiKeys.form.passwordPlaceholder')}
+            value={newKeyPassword}
+            onChange={(event) => onNewKeyPasswordChange(event.target.value)}
+            className="mb-2"
+          />
+          <p className="mb-2 text-xs text-muted-foreground">{t('apiKeys.form.passwordHint')}</p>
           <div className="flex gap-2">
-            <Button onClick={onCreateApiKey}>{t('apiKeys.form.createButton')}</Button>
+            <Button onClick={onCreateApiKey} disabled={!newKeyName.trim() || !newKeyPassword}>{t('apiKeys.form.createButton')}</Button>
             <Button variant="outline" onClick={onCancelCreateApiKey}>
               {t('apiKeys.form.cancelButton')}
             </Button>
@@ -73,12 +102,14 @@ export default function ApiKeysSection({
         </div>
       )}
 
+      {errorMessage && <p role="alert" className="mb-4 text-sm text-destructive">{errorMessage}</p>}
+
       <div className="space-y-2">
         {apiKeys.length === 0 ? (
           <p className="text-sm italic text-muted-foreground">{t('apiKeys.empty')}</p>
         ) : (
           apiKeys.map((key) => (
-            <div key={key.id} className="flex items-center justify-between rounded-lg border p-3">
+            <div key={key.id} className="flex flex-wrap items-center justify-between rounded-lg border p-3">
               <div className="flex-1">
                 <div className="font-medium">{key.key_name}</div>
                 <code className="text-xs text-muted-foreground">{key.api_key}</code>
@@ -101,6 +132,20 @@ export default function ApiKeysSection({
                   <Trash2 className="h-4 w-4" />
                 </Button>
               </div>
+              {activatingKeyId === key.id && (
+                <div className="mt-3 flex w-full items-center gap-2">
+                  <Input
+                    type="password"
+                    autoComplete="current-password"
+                    aria-label={t('apiKeys.form.passwordPlaceholder')}
+                    placeholder={t('apiKeys.form.passwordPlaceholder')}
+                    value={activationPassword}
+                    onChange={(event) => onActivationPasswordChange(event.target.value)}
+                  />
+                  <Button size="sm" onClick={onConfirmActivation} disabled={!activationPassword}>{t('apiKeys.activate.confirmButton')}</Button>
+                  <Button size="sm" variant="outline" onClick={onCancelActivation}>{t('apiKeys.activate.cancelButton')}</Button>
+                </div>
+              )}
             </div>
           ))
         )}

@@ -1671,26 +1671,39 @@ export type StudioIngressOrigins = {
 };
 
 /**
- * Who sent a request, as the auth module's throttles and lockout log and the request-guard rate
+ * Who sent a request, as the auth module's throttles, lockout and log and the request-guard rate
  * limiter count it. Built by the auth module's readRequestClient from the socket and headers;
- * consumed by the auth service, the handoff code store, the security event log and the
- * request-guard module (per-client and per-door token buckets, WebSocket connection caps).
- * - `door: 'cloudflare'`: the request reached the loopback socket (cloudflared) carrying
- *   Cloudflare's edge headers, i.e. the public tunnel door. Cloudflare overwrites
- *   CF-Connecting-IP, so `address` is the real client address there.
- * - `door: 'tailnet'`: Tailscale Serve on this machine (loopback socket, *.ts.net Host, no
- *   Cloudflare headers); `address` is the one tailnet peer address Serve writes into
- *   X-Forwarded-For.
+ * consumed by the auth service, the handoff code store, the passkey ceremonies, the security event
+ * log and the request-guard module (token buckets, in-flight and WebSocket caps).
+ * - `door: 'cloudflare'`: the public tunnel door. With STUDIO_CLOUDFLARED_PORT set, exactly the
+ *   connections that arrived on that loopback port; without it, a loopback request carrying
+ *   Cloudflare's edge headers and no sign of Tailscale Serve. `address` is CF-Connecting-IP.
+ * - `door: 'tailnet'`: Tailscale Serve on this machine (loopback socket, *.ts.net Host, exactly one
+ *   tailnet address in X-Forwarded-For); `address` is that tailnet peer.
  * - `door: 'direct'`: everything else (local programs, LAN, a request whose proxy headers do not
- *   add up); `address` is the raw socket peer. Cloudflare-looking headers from a non-loopback peer
- *   land here, so nobody can pick another client's bucket by forging CF-Connecting-IP.
- * Every limit also keeps a separate total per door, so public traffic can never use up the
- * budget of the tailnet door. `address` is 'unknown' when the value is missing; it is only a bucket
- * key, never trusted for authentication.
+ *   add up); `address` is the raw socket peer, so nobody picks another client's bucket by
+ *   forging CF-Connecting-IP.
+ * Public and direct IPv6 addresses are keyed by their /64 (written "2001:db8:1:2::/64"), so a
+ * client rotating through its own prefix stays one client. Every limit also keeps a separate total
+ * per door, so public traffic can never use up the budget of the tailnet door. `address` is
+ * 'unknown' when the value is missing; it is only a bucket key, never trusted for authentication.
  */
 export type StudioRequestClient = {
   door: 'cloudflare' | 'tailnet' | 'direct';
   address: string;
+};
+
+/**
+ * What "退出所有设备" took away besides the token version, so Settings can say so. Each
+ * listener of the auth module's onSessionsRevoked returns the parts it handled (the server
+ * entrypoint: open WebSockets, API keys, SNR gateway cookies); the auth module adds the pending
+ * handoff codes and merges them into the response of POST /api/auth/security/revoke-all.
+ */
+export type StudioSessionRevocation = {
+  webSockets?: number;
+  apiKeys?: number;
+  snrAccess?: number;
+  handoffCodes?: number;
 };
 
 /**

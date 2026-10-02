@@ -65,12 +65,13 @@ export function createAuthRouter(
     }
   });
 
-  // Public on purpose: "用面容 ID 登录" starts here, before there is a session. The options carry
-  // only a fresh challenge for this door's RP ID; no credential ids, so they name no account.
+  // Public on purpose: "用面容 ID 登录" starts here, before there is a session. The answer carries
+  // a fresh challenge for this door's RP ID (no credential ids, so it names no account) and the
+  // ceremony id the assertion must come back with.
   router.post('/passkey/options', async (req, res, next) => {
     try {
       res.setHeader('Cache-Control', 'no-store');
-      res.json(await service.passkeySignInOptions(readHeader(req, 'origin')));
+      res.json(await service.passkeySignInOptions(readHeader(req, 'origin'), readRequestClient(req)));
     } catch (error) {
       next(error);
     }
@@ -81,9 +82,11 @@ export function createAuthRouter(
   router.post('/passkey', async (req, res, next) => {
     try {
       res.setHeader('Cache-Control', 'no-store');
+      const body = bodyOf(req);
       res.json(await service.signInWithPasskey({
         origin: readHeader(req, 'origin'),
-        response: bodyOf(req).response,
+        ceremonyId: body.ceremonyId,
+        response: body.response,
         client: readRequestClient(req),
       }));
     } catch (error) {
@@ -100,6 +103,8 @@ export function createAuthRouter(
       res.json(service.signInWithTailscale({
         // The raw socket peer, not req.ip, which would honour X-Forwarded-For under trust proxy.
         remoteAddress: req.socket.remoteAddress,
+        // The cloudflared listener (STUDIO_CLOUDFLARED_PORT) never carries Tailscale traffic.
+        localPort: req.socket.localPort,
         host: readHeader(req, 'host'),
         origin: readHeader(req, 'origin'),
         fetchSite: readHeader(req, 'sec-fetch-site'),

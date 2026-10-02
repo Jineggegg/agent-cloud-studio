@@ -496,9 +496,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
     [publishSession, t],
   );
 
-  // Passkey sign-in: a fresh challenge for this door, the device's Face ID / Touch ID prompt
-  // (discoverable credential, so no username), then the assertion for a session. A cancelled
-  // prompt is not an error worth the server's time.
+  // Passkey sign-in: a fresh ceremony for this door (its id and challenge), the device's Face ID /
+  // Touch ID prompt (discoverable credential, so no username), then the assertion, named by the
+  // ceremony id, for a session. A cancelled prompt is not an error worth the server's time.
   const loginWithPasskey = useCallback<AuthContextValue['loginWithPasskey']>(async () => {
     const fail = (message: string): AuthActionResult => {
       setError(message);
@@ -507,20 +507,20 @@ export function AuthProvider({ children }: AuthProviderProps) {
     try {
       setError(null);
       const optionsResponse = await api.auth.passkeyOptions();
-      const options = await parseJsonSafely<PublicKeyCredentialRequestOptionsJSON & ApiErrorPayload>(optionsResponse);
-      if (!optionsResponse.ok || !options?.challenge) {
-        return fail(resolveApiErrorMessage(options, t(AUTH_ERROR_MESSAGES.passkeyFailed)));
+      const started = await parseJsonSafely<{ ceremonyId?: string; options?: PublicKeyCredentialRequestOptionsJSON } & ApiErrorPayload>(optionsResponse);
+      if (!optionsResponse.ok || !started?.ceremonyId || !started.options?.challenge) {
+        return fail(resolveApiErrorMessage(started, t(AUTH_ERROR_MESSAGES.passkeyFailed)));
       }
 
       let assertion: Awaited<ReturnType<typeof startAuthentication>>;
       try {
-        assertion = await startAuthentication({ optionsJSON: options });
+        assertion = await startAuthentication({ optionsJSON: started.options });
       } catch (caughtError) {
         const cancelled = caughtError instanceof Error && ['NotAllowedError', 'AbortError'].includes(caughtError.name);
         return fail(t(cancelled ? AUTH_ERROR_MESSAGES.passkeyCancelled : AUTH_ERROR_MESSAGES.passkeyFailed));
       }
 
-      const response = await api.auth.passkeySignIn(assertion);
+      const response = await api.auth.passkeySignIn(started.ceremonyId, assertion);
       const payload = await parseJsonSafely<AuthSessionPayload>(response);
       if (!response.ok || !payload?.token || !payload.user) {
         return fail(resolveApiErrorMessage(payload, t(AUTH_ERROR_MESSAGES.passkeyFailed)));

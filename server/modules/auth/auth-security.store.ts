@@ -4,11 +4,13 @@ import { getConnection } from '@/modules/database/index.js';
 
 /**
  * SQLite persistence for the account's sign-in security, in tables the auth module owns:
- * - auth_login_lockouts: consecutive password failures and the lock per typed username, so a lock
- *   survives restarts (unknown usernames get rows too, so a lock never reveals which name exists);
+ * - auth_login_lockouts: consecutive password failures and the lock per scope and typed username
+ *   ("public:andrew"), so a lock survives restarts. Unknown usernames get rows too, so a lock never
+ *   reveals which name exists; rows of real accounts are flagged and never evicted;
  * - auth_passkeys: WebAuthn sign-in credentials per user and RP ID (separate from the Trading 212
  *   order passkeys, which the Studio module keeps in its own table);
- * - auth_security_events: a bounded log of failed sign-ins, locks, passkey changes and revocations;
+ * - auth_security_events: a bounded log of sign-ins, locks, passkey changes and revocations, with
+ *   the important events kept apart from the noisy ones so a flood cannot push them out;
  * - auth_session_versions: the per-user token version embedded in every JWT ("sign out everywhere").
  */
 
@@ -21,6 +23,8 @@ type LockoutRow = {
   /** Epoch milliseconds; 0 or a past time means not locked. */
   locked_until: number;
   updated_at: number;
+  /** 1 for a real account's row, which the cap on tracked usernames never evicts. */
+  is_account: number;
 };
 
 type PasskeyRow = {
@@ -43,10 +47,13 @@ type SecurityEventRow = {
   door: string;
   client: string;
   detail: string | null;
+  /** 1 for the events worth keeping (locks, passkey changes, revocations), 0 for sign-in noise. */
+  important: number;
 };
 
-// The log keeps the newest events only; a flood of failed logins cannot grow the database.
-const MAX_SECURITY_EVENTS = 500;
+// Each class of events keeps its newest rows only; a flood of failed logins cannot grow the
+// database, nor push out a lock or a passkey change.
+const MAX_EVENTS_PER_CLASS = 500;
 
 /**
  * Creates the store on a better-sqlite3 connection, creating its tables when missing.
@@ -59,9 +66,10 @@ export function createAuthSecurityStore(database: Database.Database) {
       failures INTEGER NOT NULL DEFAULT 0,
       level INTEGER NOT NULL DEFAULT 0,
       locked_until INTEGER NOT NULL DEFAULT 0,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      is_account INTEGER NOT NULL DEFAULT 0
     );
-    CREATE INDEX IF NOT EXISTS idx_auth_login_lockouts_updated ON auth_login_lockouts(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_auth_login_lockouts_unknown ON auth_login_lockouts(is_account, updated_at);
     CREATE TABLE IF NOT EXISTS auth_passkeys (
       id TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL,
@@ -81,8 +89,10 @@ export function createAuthSecurityStore(database: Database.Database) {
       type TEXT NOT NULL,
       door TEXT NOT NULL,
       client TEXT NOT NULL,
-      detail TEXT
+      detail TEXT,
+      important INTEGER NOT NULL DEFAULT 0
     );
+    CREATE INDEX IF NOT EXISTS idx_auth_security_events_class ON auth_security_events(important, id);
     CREATE TABLE IF NOT EXISTS auth_session_versions (
       user_id INTEGER PRIMARY KEY,
       version INTEGER NOT NULL DEFAULT 0
@@ -92,16 +102,20 @@ export function createAuthSecurityStore(database: Database.Database) {
   const statements = {
     lockoutGet: database.prepare('SELECT * FROM auth_login_lockouts WHERE account_key = ?'),
     lockoutUpsert: database.prepare(`
-      INSERT INTO auth_login_lockouts (account_key, failures, level, locked_until, updated_at)
-      VALUES (@account_key, @failures, @level, @locked_until, @updated_at)
+      INSERT INTO auth_login_lockouts (account_key, failures, level, locked_until, updated_at, is_account)
+      VALUES (@account_key, @failures, @level, @locked_until, @updated_at, @is_account)
       ON CONFLICT(account_key) DO UPDATE SET
-        failures = excluded.failures, level = excluded.level,
-        locked_until = excluded.locked_until, updated_at = excluded.updated_at
+        failures = excluded.failures, level = excluded.level, locked_until = excluded.locked_until,
+        updated_at = excluded.updated_at, is_account = excluded.is_account
     `),
     lockoutDelete: database.prepare('DELETE FROM auth_login_lockouts WHERE account_key = ?'),
     lockoutDeleteAll: database.prepare('DELETE FROM auth_login_lockouts'),
-    lockoutCount: database.prepare('SELECT COUNT(*) AS count FROM auth_login_lockouts'),
-    lockoutOldest: database.prepare('SELECT account_key FROM auth_login_lockouts ORDER BY updated_at ASC LIMIT ?'),
+    lockoutCountUnknown: database.prepare('SELECT COUNT(*) AS count FROM auth_login_lockouts WHERE is_account = 0'),
+    // Least recently relevant first: a row matters until both its last attempt and its lock are past.
+    lockoutOldestUnknown: database.prepare(`
+      SELECT account_key FROM auth_login_lockouts WHERE is_account = 0
+      ORDER BY MAX(updated_at, locked_until) ASC LIMIT ?
+    `),
     passkeysForUser: database.prepare('SELECT * FROM auth_passkeys WHERE user_id = ? ORDER BY rp_id, created_at'),
     passkeyByCredential: database.prepare('SELECT * FROM auth_passkeys WHERE credential_id = ?'),
     passkeyById: database.prepare('SELECT * FROM auth_passkeys WHERE id = ? AND user_id = ?'),
@@ -111,9 +125,15 @@ export function createAuthSecurityStore(database: Database.Database) {
     `),
     passkeyUsage: database.prepare('UPDATE auth_passkeys SET counter = ?, last_used_at = ? WHERE id = ?'),
     passkeyDelete: database.prepare('DELETE FROM auth_passkeys WHERE id = ? AND user_id = ?'),
-    eventInsert: database.prepare('INSERT INTO auth_security_events (at, type, door, client, detail) VALUES (?, ?, ?, ?, ?)'),
-    eventTrim: database.prepare('DELETE FROM auth_security_events WHERE id <= (SELECT MAX(id) FROM auth_security_events) - ?'),
+    eventInsert: database.prepare('INSERT INTO auth_security_events (at, type, door, client, detail, important) VALUES (?, ?, ?, ?, ?, ?)'),
+    // Keeps the newest MAX_EVENTS_PER_CLASS rows of one class; a class with fewer rows is untouched.
+    eventTrim: database.prepare(`
+      DELETE FROM auth_security_events WHERE important = @important AND id < (
+        SELECT id FROM auth_security_events WHERE important = @important ORDER BY id DESC LIMIT 1 OFFSET @keep
+      )
+    `),
     eventsRecent: database.prepare('SELECT * FROM auth_security_events ORDER BY id DESC LIMIT ?'),
+    eventsRecentImportant: database.prepare('SELECT * FROM auth_security_events WHERE important = 1 ORDER BY id DESC LIMIT ?'),
     versionGet: database.prepare('SELECT version FROM auth_session_versions WHERE user_id = ?'),
     versionBump: database.prepare(`
       INSERT INTO auth_session_versions (user_id, version) VALUES (?, 1)
@@ -127,9 +147,11 @@ export function createAuthSecurityStore(database: Database.Database) {
       save: (row: LockoutRow) => { statements.lockoutUpsert.run(row); },
       remove: (accountKey: string) => statements.lockoutDelete.run(accountKey).changes > 0,
       removeAll: () => statements.lockoutDeleteAll.run().changes,
-      count: () => (statements.lockoutCount.get() as { count: number }).count,
-      /** Keys of the least recently touched rows, oldest first, for making room. */
-      oldestKeys: (limit: number) => (statements.lockoutOldest.all(limit) as { account_key: string }[]).map((row) => row.account_key),
+      /** Rows of usernames that are not accounts; only these count against the cap. */
+      countUnknown: () => (statements.lockoutCountUnknown.get() as { count: number }).count,
+      /** Keys of the least recently relevant unknown-username rows, oldest first, for making room. */
+      oldestUnknownKeys: (limit: number) => (statements.lockoutOldestUnknown.all(limit) as { account_key: string }[])
+        .map((row) => row.account_key),
     },
     passkeys: {
       listForUser: (userId: number) => statements.passkeysForUser.all(userId) as PasskeyRow[],
@@ -141,10 +163,13 @@ export function createAuthSecurityStore(database: Database.Database) {
     },
     events: {
       append: (event: Omit<SecurityEventRow, 'id'>) => {
-        statements.eventInsert.run(event.at, event.type, event.door, event.client, event.detail);
-        statements.eventTrim.run(MAX_SECURITY_EVENTS);
+        statements.eventInsert.run(event.at, event.type, event.door, event.client, event.detail, event.important);
+        statements.eventTrim.run({ important: event.important, keep: MAX_EVENTS_PER_CLASS - 1 });
       },
+      /** Newest first, both classes mixed. */
       recent: (limit: number) => statements.eventsRecent.all(limit) as SecurityEventRow[],
+      /** Newest important events first. */
+      recentImportant: (limit: number) => statements.eventsRecentImportant.all(limit) as SecurityEventRow[],
     },
     sessionVersions: {
       /** 0 until the first "sign out everywhere"; tokens without a version count as 0. */

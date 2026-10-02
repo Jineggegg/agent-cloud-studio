@@ -1,3 +1,4 @@
+import { readRequestClient, verifyStepUpPassword } from '@/modules/auth/index.js';
 import {
   apiKeysDb,
   credentialsDb,
@@ -14,6 +15,7 @@ import { createSettingsRouter } from './settings.routes.js';
 import { createSettingsService } from './settings.service.js';
 
 const settingsService = createSettingsService({
+  verifyStepUp: ({ user, password, client }) => verifyStepUpPassword(user, password, client),
   apiKeys: {
     list: (userId) => apiKeysDb.getApiKeys(userId),
     create: (userId, keyName) => apiKeysDb.createApiKey(userId, keyName),
@@ -47,4 +49,4 @@ const settingsService = createSettingsService({
 });
 
 /** Settings router assembled for the authenticated server mount. */
-export const settingsRoutes = createSettingsRouter(settingsService);
+export const settingsRoutes = createSettingsRouter(settingsService, (req) => readRequestClient(req));

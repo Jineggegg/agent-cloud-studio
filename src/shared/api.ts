@@ -273,10 +273,11 @@ export const api = {
     }),
     // "用面容 ID 登录": a fresh challenge for this door, then the passkey's assertion for a session.
     passkeyOptions: () => fetch('/api/auth/passkey/options', { method: 'POST' }),
-    passkeySignIn: (response: unknown) => fetch('/api/auth/passkey', {
+    // The ceremony id from passkeyOptions names the challenge this assertion answers.
+    passkeySignIn: (ceremonyId: string, response: unknown) => fetch('/api/auth/passkey', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ response }),
+      body: JSON.stringify({ ceremonyId, response }),
     }),
     refresh: () => post('/api/auth/refresh'),
     user: () => get('/api/auth/user'),
@@ -611,10 +612,11 @@ export const api = {
   // Server-side settings: API keys, stored credentials, notifications, web push
   settings: {
     apiKeys: () => get('/api/settings/api-keys'),
-    createApiKey: (keyName: string) => post('/api/settings/api-keys', { keyName }),
+    // Creating a key, or turning a disabled one back on, needs the Studio login password.
+    createApiKey: (keyName: string, password: string) => post('/api/settings/api-keys', { keyName, password }),
     deleteApiKey: (keyId: string) => del(`/api/settings/api-keys/${keyId}`),
-    toggleApiKey: (keyId: string, isActive: boolean) =>
-      patch(`/api/settings/api-keys/${keyId}/toggle`, { isActive }),
+    toggleApiKey: (keyId: string, isActive: boolean, password?: string) =>
+      patch(`/api/settings/api-keys/${keyId}/toggle`, password === undefined ? { isActive } : { isActive, password }),
 
     credentials: (type: string) => get(`/api/settings/credentials${query({ type })}`),
     createCredential: (payload: {

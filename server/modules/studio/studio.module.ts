@@ -196,5 +196,11 @@ export function createStudioModule() {
     },
   });
   routes.use('/mail', createMailRouter(mailAccounts));
-  return { routes, snrRoutes: createSnrGatewayRouter(gateway), mailCallbackRoutes: createProjectMailCallbackRouter(mail) };
+  return {
+    routes,
+    snrRoutes: createSnrGatewayRouter(gateway),
+    mailCallbackRoutes: createProjectMailCallbackRouter(mail),
+    // Used by the server entrypoint when "退出所有设备" also drops the user's SNR access cookies.
+    revokeSnrAccess: (userId: number) => gateway.revoke(userId),
+  };
 }

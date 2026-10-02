@@ -2,7 +2,10 @@
 // Lifts the password sign-in lock of Agent Cloud Studio (docs/security.md) on this machine.
 //
 //   node scripts/clear-login-lock.mjs              # clears every lock and failure count
-//   node scripts/clear-login-lock.mjs <username>   # clears one typed username only
+//   node scripts/clear-login-lock.mjs <username>   # clears one typed username only (every door)
+//
+// Locks are kept per door ("public:<name>", "tailnet:<name>", "session:<name>"); both forms clear
+// all three.
 //
 // It needs no running server and no password: whoever can run it already controls this machine.
 // The database is DATABASE_PATH (from the environment, else from the app's .env), else
@@ -53,11 +56,14 @@ if (!hasTable) {
 }
 
 const removed = username
-  ? db.prepare('DELETE FROM auth_login_lockouts WHERE account_key = ?').run(username).changes
+  ? db.prepare('DELETE FROM auth_login_lockouts WHERE account_key IN (?, ?, ?)')
+    .run(`public:${username}`, `tailnet:${username}`, `session:${username}`).changes
   : db.prepare('DELETE FROM auth_login_lockouts').run().changes;
-const hasEvents = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auth_security_events'").get();
-if (hasEvents && removed > 0) {
-  db.prepare('INSERT INTO auth_security_events (at, type, door, client, detail) VALUES (?, ?, ?, ?, ?)')
+const eventColumns = db.prepare("SELECT name FROM pragma_table_info('auth_security_events')").all().map((column) => column.name);
+if (eventColumns.length > 0 && removed > 0) {
+  // Kept with the important events, so a flood of failed sign-ins cannot push it out of the log.
+  const important = eventColumns.includes('important');
+  db.prepare(`INSERT INTO auth_security_events (at, type, door, client, detail${important ? ', important' : ''}) VALUES (?, ?, ?, ?, ?${important ? ', 1' : ''})`)
     .run(new Date().toISOString(), 'lockout-cleared', 'direct', 'unknown', 'command line');
 }
 db.close();

@@ -70,10 +70,13 @@ const accountSecurity = createAccountSecurityService({
     list: () => [],
     remove: () => null,
   },
-  events: { record: () => undefined, recent: () => [] },
+  events: { record: () => undefined, recent: () => [], recentImportant: () => [] },
   lockout: { status: () => ({ locked: false, lockedUntil: null, failures: 0, level: 0 }) },
   sessionVersions: store.sessionVersions,
-  onSessionsRevoked: (revokedUserId) => revokedUsers.push(revokedUserId),
+  onSessionsRevoked: (revokedUserId) => {
+    revokedUsers.push(revokedUserId);
+    return {};
+  },
   logInfo: () => undefined,
 });
 

@@ -16,6 +16,14 @@ export default function CredentialsSettingsTab() {
     setShowNewKeyForm,
     newKeyName,
     setNewKeyName,
+    newKeyPassword,
+    setNewKeyPassword,
+    activatingKeyId,
+    activationPassword,
+    setActivationPassword,
+    confirmActivation,
+    cancelActivation,
+    apiKeyError,
     showNewGithubForm,
     setShowNewGithubForm,
     newGithubName,
@@ -62,8 +70,16 @@ export default function CredentialsSettingsTab() {
         apiKeys={apiKeys}
         showNewKeyForm={showNewKeyForm}
         newKeyName={newKeyName}
+        newKeyPassword={newKeyPassword}
+        activatingKeyId={activatingKeyId}
+        activationPassword={activationPassword}
+        errorMessage={apiKeyError}
         onShowNewKeyFormChange={setShowNewKeyForm}
         onNewKeyNameChange={setNewKeyName}
+        onNewKeyPasswordChange={setNewKeyPassword}
+        onActivationPasswordChange={setActivationPassword}
+        onConfirmActivation={confirmActivation}
+        onCancelActivation={cancelActivation}
         onCreateApiKey={createApiKey}
         onCancelCreateApiKey={cancelNewApiKeyForm}
         onToggleApiKey={toggleApiKey}

@@ -15,6 +15,7 @@ type SecurityEventType =
   | 'passkey-added'
   | 'passkey-removed'
   | 'sessions-revoked'
+  | 'api-keys-revoked'
   | 'step-up-failed';
 
 type SecurityEventInput = {
@@ -25,14 +26,29 @@ type SecurityEventInput = {
   detail?: string;
 };
 
+// Kept in their own retention class, so no amount of failed sign-ins can push them out of the log.
+const IMPORTANT_EVENTS = new Set<SecurityEventType>([
+  'account-locked',
+  'lockout-cleared',
+  'passkey-added',
+  'passkey-removed',
+  'sessions-revoked',
+  'api-keys-revoked',
+]);
+
 // Control characters never reach the log, whatever a caller passes in.
 function printable(text: string): string {
   return text.replace(/[\p{Cc}]/gu, '?').slice(0, 200);
 }
 
+function view(row: ReturnType<EventStore['recent']>[number]) {
+  return { id: row.id, at: row.at, type: row.type, door: row.door, client: row.client, detail: row.detail };
+}
+
 /**
- * The security event log behind Settings → 安全: failed and successful sign-ins, locks, passkey
- * changes and "sign out everywhere", bounded by the store to the newest 500 events.
+ * The security event log behind Settings → 安全: sign-ins, locks, passkey changes and "sign out
+ * everywhere". The store keeps the newest 500 important events (locks, lock lifts, passkey changes,
+ * revocations) and, separately, the newest 500 others.
  * Used by auth.module, which passes `record` to auth.service and the whole log to
  * account-security.service (which also reads it back for Settings).
  */
@@ -47,6 +63,7 @@ export function createSecurityEventLog(dependencies: { store: EventStore; now?: 
           door: event.client?.door ?? 'direct',
           client: event.client ? maskClientAddress(event.client.address) : 'unknown',
           detail: event.detail === undefined ? null : printable(event.detail),
+          important: IMPORTANT_EVENTS.has(event.type) ? 1 : 0,
         });
       } catch (error) {
         // Logging must never turn a sign-in into an error.
@@ -54,16 +71,14 @@ export function createSecurityEventLog(dependencies: { store: EventStore; now?: 
       }
     },
 
-    /** Newest first, at most `limit` (capped at 100) events. */
+    /** Newest first, both classes mixed, at most `limit` (capped at 100) events. */
     recent(limit = 50) {
-      return dependencies.store.recent(Math.max(1, Math.min(limit, 100))).map((row) => ({
-        id: row.id,
-        at: row.at,
-        type: row.type,
-        door: row.door,
-        client: row.client,
-        detail: row.detail,
-      }));
+      return dependencies.store.recent(Math.max(1, Math.min(limit, 100))).map(view);
+    },
+
+    /** Newest important events first (locks, lock lifts, passkey changes, revocations). */
+    recentImportant(limit = 20) {
+      return dependencies.store.recentImportant(Math.max(1, Math.min(limit, 100))).map(view);
     },
   };
 }

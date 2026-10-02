@@ -313,7 +313,13 @@
     },
     "form": {
       "placeholder": "API Key Name (e.g., Production Server)",
+      "passwordPlaceholder": "Studio login password",
+      "passwordHint": "An API key works outside your session, so creating one or turning one back on needs your password.",
       "createButton": "Create",
+      "cancelButton": "Cancel"
+    },
+    "activate": {
+      "confirmButton": "Turn on",
       "cancelButton": "Cancel"
     },
     "newButton": "New API Key",

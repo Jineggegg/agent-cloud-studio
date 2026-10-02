@@ -7,7 +7,7 @@ import { Globe, LockKeyhole, LogOut, ScanFace, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api, readApiJson } from '@/shared/api';
-import type { StudioSecurityEvent, StudioSecurityOverview, StudioSignInPasskey } from '@/shared/types';
+import type { StudioPasswordLock, StudioRevokeAllResult, StudioSecurityEvent, StudioSecurityOverview, StudioSignInPasskey } from '@/shared/types';
 import { useAuth } from '@/modules/auth';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
@@ -28,6 +28,7 @@ const EVENT_LABELS: Record<string, string> = {
   'passkey-added': '添加了登录通行密钥',
   'passkey-removed': '移除了登录通行密钥',
   'sessions-revoked': '退出了所有设备',
+  'api-keys-revoked': '停用了 API 密钥',
   'step-up-failed': '设置里输错了密码',
 };
 const DOOR_LABELS: Record<string, string> = { cloudflare: '公网', tailnet: 'Tailscale', direct: '本机 / 局域网' };
@@ -40,13 +41,20 @@ const FAILURE_LABELS: Record<string, string> = {
   'user-missing': '账户不存在',
   malformed: '数据无效',
 };
-// What lifted a password lock (lockout-cleared events).
+// What lifted a password lock (lockout-cleared events, "<method> · <which lock>").
 const UNLOCK_LABELS: Record<string, string> = {
   password: '由密码登录解除',
   passkey: '由面容 ID 登录解除',
   Tailscale: '由 Tailscale 登录解除',
+  'step-up': '由设置里的密码确认解除',
   'command line': '由本机命令解除',
 };
+// The password locks, one per door; the session one only shows while it holds.
+const LOCK_ROWS: { key: keyof StudioSecurityOverview['passwordLocks']; title: string; hint: string }[] = [
+  { key: 'public', title: '公网密码登录', hint: '连续输错 5 次锁定，只影响 studio.ajarche.com 的密码登录' },
+  { key: 'tailnet', title: 'Tailscale 密码登录', hint: '和公网分开计数，公网被猜密码时这里照常' },
+  { key: 'session', title: '设置里的密码确认', hint: '已登录后再次输入密码（添加通行密钥、API 密钥、切换入口）' },
+];
 
 function exitDelay() {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 0 : EXIT_MS;
@@ -61,11 +69,29 @@ function eventDetail(event: StudioSecurityEvent) {
   const detail = event.detail ?? '';
   // The method of a successful password login is already in its title.
   if (event.type === 'login-succeeded') return '';
-  if (event.type === 'lockout-cleared') return UNLOCK_LABELS[detail] ?? detail;
+  if (event.type === 'lockout-cleared') {
+    const [method, ...rest] = detail.split(' · ');
+    return [UNLOCK_LABELS[method] ?? method, ...rest].join(' · ');
+  }
   if (detail.startsWith('wrong-password')) return '密码错误';
   if (detail.startsWith('unknown-user')) return '用户名不存在';
   return FAILURE_LABELS[detail] ?? detail;
 }
+// "已退出所有设备：停用 2 个 API 密钥、断开 3 个连接" — only what was actually revoked.
+function revocationSummary(result: StudioRevokeAllResult | null) {
+  const revoked = result?.revoked;
+  const parts = [
+    revoked?.apiKeys ? `停用 ${revoked.apiKeys} 个 API 密钥` : '',
+    revoked?.webSockets ? `断开 ${revoked.webSockets} 个连接` : '',
+    revoked?.snrAccess ? '关闭 SNR 研究入口' : '',
+  ].filter(Boolean);
+  return parts.length ? `已退出所有设备：${parts.join('、')}。请重新登录` : '已退出所有设备，请重新登录';
+}
+
+function lockText(lock: StudioPasswordLock, hint: string) {
+  return lock.locked && lock.lockedUntil ? `错误次数过多，${moment(lock.lockedUntil)} 前不能用密码` : hint;
+}
+
 // WebAuthn errors carry DOMException-style names; their raw messages are English and technical.
 function passkeyError(reason: unknown, fallback: string) {
   const name = reason instanceof Error ? reason.name : '';
@@ -200,6 +226,8 @@ export function StudioSettingsSecurity() {
   const passkeys = [...(overview?.passkeys ?? [])].sort((a, b) => Number(b.rpId === host) - Number(a.rpId === host) || a.rpId.localeCompare(b.rpId));
   const events = overview?.events ?? [];
   const visibleEvents = showAllEvents ? events : events.slice(0, COLLAPSED_EVENTS);
+  const importantEvents = overview?.importantEvents ?? [];
+  const lockRows = overview ? LOCK_ROWS.filter((row) => row.key !== 'session' || overview.passwordLocks.session.locked) : [];
 
   const enroll = async () => {
     setBusy('enroll'); setEnrollError('');
@@ -216,8 +244,8 @@ export function StudioSettingsSecurity() {
   const revokeAll = async () => {
     setBusy('revoke');
     try {
-      await readApiJson(await api.auth.security.revokeAll());
-      toast.success('已退出所有设备，请重新登录');
+      const result = await readApiJson<StudioRevokeAllResult>(await api.auth.security.revokeAll());
+      toast.success(revocationSummary(result));
       logout();
     } catch (reason) {
       toast.error(reason instanceof Error && reason.message ? reason.message : '操作失败');
@@ -230,16 +258,15 @@ export function StudioSettingsSecurity() {
     <div className="ios-list">
       {!overview && !loadError && <div className="ios-row no-icon"><StudioSpinner size={16} /><span className="ios-row-body"><small>读取中</small></span></div>}
       {loadError && <div className="ios-row no-icon"><span className="ios-row-body"><small>{loadError}</small></span></div>}
-      {overview && <div className="ios-row">
-        <span className="home-icon small tone-slate" aria-hidden="true"><LockKeyhole size={18} strokeWidth={1.6} /></span>
-        <span className="ios-row-body">
-          <strong>密码登录</strong>
-          <small>{overview.passwordLock.locked && overview.passwordLock.lockedUntil
-            ? `错误次数过多，${moment(overview.passwordLock.lockedUntil)} 前不能用密码登录`
-            : '连续输错 5 次会暂时锁定，面容 ID 和 Tailscale 登录不受影响'}</small>
-        </span>
-        <span className={`status-badge ${overview.passwordLock.locked ? 'warn' : 'good'}`}>{overview.passwordLock.locked ? '已锁定' : '正常'}</span>
-      </div>}
+      {lockRows.map((row) => {
+        const lock = overview?.passwordLocks[row.key];
+        if (!lock) return null;
+        return <div className="ios-row" key={row.key}>
+          <span className="home-icon small tone-slate" aria-hidden="true"><LockKeyhole size={18} strokeWidth={1.6} /></span>
+          <span className="ios-row-body"><strong>{row.title}</strong><small>{lockText(lock, row.hint)}</small></span>
+          <span className={`status-badge ${lock.locked ? 'warn' : 'good'}`}>{lock.locked ? '已锁定' : '正常'}</span>
+        </div>;
+      })}
     </div>
 
     {overview && <form className="ios-list security-enroll" aria-label="启用面容 ID 登录"
@@ -276,6 +303,17 @@ export function StudioSettingsSecurity() {
       通行密钥按网址区分：studio.ajarche.com 和 Tailscale 地址要分别启用。登录页的「用面容 ID 登录」不需要用户名和密码；密码被锁定时也能用它登录并解除锁定。
     </p>
 
+    {importantEvents.length > 0 && <>
+      <h3 className="security-subheading" id="studio-security-important-heading">重要事件</h3>
+      <div className="ios-list" role="group" aria-labelledby="studio-security-important-heading">
+        {importantEvents.map(event => <div className="ios-row no-icon security-event" key={event.id}>
+          <span className="ios-row-body">
+            <strong>{EVENT_LABELS[event.type] ?? event.type}</strong>
+            <small>{[moment(event.at), DOOR_LABELS[event.door] ?? event.door, event.client !== 'unknown' ? event.client : '', eventDetail(event)].filter(Boolean).join(' · ')}</small>
+          </span>
+        </div>)}
+      </div>
+    </>}
     {overview && <h3 className="security-subheading" id="studio-security-events-heading">最近的安全事件</h3>}
     {overview && <div className="ios-list security-events" role="group" aria-labelledby="studio-security-events-heading">
       {events.length === 0 && <div className="ios-row no-icon"><span className="ios-row-body"><small>还没有安全事件</small></span></div>}
@@ -295,7 +333,7 @@ export function StudioSettingsSecurity() {
         {busy === 'revoke' ? <StudioSpinner size={16} /> : <LogOut size={18} aria-hidden="true" />}退出所有设备
       </button>
     </div>
-    <p className="ios-section-footer">所有已登录的浏览器（包括这台）都会立即退出，正在运行的对话和终端连接会断开，之后需要重新登录。</p>
+    <p className="ios-section-footer">所有已登录的浏览器（包括这台）都会立即退出，正在运行的对话和终端连接会断开，API 密钥会被停用、SNR 研究入口会关闭，之后需要重新登录。</p>
 
     {removing && <RemoveSignInPasskeySheet passkey={removing} onCancel={() => setRemoving(null)}
       onRemoved={() => { setRemoving(null); void reload(); }} />}

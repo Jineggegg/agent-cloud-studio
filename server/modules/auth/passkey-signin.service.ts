@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 
 import {
@@ -9,7 +9,7 @@ import {
 } from '@simplewebauthn/server';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
-import type { StudioIngressOrigins } from '@/shared/types.js';
+import type { StudioIngressOrigins, StudioRequestClient } from '@/shared/types.js';
 import { AppError, describePasskeyDevice } from '@/shared/utils.js';
 
 import type { createAuthSecurityStore } from './auth-security.store.js';
@@ -31,14 +31,21 @@ type PasskeyCeremonyDependencies = {
   /** SimpleWebAuthn functions; injectable so tests never need a real authenticator. */
   webauthn?: WebAuthn;
   now?: () => number;
-  /** Most sign-in challenges waiting at once; the oldest is dropped beyond it. */
-  maxPendingChallenges?: number;
+  /** Sign-in ceremonies one client may have pending; its own oldest is dropped beyond it. */
+  maxPendingPerClient?: number;
+  /** Sign-in ceremonies one door may have pending; beyond it new ones are refused (429). */
+  maxPendingPerDoor?: number;
+  /** Registration challenges waiting at once (signed-in users only); the oldest is dropped. */
+  maxPendingRegistrations?: number;
 };
 
 /** A browser origin that may use sign-in passkeys, and the RP ID (its host name) they belong to. */
 type TrustedOrigin = { origin: string; rpId: string };
 
 type Pending = TrustedOrigin & { challenge: string; expiresAt: number };
+
+/** A pending sign-in, owned by the client and door that asked for it. */
+type SignInCeremony = Pending & { clientKey: string; door: StudioRequestClient['door'] };
 
 type SignInFailure =
   | 'malformed'
@@ -49,7 +56,11 @@ type SignInFailure =
 
 // Challenges are single-use and live one minute, like the WebAuthn prompt itself.
 const CHALLENGE_TTL_MS = 60_000;
-const DEFAULT_MAX_PENDING = 256;
+const DEFAULT_MAX_PER_CLIENT = 5;
+const DEFAULT_MAX_PER_DOOR = 100;
+const DEFAULT_MAX_REGISTRATIONS = 16;
+// 18 random bytes, base64url: what /api/auth/passkey must present to name its ceremony.
+const CEREMONY_ID_PATTERN = /^[A-Za-z0-9_-]{24}$/;
 const DEFAULT_WEBAUTHN: WebAuthn = {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -122,6 +133,10 @@ function isRegistrationShape(value: unknown): value is RegistrationResponseJSON 
  *   (studio.ajarche.com or the ts.net host). Only the configured doors' exact origins are trusted.
  * - User verification (Face ID / Touch ID / device PIN) is required; challenges are single-use and
  *   expire after 60 seconds; the signature counter is stored after every successful sign-in.
+ * - Each sign-in is a ceremony with an opaque id, owned by the client and door that started it:
+ *   a client keeps at most 5 pending (its own oldest goes first) and a door at most 100 (beyond
+ *   that new ones are refused), so no request can push out another client's or another door's
+ *   ceremony, and the assertion must come back with its ceremony's id on the same door.
  * Registering and removing need a signed-in session plus the password step-up, which the caller
  * (account-security.service) checks before calling in here.
  * Used by auth.module, which shares one instance between auth.service (sign-in) and
@@ -130,35 +145,65 @@ function isRegistrationShape(value: unknown): value is RegistrationResponseJSON 
 export function createPasskeyCeremonies(dependencies: PasskeyCeremonyDependencies) {
   const webauthn = dependencies.webauthn ?? DEFAULT_WEBAUTHN;
   const now = dependencies.now ?? Date.now;
-  const maxPending = dependencies.maxPendingChallenges ?? DEFAULT_MAX_PENDING;
+  const maxPerClient = dependencies.maxPendingPerClient ?? DEFAULT_MAX_PER_CLIENT;
+  const maxPerDoor = dependencies.maxPendingPerDoor ?? DEFAULT_MAX_PER_DOOR;
+  const maxRegistrations = dependencies.maxPendingRegistrations ?? DEFAULT_MAX_REGISTRATIONS;
   const { store } = dependencies;
-  // Sign-in challenges by challenge value; registration challenges by `${userId}:${rpId}`.
-  const signIns = new Map<string, Pending>();
+  // Sign-in ceremonies by their opaque id; registration challenges by `${userId}:${rpId}`.
+  const signIns = new Map<string, SignInCeremony>();
   const registrations = new Map<string, Pending>();
   const isoNow = () => new Date(now()).toISOString();
+  const clientKeyOf = (client: StudioRequestClient) => `${client.door} ${client.address}`;
 
-  function remember(map: Map<string, Pending>, key: string, pending: Pending) {
+  function pruneExpired<T extends Pending>(map: Map<string, T>) {
     const at = now();
-    for (const [existingKey, entry] of map) {
-      if (entry.expiresAt <= at) map.delete(existingKey);
+    for (const [key, entry] of map) {
+      if (entry.expiresAt <= at) map.delete(key);
     }
-    // Map iteration is insertion order, so the first key is the oldest challenge.
-    while (map.size >= maxPending) {
-      const oldest = map.keys().next().value;
-      if (oldest === undefined) break;
-      map.delete(oldest);
-    }
-    map.set(key, pending);
   }
 
-  // Takes a pending challenge out of the map (single use) when it is still valid for this origin.
-  function consume(map: Map<string, Pending>, key: string, origin: TrustedOrigin): Pending | null {
-    const pending = map.get(key);
-    map.delete(key);
-    if (!pending || pending.expiresAt <= now() || pending.origin !== origin.origin || pending.rpId !== origin.rpId) {
-      return null;
+  // Registrations need a signed-in session plus the password, so only the owner fills this map.
+  function rememberRegistration(key: string, pending: Pending) {
+    pruneExpired(registrations);
+    // Map iteration is insertion order, so the first key is the oldest challenge.
+    while (registrations.size >= maxRegistrations) {
+      const oldest = registrations.keys().next().value;
+      if (oldest === undefined) break;
+      registrations.delete(oldest);
     }
-    return pending;
+    registrations.set(key, pending);
+  }
+
+  /**
+   * Stores a sign-in ceremony for its client and door. A client at its cap loses its own oldest
+   * ceremony; a door at its cap refuses new ones. Nobody can push out another client's ceremony,
+   * and traffic on one door never touches another door's ceremonies.
+   */
+  function rememberSignIn(ceremony: SignInCeremony): string {
+    pruneExpired(signIns);
+    const own = [...signIns].filter(([, entry]) => entry.clientKey === ceremony.clientKey);
+    for (const [key] of own.slice(0, Math.max(0, own.length - maxPerClient + 1))) signIns.delete(key);
+    const doorCount = [...signIns.values()].filter((entry) => entry.door === ceremony.door).length;
+    if (doorCount >= maxPerDoor) {
+      fail('登录请求太多，请稍后再试', 429, 'AUTH_PASSKEY_BUSY');
+    }
+    const ceremonyId = randomBytes(18).toString('base64url');
+    signIns.set(ceremonyId, ceremony);
+    return ceremonyId;
+  }
+
+  // A pending challenge counts only before it expires and only for the origin it was issued to.
+  function stillValid<T extends Pending>(pending: T | undefined, origin: TrustedOrigin): T | null {
+    return pending && pending.expiresAt > now() && pending.origin === origin.origin && pending.rpId === origin.rpId
+      ? pending
+      : null;
+  }
+
+  // Takes a registration challenge out of its map (single use) when it is still valid.
+  function consumeRegistration(key: string, origin: TrustedOrigin): Pending | null {
+    const pending = registrations.get(key);
+    registrations.delete(key);
+    return stillValid(pending, origin);
   }
 
   /**
@@ -198,31 +243,51 @@ export function createPasskeyCeremonies(dependencies: PasskeyCeremonyDependencie
     /** Origins where sign-in passkeys work (shown in Settings so the page can tell whether it is one). */
     allowedOrigins,
 
-    /** Options for navigator.credentials.get on this door: no allowCredentials, UV required. */
-    async signInOptions(originHeader: string | undefined) {
+    /**
+     * Starts a sign-in on this door: options for navigator.credentials.get (no allowCredentials,
+     * user verification required) plus the opaque ceremony id the assertion must come back with.
+     * The ceremony belongs to the asking client and door (see rememberSignIn).
+     */
+    async signInOptions(originHeader: string | undefined, client: StudioRequestClient) {
       const origin = trustedOrigin(originHeader);
       const options = await webauthn.generateAuthenticationOptions({
         rpID: origin.rpId,
         userVerification: 'required',
         timeout: CHALLENGE_TTL_MS,
       });
-      remember(signIns, options.challenge, { ...origin, challenge: options.challenge, expiresAt: now() + CHALLENGE_TTL_MS });
-      return options;
+      const ceremonyId = rememberSignIn({
+        ...origin,
+        challenge: options.challenge,
+        expiresAt: now() + CHALLENGE_TTL_MS,
+        clientKey: clientKeyOf(client),
+        door: client.door,
+      });
+      return { ceremonyId, options };
     },
 
     /**
-     * Verifies a sign-in assertion and consumes its challenge whatever the outcome. On success the
-     * passkey's counter and last-used time are stored and its owner's id returned; a failure only
-     * carries a reason for the log, so every refusal looks the same to the caller's client.
+     * Verifies a sign-in assertion against the ceremony it names and consumes that ceremony
+     * whatever the outcome. It must come back on the same door and origin, within 60 s, signing
+     * the ceremony's own challenge. On success the passkey's counter and last-used time are stored
+     * and its owner's id returned; a failure only carries a reason for the log, so every refusal
+     * looks the same to the caller's client.
      */
-    async verifySignIn(originHeader: string | undefined, response: unknown): Promise<
-      { ok: true; userId: number; passkeyId: string; rpId: string } | { ok: false; reason: SignInFailure }
-    > {
+    async verifySignIn(
+      originHeader: string | undefined,
+      input: { ceremonyId: unknown; response: unknown },
+      client: StudioRequestClient,
+    ): Promise<{ ok: true; userId: number; passkeyId: string; rpId: string } | { ok: false; reason: SignInFailure }> {
       const origin = trustedOrigin(originHeader);
+      const { response } = input;
       const challenge = signedChallenge(response);
-      if (!challenge || !isAssertionShape(response)) return { ok: false, reason: 'malformed' };
-      const pending = consume(signIns, challenge, origin);
-      if (!pending) return { ok: false, reason: 'challenge-unknown' };
+      if (typeof input.ceremonyId !== 'string' || !CEREMONY_ID_PATTERN.test(input.ceremonyId)
+        || !challenge || !isAssertionShape(response)) {
+        return { ok: false, reason: 'malformed' };
+      }
+      const ceremony = signIns.get(input.ceremonyId);
+      signIns.delete(input.ceremonyId);
+      const pending = ceremony?.door === client.door ? stillValid(ceremony, origin) : null;
+      if (!pending || pending.challenge !== challenge) return { ok: false, reason: 'challenge-unknown' };
       const row = store.findByCredentialId(response.id);
       if (!row || row.rp_id !== origin.rpId) return { ok: false, reason: 'credential-unknown' };
       const handle = response.response.userHandle;
@@ -264,14 +329,14 @@ export function createPasskeyCeremonies(dependencies: PasskeyCeremonyDependencie
         // Discoverable, so the sign-in screen needs no username; verified, so it stands in for the password.
         authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
       });
-      remember(registrations, `${user.id}:${origin.rpId}`, { ...origin, challenge: options.challenge, expiresAt: now() + CHALLENGE_TTL_MS });
+      rememberRegistration(`${user.id}:${origin.rpId}`, { ...origin, challenge: options.challenge, expiresAt: now() + CHALLENGE_TTL_MS });
       return options;
     },
 
     /** Stores the new passkey after verifying the registration against its pending challenge. */
     async register(user: { id: number }, originHeader: string | undefined, response: unknown, userAgent: string | undefined) {
       const origin = trustedOrigin(originHeader);
-      const pending = consume(registrations, `${user.id}:${origin.rpId}`, origin);
+      const pending = consumeRegistration(`${user.id}:${origin.rpId}`, origin);
       if (!pending) fail('通行密钥注册已过期，请重新开始', 400, 'AUTH_PASSKEY_EXPIRED');
       if (!isRegistrationShape(response)) fail('通行密钥注册数据无效', 400, 'AUTH_PASSKEY_INVALID');
       let verified: Awaited<ReturnType<WebAuthn['verifyRegistrationResponse']>> | null = null;

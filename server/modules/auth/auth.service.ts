@@ -69,8 +69,9 @@ type AuthDependencies = {
   /** Clock for the default password throttle; Date.now by default. */
   now?: () => number;
   /**
-   * Persistent account lockout (5 wrong passwords in a row lock password sign-in for 15 min, then
-   * 30, 60 ... up to 24 h). Production always injects it; without it only the throttle applies.
+   * Persistent account lockout (5 wrong passwords in a row lock for 15 min, then 30, 60 ... up to
+   * 24 h), kept per scope: public sign-in, tailnet sign-in, and a signed-in session's own password
+   * checks. Production always injects it; without it only the throttles apply.
    */
   accountLockout?: ReturnType<typeof createAccountLockout>;
   /** Security event log (Settings → 安全); events are dropped when it is not injected. */
@@ -97,6 +98,59 @@ const UNKNOWN_CLIENT: StudioRequestClient = { door: 'direct', address: 'unknown'
 // hash so an unknown username takes as long to refuse as a wrong password does.
 const TIMING_HASH = '$2b$12$tGGCKzQOSdxNXD/GlV9lc.3ajYv0196H6VwHboOo.SJQJ9G/KFQH2';
 const MAX_PASSWORD_LENGTH = 1024;
+
+// Wrong passwords a signed-in session may re-enter (Settings step-up, handoff) per 10 minutes.
+const SESSION_PASSWORD_LIMITS = { windowMs: 10 * 60_000, perClient: 5, perDoor: 1000 };
+
+type LockScope = Parameters<ReturnType<typeof createAccountLockout>['begin']>[1];
+
+// How the event log names each lock scope.
+const SCOPE_LABELS: Record<LockScope, string> = {
+  public: '公网密码登录',
+  tailnet: 'Tailscale 密码登录',
+  session: '已登录会话的密码确认',
+};
+
+// Sign-in through Tailscale Serve has its own lock; everything else that signs in counts as the
+// public door (whatever cannot be proven to be Tailscale is treated as the internet). A signed-in
+// session's own password checks are a third, per-user scope.
+function lockScopeFor(purpose: 'login' | 'handoff' | 'step-up', client: StudioRequestClient): LockScope {
+  if (purpose !== 'login') return 'session';
+  return client.door === 'tailnet' ? 'tailnet' : 'public';
+}
+
+// The refusal of a throttled or locked step-up / handoff password; `retryAfterMs` is set for a lock.
+function throttledError(purpose: 'login' | 'handoff' | 'step-up', retryAfterMs: number | null): AppError {
+  if (purpose === 'login') {
+    return new AppError('登录失败次数过多，请 10 分钟后再试', { code: 'AUTH_RATE_LIMITED', statusCode: 429 });
+  }
+  const minutes = retryAfterMs === null ? 10 : Math.max(1, Math.ceil(retryAfterMs / 60_000));
+  return new AppError(`密码错误次数过多，请 ${minutes} 分钟后再试`, {
+    code: purpose === 'handoff' ? 'AUTH_HANDOFF_RATE_LIMITED' : 'AUTH_STEP_UP_RATE_LIMITED',
+    statusCode: 429,
+    ...(retryAfterMs === null ? {} : { details: { retryAfterSeconds: Math.ceil(retryAfterMs / 1000) } }),
+  });
+}
+
+// Lets the first event per client per minute through and drops the rest, for refusals anyone can
+// trigger at will (malformed or replayed passkey assertions); bounded to 1024 clients.
+function createMinuteGate(now: () => number) {
+  const lastSeen = new Map<string, number>();
+  return (client: StudioRequestClient): boolean => {
+    const key = `${client.door} ${client.address}`;
+    const at = now();
+    const last = lastSeen.get(key);
+    if (last !== undefined && at - last < 60_000) return false;
+    lastSeen.delete(key);
+    lastSeen.set(key, at);
+    while (lastSeen.size > 1024) {
+      const oldest = lastSeen.keys().next().value;
+      if (oldest === undefined) break;
+      lastSeen.delete(oldest);
+    }
+    return true;
+  };
+}
 
 // One refusal for every lock, whichever username was typed, so a lock never confirms a username.
 function accountLockedError(retryAfterMs: number): AppError {
@@ -197,23 +251,33 @@ export function createAuthService(dependencies: AuthDependencies) {
     dependencies.securityEvents?.record(event);
   };
 
-  // Forgets counted failures after a sign-in that proved the owner (password, passkey or Tailscale),
-  // and logs it when that lifted a lock or a run of failures.
-  function clearLockout(username: string, client: StudioRequestClient, method: string) {
-    const cleared = dependencies.accountLockout?.clear(username);
+  // Wrong passwords re-entered by signed-in sessions (step-up, handoff): a per-user budget that the
+  // sign-in throttles and locks never touch, so a public flood cannot block the owner's own checks.
+  const sessionPasswordFailures = createClientThrottle({ ...SESSION_PASSWORD_LIMITS, now: dependencies.now });
+  const sessionBudgetKey = (username: string): StudioRequestClient => ({ door: 'direct', address: `session:${username}` });
+  const noisyPasskeyFailures = createMinuteGate(dependencies.now ?? Date.now);
+
+  // Forgets counted failures in one scope after a success that proved the owner there, and logs
+  // it when that lifted a lock.
+  function clearLockout(username: string, scope: LockScope, client: StudioRequestClient, method: string) {
+    const cleared = dependencies.accountLockout?.clear(username, scope);
     if (cleared?.wasLocked) {
-      recordEvent({ type: 'lockout-cleared', client, detail: method });
-      dependencies.logInfo(`[auth] Password lock cleared by ${method} sign-in`);
+      recordEvent({ type: 'lockout-cleared', client, detail: `${method} · ${SCOPE_LABELS[scope]}` });
+      dependencies.logInfo(`[auth] Password lock (${scope}) cleared by ${method}`);
     }
   }
 
   /**
-   * Checks the account password for login, the handoff to the public door and the Settings
-   * step-up, all under one set of limits: the per-client/per-door throttle (429) and the persistent
-   * account lockout (429 AUTH_ACCOUNT_LOCKED), both checked and counted before bcrypt runs. An
-   * unknown username compares against TIMING_HASH, so it costs the same and locks the same way.
-   * Returns the account on success; returns null for a wrong password or unknown username (the
-   * failure is already counted and logged), leaving the caller to word the refusal.
+   * Checks the account password, with limits that depend on who is asking:
+   * - `login`: the per-client/per-door throttle (429 AUTH_RATE_LIMITED) and the persistent lockout
+   *   of the door's scope (public, or tailnet for Tailscale Serve traffic; 429
+   *   AUTH_ACCOUNT_LOCKED), so guessing on the public domain never locks the tailnet door;
+   * - `step-up` / `handoff`, for an already signed-in session: the session's own per-user budget
+   *   (5 per 10 min, plus the persistent `session` lockout), which sign-in locks never block.
+   * All limits are checked and counted before bcrypt runs. An unknown username compares against
+   * TIMING_HASH, so it costs the same and locks the same way. Returns the account on success;
+   * returns null for a wrong password or unknown username (already counted and logged), leaving the
+   * caller to word the refusal.
    */
   async function verifyAccountPassword(
     username: string,
@@ -221,39 +285,40 @@ export function createAuthService(dependencies: AuthDependencies) {
     client: StudioRequestClient,
     purpose: 'login' | 'handoff' | 'step-up',
   ): Promise<AuthLoginUser | null> {
-    if (passwordFailures.isBlocked(client)) {
+    const scope = lockScopeFor(purpose, client);
+    const throttle = purpose === 'login' ? passwordFailures : sessionPasswordFailures;
+    const throttleKey = purpose === 'login' ? client : sessionBudgetKey(username);
+    if (throttle.isBlocked(throttleKey)) {
       dependencies.logInfo(purpose === 'login'
         ? `[auth] Login refused (rate-limited, ${client.door} door)`
-        : `[auth] Password check refused (rate-limited, ${client.door} door, ${purpose})`);
-      throw purpose === 'handoff'
-        ? handoffError('AUTH_HANDOFF_RATE_LIMITED', '密码错误次数过多，请 10 分钟后再试', 429)
-        : new AppError('登录失败次数过多，请 10 分钟后再试', { code: 'AUTH_RATE_LIMITED', statusCode: 429 });
+        : `[auth] Password check refused (rate-limited, ${purpose})`);
+      throw throttledError(purpose, null);
     }
-    const attempt = dependencies.accountLockout?.begin(username);
+    const attempt = dependencies.accountLockout?.begin(username, scope);
     if (attempt && !attempt.allowed) {
-      dependencies.logInfo(`[auth] Password check refused (account locked, ${client.door} door, ${purpose})`);
-      throw accountLockedError(attempt.retryAfterMs);
+      dependencies.logInfo(`[auth] Password check refused (${scope} lock, ${client.door} door, ${purpose})`);
+      throw purpose === 'login' ? accountLockedError(attempt.retryAfterMs) : throttledError(purpose, attempt.retryAfterMs);
     }
     // Counted before the slow comparison, so parallel guesses cannot all pass the checks above;
     // a success takes it back.
-    passwordFailures.record(client);
+    throttle.record(throttleKey);
     const account = dependencies.users.getUserByUsername(username);
     const valid = await dependencies.comparePassword(password, account?.password_hash ?? timingHash);
     if (!account || !valid) {
       recordEvent({
-        type: purpose === 'step-up' ? 'step-up-failed' : 'login-failed',
+        type: purpose === 'login' ? 'login-failed' : 'step-up-failed',
         client,
         detail: account ? `wrong-password (${purpose})` : `unknown-user (${purpose})`,
       });
-      const lock = dependencies.accountLockout?.fail(username);
+      const lock = dependencies.accountLockout?.fail(username, scope);
       if (lock?.locked) {
-        recordEvent({ type: 'account-locked', client, detail: lockDescription(lock.durationMs) });
-        dependencies.logInfo(`[auth] Password sign-in locked (${lockDescription(lock.durationMs)}, ${client.door} door)`);
+        recordEvent({ type: 'account-locked', client, detail: `${SCOPE_LABELS[scope]} · ${lockDescription(lock.durationMs)}` });
+        dependencies.logInfo(`[auth] Password checks locked (${scope}, ${lockDescription(lock.durationMs)}, ${client.door} door)`);
       }
       return null;
     }
-    passwordFailures.forgive(client);
-    clearLockout(account.username, client, 'password');
+    throttle.forgive(throttleKey);
+    clearLockout(account.username, scope, client, purpose === 'login' ? 'password' : 'step-up');
     return account;
   }
 
@@ -396,34 +461,43 @@ export function createAuthService(dependencies: AuthDependencies) {
       }
     },
 
-    /** WebAuthn options for "用面容 ID 登录" on the door the page was opened on (its Origin header). */
-    async passkeySignInOptions(origin: string | undefined) {
+    /**
+     * Starts "用面容 ID 登录" on the door the page was opened on (its Origin header): WebAuthn
+     * options plus the ceremony id the assertion must come back with. The ceremony belongs to
+     * this client and door, so nobody else's requests can push it out.
+     */
+    async passkeySignInOptions(origin: string | undefined, client: StudioRequestClient = UNKNOWN_CLIENT) {
       if (!dependencies.passkeys) {
         throw new AppError('通行密钥登录不可用', { code: 'AUTH_PASSKEY_UNAVAILABLE', statusCode: 403 });
       }
-      return dependencies.passkeys.signInOptions(origin);
+      return dependencies.passkeys.signInOptions(origin, client);
     },
 
     /**
      * Issues a session for a verified passkey assertion, like `login` does for a password. The
      * passkey needs user verification, so it stands in for the password: it also works, and lifts
-     * the lock, while password sign-in is locked. Every refusal is the same 401.
+     * the lock of its door's scope, while password sign-in is locked. Every refusal is the same
+     * 401; malformed or replayed assertions (which anyone can send) are logged at most once per
+     * client per minute.
      */
-    async signInWithPasskey(input: { origin: string | undefined; response: unknown; client?: StudioRequestClient }) {
+    async signInWithPasskey(input: { origin: string | undefined; ceremonyId: unknown; response: unknown; client?: StudioRequestClient }) {
       const client = input.client ?? UNKNOWN_CLIENT;
       if (!dependencies.passkeys || !dependencies.findUserById) {
         throw new AppError('通行密钥登录不可用', { code: 'AUTH_PASSKEY_UNAVAILABLE', statusCode: 403 });
       }
-      const result = await dependencies.passkeys.verifySignIn(input.origin, input.response);
+      const result = await dependencies.passkeys.verifySignIn(input.origin, { ceremonyId: input.ceremonyId, response: input.response }, client);
       const account = result.ok ? dependencies.findUserById(result.userId) : undefined;
       if (!result.ok || !account) {
         const reason = result.ok ? 'user-missing' : result.reason;
-        dependencies.logInfo(`[auth] Passkey sign-in refused (${reason}, ${client.door} door)`);
-        recordEvent({ type: 'passkey-signin-failed', client, detail: reason });
+        const noisy = reason === 'malformed' || reason === 'challenge-unknown';
+        if (!noisy || noisyPasskeyFailures(client)) {
+          dependencies.logInfo(`[auth] Passkey sign-in refused (${reason}, ${client.door} door)`);
+          recordEvent({ type: 'passkey-signin-failed', client, detail: reason });
+        }
         throw passkeySignInFailed();
       }
       const sessionUser = { id: account.id, username: account.username };
-      clearLockout(account.username, client, 'passkey');
+      clearLockout(account.username, lockScopeFor('login', client), client, 'passkey');
       dependencies.users.updateLastLogin(numericUserId(account.id));
       recordEvent({ type: 'passkey-signin', client, detail: result.rpId });
       dependencies.logInfo(`[auth] Passkey sign-in granted on ${result.rpId} for local user "${account.username}"`);
@@ -458,8 +532,10 @@ export function createAuthService(dependencies: AuthDependencies) {
       }
 
       const sessionUser = { id: user.id, username: user.username };
-      // An allowlisted owner device proves the owner, so it also lifts a password lock.
-      clearLockout(user.username, { door: 'tailnet', address: decision.session.node }, 'Tailscale');
+      // An allowlisted owner device proves the owner on the tailnet door, so it lifts that door's
+      // password lock. The public door's lock stays: Tailscale sign-in runs on every app start, and
+      // lifting it each time would hand a public guesser a fresh run of attempts.
+      clearLockout(user.username, 'tailnet', { door: 'tailnet', address: decision.session.node }, 'Tailscale');
       dependencies.users.updateLastLogin(numericUserId(user.id));
       dependencies.logInfo(
         `[auth] Tailscale sign-in granted for ${maskedLogin}${fromNode} as local user "${user.username}"`,

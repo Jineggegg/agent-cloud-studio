@@ -40,7 +40,7 @@ beforeEach(() => {
     requests.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
     if (url === '/api/auth/status') return json({ needsSetup: false });
     if (url === '/api/auth/tailscale-session') return json({ success: false, error: { code: 'AUTH_TAILSCALE_UNAVAILABLE' } }, 403);
-    if (url === '/api/auth/passkey/options') return json(OPTIONS);
+    if (url === '/api/auth/passkey/options') return json({ ceremonyId: 'ceremony-0123456789abcdefg', options: OPTIONS });
     if (url === '/api/auth/passkey') return signInAnswer();
     if (url === '/api/user/onboarding-status') return json({ hasCompletedOnboarding: true });
     return json({});
@@ -64,7 +64,7 @@ test('the Face ID button signs in with the device passkey and stores the session
 
   await waitFor(() => expect(localStorage.getItem('auth-token')).toBeTruthy());
   expect(webauthn.startAuthentication).toHaveBeenCalledWith({ optionsJSON: OPTIONS });
-  expect(requests.find((request) => request.url === '/api/auth/passkey')?.body).toEqual({ response: ASSERTION });
+  expect(requests.find((request) => request.url === '/api/auth/passkey')?.body).toEqual({ ceremonyId: 'ceremony-0123456789abcdefg', response: ASSERTION });
   // No username or password was sent anywhere.
   expect(requests.some((request) => request.url === '/api/auth/login')).toBe(false);
 });

@@ -1,3 +1,4 @@
+import type { StudioRequestClient } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
 type ApiKeyRow = Record<string, unknown> & { api_key: string };
@@ -5,7 +6,16 @@ type NotificationPreferences = Record<string, unknown> & {
   channels?: Record<string, unknown> & { webPush?: boolean };
 };
 
+/** Who is asking and the password they re-entered, for the step-up before an API key works. */
+type ApiKeyStepUp = { user: unknown; password: unknown; client: StudioRequestClient };
+
 type SettingsDependencies = {
+  /**
+   * The auth module's password step-up (403 wrong password, 429 while the session's budget is used
+   * up). An API key is a long-lived credential outside the session, so creating one, or turning a
+   * disabled one back on, needs the password.
+   */
+  verifyStepUp(stepUp: ApiKeyStepUp): Promise<void>;
   apiKeys: {
     list(userId: number): ApiKeyRow[];
     create(userId: number, keyName: string): unknown;
@@ -61,20 +71,25 @@ export function createSettingsService(dependencies: SettingsDependencies) {
       }));
       return { apiKeys };
     },
-    createApiKey(userId: number, keyNameInput: unknown) {
+    async createApiKey(userId: number, keyNameInput: unknown, stepUp: ApiKeyStepUp) {
       const keyName = requiredString(keyNameInput, 'Key name', 'API_KEY_NAME_REQUIRED');
+      await dependencies.verifyStepUp(stepUp);
       return { success: true, apiKey: dependencies.apiKeys.create(userId, keyName) };
     },
     deleteApiKey(userId: number, keyId: number) {
       assertFound(dependencies.apiKeys.remove(userId, keyId), 'API key', 'API_KEY_NOT_FOUND');
       return { success: true };
     },
-    toggleApiKey(userId: number, keyId: number, isActive: unknown) {
+    async toggleApiKey(userId: number, keyId: number, isActive: unknown, stepUp: ApiKeyStepUp) {
       if (typeof isActive !== 'boolean') {
         throw new AppError('isActive must be a boolean', {
           code: 'INVALID_ACTIVE_STATE',
           statusCode: 400,
         });
+      }
+      // Disabling never needs the password; turning a key back on is as good as creating one.
+      if (isActive) {
+        await dependencies.verifyStepUp(stepUp);
       }
       assertFound(
         dependencies.apiKeys.toggle(userId, keyId, isActive),

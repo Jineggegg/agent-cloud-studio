@@ -28,11 +28,13 @@ const EVENTS = [
   { id: 2, at: '2026-10-02T09:29:00Z', type: 'login-failed', door: 'cloudflare', client: '198.51.*.*', detail: 'unknown-user (login)' },
   { id: 1, at: '2026-10-02T09:00:00Z', type: 'passkey-signin', door: 'tailnet', client: '100.101.*.*', detail: 'studio.ajarche.com' },
 ];
+const UNLOCKED = { locked: false, lockedUntil: null };
 const OVERVIEW = {
   passkeyOrigins: [window.location.origin, 'https://studio.ajarche.com'],
   passkeys: [OTHER_DOMAIN],
   events: EVENTS,
-  passwordLock: { locked: true, lockedUntil: '2026-10-02T09:45:00Z' },
+  importantEvents: [EVENTS[0], { id: 4, at: '2026-10-02T09:40:00Z', type: 'lockout-cleared', door: 'tailnet', client: '100.101.*.*', detail: 'Tailscale · Tailscale 密码登录' }],
+  passwordLocks: { public: { locked: true, lockedUntil: '2026-10-02T09:45:00Z' }, tailnet: UNLOCKED, session: UNLOCKED },
 };
 
 beforeEach(() => {
@@ -41,14 +43,21 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-test('shows the lock, the passkeys by domain and the recent events in plain words', async () => {
+test('shows each door\'s lock, the passkeys by domain and the events in plain words', async () => {
   security.overview.mockImplementation(ok(OVERVIEW));
   render(<StudioSettingsSecurity />);
 
   expect(await screen.findByText('已锁定')).toBeTruthy();
-  expect(screen.getByText(/前不能用密码登录/)).toBeTruthy();
+  expect(screen.getByText('公网密码登录')).toBeTruthy();
+  expect(screen.getByText('Tailscale 密码登录')).toBeTruthy();
+  expect(screen.getByText('正常')).toBeTruthy();
+  // The session's own lock only shows while it holds.
+  expect(screen.queryByText('设置里的密码确认')).toBeNull();
+  expect(screen.getByText(/前不能用密码/)).toBeTruthy();
+  expect(screen.getByText('重要事件')).toBeTruthy();
+  expect(screen.getByText(/由 Tailscale 登录解除 · Tailscale 密码登录/)).toBeTruthy();
   expect(screen.getByText('studio.ajarche.com')).toBeTruthy();
-  expect(screen.getByText('密码登录已锁定')).toBeTruthy();
+  expect(screen.getAllByText('密码登录已锁定').length).toBe(2);
   expect(screen.getByText('密码登录失败')).toBeTruthy();
   expect(screen.getByText(/公网 · 198\.51\.\*\.\* · 用户名不存在/)).toBeTruthy();
   expect(screen.getByText('面容 ID 登录')).toBeTruthy();
@@ -78,10 +87,10 @@ test('adding a passkey for this domain needs the password first, then registers 
 });
 
 test('a wrong password is shown and nothing is registered', async () => {
-  security.overview.mockImplementation(ok({ ...OVERVIEW, passwordLock: { locked: false, lockedUntil: null } }));
+  security.overview.mockImplementation(ok({ ...OVERVIEW, passwordLocks: { public: UNLOCKED, tailnet: UNLOCKED, session: UNLOCKED } }));
   security.passkeyOptions.mockImplementation(refused(403, 'AUTH_STEP_UP_FAILED', '密码不正确'));
   render(<StudioSettingsSecurity />);
-  expect(await screen.findByText('正常')).toBeTruthy();
+  expect((await screen.findAllByText('正常')).length).toBe(2);
   fireEvent.change(screen.getByLabelText('登录密码'), { target: { value: 'guess' } });
   fireEvent.click(screen.getByRole('button', { name: '在这台设备启用面容 ID 登录' }));
 
@@ -119,7 +128,7 @@ test('removing a passkey asks for the password in an alert', async () => {
 
 test('退出所有设备 asks first, revokes every session and signs this page out', async () => {
   security.overview.mockImplementation(ok(OVERVIEW));
-  security.revokeAll.mockImplementation(ok({ success: true }));
+  security.revokeAll.mockImplementation(ok({ success: true, revoked: { sessions: true, webSockets: 3, apiKeys: 2, snrAccess: 0, handoffCodes: 0 } }));
   render(<StudioSettingsSecurity />);
   fireEvent.click(await screen.findByRole('button', { name: '退出所有设备' }));
   expect(security.revokeAll).not.toHaveBeenCalled();
@@ -128,5 +137,5 @@ test('退出所有设备 asks first, revokes every session and signs this page o
   fireEvent.click(within(confirm).getByRole('button', { name: '退出所有设备' }));
   await waitFor(() => expect(security.revokeAll).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(auth.logout).toHaveBeenCalledTimes(1));
-  expect(toast.success).toHaveBeenCalledWith('已退出所有设备，请重新登录');
+  expect(toast.success).toHaveBeenCalledWith('已退出所有设备：停用 2 个 API 密钥、断开 3 个连接。请重新登录');
 });
