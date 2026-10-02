@@ -60,7 +60,10 @@ export function createProjectHubRouter(hub: ReturnType<typeof createProjectHubSe
     res.status(201).json(hub.scheduleTask(user(req), String(req.params.id), String(req.params.taskId), text(req.body?.sessionId), text(req.body?.scheduledFor)));
   }));
   router.get('/:id/mail/status', asyncHandler(async (req, res) => { res.json(mail.status(user(req), String(req.params.id))); }));
-  router.post('/:id/mail/connect', asyncHandler(async (req, res) => { res.json(mail.begin(user(req), String(req.params.id))); }));
+  // The door the page is on (Origin, else Host) decides where Google calls back (docs/network.md).
+  router.post('/:id/mail/connect', asyncHandler(async (req, res) => {
+    res.json(mail.begin(user(req), String(req.params.id), { origin: req.get('origin'), host: req.get('host') }));
+  }));
   router.get('/:id/mail/messages', asyncHandler(async (req, res) => {
     const query = req.query.q === undefined ? '' : text(req.query.q);
     res.json(await mail.search(user(req), String(req.params.id), query));

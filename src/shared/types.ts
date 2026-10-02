@@ -1944,6 +1944,24 @@ export type T212Activity = {
   price: number | null; value: number | null; realized: number | null; currency: string; at: string; status: string;
 };
 // ── v4 track: network — types below this line ──
+/**
+ * One of Studio's two front doors to the single backend on the laptop: `public` is the owner's
+ * domain through a Cloudflare Tunnel (the default), `tailnet` is Tailscale Serve reached over AJ's
+ * tailnet. Used for handoff targets and for the per-device door preference.
+ */
+export type StudioIngressId = 'public' | 'tailnet';
+/** A front door as GET /api/studio/network lists it; `origin` is null when it is not configured. */
+export type StudioIngress = { id: StudioIngressId; label: string; origin: string | null; configured: boolean; isDefault: boolean };
+/**
+ * GET /api/studio/network: both doors, the one that served this page ('local' for localhost or
+ * dev hosts), whether the session came from passwordless Tailscale sign-in, and short guidance.
+ */
+export type StudioNetworkInfo = {
+  ingresses: StudioIngress[];
+  current: StudioIngressId | 'local';
+  session: 'password' | 'tailscale';
+  guidance: string[];
+};
 // ── v4 track: orders — types below this line ──
 // ── v4 track: mail — types below this line ──
 //----------------- STUDIO MAIL CONTRACTS ------------

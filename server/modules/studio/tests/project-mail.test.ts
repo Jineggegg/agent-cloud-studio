@@ -3,17 +3,25 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import type { AddressInfo } from 'node:net';
 
 import Database from 'better-sqlite3';
+import express from 'express';
 
+import { readStudioIngressOrigins } from '@/shared/utils.js';
+
+import { createProjectHubRouter } from '../project-hub.routes.js';
 import { createProjectMailService } from '../project-mail.service.js';
 
-function fixture(configured = true, failed = false) {
+const PUBLIC_ORIGIN = 'https://studio.ajarche.com';
+const TAILNET_ORIGIN = 'https://laptop-acgghbuq.tail6e45f0.ts.net:8443';
+
+function fixture(configured = true, failed = false, env: Record<string, string | undefined> = { STUDIO_PUBLIC_ORIGIN: 'http://127.0.0.1:5186' }) {
   const database = new Database(':memory:');
   const directory = mkdtempSync(path.join(os.tmpdir(), 'project-mail-test-'));
-  const requests: { url: string; method: string }[] = [];
+  const requests: { url: string; method: string; body: string }[] = [];
   const request = (async (url, options) => {
-    requests.push({ url: String(url), method: options?.method ?? 'GET' });
+    requests.push({ url: String(url), method: options?.method ?? 'GET', body: options?.body ? String(options.body) : '' });
     if (failed) return new Response('private-token-provider-body', { status: 500 });
     if (String(url).endsWith('/token')) return Response.json({ access_token: 'unit-test-token-only', refresh_token: 'unit-test-refresh-only', expires_in: 3600, scope: 'https://www.googleapis.com/auth/gmail.readonly' });
     if (String(url).endsWith('/profile')) return Response.json({ emailAddress: 'fake@example.test' });
@@ -28,7 +36,7 @@ function fixture(configured = true, failed = false) {
     },
     clientId: configured ? 'fake-client-id' : undefined,
     clientSecret: configured ? 'fake-client-secret' : undefined,
-    publicOrigin: 'http://127.0.0.1:5186',
+    doors: () => readStudioIngressOrigins(env),
   });
   return { database, requests, service, close: () => { database.close(); rmSync(directory, { recursive: true }); } };
 }
@@ -86,4 +94,64 @@ test('provider failures never expose token response bodies', async () => {
     const state = new URL(f.service.begin(1, 'project-one').url).searchParams.get('state')!;
     await assert.rejects(f.service.complete(state, 'fake-code'), error => error instanceof Error && /授权失败/.test(error.message) && !error.message.includes('private-token'));
   } finally { f.close(); }
+});
+
+test('the OAuth flow calls back to, and returns to, the door it was started from', async () => {
+  const f = fixture(true, false, { STUDIO_PUBLIC_ORIGIN: PUBLIC_ORIGIN, STUDIO_TAILNET_ORIGIN: TAILNET_ORIGIN });
+  try {
+    const fromTailnet = new URL(f.service.begin(1, 'project-one', { origin: TAILNET_ORIGIN, host: 'laptop-acgghbuq.tail6e45f0.ts.net:8443' }).url);
+    assert.equal(fromTailnet.searchParams.get('redirect_uri'), `${TAILNET_ORIGIN}/api/studio/gmail/callback`);
+    assert.equal(await f.service.complete(fromTailnet.searchParams.get('state')!, 'fake-code'), `${TAILNET_ORIGIN}/projects/project-one?view=mail`);
+    // The code exchange repeats the same redirect_uri, as Google requires.
+    const exchange = new URLSearchParams(f.requests.find(entry => entry.url.endsWith('/token'))!.body);
+    assert.equal(exchange.get('redirect_uri'), `${TAILNET_ORIGIN}/api/studio/gmail/callback`);
+
+    const fromPublic = new URL(f.service.begin(1, 'project-one', { origin: PUBLIC_ORIGIN }).url);
+    assert.equal(fromPublic.searchParams.get('redirect_uri'), `${PUBLIC_ORIGIN}/api/studio/gmail/callback`);
+    assert.equal(await f.service.complete(fromPublic.searchParams.get('state')!, 'fake-code'), `${PUBLIC_ORIGIN}/projects/project-one?view=mail`);
+
+    // Without an Origin the Host decides; anything that is not a configured door gets the default door.
+    const byHost = new URL(f.service.begin(1, 'project-one', { host: 'LAPTOP-acgghbuq.tail6e45f0.ts.net:8443' }).url);
+    assert.equal(byHost.searchParams.get('redirect_uri'), `${TAILNET_ORIGIN}/api/studio/gmail/callback`);
+    for (const from of [{}, { origin: 'https://attacker.example', host: 'attacker.example' }, { origin: 'not a url' }]) {
+      const fallback = new URL(f.service.begin(1, 'project-one', from).url);
+      assert.equal(fallback.searchParams.get('redirect_uri'), `${PUBLIC_ORIGIN}/api/studio/gmail/callback`);
+    }
+  } finally { f.close(); }
+});
+
+test('a malformed STUDIO_PUBLIC_ORIGIN disables Gmail instead of throwing at startup', async () => {
+  // The typo from docs/network.md step 7: the scheme is missing.
+  const broken = fixture(true, false, { STUDIO_PUBLIC_ORIGIN: 'studio.ajarche.com' });
+  try {
+    assert.equal(broken.service.status(1, 'project-one').configured, false);
+    assert.throws(() => broken.service.begin(1, 'project-one', { origin: PUBLIC_ORIGIN }), /尚未配置/);
+    assert.equal(broken.requests.length, 0);
+  } finally { broken.close(); }
+  // The other door still works on its own.
+  const tailnetOnly = fixture(true, false, { STUDIO_PUBLIC_ORIGIN: 'studio.ajarche.com', STUDIO_TAILNET_ORIGIN: TAILNET_ORIGIN });
+  try {
+    assert.equal(tailnetOnly.service.status(1, 'project-one').configured, true);
+    const authorization = new URL(tailnetOnly.service.begin(1, 'project-one', { origin: PUBLIC_ORIGIN }).url);
+    assert.equal(authorization.searchParams.get('redirect_uri'), `${TAILNET_ORIGIN}/api/studio/gmail/callback`);
+  } finally { tailnetOnly.close(); }
+});
+
+test('the connect route passes the page origin and host to the service', async () => {
+  const f = fixture(true, false, { STUDIO_PUBLIC_ORIGIN: PUBLIC_ORIGIN, STUDIO_TAILNET_ORIGIN: TAILNET_ORIGIN });
+  const app = express();
+  app.use((req, _res, next) => { (req as express.Request & { user?: { id: number } }).user = { id: 1 }; next(); });
+  // Only the mail routes are exercised; the hub is never called.
+  app.use('/projects', createProjectHubRouter({} as Parameters<typeof createProjectHubRouter>[0], f.service));
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const { port } = server.address() as AddressInfo;
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/projects/project-one/mail/connect`, { method: 'POST', headers: { Origin: TAILNET_ORIGIN } });
+    const { url } = await response.json() as { url: string };
+    assert.equal(new URL(url).searchParams.get('redirect_uri'), `${TAILNET_ORIGIN}/api/studio/gmail/callback`);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => (error ? reject(error) : resolve())));
+    f.close();
+  }
 });

@@ -6,7 +6,7 @@ import { getConnection, getDatabasePath, projectsDb, sessionsDb, userDb } from '
 import { createProject } from '@/modules/projects/index.js';
 import { readCodexAccountRateLimits } from '@/modules/providers/index.js';
 import { scheduledMessagesService } from '@/modules/scheduled-messages/index.js';
-import { AppError } from '@/shared/utils.js';
+import { AppError, readStudioIngressOrigins } from '@/shared/utils.js';
 
 import { createStudioService } from './studio.service.js';
 import { createStudioRouter } from './studio.routes.js';
@@ -22,6 +22,8 @@ import { createTrading212Router } from './trading212.routes.js';
 import { createLinkChecker } from './link-check.service.js';
 import { createRemoteHostsService } from './remote-hosts.service.js';
 import { createRemoteHostsRouter } from './remote-hosts.routes.js';
+import { createStudioNetworkService } from './network.service.js';
+import { createStudioNetworkRouter } from './network.routes.js';
 import { createQuotaService } from './quota/quota.service.js';
 import { createQuotaRouter } from './quota/quota.routes.js';
 
@@ -117,7 +119,8 @@ export function createStudioModule() {
     project: hub.get,
     clientId: process.env.STUDIO_GMAIL_CLIENT_ID,
     clientSecret: process.env.STUDIO_GMAIL_CLIENT_SECRET,
-    publicOrigin: process.env.STUDIO_PUBLIC_ORIGIN,
+    // Both front doors, validated without throwing: a malformed origin disables Gmail, not the server.
+    doors: () => readStudioIngressOrigins(process.env),
   });
   const trading212 = createTrading212Service({
     database: getConnection(),
@@ -134,6 +137,8 @@ export function createStudioModule() {
   routes.use('/remote', createRemoteHostsRouter(remote));
   routes.use('/quota', createQuotaRouter(quota));
   // ── v4 track: network — create its service and mount its router below this line ──
+  // Both front doors (STUDIO_PUBLIC_ORIGIN, STUDIO_TAILNET_ORIGIN) reach this one backend.
+  routes.use('/network', createStudioNetworkRouter(createStudioNetworkService()));
   // ── v4 track: orders — create its service and mount its router below this line ──
   // ── v4 track: mail — create its service and mount its router below this line ──
   // Per-user read-only mail accounts (Gmail over IMAP, Outlook over Graph). Project-bound Gmail OAuth

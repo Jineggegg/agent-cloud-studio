@@ -1,6 +1,9 @@
 import express from 'express';
 import type { RequestHandler } from 'express';
 
+import type { StudioRequestClient } from '@/shared/types.js';
+import { isViaCloudflareEdge } from '@/shared/utils.js';
+
 import type { createAuthService } from './auth.service.js';
 
 type AuthService = ReturnType<typeof createAuthService>;
@@ -16,6 +19,17 @@ type AuthenticatedRequest = express.Request & {
 function readHeader(req: express.Request, name: string): string | undefined {
   const value = req.headers[name];
   return Array.isArray(value) ? value.join(', ') : value;
+}
+
+// Who is asking, for the throttles: through Cloudflare the edge's CF-Connecting-IP (which it
+// overwrites), otherwise the raw socket peer, never X-Forwarded-For. Capped so a forged header
+// cannot grow the throttle's memory.
+function readRequestClient(req: express.Request): StudioRequestClient {
+  if (isViaCloudflareEdge(req.headers)) {
+    const connectingIp = readHeader(req, 'cf-connecting-ip')?.trim().slice(0, 64);
+    return { door: 'cloudflare', address: connectingIp || 'unknown' };
+  }
+  return { door: 'direct', address: req.socket.remoteAddress ?? 'unknown' };
 }
 
 /**
@@ -48,7 +62,7 @@ export function createAuthRouter(
   router.post('/login', async (req, res, next) => {
     try {
       const body = req.body as { username?: unknown; password?: unknown };
-      res.json(await service.login(body.username, body.password));
+      res.json(await service.login(body.username, body.password, readRequestClient(req)));
     } catch (error) {
       next(error);
     }
@@ -69,6 +83,43 @@ export function createAuthRouter(
         forwardedFor: readHeader(req, 'x-forwarded-for'),
         userLogin: readHeader(req, 'tailscale-user-login'),
         funnelRequest: readHeader(req, 'tailscale-funnel-request'),
+        // Set by Cloudflare's edge on the public tunnel door, which must never sign in this way.
+        cfRay: readHeader(req, 'cf-ray'),
+        cfConnectingIp: readHeader(req, 'cf-connecting-ip'),
+        cdnLoop: readHeader(req, 'cdn-loop'),
+      }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Moves the signed-in session to the other front door: returns a one-time code for the page there.
+  router.post('/handoff', authenticateToken, async (req, res, next) => {
+    try {
+      // The response carries a code worth a session for 60 s.
+      res.setHeader('Cache-Control', 'no-store');
+      const authenticated = req as AuthenticatedRequest;
+      const body = (req.body ?? {}) as { target?: unknown; password?: unknown };
+      res.json(await service.issueHandoff(authenticated.user, authenticated.tailscaleSession, {
+        target: body.target,
+        password: body.password,
+        client: readRequestClient(req),
+      }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Public on purpose: the target page has no token yet. The service checks the Origin header
+  // against the code's target door and rate-limits attempts per client and per door.
+  router.post('/handoff/redeem', (req, res, next) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      const body = (req.body ?? {}) as { code?: unknown };
+      res.json(service.redeemHandoff({
+        code: body.code,
+        origin: readHeader(req, 'origin'),
+        client: readRequestClient(req),
       }));
     } catch (error) {
       next(error);
@@ -79,6 +130,8 @@ export function createAuthRouter(
     res.json(service.getCurrentUser((req as AuthenticatedRequest).user));
   });
 
+  // authenticateToken has already refused a Tailscale-issued token that did not arrive through the
+  // tailnet door, so the claim passed on here was presented where it is valid.
   router.post('/refresh', authenticateToken, (req, res) => {
     const authenticated = req as AuthenticatedRequest;
     res.json(service.refreshSession(authenticated.user, authenticated.tailscaleSession));

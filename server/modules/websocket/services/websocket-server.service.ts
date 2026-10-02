@@ -1,16 +1,16 @@
 import type { Server as HttpServer } from 'node:http';
 
-import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from 'ws';
+import { WebSocket, WebSocketServer, type VerifyClientCallbackAsync } from 'ws';
 
 import { handleChatConnection } from '@/modules/websocket/services/chat-websocket.service.js';
-import { verifyWebSocketClient } from '@/modules/websocket/services/websocket-auth.service.js';
+import { verifyWebSocketUpgrade } from '@/modules/websocket/services/websocket-auth.service.js';
 import { handlePluginWsProxy } from '@/modules/websocket/services/plugin-websocket-proxy.service.js';
 import { handleShellConnection } from '@/modules/websocket/services/shell-websocket.service.js';
 import { handleDesktopNotificationsConnection } from '@/modules/notifications/index.js';
 import type { AuthenticatedWebSocketRequest } from '@/shared/types.js';
 
 type WebSocketServerDependencies = {
-  verifyClient: Parameters<typeof verifyWebSocketClient>[1];
+  verifyClient: Parameters<typeof verifyWebSocketUpgrade>[1];
   chat: Parameters<typeof handleChatConnection>[2];
   shell: Parameters<typeof handleShellConnection>[1];
   getPluginPort: Parameters<typeof handlePluginWsProxy>[2];
@@ -84,12 +84,17 @@ export function createWebSocketServer(
   server: HttpServer,
   dependencies: WebSocketServerDependencies
 ): WebSocketServer {
-  const wss = new WebSocketServer({
-    server,
-    verifyClient: ((
-      info: Parameters<VerifyClientCallbackSync<AuthenticatedWebSocketRequest>>[0]
-    ) => verifyWebSocketClient(info, dependencies.verifyClient)),
-  });
+  // Asynchronous (two parameters) because the optional Cloudflare Access check may fetch keys.
+  const verifyClient: VerifyClientCallbackAsync<AuthenticatedWebSocketRequest> = (info, done) => {
+    verifyWebSocketUpgrade(info, dependencies.verifyClient).then(
+      (result) => (result.allowed ? done(true) : done(false, result.statusCode)),
+      (error: unknown) => {
+        console.error('[WARN] WebSocket verification failed:', error instanceof Error ? error.message : String(error));
+        done(false, 500);
+      },
+    );
+  };
+  const wss = new WebSocketServer({ server, verifyClient });
 
   wss.on('connection', (ws, request) => {
     attachWebSocketHeartbeat(ws);
