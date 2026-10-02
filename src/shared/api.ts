@@ -271,8 +271,25 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
     }),
+    // "用面容 ID 登录": a fresh challenge for this door, then the passkey's assertion for a session.
+    passkeyOptions: () => fetch('/api/auth/passkey/options', { method: 'POST' }),
+    passkeySignIn: (response: unknown) => fetch('/api/auth/passkey', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ response }),
+    }),
     refresh: () => post('/api/auth/refresh'),
     user: () => get('/api/auth/user'),
+    // Settings → 安全 (signed in). Adding or removing a sign-in passkey is stepped up with the password.
+    security: {
+      overview: () => get('/api/auth/security'),
+      passkeyOptions: (password: string) => post('/api/auth/security/passkeys/options', { password }),
+      registerPasskey: (response: unknown) => post('/api/auth/security/passkeys', { response }),
+      removePasskey: (id: string, password: string) =>
+        post(`/api/auth/security/passkeys/${encodeURIComponent(id)}/remove`, { password }),
+      // "退出所有设备": every session token so far stops working, this one included.
+      revokeAll: () => post('/api/auth/security/revoke-all'),
+    },
   },
 
   // Protected endpoints

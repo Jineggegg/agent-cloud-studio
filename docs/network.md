@@ -100,7 +100,8 @@ journalctl --user -u studio-tunnel -f      # 看到 "Registered tunnel connectio
 ### 6. 强烈建议：在前面加 Cloudflare Access
 
 Studio 能在这台笔记本上运行 Claude Code、Codex 和终端，**等于能在你的电脑上执行代码**。
-公网域名谁都能访问，只靠 Studio 自己的密码太单薄。在 Cloudflare 后台加一道 Access：
+公网域名谁都能访问，只靠 Studio 自己的密码太单薄（Studio 自己的限流、账户锁定、面容 ID 登录和
+Cloudflare 的 WAF 限流、Bot Fight Mode 见 [security.md](security.md)）。在 Cloudflare 后台加一道 Access：
 
 1. Cloudflare 后台 → Zero Trust → Access → Applications → Add an application → **Self-hosted**。
 2. Application domain 填 `studio.ajarche.com`（整个域名，不填路径）。

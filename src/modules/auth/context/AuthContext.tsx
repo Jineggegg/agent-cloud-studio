@@ -1,6 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ReactNode } from 'react';
+import { startAuthentication } from '@simplewebauthn/browser';
+import type { PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/browser';
 
 import { IS_PLATFORM, takeHandoffCodeFromUrl, writeIngressPreference } from '@/shared/utils';
 import { api } from '@/shared/api';
@@ -32,6 +34,8 @@ const AUTH_ERROR_MESSAGES = {
   networkError: 'errors.networkError',
   sessionExpired: 'errors.sessionExpired',
   handoffExpired: 'errors.handoffExpired',
+  passkeyCancelled: 'login.errors.passkeyCancelled',
+  passkeyFailed: 'login.errors.passkeyFailed',
 } as const;
 
 // Outcome of the one handoff attempt of a page load: no code in the URL, a session, or a refusal.
@@ -75,6 +79,8 @@ type AuthContextValue = {
   hasCompletedOnboarding: boolean;
   error: string | null;
   login: (username: string, password: string) => Promise<AuthActionResult>;
+  // "用面容 ID 登录": the device's passkey for this domain instead of the password.
+  loginWithPasskey: () => Promise<AuthActionResult>;
   register: (username: string, password: string) => Promise<AuthActionResult>;
   logout: () => void;
   refreshOnboardingStatus: () => Promise<void>;
@@ -490,6 +496,44 @@ export function AuthProvider({ children }: AuthProviderProps) {
     [publishSession, t],
   );
 
+  // Passkey sign-in: a fresh challenge for this door, the device's Face ID / Touch ID prompt
+  // (discoverable credential, so no username), then the assertion for a session. A cancelled
+  // prompt is not an error worth the server's time.
+  const loginWithPasskey = useCallback<AuthContextValue['loginWithPasskey']>(async () => {
+    const fail = (message: string): AuthActionResult => {
+      setError(message);
+      return { success: false, error: message };
+    };
+    try {
+      setError(null);
+      const optionsResponse = await api.auth.passkeyOptions();
+      const options = await parseJsonSafely<PublicKeyCredentialRequestOptionsJSON & ApiErrorPayload>(optionsResponse);
+      if (!optionsResponse.ok || !options?.challenge) {
+        return fail(resolveApiErrorMessage(options, t(AUTH_ERROR_MESSAGES.passkeyFailed)));
+      }
+
+      let assertion: Awaited<ReturnType<typeof startAuthentication>>;
+      try {
+        assertion = await startAuthentication({ optionsJSON: options });
+      } catch (caughtError) {
+        const cancelled = caughtError instanceof Error && ['NotAllowedError', 'AbortError'].includes(caughtError.name);
+        return fail(t(cancelled ? AUTH_ERROR_MESSAGES.passkeyCancelled : AUTH_ERROR_MESSAGES.passkeyFailed));
+      }
+
+      const response = await api.auth.passkeySignIn(assertion);
+      const payload = await parseJsonSafely<AuthSessionPayload>(response);
+      if (!response.ok || !payload?.token || !payload.user) {
+        return fail(resolveApiErrorMessage(payload, t(AUTH_ERROR_MESSAGES.passkeyFailed)));
+      }
+
+      await publishSession(payload.user, payload.token);
+      return { success: true };
+    } catch (caughtError) {
+      console.error('Passkey sign-in error:', caughtError);
+      return fail(t(AUTH_ERROR_MESSAGES.networkError));
+    }
+  }, [publishSession, t]);
+
   const register = useCallback<AuthContextValue['register']>(
     async (username, password) => {
       try {
@@ -529,6 +573,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       hasCompletedOnboarding,
       error,
       login,
+      loginWithPasskey,
       register,
       logout,
       refreshOnboardingStatus,
@@ -538,6 +583,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       hasCompletedOnboarding,
       isLoading,
       login,
+      loginWithPasskey,
       logout,
       needsSetup,
       refreshOnboardingStatus,

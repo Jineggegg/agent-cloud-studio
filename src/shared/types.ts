@@ -2116,3 +2116,23 @@ export type StudioRuntimeInfo = {
   };
 };
 // ---------------------------
+
+//----------------- STUDIO ACCOUNT SECURITY ------------
+/** A Face ID / Touch ID passkey that signs in to the Studio account on one domain (its RP ID). */
+export type StudioSignInPasskey = { id: string; rpId: string; label: string | null; createdAt: string; lastUsedAt: string | null };
+/**
+ * One entry of the server's bounded security log: failed and successful sign-ins, password locks,
+ * passkey changes and "退出所有设备". `client` is already masked ("198.51.*.*"); `detail` is plain text.
+ */
+export type StudioSecurityEvent = { id: number; at: string; type: string; door: string; client: string; detail: string | null };
+/** GET /api/auth/security: what Settings → 安全 shows for the signed-in account. */
+export type StudioSecurityOverview = {
+  // Origins whose pages may add and use sign-in passkeys (the configured front doors).
+  passkeyOrigins: string[];
+  passkeys: StudioSignInPasskey[];
+  // Newest first.
+  events: StudioSecurityEvent[];
+  // Password sign-in lock after repeated wrong passwords; passkeys and Tailscale still work while locked.
+  passwordLock: { locked: boolean; lockedUntil: string | null };
+};
+// ---------------------------

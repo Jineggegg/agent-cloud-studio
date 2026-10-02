@@ -58,7 +58,7 @@ const removed = username
 const hasEvents = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auth_security_events'").get();
 if (hasEvents && removed > 0) {
   db.prepare('INSERT INTO auth_security_events (at, type, door, client, detail) VALUES (?, ?, ?, ?, ?)')
-    .run(new Date().toISOString(), 'lockout-cleared', 'direct', 'local', 'command line');
+    .run(new Date().toISOString(), 'lockout-cleared', 'direct', 'unknown', 'command line');
 }
 db.close();
 console.log(removed > 0
