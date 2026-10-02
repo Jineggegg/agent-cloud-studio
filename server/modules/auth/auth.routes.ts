@@ -3,7 +3,14 @@ import type { RequestHandler } from 'express';
 
 import type { createAuthService } from './auth.service.js';
 
-type AuthenticatedRequest = express.Request & { user?: unknown };
+type AuthService = ReturnType<typeof createAuthService>;
+
+// Set by authenticateToken: the active user and, for a token issued by Tailscale sign-in, its
+// claim, which the middleware has already verified and re-checked against the allowlist.
+type AuthenticatedRequest = express.Request & {
+  user?: unknown;
+  tailscaleSession?: Parameters<AuthService['refreshSession']>[1];
+};
 
 // Node joins repeated headers with ", " (keeping only the first Host), so most values are strings.
 function readHeader(req: express.Request, name: string): string | undefined {
@@ -16,7 +23,7 @@ function readHeader(req: express.Request, name: string): string | undefined {
  * delegate authentication behavior to the injected application service.
  */
 export function createAuthRouter(
-  service: ReturnType<typeof createAuthService>,
+  service: AuthService,
   authenticateToken: RequestHandler,
 ): express.Router {
   const router = express.Router();
@@ -73,7 +80,8 @@ export function createAuthRouter(
   });
 
   router.post('/refresh', authenticateToken, (req, res) => {
-    res.json(service.refreshSession((req as AuthenticatedRequest).user));
+    const authenticated = req as AuthenticatedRequest;
+    res.json(service.refreshSession(authenticated.user, authenticated.tailscaleSession));
   });
 
   router.post('/logout', authenticateToken, (_req, res) => {

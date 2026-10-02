@@ -25,7 +25,7 @@ function createDependencies(overrides: Partial<AuthDependencies> = {}): AuthDepe
     hashPassword: async () => 'hashed-password',
     comparePassword: async () => false,
     generateToken: () => 'signed-token',
-    tailscaleSignIn: () => ({ allowedLogins: [], mappedUsername: null, publicOrigin: null }),
+    tailscaleSignIn: () => ({ allowedLogins: [], allowedNodes: [], mappedUsername: null, publicOrigin: null }),
     logInfo: () => undefined,
     ...overrides,
   };
@@ -88,10 +88,10 @@ test('login rejects an invalid password without issuing a token', async () => {
 });
 
 test('refreshSession issues a replacement token for the authenticated user', () => {
-  let tokenUser: { id: number | bigint; username: string } | undefined;
+  const issued: unknown[][] = [];
   const service = createAuthService(createDependencies({
-    generateToken: (user) => {
-      tokenUser = user;
+    generateToken: (...args) => {
+      issued.push(args);
       return 'replacement-token';
     },
   }));
@@ -99,5 +99,20 @@ test('refreshSession issues a replacement token for the authenticated user', () 
   const result = service.refreshSession({ id: 7, username: 'alice' });
 
   assert.deepEqual(result, { token: 'replacement-token' });
-  assert.deepEqual(tokenUser, { id: 7, username: 'alice' });
+  assert.deepEqual(issued, [[{ id: 7, username: 'alice' }, undefined]]);
+});
+
+test('refreshSession keeps the Tailscale claim so the replacement stays revocable', () => {
+  const issued: unknown[][] = [];
+  const service = createAuthService(createDependencies({
+    generateToken: (...args) => {
+      issued.push(args);
+      return 'replacement-token';
+    },
+  }));
+  const claim = { login: 'owner@example.com', node: '100.101.102.103' };
+
+  service.refreshSession({ id: 7, username: 'alice' }, claim);
+
+  assert.deepEqual(issued, [[{ id: 7, username: 'alice' }, claim]]);
 });

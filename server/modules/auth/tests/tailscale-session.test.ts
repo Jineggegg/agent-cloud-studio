@@ -9,14 +9,21 @@ import { AppError } from '@/shared/utils.js';
 
 import { createAuthRouter } from '../auth.routes.js';
 import { createAuthService } from '../auth.service.js';
-import { maskTailscaleLogin, parseTailscaleSignInConfig } from '../tailscale-session.service.js';
+import {
+  isTailscaleSessionRevoked,
+  maskTailscaleLogin,
+  parseTailscaleSignInConfig,
+} from '../tailscale-session.service.js';
 
 type AuthDependencies = Parameters<typeof createAuthService>[0];
 type TailscaleRequest = Parameters<ReturnType<typeof createAuthService>['signInWithTailscale']>[0];
+type TailscaleSessionClaim = Parameters<AuthDependencies['generateToken']>[1];
 type StoredUser = { id: number; username: string };
 
 const OWNER_LOGIN = 'owner@example.com';
 const SERVE_HOST = 'studio-pc.tail1234.ts.net:8443';
+const IPAD_NODE = '100.101.102.103';
+const OWNER_SESSION = { login: OWNER_LOGIN, node: IPAD_NODE };
 
 // What Tailscale Serve delivers for the owner's iPad: loopback socket, one tailnet X-Forwarded-For,
 // the browser's ts.net Host, a same-origin Origin and the identity header.
@@ -26,7 +33,7 @@ function serveRequest(overrides: Partial<TailscaleRequest> = {}): TailscaleReque
     host: SERVE_HOST,
     origin: `https://${SERVE_HOST}`,
     fetchSite: 'same-origin',
-    forwardedFor: '100.101.102.103',
+    forwardedFor: IPAD_NODE,
     userLogin: OWNER_LOGIN,
     funnelRequest: undefined,
     ...overrides,
@@ -41,7 +48,7 @@ function createHarness(options: {
   const env = options.env ?? { STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN };
   const logs: string[] = [];
   const lastLogins: number[] = [];
-  const issuedFor: { id: number | bigint; username: string }[] = [];
+  const issuedFor: { user: { id: number | bigint; username: string }; session: TailscaleSessionClaim }[] = [];
   const dependencies: AuthDependencies = {
     users: {
       hasUsers: () => users.length > 0,
@@ -57,8 +64,8 @@ function createHarness(options: {
     transaction: { begin: () => undefined, commit: () => undefined, rollback: () => undefined },
     hashPassword: async () => 'hash',
     comparePassword: async () => false,
-    generateToken: (user) => {
-      issuedFor.push(user);
+    generateToken: (user, session) => {
+      issuedFor.push({ user, session });
       return `token-for-${user.username}`;
     },
     tailscaleSignIn: () => parseTailscaleSignInConfig(env),
@@ -95,9 +102,10 @@ test('an allowlisted Serve identity receives the normal login session for the on
     token: 'token-for-andrew',
   });
   assert.deepEqual(harness.lastLogins, [1]);
-  assert.deepEqual(harness.issuedFor, [{ id: 1, username: 'andrew' }]);
+  // The token records the normalised login and the device, so it can be revoked later.
+  assert.deepEqual(harness.issuedFor, [{ user: { id: 1, username: 'andrew' }, session: OWNER_SESSION }]);
   assert.equal(harness.logs.length, 1);
-  assert.match(harness.logs[0], /granted for Ow\*\*\*@Example\.com as local user "andrew"/);
+  assert.match(harness.logs[0], /granted for Ow\*\*\*@Example\.com from 100\.101\.102\.103 as local user "andrew"/);
   assert.ok(!harness.logs[0].toLowerCase().includes(OWNER_LOGIN));
 });
 
@@ -158,6 +166,40 @@ test('X-Forwarded-For must be the single tailnet address Serve writes', () => {
   }
   const ipv6Peer = createHarness().service.signInWithTailscale(serveRequest({ forwardedFor: 'fd7a:115c:a1e0::53' }));
   assert.equal(ipv6Peer.success, true);
+  for (const forwardedFor of ['fe80::1%eth0', 'fd7a:115c:a1e0::53%tailscale0']) {
+    assertRefused(createHarness(), serveRequest({ forwardedFor }), 'forwarded-for-not-tailnet');
+  }
+});
+
+test('STUDIO_TAILSCALE_NODES limits sign-in to the listed devices of the allowed login', () => {
+  // Origin and Sec-Fetch-Site are forgeable by any program, so the device list is what narrows
+  // the boundary below "every untagged device signed in as the owner".
+  const env = { STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN, STUDIO_TAILSCALE_NODES: `${IPAD_NODE}, FD7A:115C:A1E0:0:0:0:0:53` };
+
+  const otherDevice = createHarness({ env });
+  assertRefused(otherDevice, serveRequest({ forwardedFor: '100.101.102.104' }), 'node-not-allowed');
+  // The refusal names the validated address, which is what the operator adds to the list.
+  assert.match(otherDevice.logs[0], /refused \(node-not-allowed\) for ow\*\*\*@example\.com from 100\.101\.102\.104$/);
+
+  const ipad = createHarness({ env });
+  assert.equal(ipad.service.signInWithTailscale(serveRequest()).success, true);
+  assert.deepEqual(ipad.issuedFor[0].session, OWNER_SESSION);
+
+  // Entries compare by address, not spelling: the expanded upper-case IPv6 entry matches the
+  // compressed address Serve writes, and the token records the canonical spelling.
+  const ipadOverIpv6 = createHarness({ env });
+  assert.equal(ipadOverIpv6.service.signInWithTailscale(serveRequest({ forwardedFor: 'fd7a:115c:a1e0::53' })).success, true);
+  assert.deepEqual(ipadOverIpv6.issuedFor[0].session, { login: OWNER_LOGIN, node: 'fd7a:115c:a1e0::53' });
+});
+
+test('an invalid STUDIO_TAILSCALE_NODES entry refuses every device instead of allowing all', () => {
+  for (const nodes of ['ipad', `${IPAD_NODE}, 192.168.1.5`, `${IPAD_NODE},100.101.102`, 'fd7a:115c:a1e0::53%tailscale0']) {
+    assertRefused(
+      createHarness({ env: { STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN, STUDIO_TAILSCALE_NODES: nodes } }),
+      serveRequest(),
+      'nodes-invalid',
+    );
+  }
 });
 
 test('only a MagicDNS host is accepted, which defeats DNS rebinding to the loopback port', () => {
@@ -166,7 +208,9 @@ test('only a MagicDNS host is accepted, which defeats DNS rebinding to the loopb
   }
 });
 
-test('cross-site and non-browser-origin requests are refused because Tailscale identity is ambient', () => {
+// This stops other web pages from riding the ambient identity; it is not authentication, since a
+// non-browser program can send any Origin it likes.
+test('requests without a same-origin Origin are refused because Tailscale identity is ambient', () => {
   const cases: Partial<TailscaleRequest>[] = [
     { origin: undefined },
     { origin: 'null' },
@@ -188,6 +232,18 @@ test('cross-site and non-browser-origin requests are refused because Tailscale i
   assert.equal(defaultPort.success, true);
 });
 
+test('an http Origin is cross-origin to the https page Serve terminates', () => {
+  // E.g. another app served with `tailscale serve --http=80` on the same MagicDNS name, opened in
+  // a browser that sends no Sec-Fetch-Site.
+  const cases: Partial<TailscaleRequest>[] = [
+    { host: 'studio-pc.tail1234.ts.net', origin: 'http://studio-pc.tail1234.ts.net', fetchSite: undefined },
+    { origin: `http://${SERVE_HOST}`, fetchSite: undefined },
+  ];
+  for (const overrides of cases) {
+    assertRefused(createHarness(), serveRequest(overrides), 'cross-site');
+  }
+});
+
 test('STUDIO_PUBLIC_ORIGIN pins the only accepted origin', () => {
   const pinned = { STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN, STUDIO_PUBLIC_ORIGIN: `https://${SERVE_HOST}` };
   assert.equal(createHarness({ env: pinned }).service.signInWithTailscale(serveRequest()).success, true);
@@ -198,18 +254,79 @@ test('STUDIO_PUBLIC_ORIGIN pins the only accepted origin', () => {
     serveRequest({ host: otherServeName, origin: `https://${otherServeName}` }),
     'cross-site',
   );
+
+  const trailingSlash = { ...pinned, STUDIO_PUBLIC_ORIGIN: `https://${SERVE_HOST}/` };
+  assert.equal(createHarness({ env: trailingSlash }).service.signInWithTailscale(serveRequest()).success, true);
 });
 
-test('parseTailscaleSignInConfig normalises the allowlist and optional settings', () => {
-  assert.deepEqual(parseTailscaleSignInConfig({}), { allowedLogins: [], mappedUsername: null, publicOrigin: null });
+test('a malformed STUDIO_PUBLIC_ORIGIN refuses sign-in instead of skipping the pin', () => {
+  const otherServeName = 'other.tail1234.ts.net';
+  const malformed = [
+    SERVE_HOST, // missing https://, which URL parses as a "studio-pc.tail1234.ts.net:" scheme
+    `http://${SERVE_HOST}`,
+    `https://${SERVE_HOST}/studio`,
+    `https://${SERVE_HOST}/?x=1`,
+    `https://user@${SERVE_HOST}`,
+    'not a url',
+  ];
+  for (const publicOrigin of malformed) {
+    const env = { STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN, STUDIO_PUBLIC_ORIGIN: publicOrigin };
+    assertRefused(createHarness({ env }), serveRequest(), 'public-origin-invalid');
+    assertRefused(
+      createHarness({ env }),
+      serveRequest({ host: otherServeName, origin: `https://${otherServeName}` }),
+      'public-origin-invalid',
+    );
+  }
+});
+
+test('parseTailscaleSignInConfig normalises the allowlists and optional settings', () => {
+  assert.deepEqual(
+    parseTailscaleSignInConfig({}),
+    { allowedLogins: [], allowedNodes: [], mappedUsername: null, publicOrigin: null },
+  );
   assert.deepEqual(
     parseTailscaleSignInConfig({
       STUDIO_TAILSCALE_LOGINS: ' Owner@Example.com ,, me@github ',
+      STUDIO_TAILSCALE_NODES: ` ${IPAD_NODE} ,, fd7a:115c:a1e0::53 `,
       STUDIO_TAILSCALE_USER: ' andrew ',
       STUDIO_PUBLIC_ORIGIN: ' ',
     }),
-    { allowedLogins: ['owner@example.com', 'me@github'], mappedUsername: 'andrew', publicOrigin: null },
+    {
+      allowedLogins: ['owner@example.com', 'me@github'],
+      allowedNodes: [IPAD_NODE, 'fd7a:115c:a1e0::53'],
+      mappedUsername: 'andrew',
+      publicOrigin: null,
+    },
   );
+});
+
+test('isTailscaleSessionRevoked re-checks an issued session against the current settings', () => {
+  const config = (env: Record<string, string>) => parseTailscaleSignInConfig(env);
+  const enabled = config({ STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN });
+
+  // Password sessions carry no claim and are never revoked by this feature.
+  assert.equal(isTailscaleSessionRevoked(undefined, config({})), false);
+  assert.equal(isTailscaleSessionRevoked(OWNER_SESSION, enabled), false);
+  assert.equal(isTailscaleSessionRevoked({ login: 'Owner@Example.com', node: IPAD_NODE }, enabled), false);
+
+  // Turning the feature off or removing the login revokes it.
+  assert.equal(isTailscaleSessionRevoked(OWNER_SESSION, config({})), true);
+  assert.equal(isTailscaleSessionRevoked(OWNER_SESSION, config({ STUDIO_TAILSCALE_LOGINS: 'friend@example.com' })), true);
+
+  // A device list revokes sessions of unlisted devices, and a broken list revokes everything.
+  const listed = config({ STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN, STUDIO_TAILSCALE_NODES: IPAD_NODE });
+  assert.equal(isTailscaleSessionRevoked(OWNER_SESSION, listed), false);
+  assert.equal(isTailscaleSessionRevoked({ login: OWNER_LOGIN, node: '100.101.102.104' }, listed), true);
+  assert.equal(
+    isTailscaleSessionRevoked(OWNER_SESSION, config({ STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN, STUDIO_TAILSCALE_NODES: 'ipad' })),
+    true,
+  );
+
+  // A malformed claim fails closed.
+  for (const claim of [null, 'owner', {}, { login: OWNER_LOGIN }, { login: OWNER_LOGIN, node: 7 }]) {
+    assert.equal(isTailscaleSessionRevoked(claim, enabled), true);
+  }
 });
 
 test('maskTailscaleLogin keeps logs free of full login names', () => {
@@ -222,12 +339,19 @@ test('maskTailscaleLogin keeps logs free of full login names', () => {
 });
 
 test('the route reads the raw socket and Serve headers and answers every refusal identically', async () => {
-  const configured = createHarness();
+  const configured = createHarness({ env: { STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN, STUDIO_TAILSCALE_NODES: IPAD_NODE } });
   const disabled = createHarness({ env: {} });
+  const refreshing = createHarness();
   const app = express();
   const passThrough: express.RequestHandler = (_req, _res, next) => next();
+  // Stands in for authenticateToken after it verified a Tailscale-issued token.
+  const tailscaleTokenAuth: express.RequestHandler = (req, _res, next) => {
+    Object.assign(req, { user: { id: 1, username: 'andrew' }, tailscaleSession: OWNER_SESSION });
+    next();
+  };
   app.use('/configured', createAuthRouter(configured.service, passThrough));
   app.use('/disabled', createAuthRouter(disabled.service, passThrough));
+  app.use('/refreshing', createAuthRouter(refreshing.service, tailscaleTokenAuth));
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     const appError = error instanceof AppError ? error : null;
     res.status(appError?.statusCode ?? 500).json({ error: { code: appError?.code, message: appError?.message } });
@@ -236,11 +360,12 @@ test('the route reads the raw socket and Serve headers and answers every refusal
   await new Promise<void>((resolve) => server.once('listening', resolve));
   const { port } = server.address() as AddressInfo;
 
-  // node:http lets the test send the exact Host/Origin a browser behind Serve would.
-  function post(prefix: string, headers: Record<string, string>) {
+  // node:http sends the exact Host/Origin a browser behind Serve would. Any non-browser program on
+  // a tailnet device can do the same, which is why STUDIO_TAILSCALE_NODES exists.
+  function post(prefix: string, headers: Record<string, string>, endpoint = '/tailscale-session') {
     return new Promise<{ status: number; cacheControl: string | undefined; body: string }>((resolve, reject) => {
       const request = http.request(
-        { host: '127.0.0.1', port, method: 'POST', path: `${prefix}/tailscale-session`, headers },
+        { host: '127.0.0.1', port, method: 'POST', path: `${prefix}${endpoint}`, headers },
         (response) => {
           let body = '';
           response.setEncoding('utf8');
@@ -261,7 +386,7 @@ test('the route reads the raw socket and Serve headers and answers every refusal
     Host: SERVE_HOST,
     Origin: `https://${SERVE_HOST}`,
     'Sec-Fetch-Site': 'same-origin',
-    'X-Forwarded-For': '100.101.102.103',
+    'X-Forwarded-For': IPAD_NODE,
     'Tailscale-User-Login': OWNER_LOGIN,
   };
 
@@ -274,14 +399,18 @@ test('the route reads the raw socket and Serve headers and answers every refusal
       user: { id: 1, username: 'andrew' },
       token: 'token-for-andrew',
     });
+    assert.deepEqual(configured.issuedFor[0].session, OWNER_SESSION);
 
     // Sequential, so the refusal reasons are logged in request order.
+    const { 'Sec-Fetch-Site': _fetchSite, ...withoutFetchSite } = serveHeaders;
     const refusals = [
       await post('/disabled', serveHeaders),
       await post('/configured', { ...serveHeaders, 'Tailscale-User-Login': 'friend@example.com' }),
       await post('/configured', { ...serveHeaders, 'X-Forwarded-For': '100.101.102.103, 203.0.113.9' }),
+      await post('/configured', { ...serveHeaders, 'X-Forwarded-For': '100.101.102.104' }),
       await post('/configured', { ...serveHeaders, 'Tailscale-Funnel-Request': '?1' }),
       await post('/configured', { ...serveHeaders, Host: `127.0.0.1:${port}`, Origin: `http://127.0.0.1:${port}` }),
+      await post('/configured', { ...withoutFetchSite, Origin: `http://${SERVE_HOST}` }),
     ];
     for (const refusal of refusals) {
       assert.equal(refusal.status, 403);
@@ -291,8 +420,14 @@ test('the route reads the raw socket and Serve headers and answers every refusal
     assert.ok(!refusals[0].body.includes('disabled'));
     assert.deepEqual(
       configured.logs.slice(1).map((line) => /refused \(([a-z-]+)\)/.exec(line)?.[1]),
-      ['login-not-allowed', 'forwarded-for-not-tailnet', 'funnel-request', 'host-not-tailnet'],
+      ['login-not-allowed', 'forwarded-for-not-tailnet', 'node-not-allowed', 'funnel-request', 'host-not-tailnet', 'cross-site'],
     );
+
+    // An explicit refresh keeps the Tailscale claim the middleware attached to the request.
+    const refreshed = await post('/refreshing', {}, '/refresh');
+    assert.equal(refreshed.status, 200);
+    assert.deepEqual(JSON.parse(refreshed.body), { token: 'token-for-andrew' });
+    assert.deepEqual(refreshing.issuedFor, [{ user: { id: 1, username: 'andrew' }, session: OWNER_SESSION }]);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
