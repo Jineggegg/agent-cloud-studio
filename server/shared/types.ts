@@ -1775,3 +1775,134 @@ export type StudioOutlookTokens = { accessToken: string; refreshToken: string; e
 // ── v6 track: github — server types below this line ──
 // ── v6 track: builder — server types below this line ──
 // ── v6 track: memory — server types below this line ──
+//----------------- STUDIO SHARED MEMORY (basic-memory MCP) ------------
+/**
+ * The calls the Studio memory service makes on its MCP session with the shared basic-memory server.
+ *
+ * Implemented by the streamable-HTTP adapter (studio/memory/memory-client.adapter.ts) and by fakes in tests.
+ * `call` resolves to the tool's decoded result (its `structuredContent.result`, else the JSON text, else the
+ * raw text). Both methods reject with an AppError: `MEMORY_UNAVAILABLE` (503) when the server cannot be
+ * reached, `MEMORY_TOOL_ERROR` (502) when a tool reports an error, `MEMORY_TIMEOUT` (504) when a connected
+ * server answers too slowly (the server is not marked down for that). An aborted `signal` rejects with the
+ * abort reason instead and never marks the server as down.
+ */
+export type StudioMemoryToolCaller = {
+  call(name: string, args: Record<string, unknown>, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<unknown>;
+  ping(options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void>;
+};
+
+/**
+ * Which agent wrote a shared-memory note, taken from the note's frontmatter tags (or `source`).
+ * The conventions ask Claude Code and Codex to tag their notes; Studio tags DeepSeek's notes itself.
+ */
+export type StudioMemorySource = 'claude' | 'codex' | 'deepseek';
+
+/**
+ * One note in a memory listing or search result, as the memory routes send it to the browser.
+ * `id` is the basic-memory permalink (e.g. `studio/agent-cloud-studio/部署`) and the only identifier the
+ * routes accept back. `folder` is the first path segment: a project folder or `global`. `updatedAt` is
+ * ISO-8601 or null; `snippet` is plain text (empty for recent-notes listings).
+ */
+export type StudioMemoryNoteSummary = {
+  id: string;
+  title: string;
+  folder: string;
+  source: StudioMemorySource | null;
+  updatedAt: string | null;
+  snippet: string;
+};
+
+/**
+ * An opened note: its Markdown body without frontmatter, capped in size (`truncated` reports the cap).
+ * The body was written by a model or a person and is untrusted: render it as escaped Markdown only.
+ */
+export type StudioMemoryNoteDetail = StudioMemoryNoteSummary & { content: string; tags: string[]; truncated: boolean };
+
+/**
+ * A top-level folder of the memory project, with the Studio hub project whose workspace it belongs to
+ * (matched by folder name) so the 记忆 app can show that project's icon; null for `global` and others.
+ */
+export type StudioMemoryFolder = {
+  name: string;
+  project: { id: string; name: string; tone: string; glyph: string } | null;
+};
+
+/**
+ * GET /api/studio/memory/status: whether the shared server answers, where its notes live, and which clients
+ * are wired to it. Client checks only read config files (never print them): `claude` looks at the user-scope
+ * `mcpServers` of ~/.claude.json, `codex` at `[mcp_servers.studio-memory]` in ~/.codex/config.toml, and
+ * `conventions` at the delimited block in ~/.claude/CLAUDE.md / ~/.codex/AGENTS.md. `deepseek` is Studio's own
+ * bridge (STUDIO_MEMORY_DEEPSEEK); it only works while the server is reachable.
+ */
+export type StudioMemoryStatus = {
+  reachable: boolean;
+  url: string;
+  project: string | null;
+  notesPath: string | null;
+  clients: {
+    claude: { registered: boolean; transport: string | null; conventions: boolean };
+    codex: { registered: boolean; transport: string | null; conventions: boolean };
+    deepseek: { enabled: boolean };
+  };
+};
+
+//----------------- STUDIO DEEPSEEK CHAT WIRE SHAPES ------------
+/**
+ * A function call DeepSeek asked for (OpenAI-compatible chat completions). `arguments` is a JSON string the
+ * model wrote; it is untrusted and must be parsed and validated before use.
+ */
+export type StudioDeepseekToolCall = { id: string; type: 'function'; function: { name: string; arguments: string } };
+
+/**
+ * One chat-completions message as Studio sends it to and reads it from DeepSeek. `tool_calls` only appears on
+ * assistant messages, `tool_call_id` only on tool results; `reasoning_content` is echoed back on assistant
+ * messages inside a tool loop because thinking models require it there.
+ */
+export type StudioDeepseekMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  tool_calls?: StudioDeepseekToolCall[];
+  tool_call_id?: string;
+  reasoning_content?: string;
+};
+
+/** A function tool offered to DeepSeek; `parameters` is a JSON Schema object. */
+export type StudioDeepseekTool = {
+  type: 'function';
+  function: { name: string; description: string; parameters: Record<string, unknown> };
+};
+
+/**
+ * One DeepSeek completion request made by the Studio service (model, limits, key and timeouts are its
+ * business). Resolves to the first choice's message, or null when DeepSeek returned none; rejects with an
+ * AppError for HTTP failures.
+ */
+export type StudioDeepseekCompletion = (body: {
+  messages: StudioDeepseekMessage[];
+  tools?: StudioDeepseekTool[];
+  tool_choice?: 'auto' | 'none';
+}) => Promise<StudioDeepseekMessage | null>;
+
+/**
+ * The shared-memory bridge the Studio service hands each DeepSeek reply to (studio/memory/memory-chat.service.ts).
+ * It adds relevant notes to the system prompt as framed, untrusted background data, offers note tools in a
+ * bounded loop through `complete`, and resolves to the final assistant text (null when there is none). When the
+ * memory server is down it degrades to one plain completion; it only rejects with errors from `complete` or
+ * an aborted `signal`.
+ */
+export type StudioDeepseekMemoryBridge = {
+  reply(input: {
+    userId: number;
+    // The conversation space ('deepseek' or 'project:<id>'), which decides the memory folder.
+    space: string;
+    // The user's new message, used as the memory search.
+    query: string;
+    // Studio's own system prompt; the bridge appends the memory context to it.
+    system: string;
+    // Prior turns plus the new user message, without a system message.
+    messages: StudioDeepseekMessage[];
+    complete: StudioDeepseekCompletion;
+    signal: AbortSignal;
+  }): Promise<string | null>;
+};
+// ---------------------------

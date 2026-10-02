@@ -2060,4 +2060,32 @@ export type WorkbenchChatProps = {
 // ── v6 track: github — types below this line ──
 // ── v6 track: builder — types below this line ──
 // ── v6 track: memory — types below this line ──
+/** Which agent wrote a shared-memory note (from its tags); null when the note is untagged. */
+export type StudioMemorySource = 'claude' | 'codex' | 'deepseek';
+/**
+ * One note in the 记忆 app's lists. `id` is the basic-memory permalink and the only identifier the memory API
+ * accepts back; `folder` is a project folder or `global`; `snippet` is plain text (empty in recent lists).
+ */
+export type StudioMemoryNote = {
+  id: string; title: string; folder: string; source: StudioMemorySource | null; updatedAt: string | null; snippet: string;
+};
+/** An opened note: Markdown without frontmatter, written by a model or a person; render it escaped, never as HTML. */
+export type StudioMemoryNoteDetail = StudioMemoryNote & { content: string; tags: string[]; truncated: boolean };
+/** A top-level memory folder, with the hub project it belongs to (for its icon) when one matches. */
+export type StudioMemoryFolder = { name: string; project: { id: string; name: string; tone: string; glyph: string } | null };
+/** GET /api/studio/memory/notes: the newest notes (optionally of one folder), every folder, and the note count. */
+export type StudioMemoryRecent = { notes: StudioMemoryNote[]; folders: StudioMemoryFolder[]; total: number };
+/**
+ * GET /api/studio/memory/status: whether the shared server answers and which clients are wired to it.
+ * `transport` is 'http' (shared server) or 'stdio'; `conventions` means the usage rules were added to that
+ * agent's global instructions; `deepseek.enabled` is Studio's own bridge.
+ */
+export type StudioMemoryStatus = {
+  reachable: boolean; url: string; project: string | null; notesPath: string | null;
+  clients: {
+    claude: { registered: boolean; transport: string | null; conventions: boolean };
+    codex: { registered: boolean; transport: string | null; conventions: boolean };
+    deepseek: { enabled: boolean };
+  };
+};
 // ---------------------------

@@ -19,6 +19,7 @@ import '@/modules/studio/studio.css';
 // Sub-apps stay out of the home screen's first load (and are warmed once it is idle); same props as the originals.
 const StudioChatPane = lazyStudioPanel(() => import('@/modules/studio/StudioChatPane').then(module => module.StudioChatPane), 'chat');
 const StudioConnections = lazyStudioPanel(() => import('@/modules/studio/StudioConnections').then(module => module.StudioConnections), 'list');
+const StudioMemory = lazyStudioPanel(() => import('@/modules/studio/StudioMemory').then(module => module.StudioMemory), 'list');
 const StudioProjectAgents = lazyStudioPanel(() => import('@/modules/studio/StudioProjectAgents').then(module => module.StudioProjectAgents), 'list');
 const StudioProjectEditor = lazyStudioPanel(() => import('@/modules/studio/StudioProjectEditor').then(module => module.StudioProjectEditor), 'form');
 const StudioProjectMail = lazyStudioPanel(() => import('@/modules/studio/StudioProjectMail').then(module => module.StudioProjectMail), 'list');
@@ -151,6 +152,8 @@ export function StudioPage() {
     })),
     // ── v6 track: github — home tile below this line ──
     // ── v6 track: memory — home tile below this line ──
+    // The shared memory of Claude Code, Codex and DeepSeek: a notebook, in warm paper.
+    { id: 'memory', name: '记忆', tone: 'sand', glyph: 'book' },
     { id: 'deepseek', name: 'DeepSeek', tone: 'slate', glyph: 'sparkles', status: studio.loading || configured ? undefined : '待配置' },
     { id: 'workspace', name: '开发工具', tone: 'graphite', glyph: 'terminal', href: '/workspace' },
     { id: 'connections', name: '设置', tone: 'stone', glyph: 'settings', status: studio.loading || configured ? undefined : '1 项待配置' },
@@ -222,6 +225,7 @@ export function StudioPage() {
               {target.kind === 'app' && target.id === 'connections' && <StudioConnections status={studio.status} onChange={studio.refresh} />}
               {/* ── v6 track: github — app content below this line ── */}
               {/* ── v6 track: memory — app content below this line ── */}
+              {target.kind === 'app' && target.id === 'memory' && <StudioMemory refreshing={refreshing} />}
               {target.kind === 'project' && !project && (projects === null
                 ? <div className="studio-skeleton" role="status" aria-label="正在加载项目"><div className="skeleton-block" style={{ height: 160 }} /></div>
                 : <div className="ios-empty"><FolderX size={32} strokeWidth={1.5} aria-hidden="true" /><span>这个项目不存在或已被删除</span>

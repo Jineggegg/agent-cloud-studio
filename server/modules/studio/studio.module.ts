@@ -29,6 +29,10 @@ import { createStudioNetworkService } from './network.service.js';
 import { createStudioNetworkRouter } from './network.routes.js';
 import { createQuotaService } from './quota/quota.service.js';
 import { createQuotaRouter } from './quota/quota.routes.js';
+import { createMemoryMcpClient } from './memory/memory-client.adapter.js';
+import { createMemoryService, memoryFolderName } from './memory/memory.service.js';
+import { createMemoryChatBridge } from './memory/memory-chat.service.js';
+import { createMemoryRouter } from './memory/memory.routes.js';
 
 const linkChecker = createLinkChecker();
 
@@ -192,5 +196,34 @@ export function createStudioModule() {
   // ── v6 track: github — create its service and mount its router below this line ──
   // ── v6 track: builder — create its service and mount its router below this line ──
   // ── v6 track: memory — create its service and mount its router below this line ──
+  // One MCP session with the shared basic-memory server (scripts/wsl/install-memory.sh, docs/memory.md) serves the
+  // 记忆 app and the DeepSeek bridge. STUDIO_MEMORY_URL overrides the endpoint; STUDIO_MEMORY_DEEPSEEK=0 keeps
+  // DeepSeek replies away from memory. A hub project's notes live in the folder named after its workspace.
+  const memoryUrl = process.env.STUDIO_MEMORY_URL?.trim() || 'http://127.0.0.1:8770/mcp';
+  const memoryForDeepseek = !['0', 'false', 'off', 'no'].includes((process.env.STUDIO_MEMORY_DEEPSEEK ?? '').trim().toLowerCase());
+  const memoryFolder = (item: { id: string; name: string; workspacePath: string; remoteDir: string }) =>
+    memoryFolderName([item.workspacePath, item.remoteDir, item.name], item.id);
+  const memory = createMemoryService({
+    client: createMemoryMcpClient({ url: memoryUrl }),
+    url: memoryUrl,
+    deepseekEnabled: memoryForDeepseek,
+    projects: userId => hub.list(userId).map(item => ({ id: item.id, name: item.name, tone: item.tone, glyph: item.glyph, folder: memoryFolder(item) })),
+  });
+  if (memoryForDeepseek) {
+    service.attachMemory(createMemoryChatBridge({
+      memory,
+      scope(userId, space) {
+        const projectId = /^project:(.+)$/.exec(space)?.[1];
+        if (!projectId) return { folder: null, project: null };
+        try {
+          const project = hub.get(userId, projectId);
+          return { folder: memoryFolder(project), project: project.name };
+        } catch {
+          return { folder: null, project: null };
+        }
+      },
+    }));
+  }
+  routes.use('/memory', createMemoryRouter(memory));
   return { routes, snrRoutes: createSnrGatewayRouter(gateway), mailCallbackRoutes: createProjectMailCallbackRouter(mail) };
 }

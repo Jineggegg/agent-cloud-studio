@@ -10,8 +10,8 @@ function exitDelay() {
 }
 
 /**
- * Used by StudioPage, StudioConnections and StudioSettingsMail (removing a mail
- * account) in place of window.confirm, which cannot be styled and blocks the iOS
+ * Used by StudioPage, StudioConnections, StudioSettingsMail (removing a mail
+ * account) and StudioMemory (deleting a note) in place of window.confirm, which cannot be styled and blocks the iOS
  * standalone web app. Rendered through a portal so animated ancestors never
  * become the containing block.
  */
