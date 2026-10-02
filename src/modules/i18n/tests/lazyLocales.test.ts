@@ -13,10 +13,11 @@ afterEach(async () => {
   await i18n.changeLanguage('en');
 });
 
-test('English ships with the app, so it works synchronously at startup', () => {
-  expect(i18n.language).toBe('en');
+test('a device with no saved language starts in Chinese, and English ships with the app', () => {
+  // No saved preference (the mock returns the fallback): this Studio starts in Chinese.
+  expect(i18n.options.lng).toBe('zh-CN');
   expect(i18n.hasResourceBundle('en', 'auth')).toBe(true);
-  expect(i18n.t('auth:login.submit')).toBe('Sign In');
+  expect(i18n.getFixedT('en')('auth:login.submit')).toBe('Sign In');
 });
 
 test('other languages are not in the entry bundle and load on demand when chosen', async () => {

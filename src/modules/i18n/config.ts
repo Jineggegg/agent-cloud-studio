@@ -110,7 +110,8 @@ const getSavedLanguage = (): string => {
   if (saved && languages.some(lang => lang.value === saved)) {
     return saved;
   }
-  return 'en';
+  // This Studio is used in Chinese; a device with no saved choice starts there (the IDE can still switch).
+  return 'zh-CN';
 };
 
 // Initialize i18next
