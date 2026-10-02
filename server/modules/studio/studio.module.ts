@@ -25,13 +25,13 @@ import { createTrading212OrdersRouter } from './trading212-orders.routes.js';
 import { createLinkChecker } from './link-check.service.js';
 import { createRemoteHostsService } from './remote-hosts.service.js';
 import { createRemoteHostsRouter } from './remote-hosts.routes.js';
+import { createGhRunner, resolveGhPath } from './github/github-cli.adapter.js';
+import { createGitHubService } from './github/github.service.js';
+import { createGitHubRouter } from './github/github.routes.js';
 import { createStudioNetworkService } from './network.service.js';
 import { createStudioNetworkRouter } from './network.routes.js';
 import { createQuotaService } from './quota/quota.service.js';
 import { createQuotaRouter } from './quota/quota.routes.js';
-import { createGhRunner, resolveGhPath } from './github/github-cli.adapter.js';
-import { createGitHubService } from './github/github.service.js';
-import { createGitHubRouter } from './github/github.routes.js';
 
 const linkChecker = createLinkChecker();
 
