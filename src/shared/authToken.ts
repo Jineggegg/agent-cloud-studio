@@ -72,8 +72,10 @@ export const getAuthTokenRefreshDelay = (token: unknown): number | null => {
 };
 
 export const expireAuthSession = (): void => {
+  // A 401 for a request sent before signing in is not an expired session: only a stored token can expire.
+  const hadToken = localStorage.getItem('auth-token') !== null;
   localStorage.removeItem('auth-token');
-  if (typeof window !== 'undefined') {
+  if (hadToken && typeof window !== 'undefined') {
     window.dispatchEvent(new Event(AUTH_SESSION_EXPIRED_EVENT));
   }
 };

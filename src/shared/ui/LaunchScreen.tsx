@@ -131,8 +131,8 @@ export function LaunchScreen({ label }: { label: string }) {
   );
 }
 
-// The glass cloud mark of the splash, shared by the loading and error screens.
-function LaunchMark() {
+/** The glass cloud mark of the splash: used here by the loading and error screens, and by the auth module's sign-in layout. */
+export function LaunchMark() {
   return (
     <span className="acs-launch-mark">
       <svg viewBox="0 0 512 512" focusable="false">
