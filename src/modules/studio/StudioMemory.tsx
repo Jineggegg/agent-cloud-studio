@@ -36,21 +36,36 @@ const AGENT_LOOK: Record<StudioMemoryAgentId, { name: string; place: string; ton
 };
 
 type AgentRow = { id: string; name: string; place: string | null; tone: string; mark: ReactNode; state: 'ok' | 'warn' | 'absent'; detail: string };
-// What a row says, most fundamental gap first; only a registration of the shared server with the conventions is green.
-function agentRow(agent: StudioMemoryAgentStatus): AgentRow {
+// Why a config that names the shared server still does not let the agent use it.
+function issueDetail(agent: StudioMemoryAgentStatus): string | null {
+  const codex = agent.id.startsWith('codex');
+  switch (agent.issue) {
+    case 'invalid-config': return codex ? '配置文件不是有效的 TOML（例如表重复），Codex 读不到注册' : '配置文件不是有效的 JSON，Claude Code 读不到注册';
+    case 'disabled': return codex ? '已注册但被停用（enabled = false）' : '在某些项目里被停用（disabledMcpServers）';
+    case 'project-override': return '某个项目里的同名 studio-memory 盖过了共享服务';
+    case 'ipv6-loopback': return '注册的是 [::1]，记忆服务只监听 127.0.0.1';
+    default: return null;
+  }
+}
+// What a row says, most fundamental gap first; only a working registration of the shared server with the current
+// conventions is green, and only while the server itself is up.
+function agentRow(agent: StudioMemoryAgentStatus, status: StudioMemoryStatus): AgentRow {
   const look = AGENT_LOOK[agent.id];
   const row = { id: agent.id, name: look.name, place: look.place, tone: look.tone, mark: look.mark };
+  const issue = issueDetail(agent);
   if (!agent.installed) return { ...row, state: 'absent', detail: '未安装' };
+  if (issue) return { ...row, state: 'warn', detail: issue };
   if (!agent.registered) return { ...row, state: 'warn', detail: '未接入共享记忆' };
   if (agent.transport === 'stdio') return { ...row, state: 'warn', detail: '注册的是独立进程，不是共享服务' };
   if (!agent.shared) return { ...row, state: 'warn', detail: '注册的地址不是共享服务' };
-  if (!agent.conventions) return { ...row, state: 'warn', detail: '已注册，使用约定未写入' };
+  if (!agent.conventions) return { ...row, state: 'warn', detail: '已注册，使用约定未写入或已过期' };
+  if (!status.reachable) return { ...row, state: 'warn', detail: status.slow ? '已配置 · 服务响应慢' : '已配置 · 服务未运行' };
   return { ...row, state: 'ok', detail: '已接入 · 共享服务' };
 }
 function agentRows(status: StudioMemoryStatus): AgentRow[] {
   const { deepseek } = status;
   return [
-    ...status.agents.map(agentRow),
+    ...status.agents.map(agent => agentRow(agent, status)),
     {
       id: 'deepseek', name: 'Studio DeepSeek', place: null, tone: 'slate', mark: <Sparkles size={16} strokeWidth={1.8} />,
       state: deepseek.enabled && status.reachable ? 'ok' : 'warn',

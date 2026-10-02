@@ -1783,7 +1783,8 @@ export type StudioOutlookTokens = { accessToken: string; refreshToken: string; e
  * `call` resolves to the tool's decoded result (its `structuredContent.result`, else the JSON text, else the
  * raw text). Both methods reject with an AppError: `MEMORY_UNAVAILABLE` (503) when the server cannot be
  * reached, `MEMORY_TOOL_ERROR` (502) when a tool reports an error, `MEMORY_TIMEOUT` (504) when a connected
- * server answers too slowly (the server is not marked down for that). An aborted `signal` rejects with the
+ * server answers too slowly (the server is not marked down for that; after two initialize timeouts in a row the
+ * adapter fails fast with MEMORY_TIMEOUT for a few seconds instead of waiting again). An aborted `signal` rejects with the
  * abort reason instead and never marks the server as down.
  */
 export type StudioMemoryToolCaller = {
@@ -1840,6 +1841,17 @@ export type StudioMemoryAgentId = 'claude-wsl' | 'codex-wsl' | 'claude-windows' 
 export type StudioMemoryAgentFix = { where: string; command: string };
 
 /**
+ * A setting that keeps an agent from using the shared server even when its config names it, as the memory status
+ * reports it (the 记忆 app shows it instead of 「已接入」):
+ * - 'invalid-config': the config does not parse (JSON for Claude Code; TOML for Codex, e.g. a duplicated table), so
+ *   the agent loads none of it.
+ * - 'disabled': Codex has `enabled = false` on the entry, or a Claude Code project lists it in `disabledMcpServers`.
+ * - 'project-override': a Claude Code project declares its own `studio-memory` that is not the shared server.
+ * - 'ipv6-loopback': the URL uses `[::1]`, which the server (listening on 127.0.0.1 only) never answers.
+ */
+export type StudioMemoryAgentIssue = 'invalid-config' | 'disabled' | 'project-override' | 'ipv6-loopback';
+
+/**
  * How one agent installation is wired, read from its own config files (only presence and the URL; nothing is
  * printed). Claude Code: the user-scope `mcpServers` of `.claude.json` and the delimited block in
  * `.claude/CLAUDE.md`; Codex: `[mcp_servers.studio-memory]` in `.codex/config.toml` and the block in
@@ -1847,9 +1859,12 @@ export type StudioMemoryAgentFix = { where: string; command: string };
  * - `installed`: the agent's config or config directory exists; an absent agent is not a fault.
  * - `registered`/`transport`: a `studio-memory` entry exists, over 'http', 'stdio' (its own process) or another type.
  * - `shared`: registered over HTTP at the URL Studio uses, i.e. the one shared server (localhost = 127.0.0.1).
- * - `conventions`: the usage rules are in that agent's global instructions.
+ * - `conventions`: the current usage rules (the whole block, untrusted-data rule included) are between the markers
+ *   in that agent's global instructions.
+ * - `issue`: a setting that keeps the agent from using the server anyway (see StudioMemoryAgentIssue), or null.
  * - `config`: where the registration lives, as the owner finds it (`~/.claude.json`, `C:\Users\…\.codex\config.toml`).
- * - `fix`: the step that completes the wiring, or null when the agent is wired or not installed.
+ * - `fix`: the step that completes the wiring, or null when the agent is wired, not installed, or only fixable by
+ *   hand (an `issue` other than 'ipv6-loopback').
  */
 export type StudioMemoryAgentStatus = {
   id: StudioMemoryAgentId;
@@ -1858,6 +1873,7 @@ export type StudioMemoryAgentStatus = {
   transport: string | null;
   shared: boolean;
   conventions: boolean;
+  issue: StudioMemoryAgentIssue | null;
   config: string;
   fix: StudioMemoryAgentFix | null;
 };

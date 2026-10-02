@@ -50,13 +50,13 @@ const WINDOWS_CLAUDE_COMMAND = 'claude mcp add -s user -t http studio-memory htt
 const STATUS: StudioMemoryStatus = {
   reachable: true, slow: false, url: 'http://127.0.0.1:8770/mcp', project: 'studio', notesPath: '~/studio-memory',
   agents: [
-    { id: 'claude-wsl', installed: true, registered: true, transport: 'http', shared: true, conventions: true, config: '~/.claude.json', fix: null },
-    { id: 'codex-wsl', installed: true, registered: true, transport: 'http', shared: true, conventions: false, config: '~/.codex/config.toml', fix: SCRIPT },
+    { id: 'claude-wsl', installed: true, registered: true, transport: 'http', shared: true, conventions: true, issue: null, config: '~/.claude.json', fix: null },
+    { id: 'codex-wsl', installed: true, registered: true, transport: 'http', shared: true, conventions: false, issue: null, config: '~/.codex/config.toml', fix: SCRIPT },
     {
-      id: 'claude-windows', installed: true, registered: false, transport: null, shared: false, conventions: false, config: 'C:\\Users\\owner\\.claude.json',
+      id: 'claude-windows', installed: true, registered: false, transport: null, shared: false, conventions: false, issue: null, config: 'C:\\Users\\owner\\.claude.json',
       fix: { where: '在 Windows PowerShell 运行', command: WINDOWS_CLAUDE_COMMAND },
     },
-    { id: 'codex-windows', installed: true, registered: true, transport: 'stdio', shared: false, conventions: true, config: 'C:\\Users\\owner\\.codex\\config.toml', fix: SCRIPT },
+    { id: 'codex-windows', installed: true, registered: true, transport: 'stdio', shared: false, conventions: true, issue: null, config: 'C:\\Users\\owner\\.codex\\config.toml', fix: SCRIPT },
   ],
   deepseek: { enabled: true },
 };
@@ -94,7 +94,7 @@ describe('记忆 app', () => {
     expect(screen.getByText('~/studio-memory · 3 条笔记')).toBeTruthy();
     const agents = screen.getByRole('list', { name: '接入的助手' });
     expect(within(agents).getByText('已接入 · 共享服务')).toBeTruthy();
-    expect(within(agents).getByText('已注册，使用约定未写入')).toBeTruthy();
+    expect(within(agents).getByText('已注册，使用约定未写入或已过期')).toBeTruthy();
     expect(within(agents).getByText('回复前查阅记忆')).toBeTruthy();
   });
 
@@ -104,7 +104,7 @@ describe('记忆 app', () => {
     const rows = within(agents).getAllByRole('listitem');
     expect(rows.map(row => row.querySelector('.memory-agent-body')?.textContent)).toEqual([
       'Claude CodeWSL已接入 · 共享服务',
-      'CodexWSL已注册，使用约定未写入',
+      'CodexWSL已注册，使用约定未写入或已过期',
       'Claude CodeWindows未接入共享记忆',
       'CodexWindows注册的是独立进程，不是共享服务',
       'Studio DeepSeek回复前查阅记忆',
@@ -133,6 +133,39 @@ describe('记忆 app', () => {
     expect(rows[1].className).toBe('absent');
     expect(within(rows[1]).getByText('未安装')).toBeTruthy();
     expect(screen.queryByRole('list', { name: '接入方法' })).toBeNull();
+  });
+
+  it('never shows an agent as connected while a setting blocks it or the server is down', async () => {
+    const wired = STATUS.agents[0];
+    mocks.memory.status.mockImplementation(async () => Response.json({
+      ...STATUS, reachable: false, slow: false,
+      agents: [
+        wired,
+        { ...wired, id: 'codex-wsl', config: '~/.codex/config.toml', issue: 'disabled' },
+        { ...wired, id: 'claude-windows', issue: 'project-override' },
+        { ...wired, id: 'codex-windows', registered: false, transport: null, shared: false, issue: 'invalid-config' },
+      ],
+    }));
+    render(<StudioMemory />);
+    expect(await screen.findByText('记忆服务未运行')).toBeTruthy();
+    const rows = within(screen.getByRole('list', { name: '接入的助手' })).getAllByRole('listitem');
+    expect(rows.map(row => row.querySelector('.memory-agent-body small')?.textContent)).toEqual([
+      '已配置 · 服务未运行',
+      '已注册但被停用（enabled = false）',
+      '某个项目里的同名 studio-memory 盖过了共享服务',
+      '配置文件不是有效的 TOML（例如表重复），Codex 读不到注册',
+      '等待记忆服务',
+    ]);
+    expect(rows.map(row => row.className)).toEqual(['warn', 'warn', 'warn', 'warn', 'warn']);
+    cleanup();
+    mocks.memory.status.mockImplementation(async () => Response.json({
+      ...STATUS, reachable: false, slow: true,
+      agents: [wired, { ...wired, id: 'claude-windows', issue: 'disabled' }, { ...wired, id: 'codex-windows', shared: false, issue: 'ipv6-loopback' }],
+    }));
+    render(<StudioMemory />);
+    expect(await screen.findByText('已配置 · 服务响应慢')).toBeTruthy();
+    expect(screen.getByText('在某些项目里被停用（disabledMcpServers）')).toBeTruthy();
+    expect(screen.getByText('注册的是 [::1]，记忆服务只监听 127.0.0.1')).toBeTruthy();
   });
 
   it('searches after typing pauses, marks the words and explains an empty result', async () => {

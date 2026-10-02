@@ -132,6 +132,33 @@ test('a slow initialize is a timeout, not a stopped server: the next call connec
   } finally { await server.close(); }
 });
 
+test('two initialize timeouts in a row mark the server hung: calls then fail fast as timeouts', async () => {
+  const server = await fakeServer();
+  let clock = 0;
+  const client = createMemoryMcpClient({ url: server.url, now: () => clock, connectTimeoutMs: 80 });
+  const isTimeout = (error: { code?: string; statusCode?: number }) => error.code === 'MEMORY_TIMEOUT' && error.statusCode === 504;
+  try {
+    server.stats.initializeDelayMs = 400;
+    await assert.rejects(client.ping(), isTimeout);
+    await assert.rejects(client.call('echo', {}), isTimeout);
+    // Inside the window nothing waits on the hung server, and the error stays a timeout (the status card says slow).
+    const started = Date.now();
+    await assert.rejects(client.call('echo', {}), isTimeout);
+    await assert.rejects(client.ping(), isTimeout);
+    assert.ok(Date.now() - started < 60, 'calls in the window fail at once');
+    // After the window one more attempt is made; another timeout re-opens the window straight away.
+    clock = 11_000;
+    await assert.rejects(client.call('echo', {}), isTimeout);
+    const again = Date.now();
+    await assert.rejects(client.call('echo', {}), isTimeout);
+    assert.ok(Date.now() - again < 60, 'a still-hung server re-enters the fail-fast window');
+    // A server that recovers connects once the window has passed, and the count starts over.
+    clock = 22_000;
+    server.stats.initializeDelayMs = 0;
+    assert.deepEqual(await client.call('echo', { back: 1 }), { back: 1 });
+  } finally { await server.close(); }
+});
+
 test('an aborted call rejects with the abort reason and keeps the server marked up', async () => {
   const server = await fakeServer();
   const client = createMemoryMcpClient({ url: server.url });

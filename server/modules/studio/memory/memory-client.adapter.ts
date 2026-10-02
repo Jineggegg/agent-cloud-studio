@@ -22,6 +22,9 @@ const PING_TIMEOUT_MS = 3000;
 const CONNECT_TIMEOUT_MS = 10_000;
 // After a refused connection, calls fail at once for this long instead of each waiting on a dead server.
 const RETRY_AFTER_MS = 10_000;
+// One slow initialize is a server still starting; this many in a row is a hung server, which then gets the same
+// fail-fast window (reported as a timeout, not as stopped) so it cannot add the connect limit to every call.
+const HUNG_AFTER_TIMEOUTS = 2;
 
 function unavailable(): never {
   throw new AppError('共享记忆服务未运行或无法连接', { statusCode: 503, code: 'MEMORY_UNAVAILABLE' });
@@ -53,13 +56,17 @@ function decode(result: Record<string, unknown>) {
  * shared basic-memory server. It connects lazily, shares the session between concurrent callers, reconnects
  * once when a reused session has gone away (the server restarted), and fails fast for a few seconds after a
  * refused connection so a stopped server never slows DeepSeek replies down. A server that connects but answers
- * too slowly (initialize or a call) is reported as MEMORY_TIMEOUT and never marked down.
+ * too slowly (initialize or a call) is reported as MEMORY_TIMEOUT and never marked down; after two initialize
+ * timeouts in a row it is treated as hung and calls fail fast with MEMORY_TIMEOUT for the same window.
  */
 export function createMemoryMcpClient(options: Options): StudioMemoryToolCaller {
   const now = options.now ?? Date.now;
   const connectTimeoutMs = options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
   let session: Promise<Client> | null = null;
   let downUntil = 0;
+  // Why the fail-fast window is open: a refused connection (unavailable) or a server that keeps timing out (hung).
+  let downReason: 'unavailable' | 'hung' = 'unavailable';
+  let initializeTimeouts = 0;
 
   async function open() {
     const client = new Client({ name: 'agent-cloud-studio', version: '6.0.0' });
@@ -72,15 +79,28 @@ export function createMemoryMcpClient(options: Options): StudioMemoryToolCaller 
     }
     return client;
   }
+  function markDown(reason: 'unavailable' | 'hung') {
+    downUntil = now() + RETRY_AFTER_MS;
+    downReason = reason;
+  }
   function connect() {
-    if (now() < downUntil) unavailable();
+    if (now() < downUntil) {
+      if (downReason === 'hung') timedOut();
+      unavailable();
+    }
     if (!session) {
       const opening = open();
       session = opening;
-      opening.catch(error => {
+      opening.then(() => { initializeTimeouts = 0; }, error => {
         if (session === opening) session = null;
-        // Only a refused or broken connection starts the fail-fast window; a slow initialize is retried next call.
-        if (!isTimeout(error)) downUntil = now() + RETRY_AFTER_MS;
+        // A refused or broken connection starts the fail-fast window at once. A slow initialize is retried next
+        // call, until it has timed out HUNG_AFTER_TIMEOUTS times in a row; every timeout after that re-opens it.
+        if (!isTimeout(error)) {
+          initializeTimeouts = 0;
+          markDown('unavailable');
+        } else if (++initializeTimeouts >= HUNG_AFTER_TIMEOUTS) {
+          markDown('hung');
+        }
       });
     }
     return session;
@@ -118,7 +138,7 @@ export function createMemoryMcpClient(options: Options): StudioMemoryToolCaller 
         drop(pending);
         // A fresh session that fails means the server is really unreachable; a reused one may just be stale.
         if (!reused) {
-          downUntil = now() + RETRY_AFTER_MS;
+          markDown('unavailable');
           unavailable();
         }
       }

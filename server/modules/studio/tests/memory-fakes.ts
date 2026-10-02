@@ -93,16 +93,21 @@ export function createFakeMemory(notes: Array<Partial<FakeNote> & { permalink: s
       case 'write_note': {
         const title = String(args.title);
         const folder = String(args.directory);
-        const permalink = `studio/${folder}/${title.toLowerCase().replace(/\s+/g, '-')}`;
-        if (store.has(permalink) && args.overwrite !== true) {
-          return { title, permalink: `${folder}/${title}`, file_path: null, action: 'conflict', error: 'NOTE_ALREADY_EXISTS' };
+        // Like basic-memory 0.23 (sanitize_for_filename): the file name, not the title, decides whether the note
+        // exists, and an overwrite replaces whatever note lives in that file.
+        let name = title;
+        for (const [pattern, value] of [[/[/\\]/g, '-'], [/[<>:"|?*]/g, '-'], [/-+/g, '-'], [/^\.+|\.+$/g, ''], [/^-+|-+$/g, '']] as const) name = name.replace(pattern, value);
+        const filePath = `${folder}/${name}.md`;
+        const existing = all.find(note => note.filePath === filePath);
+        if (existing && args.overwrite !== true) {
+          return { title, permalink: existing.permalink, file_path: null, action: 'conflict', error: 'NOTE_ALREADY_EXISTS' };
         }
-        const action = store.has(permalink) ? 'updated' : 'created';
+        const permalink = existing?.permalink ?? `studio/${folder}/${name.toLowerCase().replace(/\s+/g, '-')}`;
         store.set(permalink, {
-          permalink, title, filePath: `${folder}/${title}.md`, content: String(args.content),
+          permalink, title, filePath, content: String(args.content),
           tags: Array.isArray(args.tags) ? args.tags as string[] : [], updatedAt: '2026-10-09T12:00:00+01:00',
         });
-        return { title, permalink, file_path: `${folder}/${title}.md`, checksum: null, action };
+        return { title, permalink, file_path: filePath, checksum: null, action: existing ? 'updated' : 'created' };
       }
       case 'list_memory_projects':
         return {

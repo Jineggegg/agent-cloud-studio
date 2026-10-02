@@ -2081,13 +2081,20 @@ export type StudioMemoryRecent = { notes: StudioMemoryNote[]; folders: StudioMem
 /** Which agent installation a status row describes: Claude Code or Codex, inside WSL or on Windows. */
 export type StudioMemoryAgentId = 'claude-wsl' | 'codex-wsl' | 'claude-windows' | 'codex-windows';
 /**
+ * A setting that keeps an agent from using the shared server although its config names it: an unparsable config,
+ * a disabled entry (Codex `enabled = false`, a Claude Code project's `disabledMcpServers`), a Claude Code project
+ * entry of the same name that is not the shared server, or a `[::1]` URL the server (127.0.0.1 only) never answers.
+ */
+export type StudioMemoryAgentIssue = 'invalid-config' | 'disabled' | 'project-override' | 'ipv6-loopback';
+/**
  * How one agent installation is wired, read from its own config: `shared` means registered over HTTP at the
- * shared server's URL; `conventions` means the usage rules are in its global instructions; `config` is where the
- * registration lives; `fix` is the exact step (where to run it and the command) that completes it, or null.
+ * shared server's URL; `conventions` means the current usage rules are in its global instructions; `issue` is a
+ * setting that blocks it anyway; `config` is where the registration lives; `fix` is the exact step (where to run
+ * it and the command) that completes it, or null (also when the issue must be fixed by hand).
  */
 export type StudioMemoryAgentStatus = {
   id: StudioMemoryAgentId; installed: boolean; registered: boolean; transport: string | null; shared: boolean;
-  conventions: boolean; config: string; fix: { where: string; command: string } | null;
+  conventions: boolean; issue: StudioMemoryAgentIssue | null; config: string; fix: { where: string; command: string } | null;
 };
 /**
  * GET /api/studio/memory/status: whether the shared server answers (`slow`: connected but no answer in time),
