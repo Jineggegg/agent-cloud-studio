@@ -84,6 +84,43 @@ test('a stale socket close cannot detach the socket that replaced it', () => {
   pty.emitExit();
 });
 
+test('plain commands sharing a long prefix get separate PTYs; the same command reattaches', () => {
+  const spawned: { command: string; pty: ReturnType<typeof createFakePty> }[] = [];
+  const dependencies = {
+    resolveProviderSessionId: () => null,
+    spawnPty: (_shell: string, args: string | string[]) => {
+      const pty = createFakePty();
+      spawned.push({ command: Array.isArray(args) ? args[args.length - 1] : args, pty });
+      return pty as never;
+    },
+  };
+  const sessionId = `remote-prefix-${Date.now()}`;
+  // Everything up to the host alias is identical, far beyond what a 16-character key prefix could tell apart.
+  const prefix = 'ssh -tt -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -- sp-remote ';
+  const claude = `${prefix}'cd ~/a; exec claude'`;
+  const codex = `${prefix}'cd ~/a; exec codex'`;
+  const init = (command: string) => {
+    const socket = createFakeSocket();
+    handleShellConnection(socket as never, dependencies);
+    socket.emit('message', JSON.stringify({
+      type: 'init', projectPath: process.cwd(), sessionId, hasSession: false,
+      provider: 'plain-shell', isPlainShell: true, initialCommand: command,
+    }));
+    return socket;
+  };
+
+  init(claude);
+  const second = init(codex);
+  assert.deepEqual(spawned.map(entry => entry.command), [claude, codex]);
+  assert.ok(!second.frames.some(frame => frame.includes('Reconnected to existing session')));
+
+  const again = init(claude);
+  assert.equal(spawned.length, 2);
+  assert.ok(again.frames.some(frame => frame.includes('Reconnected to existing session')));
+
+  for (const entry of spawned) entry.pty.emitExit();
+});
+
 test('shell output detects and normalizes a wrapped authentication URL', () => {
   const pty = createFakePty();
   const socket = createFakeSocket();

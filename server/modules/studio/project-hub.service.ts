@@ -6,7 +6,7 @@ import type Database from 'better-sqlite3';
 import type {
   StudioAgentProvider, StudioLinkStatus, StudioProjectInput, StudioProjectLink, StudioProjectRecord, StudioRemoteLaunch, StudioTaskInput,
 } from '@/shared/types.js';
-import { AppError } from '@/shared/utils.js';
+import { AppError, isSafeRemoteDirectory } from '@/shared/utils.js';
 
 type Dependencies = {
   database: Database.Database;
@@ -42,8 +42,6 @@ function fail(message: string, statusCode = 400): never {
   throw new AppError(message, { statusCode, code: 'PROJECT_HUB_ERROR' });
 }
 
-// A remote working directory: home-relative or absolute, no spaces, quotes or parent hops.
-const REMOTE_DIR = /^(~|~\/[A-Za-z0-9._\/-]*|\/[A-Za-z0-9._\/-]+)$/;
 const MAX_LINKS = 8;
 
 function validLink(link: StudioProjectLink) {
@@ -66,7 +64,8 @@ function validate(input: StudioProjectInput, remoteHosts: string[]) {
   if (!Array.isArray(input.links) || input.links.length > MAX_LINKS || !input.links.every(validLink)) fail(`网站链接无效（最多 ${MAX_LINKS} 个，http/https）`);
   if (input.remoteHost) {
     if (!remoteHosts.includes(input.remoteHost)) fail('远程主机未在服务器配置中');
-    if (!REMOTE_DIR.test(input.remoteDir) || input.remoteDir.split('/').includes('..') || input.remoteDir.length > 300) fail('远程目录无效');
+    // Home-relative or absolute, no spaces, quotes or parent hops (shared with the remote-hosts service).
+    if (!isSafeRemoteDirectory(input.remoteDir)) fail('远程目录无效');
   } else if (input.remoteDir) {
     fail('未选择远程主机时不能设置远程目录');
   }

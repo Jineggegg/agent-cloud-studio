@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -228,6 +229,23 @@ function buildShellCommand(
   return command;
 }
 
+/**
+ * Identifies the retained PTY a shell init attaches to. Plain-shell commands
+ * are keyed by a hash of the FULL command: commands that only share a prefix
+ * (every remote `ssh -tt ...` launch does) must never reattach to each other's
+ * PTY, which a truncated encoding of the command's first bytes allowed.
+ */
+function buildPtySessionKey(
+  projectPath: string,
+  sessionId: string | null,
+  plainShellCommand: string
+): string {
+  const commandSuffix = plainShellCommand
+    ? `_cmd_${createHash('sha256').update(plainShellCommand).digest('hex').slice(0, 16)}`
+    : '';
+  return `${projectPath}_${sessionId ?? 'default'}${commandSuffix}`;
+}
+
 function readEnvValue(env: NodeJS.ProcessEnv, key: string): string | undefined {
   const resolvedKey = Object.keys(env).find((envKey) => envKey.toLowerCase() === key.toLowerCase());
   return resolvedKey ? env[resolvedKey] : undefined;
@@ -327,11 +345,11 @@ export function handleShellConnection(
             initialCommand.includes('cursor-agent login') ||
             initialCommand.includes('auth login'));
 
-        const commandSuffix =
-          isPlainShell && initialCommand
-            ? `_cmd_${Buffer.from(initialCommand).toString('base64').slice(0, 16)}`
-            : '';
-        ptySessionKey = `${projectPath}_${sessionId ?? 'default'}${commandSuffix}`;
+        ptySessionKey = buildPtySessionKey(
+          projectPath,
+          sessionId,
+          isPlainShell ? initialCommand : '',
+        );
 
         if (isLoginCommand || forceRestart) {
           const oldSession = ptySessionsMap.get(ptySessionKey);
