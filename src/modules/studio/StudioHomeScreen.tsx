@@ -2,10 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import type { MouseEvent, PointerEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { createPortal } from 'react-dom';
-import { Check, LogOut, Minus, Plus, RefreshCw, SlidersHorizontal } from 'lucide-react';
+import { Check, LogOut, Minus, Moon, Plus, RefreshCw, SlidersHorizontal, Sun } from 'lucide-react';
 
-import type { StudioHomeTile } from '@/shared/types';
+import { useTheme } from '@/shared/context/ThemeContext';
+import type { StudioHomeTile, StudioSnr } from '@/shared/types';
+import { StudioFluidBackground } from '@/modules/studio/StudioFluidBackground';
 import { StudioTileIcon } from '@/modules/studio/StudioTileIcon';
+import { StudioWidgets } from '@/modules/studio/StudioWidgets';
 
 // Long-pressing a tile for this long enters edit mode, like the iPadOS home screen.
 const LONG_PRESS_MS = 520;
@@ -18,6 +21,27 @@ const PLANNED = [
 
 type Layout = { hidden: string[]; labels: boolean; large: boolean };
 const DEFAULT_LAYOUT: Layout = { hidden: [], labels: true, large: false };
+
+// Switch theme with a circular reveal from the button, like Super Professor; instant where View Transitions are missing.
+function revealTheme(apply: () => void, origin: HTMLElement) {
+  const doc = document as Document & { startViewTransition?: (update: () => void) => { ready: Promise<void>; finished: Promise<void> } };
+  const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  if (!doc.startViewTransition || reduced) { apply(); return; }
+  const box = origin.getBoundingClientRect();
+  const x = box.left + box.width / 2;
+  const y = box.top + box.height / 2;
+  const radius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
+  const root = document.documentElement;
+  root.classList.add('theme-revealing');
+  const transition = doc.startViewTransition(apply);
+  void transition.finished.finally(() => root.classList.remove('theme-revealing'));
+  void transition.ready.then(() => {
+    document.documentElement.animate(
+      { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${radius}px at ${x}px ${y}px)`] },
+      { duration: 560, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', pseudoElement: '::view-transition-new(root)' },
+    );
+  }).catch(() => {});
+}
 
 function readLayout(): Layout {
   try {
@@ -32,11 +56,15 @@ function readLayout(): Layout {
 }
 
 /** Used by StudioPage as the launcher: one large icon per project or app, plus + to create a project. */
-export function StudioHomeScreen({ tiles, loading, onOpen, onCreate, onRefresh, onSignOut, refreshing }: {
+export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreate, onRefresh, onSignOut, refreshing }: {
   tiles: StudioHomeTile[]; loading: boolean;
+  // True while an app fully covers the home screen; the wallpaper animation pauses to save battery.
+  covered: boolean;
+  snr: StudioSnr | null;
   onOpen: (tile: StudioHomeTile, icon: DOMRect | null) => void;
   onCreate: () => void; onRefresh: () => void; onSignOut: () => void; refreshing: boolean;
 }) {
+  const { isDarkMode, setThemeMode } = useTheme();
   // Layout choices are per device so an iPad and a MacBook can arrange tiles differently.
   const [layout, setLayout] = useState<Layout>(readLayout);
   // Edit mode wiggles tiles and exposes hide controls, as on the iPadOS home screen.
@@ -73,7 +101,7 @@ export function StudioHomeScreen({ tiles, loading, onOpen, onCreate, onRefresh, 
   const iconSize = layout.large ? 52 : 40;
 
   return <div className={`home-screen ${layout.large ? 'large-icons' : ''} ${layout.labels ? '' : 'no-labels'} ${editing ? 'editing' : ''}`}>
-    <div className="home-wallpaper" aria-hidden="true"><span /><span /><span /></div>
+    <StudioFluidBackground paused={covered} />
     <header className="home-top">
       <div className="home-date">
         <span className="home-weekday">{new Intl.DateTimeFormat('zh-CN', { weekday: 'long', timeZone: 'Europe/London' }).format(today)}</span>
@@ -84,6 +112,9 @@ export function StudioHomeScreen({ tiles, loading, onOpen, onCreate, onRefresh, 
           <button type="button" className="glass-button" onClick={() => setLibraryOpen(true)}><Plus size={17} aria-hidden="true" />资源库</button>
           <button type="button" className="glass-button strong" onClick={() => setEditing(false)}><Check size={17} aria-hidden="true" />完成</button>
         </> : <>
+          <button type="button" className="glass-icon theme-toggle" aria-label={isDarkMode ? '切换到浅色模式' : '切换到深色模式'} title={isDarkMode ? '浅色模式' : '深色模式'}
+            onClick={event => revealTheme(() => setThemeMode(isDarkMode ? 'light' : 'dark'), event.currentTarget)}>
+            {isDarkMode ? <Sun size={18} aria-hidden="true" /> : <Moon size={18} aria-hidden="true" />}</button>
           <button type="button" className={`glass-icon ${refreshing ? 'refreshing' : ''}`} aria-label="刷新状态" title="刷新状态" disabled={refreshing} onClick={onRefresh}><RefreshCw size={18} className="refresh-icon" aria-hidden="true" /></button>
           <button type="button" className="glass-icon" aria-label="编辑主屏幕" title="编辑主屏幕" onClick={() => setEditing(true)}><SlidersHorizontal size={18} aria-hidden="true" /></button>
           <button type="button" className="glass-icon" aria-label="退出登录" title="退出登录" onClick={onSignOut}><LogOut size={18} aria-hidden="true" /></button>
@@ -99,6 +130,8 @@ export function StudioHomeScreen({ tiles, loading, onOpen, onCreate, onRefresh, 
         <input type="checkbox" role="switch" className="ios-switch" checked={layout.large} onChange={event => update({ large: event.target.checked })} />
       </label>
     </div>}
+
+    <StudioWidgets editing={editing} snr={snr} />
 
     <nav className="home-grid" aria-label="应用" aria-busy={loading}>
       {visible.map((tile, index) => {

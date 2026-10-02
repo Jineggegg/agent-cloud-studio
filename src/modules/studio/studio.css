@@ -280,15 +280,34 @@
 .library-sheet .ios-row[aria-disabled] .home-icon { filter: saturate(.6); opacity: .8; }
 .library-sheet .ios-section-footer { padding: 12px 4px 0; }
 
-/* ---------- Apps: zoom out of the tapped icon ---------- */
+/* ---------- Apps: grow out of the tapped icon ----------
+ * With an icon (`has-origin`) the app is revealed through a clip that starts as the icon's
+ * exact rounded rectangle, the content settles from a slight scale, and the icon's own
+ * gradient dissolves on top — the iOS launch. Without an icon (deep link) it fades up. */
 .studio-app {
   position: absolute; inset: 0; z-index: 2; display: flex; overflow: hidden; background: var(--ios-bg);
-  transform-origin: var(--origin-x, 50%) var(--origin-y, 50%);
+  transform-origin: var(--zoom-cx, 50%) var(--zoom-cy, 50%);
 }
 .studio-app.opening { animation: app-open var(--dur-slow) cubic-bezier(.2, .9, .2, 1) both; }
 .studio-app.closing { animation: app-close 420ms cubic-bezier(.4, 0, .2, 1) forwards; pointer-events: none; }
-@keyframes app-open { from { transform: scale(.1); opacity: 0; border-radius: 80px; } 45% { opacity: 1; } to { border-radius: 0; } }
-@keyframes app-close { to { transform: scale(.1); opacity: 0; border-radius: 80px; } }
+@keyframes app-open { from { transform: scale(.92); opacity: 0; } }
+@keyframes app-close { to { transform: scale(.92); opacity: 0; } }
+.studio-app.has-origin.opening { animation: app-reveal var(--dur-slow) cubic-bezier(.2, .9, .2, 1) both; }
+.studio-app.has-origin.closing { animation: app-conceal 420ms cubic-bezier(.4, 0, .2, 1) forwards; }
+.studio-app.has-origin.opening > * { animation: app-content-in var(--dur-slow) cubic-bezier(.2, .9, .2, 1) both; transform-origin: var(--zoom-cx) var(--zoom-cy); }
+.studio-app.has-origin.closing > * { animation: app-content-out 420ms cubic-bezier(.4, 0, .2, 1) forwards; transform-origin: var(--zoom-cx) var(--zoom-cy); }
+.studio-app.has-origin::after {
+  content: ""; position: absolute; inset: 0; z-index: 40; pointer-events: none; opacity: 0;
+  background: radial-gradient(120% 80% at 20% 0%, rgba(255, 255, 255, .22), transparent 55%), linear-gradient(160deg, var(--tone-a), var(--tone-b));
+}
+.studio-app.has-origin.opening::after { animation: app-tone-out var(--dur-slow) ease-out both; }
+.studio-app.has-origin.closing::after { animation: app-tone-in 420ms ease-in forwards; }
+@keyframes app-reveal { from { clip-path: var(--zoom-clip); } to { clip-path: inset(0 0 0 0 round 0px); } }
+@keyframes app-conceal { from { clip-path: inset(0 0 0 0 round 0px); } to { clip-path: var(--zoom-clip); } }
+@keyframes app-content-in { from { transform: scale(.86); } }
+@keyframes app-content-out { to { transform: scale(.86); } }
+@keyframes app-tone-out { from { opacity: 1; } 55%, to { opacity: 0; } }
+@keyframes app-tone-in { 0%, 35% { opacity: 0; } to { opacity: 1; } }
 
 /* --chrome-top is the height of the glass chrome (navigation bar, plus the tab bar in projects). */
 .studio-main { --chrome-top: calc(52px + env(safe-area-inset-top)); position: relative; min-width: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -796,3 +815,145 @@ article.studio-message:nth-last-of-type(-n+2) { animation: studio-bubble-in var(
 .ios-field { position: relative; }
 .ios-field + .ios-field::before { content: ""; position: absolute; top: 0; right: 0; left: 16px; height: .5px; background: var(--ios-separator); }
 .studio-main.has-tabs .studio-content { padding-top: calc(var(--chrome-top) + 16px); }
+
+/* ---------- Fluid wallpaper (WebGL) ----------
+ * The canvas fades in over the CSS blobs once the first frame is drawn; the grain
+ * (::after) stays on top so both look like the same printed surface. */
+.home-wallpaper-canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; opacity: 0; transition: opacity 1.4s var(--ease-out); }
+.home-wallpaper.is-webgl .home-wallpaper-canvas { opacity: 1; }
+.home-wallpaper.is-webgl span { opacity: 0; visibility: hidden; transition: opacity 1.4s ease, visibility 0s linear 1.4s; }
+
+/* Theme: the toggle icon spins in, and the new theme spreads as a circle from the button. */
+.theme-toggle svg { animation: theme-icon-in var(--dur-slow) var(--ease-spring); }
+@keyframes theme-icon-in { from { transform: rotate(-90deg) scale(.4); opacity: 0; } }
+html.theme-revealing::view-transition-old(root), html.theme-revealing::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+html.theme-revealing::view-transition-new(root) { z-index: 2; }
+
+/* ---------- Home widgets ---------- */
+.widget-grid {
+  --widget-unit: 158px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--widget-unit), 1fr)); grid-auto-rows: var(--widget-unit); grid-auto-flow: dense;
+  gap: 18px; max-width: 1040px; margin: 36px auto 0;
+}
+.widget {
+  position: relative; display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 14px 15px; border-radius: 26px;
+  background: var(--ios-glass); color: var(--ios-label); text-align: left;
+  -webkit-backdrop-filter: saturate(170%) blur(28px); backdrop-filter: saturate(170%) blur(28px);
+  border: .5px solid var(--ios-glass-edge); box-shadow: var(--ios-shadow);
+}
+.widget-medium { grid-column: span 2; }
+.widget-head { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 13px; font-weight: 600; color: var(--ios-label-2); }
+.widget-head > span:not(.home-icon, .widget-source) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.widget-head .home-icon.small { --icon: 22px; border-radius: 6px; }
+.widget-source { margin-left: auto; flex-shrink: 0; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-weight: 500; color: var(--ios-label-3); background: var(--ios-fill); white-space: nowrap; }
+.widget-source.is-stale { color: var(--ios-orange); background: color-mix(in srgb, var(--ios-orange) 12%, transparent); }
+.widget-note { flex: 1; display: flex; align-items: flex-end; font-size: 13px; line-height: 1.45; color: var(--ios-label-2); }
+
+.widget-rings { flex: 1; display: flex; align-items: center; justify-content: space-around; gap: 6px; min-height: 0; }
+.quota-ring { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 0; text-align: center; }
+.quota-ring-dial { position: relative; display: grid; place-items: center; }
+.quota-ring-dial svg { position: absolute; inset: 0; overflow: visible; }
+.quota-ring-track, .quota-ring-fill { fill: none; stroke-width: 6; }
+.quota-ring-track { stroke: var(--ios-fill-pressed); }
+.quota-ring-fill { stroke: var(--ios-tint); stroke-linecap: round; transition: stroke var(--dur-base) ease; }
+.quota-ring.is-high .quota-ring-fill { stroke: var(--chart-loss); }
+.quota-ring-value { position: relative; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.quota-ring-label { margin-top: 2px; font-size: 12px; font-weight: 600; }
+.quota-ring-reset { max-width: 12em; font-size: 11px; line-height: 1.25; color: var(--ios-label-2); }
+.quota-ring.is-high .quota-ring-reset { color: var(--chart-loss); }
+.widget-small .quota-ring-label { display: none; }
+
+.widget-figure { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: 4px; min-height: 0; }
+.widget-figure strong { font-size: 26px; font-weight: 600; line-height: 1.1; letter-spacing: -.015em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.widget-medium .widget-figure strong { font-size: 32px; }
+.widget-figure small { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; color: var(--ios-label-2); }
+.widget-delta { font-weight: 600; font-variant-numeric: tabular-nums; }
+.widget-delta.gain { color: var(--chart-gain); }
+.widget-delta.loss { color: var(--chart-loss); }
+.widget-spark { display: block; width: 100%; height: 34px; margin-top: 6px; overflow: visible; }
+.widget-spark path { fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.widget-spark.gain { color: var(--chart-gain); }
+.widget-spark.loss { color: var(--chart-loss); }
+.widget-status { display: inline-flex; align-items: center; gap: 9px; }
+.status-dot { display: inline-block; flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; background: var(--ios-label-3); }
+.status-dot.good { background: var(--ios-green); animation: status-breathe 2.6s ease-in-out infinite; }
+@keyframes status-breathe { 0%, 100% { box-shadow: 0 0 0 0 var(--ios-green-soft); } 50% { box-shadow: 0 0 0 5px var(--ios-green-soft); } }
+
+/* Loading: two shimmering bars where the figure will land. */
+.widget-loading { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: 8px; }
+.widget-loading span { position: relative; overflow: hidden; width: 45%; height: 12px; border-radius: 6px; background: var(--ios-fill); }
+.widget-loading span:first-child { width: 72%; height: 22px; border-radius: 8px; }
+.widget-loading span::after {
+  content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+  background: linear-gradient(100deg, transparent 20%, var(--ios-fill-pressed) 50%, transparent 80%);
+  animation: studio-shimmer 1.5s ease-in-out infinite;
+}
+
+/* Edit mode: widgets wiggle (rotate, so motion's layout transforms still apply) and expose controls. */
+.widget-grid.editing .widget:not(.widget-add) { animation: widget-wiggle .34s ease-in-out infinite alternate; }
+.widget-grid.editing .widget:nth-child(even):not(.widget-add) { animation-delay: -.17s; animation-duration: .38s; }
+@keyframes widget-wiggle { from { rotate: -.7deg; } to { rotate: .7deg; } }
+.widget .widget-remove { top: -8px; left: -8px; }
+.widget-edit-bar {
+  position: absolute; right: 8px; bottom: 8px; display: flex; gap: 2px; padding: 2px; border-radius: 999px;
+  background: var(--ios-glass-strong); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .14); animation: studio-pop var(--dur-base) var(--ease-spring);
+}
+.widget-edit-bar button { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; color: var(--ios-label); transition: transform var(--dur-slow) var(--ease-spring), background-color var(--dur-fast) ease; }
+.widget-edit-bar button:not(:disabled):active { transform: scale(.88); background: var(--ios-fill-pressed); transition-duration: var(--dur-press); }
+.widget-add {
+  align-items: center; justify-content: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ios-label-2);
+  background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; box-shadow: none;
+  border: 1.5px dashed color-mix(in srgb, var(--ios-label-2) 45%, transparent);
+  transition: background-color var(--dur-fast) ease, transform var(--dur-slow) var(--ease-spring);
+}
+.widget-add:active { transform: scale(.95); transition-duration: var(--dur-press); }
+@media (hover: hover) { .widget-add:hover { background: var(--ios-fill); } }
+.library-sheet .ios-row .ios-button + .ios-button { margin-left: -6px; }
+
+/* ---------- Website quick-browse ---------- */
+.links-sheet { width: min(640px, calc(100% - 32px)); }
+.link-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; margin-top: 10px; }
+.link-card {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 12px; row-gap: 4px; align-items: center;
+  min-height: 72px; padding: 14px; border-radius: 18px; background: var(--ios-surface); color: var(--ios-label); text-align: left; box-shadow: var(--ios-shadow);
+}
+.link-card-icon { grid-row: 1 / span 2; display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; background: var(--ios-tint-soft); color: var(--ios-tint); }
+.link-card-text { grid-column: 2; display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.link-card-text strong { flex-shrink: 0; font-size: 16px; font-weight: 600; }
+.link-card-text small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--ios-label-3); }
+.link-card-status { grid-column: 2; display: inline-flex; align-items: center; gap: 6px; min-height: 16px; font-size: 12px; color: var(--ios-label-2); font-variant-numeric: tabular-nums; }
+.link-card-open { grid-column: 3; grid-row: 1 / span 2; color: var(--ios-label-3); }
+@media (hover: hover) { .link-card:hover .link-card-open { color: var(--ios-tint); } }
+.browser-actions { display: inline-flex; align-items: center; }
+.browser-cover iframe { background: #fff; }
+
+/* ---------- Activity indicator (iOS spokes) ---------- */
+.studio-spinner { position: relative; display: inline-block; flex-shrink: 0; color: var(--ios-label-2); animation: spinner-step .8s steps(8, end) infinite; }
+.studio-spinner i { position: absolute; left: 45.5%; top: 0; width: 9%; height: 28%; border-radius: 99px; background: currentColor; transform-origin: 50% 178.6%; }
+@keyframes spinner-step { to { transform: rotate(360deg); } }
+
+/* ---------- Toasts (sonner), restyled as iOS glass banners ---------- */
+html [data-sonner-toaster] .studio-toast[data-styled="true"] {
+  padding: 12px 16px; gap: 10px; border-radius: 18px;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", "Segoe UI", sans-serif; font-size: 15px; font-weight: 500;
+  background: rgba(250, 249, 246, .8); color: #1d1c1a; border: .5px solid rgba(255, 255, 255, .6);
+  -webkit-backdrop-filter: saturate(170%) blur(24px); backdrop-filter: saturate(170%) blur(24px);
+  box-shadow: 0 2px 8px rgba(40, 35, 25, .06), 0 18px 48px rgba(40, 35, 25, .16);
+}
+html.dark [data-sonner-toaster] .studio-toast[data-styled="true"] { background: rgba(34, 35, 39, .82); color: #f2f0ec; border-color: rgba(255, 255, 255, .08); box-shadow: 0 2px 8px rgba(0, 0, 0, .4), 0 18px 48px rgba(0, 0, 0, .5); }
+html [data-sonner-toaster] .studio-toast[data-type="success"] [data-icon] { color: #3e7556; }
+html.dark [data-sonner-toaster] .studio-toast[data-type="success"] [data-icon] { color: #8cc2a2; }
+
+@media (max-width: 699px) {
+  .widget-grid { --widget-unit: 148px; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 26px; }
+  .widget { border-radius: 22px; padding: 13px; }
+  .widget-medium .widget-figure strong { font-size: 28px; }
+  .links-sheet { width: 100%; }
+  .link-grid { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-wallpaper-canvas { transition: none; }
+  .status-dot.good, .widget-grid.editing .widget { animation: none !important; }
+  .studio-spinner { animation-duration: 1.6s !important; animation-iteration-count: infinite !important; }
+}

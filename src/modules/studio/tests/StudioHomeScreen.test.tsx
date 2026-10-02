@@ -3,6 +3,10 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import type { StudioHomeTile } from '@/shared/types';
+vi.mock('@/shared/context/ThemeContext', () => ({ useTheme: () => ({ isDarkMode: false, setThemeMode: vi.fn() }) }));
+vi.mock('@/modules/studio/StudioWidgets', () => ({ StudioWidgets: () => null }));
+vi.mock('@/modules/studio/StudioFluidBackground', () => ({ StudioFluidBackground: () => null }));
+
 import { StudioHomeScreen } from '@/modules/studio/StudioHomeScreen';
 
 beforeEach(() => localStorage.clear());
@@ -16,7 +20,7 @@ const TILES: StudioHomeTile[] = [
 ];
 
 function renderHome(overrides: Partial<Parameters<typeof StudioHomeScreen>[0]> = {}) {
-  const props = { tiles: TILES, loading: false, onOpen: vi.fn(), onCreate: vi.fn(), onRefresh: vi.fn(), onSignOut: vi.fn(), refreshing: false, ...overrides };
+  const props = { tiles: TILES, loading: false, covered: false, snr: null, onOpen: vi.fn(), onCreate: vi.fn(), onRefresh: vi.fn(), onSignOut: vi.fn(), refreshing: false, ...overrides };
   render(<MemoryRouter><StudioHomeScreen {...props} /></MemoryRouter>);
   return props;
 }

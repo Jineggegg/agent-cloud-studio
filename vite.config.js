@@ -34,6 +34,11 @@ export default defineConfig(({ mode }) => {
         '@': fileURLToPath(new URL('./src', import.meta.url))
       }
     },
+    // Pre-bundle the Studio's lazily reached UI libraries up front; discovering them mid-session
+    // re-optimizes deps and can load two copies of React ("Invalid hook call").
+    optimizeDeps: {
+      include: ['motion/react', 'sonner', '@number-flow/react']
+    },
     server: {
       host,
       port: parseInt(env.VITE_PORT) || 5173,

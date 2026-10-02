@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from 'react';
 import type { CSSProperties, UIEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ChevronLeft, FolderX, LayoutGrid, RefreshCw, ShieldCheck, SquarePen, Trash2 } from 'lucide-react';
+import { AnimatePresence, LazyMotion, MotionConfig, m } from 'motion/react';
+import { Toaster, toast } from 'sonner';
+import { ChevronLeft, FolderX, Globe, LayoutGrid, RefreshCw, ShieldCheck, SquarePen, Trash2 } from 'lucide-react';
 
 import { useAuth } from '@/modules/auth';
 import { api, readApiJson } from '@/shared/api';
@@ -12,6 +14,7 @@ import { StudioChatPane } from '@/modules/studio/StudioChatPane';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { StudioConnections } from '@/modules/studio/StudioConnections';
 import { StudioHomeScreen } from '@/modules/studio/StudioHomeScreen';
+import { StudioLinksSheet } from '@/modules/studio/StudioLinksSheet';
 import { StudioProjectAgents } from '@/modules/studio/StudioProjectAgents';
 import { StudioProjectEditor } from '@/modules/studio/StudioProjectEditor';
 import { StudioProjectMail } from '@/modules/studio/StudioProjectMail';
@@ -20,6 +23,10 @@ import { StudioSnrPanel } from '@/modules/studio/StudioSnrPanel';
 import { StudioTrading212 } from '@/modules/studio/StudioTrading212';
 import '@/modules/studio/studio.css';
 
+// Layout/drag features load after first paint; plain animations work immediately.
+const loadMotionFeatures = () => import('@/modules/studio/motionFeatures').then(module => module.default);
+// iOS-like default spring (response ~0.5 s, no visible overshoot).
+const SPRING = { type: 'spring', stiffness: 158, damping: 25 } as const;
 // Durations match the zoom keyframes in studio.css.
 const APP_OPEN_MS = 560;
 const APP_CLOSE_MS = 420;
@@ -63,7 +70,9 @@ export function StudioPage() {
   // Zoom phase: an app grows out of its icon and shrinks back into it.
   const [transition, setTransition] = useState<'opening' | 'closing' | null>(null);
   // Screen point of the tapped icon, used as the zoom's transform origin.
-  const [origin, setOrigin] = useState<{ x: number; y: number } | null>(null);
+  const [origin, setOrigin] = useState<{ x: number; y: number; w: number; h: number; tone: string } | null>(null);
+  // The website quick-browse sheet for the open project.
+  const [linksOpen, setLinksOpen] = useState(false);
   // Phones push from the conversation list to a thread; wider layouts show both side by side.
   const [threadOpen, setThreadOpen] = useState(false);
   // The navigation bar turns into translucent glass once the large title scrolls away.
@@ -102,7 +111,7 @@ export function StudioPage() {
   const signOut = () => { void api.studio.closeSnr().finally(logout).catch(() => {}); };
   const openTile = (tile: StudioHomeTile, icon: DOMRect | null) => {
     if (transition || tile.href) return;
-    setOrigin(icon ? { x: icon.left + icon.width / 2, y: icon.top + icon.height / 2 } : null);
+    setOrigin(icon ? { x: icon.left, y: icon.top, w: icon.width, h: icon.height, tone: tile.tone } : null);
     setThreadOpen(false);
     setCompact(false);
     setTransition('opening');
@@ -140,7 +149,11 @@ export function StudioPage() {
     { id: 'workspace', name: '开发工具', tone: 'graphite', glyph: 'terminal', href: '/workspace' },
     { id: 'connections', name: '设置', tone: 'stone', glyph: 'settings', status: studio.loading || configured ? undefined : '1 项待配置' },
   ];
-  const appStyle = (origin ? { '--origin-x': `${origin.x}px`, '--origin-y': `${origin.y}px` } : {}) as CSSProperties;
+  // The app is revealed from the exact icon rectangle (clip-path, so content never distorts), like iOS; without an icon it fades and scales from centre.
+  const appStyle = (origin ? {
+    '--zoom-clip': `inset(${origin.y}px ${Math.max(0, window.innerWidth - origin.x - origin.w)}px ${Math.max(0, window.innerHeight - origin.y - origin.h)}px ${origin.x}px round ${origin.w * 0.23}px)`,
+    '--zoom-cx': `${origin.x + origin.w / 2}px`, '--zoom-cy': `${origin.y + origin.h / 2}px`,
+  } : {}) as CSSProperties;
 
   const projectContent = () => {
     if (!project) return null;
@@ -150,21 +163,23 @@ export function StudioPage() {
     if (tab === 'mail') return <StudioProjectMail project={project} />;
     if (tab === 'automations') return <StudioProjectTasks project={project} />;
     return <StudioProjectEditor key={project.updatedAt} project={project}
-      onSaved={saved => setProjects(previous => previous?.map(item => item.id === saved.id ? saved : item) ?? [saved])}
+      onSaved={saved => { setProjects(previous => previous?.map(item => item.id === saved.id ? saved : item) ?? [saved]); toast.success('已保存项目设置'); }}
       onDelete={() => setConfirmProjectDelete(true)} />;
   };
 
-  return <div className="studio" data-thread={chatContext && threadOpen ? 'true' : 'false'} data-transition={transition ?? undefined}>
+  return <LazyMotion features={loadMotionFeatures} strict><MotionConfig reducedMotion="user" transition={SPRING}>
+  <div className="studio" data-thread={chatContext && threadOpen ? 'true' : 'false'} data-transition={transition ?? undefined}>
+    <Toaster position="top-center" offset={18} toastOptions={{ className: 'studio-toast', duration: 2600 }} />
     {busy && <div className="studio-progress" role="progressbar" aria-label={studio.sending ? '正在回复' : '正在同步'} />}
     {error && <div className="studio-alert" role="alert"><span>{error}</span><button type="button" className="ios-button tinted" onClick={() => void refresh()}>重试</button></div>}
 
     {/* The home screen stays mounted under an open app so its entrance animation and edit state persist. */}
     <div className={`home-layer ${target && !transition ? 'is-covered' : ''}`} aria-hidden={target ? true : undefined}>
-      <StudioHomeScreen tiles={tiles} loading={projects === null} onOpen={openTile} onCreate={() => setCreating(true)}
+      <StudioHomeScreen tiles={tiles} loading={projects === null} covered={Boolean(target && !transition)} snr={studio.snr} onOpen={openTile} onCreate={() => setCreating(true)}
         onRefresh={() => void refresh()} onSignOut={signOut} refreshing={refreshing} />
     </div>
 
-    {target && <div className={`studio-app ${transition ?? ''}`} style={appStyle} role="region" aria-label={title || '应用'}>
+    {target && <div className={`studio-app ${transition ?? ''} ${origin ? `has-origin tone-${origin.tone}` : ''}`} style={appStyle} role="region" aria-label={title || '应用'}>
       <main className={`studio-main ${tabs.length ? 'has-tabs' : ''}`}>
         <header className="studio-navbar" data-compact={chatContext || tabs.length > 0 || compact ? 'true' : 'false'}>
           <div className="navbar-leading">
@@ -177,6 +192,7 @@ export function StudioPage() {
           </div>
           <div className="navbar-trailing">
             <span className="studio-private"><ShieldCheck size={15} aria-hidden="true" />私有工作空间</span>
+            {project && project.links.length > 0 && !chatContext && <button type="button" className="icon-button" aria-label="打开网站" title="网站" onClick={() => setLinksOpen(true)}><Globe size={20} aria-hidden="true" /></button>}
             {chatContext ? <>
               {studio.active && <button type="button" className="icon-button danger" aria-label="删除当前对话" title="删除当前对话" disabled={studio.sending} onClick={() => setPendingDelete(studio.active)}><Trash2 size={19} aria-hidden="true" /></button>}
               <button type="button" className="icon-button" aria-label="新建对话" title="新建对话" disabled={studio.sending} onClick={() => { studio.startNew(); setThreadOpen(true); }}><SquarePen size={21} aria-hidden="true" /></button>
@@ -193,7 +209,9 @@ export function StudioPage() {
           tone={project?.tone ?? 'slate'} glyph={project?.glyph ?? 'sparkles'}
           onOpenThread={() => setThreadOpen(true)} onDelete={setPendingDelete} />
           : <div className="studio-scroll" onScroll={onScroll}>
-            <div className="studio-content" key={`${target.kind}:${target.id}:${tab ?? ''}`}>
+            <AnimatePresence mode="wait" initial={false}>
+            <m.div className="studio-content" key={`${target.kind}:${target.id}:${tab ?? ''}`}
+              initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8, transition: { duration: 0.14 } }}>
               {!tabs.length && <div className="studio-large-title"><h1>{title}</h1></div>}
               {target.kind === 'app' && target.id === 'connections' && <StudioConnections status={studio.status} onChange={studio.refresh} />}
               {target.kind === 'project' && !project && (projects === null
@@ -201,7 +219,8 @@ export function StudioPage() {
                 : <div className="ios-empty"><FolderX size={32} strokeWidth={1.5} aria-hidden="true" /><span>这个项目不存在或已被删除</span>
                   <button type="button" className="ios-button tinted" onClick={goHome}>返回主屏幕</button></div>)}
               {projectContent()}
-            </div>
+            </m.div>
+            </AnimatePresence>
           </div>}
       </main>
     </div>}
@@ -214,6 +233,7 @@ export function StudioPage() {
         <StudioProjectEditor onCancel={() => setCreating(false)} onSaved={saved => {
           setProjects(previous => [...(previous ?? []), saved]);
           setCreating(false);
+          toast.success(`已创建「${saved.name}」`);
           setOrigin(null);
           setTransition('opening');
           navigate(`/projects/${encodeURIComponent(saved.id)}`, { state: { fromHome: true } });
@@ -239,7 +259,11 @@ export function StudioPage() {
         void api.studio.projects.remove(removed.id).then(readApiJson).then(() => {
           setProjects(previous => previous?.filter(item => item.id !== removed.id) ?? []);
           navigate('/', { replace: true });
+          toast(`已删除「${removed.name}」`);
         }).catch(failure => setProjectsError(failure instanceof Error ? failure.message : '删除失败'));
       }} />}
-  </div>;
+
+    {linksOpen && project && <StudioLinksSheet project={project} onClose={() => setLinksOpen(false)} />}
+  </div>
+  </MotionConfig></LazyMotion>;
 }

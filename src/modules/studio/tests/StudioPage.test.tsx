@@ -6,14 +6,16 @@ import type * as ApiModule from '@/shared/api';
 
 const json = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } }));
 const PROJECTS = [
-  { id: 'snr', name: 'SNR 3.0', description: '', workspacePath: '/p/snr', modules: ['agents', 'snr-lab'], providers: ['claude', 'deepseek'], tone: 'sage', glyph: 'activity', updatedAt: '1' },
-  { id: 'prof', name: '超级教授', description: '', workspacePath: '/p/prof', modules: ['agents'], providers: ['claude', 'codex', 'deepseek'], tone: 'clay', glyph: 'graduation', updatedAt: '1' },
+  { id: 'snr', name: 'SNR 3.0', description: '', workspacePath: '/p/snr', modules: ['agents', 'snr-lab'], providers: ['claude', 'deepseek'], tone: 'sage', glyph: 'activity', links: [], remoteHost: '', remoteDir: '', updatedAt: '1' },
+  { id: 'prof', name: '超级教授', description: '', workspacePath: '/p/prof', modules: ['agents'], providers: ['claude', 'codex', 'deepseek'], tone: 'clay', glyph: 'graduation', links: [{ label: '网站', url: 'https://example.test/' }], remoteHost: '', remoteDir: '', updatedAt: '1' },
 ];
 const conversations = vi.fn((space: string) => json(space === 'project:prof'
   ? [{ id: 'p1', title: '课程大纲', model: 'deepseek-flash', updated_at: new Date().toISOString(), space }]
   : [{ id: 'd1', title: '通用问题', model: 'deepseek-flash', updated_at: new Date().toISOString(), space }]));
 
 vi.mock('@/modules/auth', () => ({ useAuth: () => ({ user: { username: 'tester' }, logout: vi.fn() }) }));
+vi.mock('@/shared/context/ThemeContext', () => ({ useTheme: () => ({ isDarkMode: false, setThemeMode: vi.fn() }) }));
+vi.mock('@/modules/studio/StudioFluidBackground', () => ({ StudioFluidBackground: () => null }));
 vi.mock('@/shared/api', async (original) => ({
   ...(await original<typeof ApiModule>()),
   api: {
@@ -25,6 +27,7 @@ vi.mock('@/shared/api', async (original) => ({
       closeSnr: () => json({}),
       projects: { list: () => json(PROJECTS), sessions: () => json([]) },
       trading212: { status: () => json([{ env: 'live', configured: false, source: null }]) },
+      quota: () => json([{ provider: 'claude', available: true, windows: [{ id: 'five_hour', label: '5 小时', usedPercent: 42, windowMinutes: 300, resetsAt: new Date(Date.now() + 7200000).toISOString() }], balances: [], source: 'statusline', observedAt: new Date().toISOString(), stale: false }]),
     },
   },
 }));
