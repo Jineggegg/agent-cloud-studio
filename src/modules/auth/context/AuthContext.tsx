@@ -16,6 +16,10 @@ type AuthUser = {
 
 const AUTH_TOKEN_STORAGE_KEY = 'auth-token';
 
+// Passwordless Tailscale sign-in is only a shortcut on boot; a slow or absent Serve must not
+// keep the loading screen up for longer than this before the login form appears.
+const TAILSCALE_SESSION_TIMEOUT_MS = 3000;
+
 const AUTH_ERROR_MESSAGES = {
   authStatusCheckFailed: 'errors.authStatusCheckFailed',
   loginFailed: 'errors.loginFailed',
@@ -72,6 +76,31 @@ async function parseJsonSafely<T>(response: Response): Promise<T | null> {
     return (await response.json()) as T;
   } catch {
     return null;
+  }
+}
+
+// Resolves to a session only when the server accepts this device's Tailscale identity. Refusals,
+// network errors and answers slower than the timeout all resolve to null, so the caller shows the
+// normal login form without an error. The shared API helper takes no AbortSignal, so a late
+// answer is simply ignored.
+async function requestTailscaleSession(): Promise<{ user: AuthUser; token: string } | null> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timeoutId = setTimeout(() => resolve(null), TAILSCALE_SESSION_TIMEOUT_MS);
+  });
+  const attempt = (async () => {
+    const response = await api.auth.tailscaleSession();
+    if (!response.ok) {
+      return null;
+    }
+    const payload = await parseJsonSafely<AuthSessionPayload>(response);
+    return payload?.token && payload.user ? { user: payload.user, token: payload.token } : null;
+  })().catch(() => null);
+
+  try {
+    return await Promise.race([attempt, timeout]);
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -209,6 +238,42 @@ export function AuthProvider({ children }: AuthProviderProps) {
     tRef.current = t;
   }, [t]);
 
+  // ProtectedRoute shows the workspace as soon as there is a user, so the
+  // onboarding status is settled before the user is published; otherwise a
+  // user who still has to onboard would see the workspace mount for a whole
+  // round trip before Onboarding replaced it. The token is stored first
+  // because that request reads it from storage.
+  const publishSession = useCallback(async (nextUser: AuthUser, nextToken: string) => {
+    persistToken(nextToken);
+    await checkOnboardingStatus();
+    setUser(nextUser);
+    setToken(nextToken);
+    setNeedsSetup(false);
+  }, [checkOnboardingStatus]);
+
+  // The single Tailscale sign-in attempt of this page load. StrictMode runs the
+  // bootstrap effect twice; both runs await this one request instead of sending
+  // a second, and neither shows the login form before it settles.
+  const tailscaleSignInRef = useRef<Promise<boolean> | null>(null);
+
+  const signInWithTailscaleOnce = useCallback(() => {
+    tailscaleSignInRef.current ??= requestTailscaleSession()
+      .then(async (session) => {
+        if (!session) {
+          return false;
+        }
+        await publishSession(session.user, session.token);
+        // A stale stored token may have raised "session expired" on the way here.
+        setError(null);
+        return true;
+      })
+      .catch((caughtError: unknown) => {
+        console.warn('[Auth] Tailscale sign-in could not be completed:', caughtError);
+        return false;
+      });
+    return tailscaleSignInRef.current;
+  }, [publishSession]);
+
   const checkAuthStatus = useCallback(async () => {
     try {
       setIsLoading(true);
@@ -228,13 +293,17 @@ export function AuthProvider({ children }: AuthProviderProps) {
       // bootstrap flips `isLoading`, which swaps the whole app for the loading
       // screen, so it must run once on mount and not again on every
       // X-Refreshed-Token rotation (each one remounted the workspace, #1269).
+      // Without a usable token, the owner's own Tailscale device may be signed
+      // in without a password; on any refusal the login form appears silently.
       if (!readStoredToken()) {
+        await signInWithTailscaleOnce();
         return;
       }
 
       const userResponse = await api.auth.user();
       if (!userResponse.ok) {
         clearSession();
+        await signInWithTailscaleOnce();
         return;
       }
 
@@ -252,7 +321,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [checkOnboardingStatus, clearSession]);
+  }, [checkOnboardingStatus, clearSession, signInWithTailscaleOnce]);
 
   useEffect(() => {
     if (IS_PLATFORM) {
@@ -300,19 +369,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [refreshSession, token, user]);
-
-  // ProtectedRoute shows the workspace as soon as there is a user, so the
-  // onboarding status is settled before the user is published; otherwise a
-  // user who still has to onboard would see the workspace mount for a whole
-  // round trip before Onboarding replaced it. The token is stored first
-  // because that request reads it from storage.
-  const publishSession = useCallback(async (nextUser: AuthUser, nextToken: string) => {
-    persistToken(nextToken);
-    await checkOnboardingStatus();
-    setUser(nextUser);
-    setToken(nextToken);
-    setNeedsSetup(false);
-  }, [checkOnboardingStatus]);
 
   const login = useCallback<AuthContextValue['login']>(
     async (username, password) => {

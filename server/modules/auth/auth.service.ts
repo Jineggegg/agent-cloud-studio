@@ -1,5 +1,10 @@
 import { AppError } from '@/shared/utils.js';
 
+import {
+  evaluateTailscaleSessionRequest,
+  maskTailscaleLogin,
+} from './tailscale-session.service.js';
+
 type AuthUser = {
   id: number | bigint;
   username: string;
@@ -7,12 +12,17 @@ type AuthUser = {
 
 type AuthLoginUser = AuthUser & { password_hash: string };
 
+type TailscaleSessionRequest = Parameters<typeof evaluateTailscaleSessionRequest>[0];
+type TailscaleSignInConfig = Parameters<typeof evaluateTailscaleSessionRequest>[1];
+
 type AuthDependencies = {
   users: {
     hasUsers(): boolean;
     createUser(username: string, passwordHash: string): AuthUser;
     getUserByUsername(username: string): AuthLoginUser | undefined;
     updateLastLogin(userId: number): void;
+    countActiveUsers(): number;
+    getFirstUser(): AuthUser | undefined;
   };
   transaction: {
     begin(): void;
@@ -22,10 +32,23 @@ type AuthDependencies = {
   hashPassword(password: string): Promise<string>;
   comparePassword(password: string, passwordHash: string): Promise<boolean>;
   generateToken(user: AuthUser): string;
+  /** Current Tailscale sign-in settings; read per request so the policy follows the env. */
+  tailscaleSignIn(): TailscaleSignInConfig;
+  /** Info-level sink for Tailscale sign-in outcomes. */
+  logInfo(message: string): void;
 };
 
 function numericUserId(userId: number | bigint): number {
   return Number(userId);
+}
+
+// One response for every refusal, so callers cannot probe whether the feature is configured
+// or which check failed; the reason only goes to the server log.
+function tailscaleSignInUnavailable(): AppError {
+  return new AppError('Tailscale sign-in is not available', {
+    code: 'AUTH_TAILSCALE_UNAVAILABLE',
+    statusCode: 403,
+  });
 }
 
 function isUniqueConstraintError(error: unknown): boolean {
@@ -40,6 +63,19 @@ function isUniqueConstraintError(error: unknown): boolean {
  * transaction, and token dependencies.
  */
 export function createAuthService(dependencies: AuthDependencies) {
+  // Without STUDIO_TAILSCALE_USER an identity may only stand for the single local account;
+  // with several accounts the mapping must be explicit. Failure reasons are returned as strings.
+  function resolveTailscaleUser(mappedUsername: string | null) {
+    if (mappedUsername) {
+      return dependencies.users.getUserByUsername(mappedUsername) ?? 'mapped-user-missing';
+    }
+    const activeUsers = dependencies.users.countActiveUsers();
+    if (activeUsers > 1) {
+      return 'ambiguous-user';
+    }
+    return (activeUsers === 1 ? dependencies.users.getFirstUser() : undefined) ?? 'no-user';
+  }
+
   return {
     getStatus() {
       return {
@@ -123,6 +159,39 @@ export function createAuthService(dependencies: AuthDependencies) {
         success: true,
         user: { id: user.id, username: user.username },
         token: dependencies.generateToken(user),
+      };
+    },
+
+    /**
+     * Issues the same session as `login`, without a password, for an allowlisted Tailscale
+     * identity proxied by Tailscale Serve. Every refusal is the same 403; the reason is logged.
+     */
+    signInWithTailscale(request: TailscaleSessionRequest) {
+      const config = dependencies.tailscaleSignIn();
+      const decision = evaluateTailscaleSessionRequest(request, config);
+      const maskedLogin = maskTailscaleLogin(decision.login);
+      const refuse = (reason: string) => {
+        dependencies.logInfo(`[auth] Tailscale sign-in refused (${reason}) for ${maskedLogin}`);
+        return tailscaleSignInUnavailable();
+      };
+      if (!decision.allowed) {
+        throw refuse(decision.reason);
+      }
+
+      const user = resolveTailscaleUser(config.mappedUsername);
+      if (typeof user === 'string') {
+        throw refuse(user);
+      }
+
+      const sessionUser = { id: user.id, username: user.username };
+      dependencies.users.updateLastLogin(numericUserId(user.id));
+      dependencies.logInfo(
+        `[auth] Tailscale sign-in granted for ${maskedLogin} as local user "${user.username}"`,
+      );
+      return {
+        success: true,
+        user: sessionUser,
+        token: dependencies.generateToken(sessionUser),
       };
     },
 

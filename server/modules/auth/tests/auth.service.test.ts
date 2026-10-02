@@ -14,6 +14,8 @@ function createDependencies(overrides: Partial<AuthDependencies> = {}): AuthDepe
       createUser: (username, passwordHash) => ({ id: 1, username, password_hash: passwordHash }),
       getUserByUsername: () => undefined,
       updateLastLogin: () => undefined,
+      countActiveUsers: () => 0,
+      getFirstUser: () => undefined,
     },
     transaction: {
       begin: () => undefined,
@@ -23,6 +25,8 @@ function createDependencies(overrides: Partial<AuthDependencies> = {}): AuthDepe
     hashPassword: async () => 'hashed-password',
     comparePassword: async () => false,
     generateToken: () => 'signed-token',
+    tailscaleSignIn: () => ({ allowedLogins: [], mappedUsername: null, publicOrigin: null }),
+    logInfo: () => undefined,
     ...overrides,
   };
 }
@@ -47,6 +51,8 @@ test('register hashes credentials and commits through injected dependencies', as
       },
       getUserByUsername: () => undefined,
       updateLastLogin: (userId) => operations.push(`login:${userId}`),
+      countActiveUsers: () => 0,
+      getFirstUser: () => undefined,
     },
   }));
 
@@ -64,6 +70,8 @@ test('login rejects an invalid password without issuing a token', async () => {
       createUser: () => { throw new Error('unused'); },
       getUserByUsername: () => ({ id: 1, username: 'alice', password_hash: 'hash' }),
       updateLastLogin: () => undefined,
+      countActiveUsers: () => 1,
+      getFirstUser: () => undefined,
     },
     comparePassword: async () => false,
     generateToken: () => {
