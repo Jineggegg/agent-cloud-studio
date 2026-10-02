@@ -51,3 +51,42 @@ test('gateway requires its capability and rejects foreign or malformed write ori
     assert.equal(calls, 3);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
 });
+
+test('with two front doors configured, writes are accepted from either door and nowhere else', async () => {
+  const saved = { public: process.env.STUDIO_PUBLIC_ORIGIN, tailnet: process.env.STUDIO_TAILNET_ORIGIN };
+  // The route reads process.env per request; a trailing slash is normalised away.
+  process.env.STUDIO_PUBLIC_ORIGIN = 'https://studio.ajarche.com/';
+  process.env.STUDIO_TAILNET_ORIGIN = 'https://laptop-acgghbuq.tail6e45f0.ts.net:8443';
+  let calls = 0;
+  const gateway = createSnrGateway({
+    baseUrl: 'http://127.0.0.1:8768', validUser: () => true, authorization: () => null,
+    request: (async () => { calls++; return Response.json({ status: 'ok' }); }) as typeof fetch,
+  });
+  const app = express();
+  app.use(express.json());
+  app.use('/gateway', createSnrGatewayRouter(gateway));
+  app.use((error: { statusCode?: number }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    res.status(error.statusCode ?? 500).json({});
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const cookie = `studio-snr-access=${gateway.grant(1).key}`;
+  const write = (origin: string) => fetch(`${base}/gateway/api/sessions`, {
+    method: 'POST', headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' }, body: '{}',
+  }).then(response => response.status);
+  try {
+    assert.equal(await write('https://studio.ajarche.com'), 200);
+    assert.equal(await write('https://laptop-acgghbuq.tail6e45f0.ts.net:8443'), 200);
+    for (const origin of [base, 'https://evil.example', 'https://laptop-acgghbuq.tail6e45f0.ts.net', 'http://studio.ajarche.com']) {
+      assert.equal(await write(origin), 403);
+    }
+    assert.equal(calls, 2);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    for (const [name, value] of [['STUDIO_PUBLIC_ORIGIN', saved.public], ['STUDIO_TAILNET_ORIGIN', saved.tailnet]] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});

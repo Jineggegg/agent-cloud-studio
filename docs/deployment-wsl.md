@@ -39,7 +39,9 @@ cp .env.example .env   # 如已存在则直接编辑
 
 至少填写：
 
-- `STUDIO_PUBLIC_ORIGIN=https://<机器名>.<tailnet>.ts.net:8443`
+- `STUDIO_TAILNET_ORIGIN=https://<机器名>.<tailnet>.ts.net:8443`（Tailscale 入口）
+- `STUDIO_PUBLIC_ORIGIN`：公网域名入口，例如 `https://studio.ajarche.com`；还没开 Cloudflare 隧道时可以先留空。
+  两个入口的配置和切换见 [连接方式](network.md)。
 - `STUDIO_T212_ENV_FILE`、`STUDIO_T212_DEMO_ENV_FILE`：指向包含 `TRADING212_API_KEY` / `TRADING212_API_SECRET` 的文件。
 - 需要时填写 `STUDIO_SNR_PATH` 等项目目录。目录必须在 WSL 用户主目录下，才能在里面启动 Claude / Codex。
 
@@ -157,9 +159,10 @@ tailnet 里其他人（包括共享给你的设备）仍然需要密码。
 
    - `STUDIO_TAILSCALE_NODES` 里只要有一项不是 Tailscale 地址，免密码登录就会全部拒绝（日志原因 `nodes-invalid`），
      而不会退回「所有设备」。
-   - 如果设置了 `STUDIO_PUBLIC_ORIGIN`，免密码登录只接受来自这个地址的页面。它必须写成完整的
+   - 如果设置了 `STUDIO_TAILNET_ORIGIN`，免密码登录只接受来自这个地址的页面；没设置时退回
+     `STUDIO_PUBLIC_ORIGIN`（旧的单入口配置）。它必须写成完整的
      `https://<机器名>.<tailnet>.ts.net:8443`（带 `https://`、不带路径）；格式不对时免密码登录会全部拒绝
-     （日志原因 `public-origin-invalid`）。
+     （日志原因 `pinned-origin-invalid`），指向非 ts.net 地址时原因是 `pinned-origin-not-tailnet`。
 4. `systemctl --user restart agent-cloud-studio.service`，然后在 iPad 上重新打开 Studio。
 
 只有同时满足下列条件才会免密码登录，否则照常显示登录页：请求经由 Tailscale Serve（`https://…ts.net`）
@@ -177,7 +180,9 @@ tailnet 里其他人（包括共享给你的设备）仍然需要密码。
 注意：
 
 - 只在你信任这台电脑上的所有程序和用户、以及上面列出的设备上的所有 App 时开启。
-- 不要再用 cloudflared、ngrok、nginx 等其他反向代理把 3002 端口转发出去；它们可能原样转发伪造的请求头。
+- 公网访问只按 [连接方式](network.md) 的做法接 Cloudflare Tunnel（固定 Host、前面加 Cloudflare Access），
+  并设置 `STUDIO_TAILNET_ORIGIN`；Studio 会拒绝经 Cloudflare 转来的免密码登录请求。不要再用 ngrok、nginx
+  等其他反向代理把 3002 端口转发出去；它们可能原样转发伪造的请求头。
 - 不要对 Studio 开启 Tailscale Funnel。
 - 「退出登录」后刷新页面会自动重新登录；要关闭此功能，清空 `STUDIO_TAILSCALE_LOGINS` 并重启服务。
 

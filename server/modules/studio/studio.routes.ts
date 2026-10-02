@@ -1,6 +1,6 @@
 import express from 'express';
 
-import { AppError, asyncHandler } from '@/shared/utils.js';
+import { AppError, asyncHandler, readStudioIngressOrigins } from '@/shared/utils.js';
 
 import type { createStudioService } from './studio.service.js';
 import type { createSnrGateway } from './snr-gateway.service.js';
@@ -25,8 +25,11 @@ export function createStudioRouter(service: ReturnType<typeof createStudioServic
   router.get('/snr', asyncHandler(async (req, res) => { user(req); res.json(await service.snrStatus()); }));
   router.post('/snr/access', asyncHandler(async (req, res) => {
     const access = gateway.grant(user(req));
+    // Either https front door (public domain or tailnet) makes the scoped cookie Secure.
+    const doors = readStudioIngressOrigins(process.env);
+    const httpsDoor = [doors.public, doors.tailnet].some(door => door?.startsWith('https://'));
     res.cookie('studio-snr-access', access.key, {
-      httpOnly: true, sameSite: 'strict', secure: process.env.STUDIO_PUBLIC_ORIGIN?.startsWith('https://') || req.secure || req.get('x-forwarded-proto') === 'https',
+      httpOnly: true, sameSite: 'strict', secure: httpsDoor || req.secure || req.get('x-forwarded-proto') === 'https',
       path: '/api/studio/snr-site', maxAge: access.maxAge,
     });
     res.json({ url: access.url });

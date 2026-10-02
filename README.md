@@ -67,10 +67,12 @@ its existing save actions. The gateway cookie is HttpOnly, SameSite Strict and
 expires after 30 minutes; reopen the lab from Studio after expiry.
 No arbitrary-network proxy or SNR auto-training is provided.
 
-Set `STUDIO_PUBLIC_ORIGIN` to the exact HTTPS origin for a reverse-proxied
-preview, so scoped cookies and write-origin checks remain correct.
-Expose only through a private authenticated channel such as Tailscale Serve.
-The computer must remain powered, awake and signed in. Do not expose port 3002
+Studio has two front doors to the same backend and database
+([docs/network.md](docs/network.md)): set `STUDIO_PUBLIC_ORIGIN` to the public
+domain served by a Cloudflare Tunnel (put Cloudflare Access in front of it) and
+`STUDIO_TAILNET_ORIGIN` to the Tailscale Serve origin, so scoped cookies,
+write-origin checks and session handoff between the doors remain correct.
+The computer must remain powered, awake and signed in. Do not open port 3002
 to the public internet or enable platform auth bypass.
 
 ## Next Work

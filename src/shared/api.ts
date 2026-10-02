@@ -5,7 +5,7 @@ import {
 } from '@/shared/authToken';
 import { IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
-import type { HubAgentProvider, HubProjectInput, HubTaskInput, StudioChatSpace, T212Env } from '@/shared/types';
+import type { HubAgentProvider, HubProjectInput, HubTaskInput, StudioChatSpace, StudioIngressId, T212Env } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -190,6 +190,48 @@ export const api = {
       overview: (env: T212Env) => get(`/api/studio/trading212/overview${query({ env })}`),
       history: (env: T212Env, days: number) => get(`/api/studio/trading212/history${query({ env, days: String(days) })}`),
       activity: (env: T212Env) => get(`/api/studio/trading212/activity${query({ env })}`),
+    },
+    // ── v4 track: network — endpoints below this line ──
+    // Both front doors, the one serving this page and short guidance (docs/network.md).
+    network: () => get('/api/studio/network'),
+    // The network guide (docs/network.md) as Markdown, served by Studio so it opens without GitHub.
+    networkGuide: () => get('/api/studio/network/guide'),
+    // A one-time code that signs this user in on the other door; a Tailscale session needs the password for the public door.
+    handoff: (target: StudioIngressId, password?: string) => post('/api/auth/handoff', password ? { target, password } : { target }),
+    // Redeemed by the page on the target door, which has no token yet; the server checks this page's Origin.
+    redeemHandoff: (code: string) => fetch('/api/auth/handoff/redeem', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    }),
+    // ── v4 track: orders — endpoints below this line ──
+    // Trading 212 order placement (single-use previews confirmed by a passkey or a double confirmation) and passkeys.
+    // Passkey changes are stepped up with the Studio password (or, for a removal, that passkey's assertion).
+    t212Trading: {
+      config: () => get('/api/studio/trading212/trading'),
+      preview: (input: {
+        env: T212Env; ticker: string; side: 'buy' | 'sell'; type: 'market' | 'limit'; quantity: number;
+        limitPrice?: number; timeValidity?: 'DAY' | 'GOOD_TILL_CANCEL'; acknowledgeUnknown?: boolean;
+      }) => post('/api/studio/trading212/orders/preview', input),
+      confirm: (id: string, proof: { assertion: unknown } | { confirmed: true }) =>
+        post(`/api/studio/trading212/orders/${encodeURIComponent(id)}/confirm`, proof),
+      passkeyOptions: (password: string) => post('/api/studio/trading212/passkey/options', { password }),
+      registerPasskey: (response: unknown) => post('/api/studio/trading212/passkey', { response }),
+      removalOptions: (id: string) => post(`/api/studio/trading212/passkey/${encodeURIComponent(id)}/remove/options`),
+      removePasskey: (id: string, proof: { password: string } | { assertion: unknown }) =>
+        post(`/api/studio/trading212/passkey/${encodeURIComponent(id)}/remove`, proof),
+    },
+    // ── v4 track: mail — endpoints below this line ──
+    // Per-user read-only mail accounts (Gmail IMAP, Outlook) and the unified inbox; secrets only travel in addImap's body.
+    mail: {
+      accounts: () => get('/api/studio/mail/accounts'),
+      addImap: (email: string, password: string) => post('/api/studio/mail/accounts/imap', { email, password }),
+      startOutlook: () => post('/api/studio/mail/accounts/outlook/device'),
+      pollOutlook: (pollId: string) => post(`/api/studio/mail/accounts/outlook/device/${encodeURIComponent(pollId)}`),
+      removeAccount: (id: string) => del(`/api/studio/mail/accounts/${encodeURIComponent(id)}`),
+      messages: (params: { accountId?: string; q?: string; limit?: number } = {}) => get(`/api/studio/mail/messages${query(params)}`),
+      message: (accountId: string, messageId: string) =>
+        get(`/api/studio/mail/messages/${encodeURIComponent(accountId)}/${encodeURIComponent(messageId)}`),
     },
     status: () => get('/api/studio/status'),
     snr: () => get('/api/studio/snr'),

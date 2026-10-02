@@ -1825,7 +1825,8 @@ type TaskPriority = 'high' | 'medium' | 'low' | string;
 //----------------- STUDIO CONTRACTS ------------
 /** Studio's server-confirmed connector state; never includes an API secret. */
 export type StudioStatus = {
-  deepseek: { configured: boolean; models: string[]; baseUrl: string };
+  // `source`: saved in Studio's vault, read from the owner key file (STUDIO_DEEPSEEK_ENV_FILE), or none.
+  deepseek: { configured: boolean; source: 'vault' | 'file' | null; models: string[]; baseUrl: string };
   agentWorkbenchUrl: string | null;
   snrRemoteUrl: string | null;
 };
@@ -1942,4 +1943,89 @@ export type T212Activity = {
   id: string; kind: 'buy' | 'sell' | 'dividend'; ticker: string; name: string; quantity: number;
   price: number | null; value: number | null; realized: number | null; currency: string; at: string; status: string;
 };
+// ── v4 track: network — types below this line ──
+/**
+ * One of Studio's two front doors to the single backend on the laptop: `public` is the owner's
+ * domain through a Cloudflare Tunnel (the default), `tailnet` is Tailscale Serve reached over AJ's
+ * tailnet. Used for handoff targets and for the per-device door preference.
+ */
+export type StudioIngressId = 'public' | 'tailnet';
+/** A front door as GET /api/studio/network lists it; `origin` is null when it is not configured. */
+export type StudioIngress = { id: StudioIngressId; label: string; origin: string | null; configured: boolean; isDefault: boolean };
+/**
+ * GET /api/studio/network: both doors, the one that served this page ('local' for localhost or
+ * dev hosts), whether the session came from passwordless Tailscale sign-in, and short guidance.
+ */
+export type StudioNetworkInfo = {
+  ingresses: StudioIngress[];
+  current: StudioIngressId | 'local';
+  session: 'password' | 'tailscale';
+  guidance: string[];
+};
+// ── v4 track: orders — types below this line ──
+//----------------- STUDIO TRADING 212 ORDERS ------------
+/** Buy or sell in the Trading 212 order sheet; the server turns a sell into a negative quantity. */
+export type T212OrderSide = 'buy' | 'sell';
+/** A Face ID / Touch ID passkey registered for one Studio domain (its RP ID); a passkey never authorizes another domain. */
+export type T212Passkey = { id: string; rpId: string; label: string | null; createdAt: string; lastUsedAt: string | null };
+/** Server order-safety settings shared by the order sheet and Settings: tradable accounts, the per-order cap and passkeys. */
+export type T212TradingConfig = {
+  // Accounts STUDIO_T212_TRADING allows to trade; empty means trading is off.
+  allowedEnvs: T212Env[];
+  // STUDIO_T212_MAX_ORDER_VALUE, in the account currency.
+  maxOrderValue: number;
+  // Account currency from the last stored balance snapshot; absent before the account was first read.
+  currency?: string;
+  // This user's passkeys on every domain; once there is one, a domain without its own passkey cannot trade.
+  passkeys: T212Passkey[];
+  // Origins allowed to trade and register passkeys.
+  trustedOrigins: string[];
+  // STUDIO_T212_ALLOW_LOCALHOST=1: http://localhost, 127.0.0.1 and [::1] are trusted as well.
+  allowLocalhost: boolean;
+  // STUDIO_T212_REQUIRE_PASSKEY=1: the double confirmation is off, so every domain needs its own passkey.
+  requirePasskey: boolean;
+};
+// ── v4 track: mail — types below this line ──
+//----------------- STUDIO MAIL CONTRACTS ------------
+/** How a Studio mail account is read: Gmail over IMAP (App Password), Outlook over Graph, or a legacy project Gmail OAuth link. */
+export type StudioMailProvider = 'gmail-imap' | 'outlook' | 'gmail-oauth';
+/** A mail account owned by the Studio user; the server never sends its password or tokens. */
+export type StudioMailAccount = {
+  id: string;
+  provider: StudioMailProvider;
+  email: string;
+  displayName: string;
+  // `reauth`: the provider rejected the saved credential; the user must add the account again.
+  status: 'ok' | 'error' | 'reauth';
+  lastError: string | null;
+  createdAt: string;
+};
+/** GET /api/studio/mail/accounts: the accounts plus whether the server can offer Outlook sign-in. */
+export type StudioMailAccounts = { accounts: StudioMailAccount[]; outlookConfigured: boolean };
+/** One row of the unified inbox. Untrusted plain text (no markup); render it as text, never as HTML. */
+export type StudioMailMessage = {
+  id: string;
+  accountId: string;
+  subject: string;
+  from: string;
+  fromAddress: string;
+  // ISO-8601, or empty when the provider gave no usable date.
+  date: string;
+  snippet: string;
+  unread: boolean;
+};
+/** An opened message: the row plus recipients and the capped plain-text body. */
+export type StudioMailMessageDetail = StudioMailMessage & { to: string; text: string; truncated: boolean };
+/**
+ * One account that could not be listed: a provider failure, an account paused until its credentials are replaced
+ * or cooling down after repeated failures, or (`skipped`) a search its provider cannot run, which is a notice
+ * rather than a fault of the account. `message` is short user-facing Chinese text.
+ */
+export type StudioMailAccountFailure = { accountId: string; email: string; message: string; skipped?: true };
+/** GET /api/studio/mail/messages: merged messages, plus per-account failures that did not stop the others. */
+export type StudioMailInbox = { messages: StudioMailMessage[]; errors: StudioMailAccountFailure[] };
+/** An Outlook device-code sign-in in progress: the code the user types at Microsoft, never the device secret. */
+export type StudioMailDeviceStart = { pollId: string; userCode: string; verificationUri: string; expiresAt: string; interval: number };
+/** One poll of an Outlook device-code sign-in. */
+export type StudioMailDevicePoll = { status: 'pending' | 'connected' | 'expired' | 'error'; account?: StudioMailAccount; message?: string };
 // ---------------------------

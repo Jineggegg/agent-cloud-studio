@@ -1,17 +1,16 @@
 import { Suspense, lazy } from 'react';
-import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
+import { BrowserRouter as Router, Navigate, Route, Routes } from 'react-router-dom';
 import { I18nextProvider } from 'react-i18next';
 
 import { ThemeProvider } from '@/shared/context/ThemeContext';
 import { UiPreferencesProvider } from '@/shared/context/UiPreferencesContext';
+import { LaunchErrorBoundary, LaunchScreen, LaunchSplashRelease } from '@/shared/ui/LaunchScreen';
 import { AuthProvider, ProtectedRoute } from '@/modules/auth';
-import { TaskMasterProvider,TasksSettingsProvider } from '@/modules/task-master';
-import { WebSocketProvider } from '@/shared/context/WebSocketContext';
-import { PluginsProvider } from '@/modules/plugins';
 import { i18n } from '@/modules/i18n';
 import { StudioPage } from '@/modules/studio';
 
-// The IDE (editor, terminal, chat) is large; the Studio home screen loads without it.
+// The IDE (editor, terminal, chat) is large; the Studio home screen loads without it. The IDE-wide
+// providers (chat websocket, plugins, TaskMaster) live inside this chunk too, in ProjectWorkspaceRoute.
 const ProjectWorkspaceRoute = lazy(() => import('@/modules/project-workspace').then(module => ({ default: module.ProjectWorkspaceRoute })));
 
 const DEPLOYMENT_ASSET_DIRECTORIES = new Set(['assets', 'static', 'icons', 'images']);
@@ -109,43 +108,51 @@ function detectRouterBasename() {
   return detectedBasename;
 }
 
-function WorkspaceLoading() {
-  return <div className="flex h-dvh items-center justify-center bg-background" role="status" aria-label="正在打开开发工具">
-    <span className="h-6 w-6 animate-spin rounded-full border-2 border-muted-foreground/25 border-t-muted-foreground" />
-  </div>;
-}
-
-/** Rendered by main.tsx; mounts the shared providers, the auth gate and the project workspace routes. */
+/**
+ * Rendered by main.tsx; mounts the shared providers, the auth gate and the routes. Every route
+ * renders LaunchSplashRelease beside its screen so the index.html splash crossfades away only once
+ * that screen has painted; the IDE's sits inside its Suspense boundary, so a cold start on
+ * /workspace keeps the splash (not a spinner) up until the IDE itself is ready. An unknown path
+ * goes to the Studio home, and a screen that throws (or a chunk that fails to download) shows
+ * LaunchErrorBoundary's error screen, so the splash can never be left up with nothing behind it.
+ */
 export default function App() {
   const routerBasename = detectRouterBasename();
+  // One element shape for all three Studio routes, so opening an app keeps the home screen mounted.
+  const studioScreen = <><StudioPage /><LaunchSplashRelease /></>;
+  const workspaceScreen = (
+    <Suspense fallback={<LaunchScreen label="正在打开开发工具" />}>
+      <ProjectWorkspaceRoute />
+      <LaunchSplashRelease />
+    </Suspense>
+  );
 
   return (
+    <LaunchErrorBoundary homeHref={`${routerBasename}/`}>
     <I18nextProvider i18n={i18n}>
       <ThemeProvider>
         <UiPreferencesProvider>
         <AuthProvider>
-          <WebSocketProvider>
-            <PluginsProvider>
-              <TasksSettingsProvider>
-                <TaskMasterProvider>
-                <ProtectedRoute>
-                  <Router basename={routerBasename}>
-                    <Routes>
-                      <Route path="/" element={<StudioPage />} />
-                      <Route path="/projects/:id" element={<StudioPage />} />
-                      <Route path="/apps/:app" element={<StudioPage />} />
-                      <Route path="/workspace" element={<Suspense fallback={<WorkspaceLoading />}><ProjectWorkspaceRoute /></Suspense>} />
-                      <Route path="/session/:sessionId" element={<Suspense fallback={<WorkspaceLoading />}><ProjectWorkspaceRoute /></Suspense>} />
-                    </Routes>
-                  </Router>
-                </ProtectedRoute>
-                </TaskMasterProvider>
-              </TasksSettingsProvider>
-            </PluginsProvider>
-          </WebSocketProvider>
+          {/* Last-resort boundary: every lazy screen has its own, this only catches a stray suspension. */}
+          <Suspense fallback={<LaunchScreen label="正在加载" />}>
+            <ProtectedRoute>
+              <Router basename={routerBasename}>
+                <Routes>
+                  <Route path="/" element={studioScreen} />
+                  <Route path="/projects/:id" element={studioScreen} />
+                  <Route path="/apps/:app" element={studioScreen} />
+                  <Route path="/workspace" element={workspaceScreen} />
+                  <Route path="/session/:sessionId" element={workspaceScreen} />
+                  {/* Old bookmarks and mistyped links land on the home screen instead of an empty page. */}
+                  <Route path="*" element={<Navigate to="/" replace />} />
+                </Routes>
+              </Router>
+            </ProtectedRoute>
+          </Suspense>
         </AuthProvider>
         </UiPreferencesProvider>
       </ThemeProvider>
     </I18nextProvider>
+    </LaunchErrorBoundary>
   );
 }

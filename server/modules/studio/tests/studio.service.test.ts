@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -30,6 +30,33 @@ test('credentials are encrypted locally, never returned and scoped to the owner'
     f.service.removeKey(1);
     assert.equal(f.service.status(1).deepseek.configured, false);
   } finally { f.close(); }
+});
+
+test('an owner key file supplies the DeepSeek key when none is saved, and a saved key wins', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'studio-keyfile-'));
+  const keyFile = path.join(directory, '.env');
+  writeFileSync(keyFile, 'OTHER=1\nDEEPSEEK_API_KEY="fake-file-key-0123456789"\n');
+  const database = new Database(':memory:');
+  const seen: string[] = [];
+  const request = (async (_url: string, init?: RequestInit) => {
+    seen.push(String((init?.headers as Record<string, string>).Authorization));
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  }) as typeof fetch;
+  const service = createStudioService({ database, vaultDirectory: directory, request, deepseekKeyFile: keyFile });
+  try {
+    assert.deepEqual([service.status(1).deepseek.configured, service.status(1).deepseek.source], [true, 'file']);
+    assert.ok(!JSON.stringify(service.status(1)).includes('fake-file-key'));
+    await service.testKey(1);
+    assert.equal(seen.at(-1), 'Bearer fake-file-key-0123456789');
+    service.saveKey(1, 'fake-vault-key-0123456789');
+    assert.equal(service.status(1).deepseek.source, 'vault');
+    await service.testKey(1);
+    assert.equal(seen.at(-1), 'Bearer fake-vault-key-0123456789');
+    service.removeKey(1);
+    assert.equal(service.status(1).deepseek.source, 'file');
+    rmSync(keyFile);
+    assert.deepEqual([service.status(1).deepseek.configured, service.status(1).deepseek.source], [false, null]);
+  } finally { database.close(); rmSync(directory, { recursive: true }); }
 });
 
 test('conversation access and deletion cannot cross users', () => {

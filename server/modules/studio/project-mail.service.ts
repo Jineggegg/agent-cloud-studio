@@ -5,7 +5,7 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 
 import { AppError } from '@/shared/utils.js';
-import type { StudioProjectRecord } from '@/shared/types.js';
+import type { StudioIngressOrigins, StudioProjectRecord } from '@/shared/types.js';
 
 type Dependencies = {
   database: Database.Database;
@@ -13,9 +13,16 @@ type Dependencies = {
   project: (userId: number, id: string) => StudioProjectRecord;
   clientId?: string;
   clientSecret?: string;
-  publicOrigin?: string;
+  /**
+   * Studio's front doors (docs/network.md), already validated: studio.module passes
+   * readStudioIngressOrigins(process.env), which never throws, so a malformed origin only disables
+   * Gmail instead of stopping the server. Without any door Gmail OAuth is unconfigured.
+   */
+  doors?: () => StudioIngressOrigins;
   request?: typeof fetch;
 };
+/** Where the Connect request came from: its Origin header and, as a fallback, its Host header. */
+type RequestDoor = { origin?: string; host?: string };
 type Tokens = { access_token: string; refresh_token?: string; expires_at: number; email: string };
 type GmailMessage = {
   id: string; snippet?: string; internalDate?: string;
@@ -32,11 +39,26 @@ function fail(message: string, statusCode = 400): never {
 export function createProjectMailService(deps: Dependencies) {
   const db = deps.database;
   const request = deps.request ?? fetch;
-  const pending = new Map<string, { userId: number; projectId: string; verifier: string; expires: number }>();
-  const origin = deps.publicOrigin ? new URL(deps.publicOrigin).origin : '';
-  const redirectUri = origin ? `${origin}/api/studio/gmail/callback` : '';
+  // `door` is the configured origin the flow started from; Google calls back there and the user returns there.
+  const pending = new Map<string, { userId: number; projectId: string; verifier: string; expires: number; door: string }>();
   db.exec('CREATE TABLE IF NOT EXISTS studio_project_mail (project_id TEXT PRIMARY KEY, encrypted_tokens TEXT NOT NULL)');
 
+  // Configured doors, public (the default) first.
+  function doors(): string[] {
+    const origins = deps.doors?.();
+    return origins ? [origins.public, origins.tailnet].filter((door): door is string => door !== null) : [];
+  }
+  // The door the user is on, when it is one of the configured doors (the Origin header first, then
+  // the Host header); otherwise the default door. A request can only pick among configured doors.
+  function chooseDoor(from: RequestDoor): string | null {
+    const configured = doors();
+    const parse = (value: string) => { try { return new URL(value); } catch { return null; } };
+    const origin = from.origin ? parse(from.origin)?.origin : undefined;
+    const byOrigin = configured.find(door => door === origin);
+    const byHost = from.host ? configured.find(door => parse(door)?.host === from.host?.trim().toLowerCase()) : undefined;
+    return byOrigin ?? byHost ?? configured[0] ?? null;
+  }
+  const callbackUrl = (door: string) => `${door}/api/studio/gmail/callback`;
   function check(userId: number, id: string) {
     const project = deps.project(userId, id);
     if (!project.modules.includes('mail')) fail('邮箱模块未启用');
@@ -66,7 +88,7 @@ export function createProjectMailService(deps: Dependencies) {
       .run(id, [iv, cipher.getAuthTag(), body].map(value => value.toString('base64')).join('.'));
   }
   async function tokenRequest(params: Record<string, string>) {
-    if (!deps.clientId || !deps.clientSecret || !redirectUri) fail('Gmail OAuth 尚未配置', 503);
+    if (!deps.clientId || !deps.clientSecret) fail('Gmail OAuth 尚未配置', 503);
     let response: Response;
     try {
       response = await request('https://oauth2.googleapis.com/token', {
@@ -106,18 +128,24 @@ export function createProjectMailService(deps: Dependencies) {
     status(userId: number, id: string) {
       check(userId, id);
       const tokens = load(id);
-      return { configured: Boolean(deps.clientId && deps.clientSecret && origin), connected: Boolean(tokens), email: tokens?.email ?? null, access: 'readonly' };
+      return { configured: Boolean(deps.clientId && deps.clientSecret && doors().length > 0), connected: Boolean(tokens), email: tokens?.email ?? null, access: 'readonly' };
     },
-    begin(userId: number, projectId: string) {
+    /**
+     * Starts the OAuth flow from the door the user is on (docs/network.md), so Google calls back to
+     * that door's /api/studio/gmail/callback and the user lands back on a page that is signed in.
+     * Both callbacks must be registered with the Google OAuth client.
+     */
+    begin(userId: number, projectId: string, from: RequestDoor = {}) {
       check(userId, projectId);
-      if (!deps.clientId || !deps.clientSecret || !redirectUri) fail('Gmail OAuth 尚未配置', 503);
+      const door = chooseDoor(from);
+      if (!deps.clientId || !deps.clientSecret || !door) fail('Gmail OAuth 尚未配置', 503);
       for (const [state, value] of pending) if (value.expires < Date.now()) pending.delete(state);
       if (pending.size > 100) fail('授权请求过多，请稍后重试', 429);
       const state = randomBytes(32).toString('base64url');
       const verifier = randomBytes(32).toString('base64url');
-      pending.set(state, { userId, projectId, verifier, expires: Date.now() + 600000 });
+      pending.set(state, { userId, projectId, verifier, expires: Date.now() + 600000, door });
       const params = new URLSearchParams({
-        client_id: deps.clientId, redirect_uri: redirectUri, response_type: 'code', scope: SCOPE,
+        client_id: deps.clientId, redirect_uri: callbackUrl(door), response_type: 'code', scope: SCOPE,
         access_type: 'offline', prompt: 'consent', state,
         code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256',
       });
@@ -128,7 +156,8 @@ export function createProjectMailService(deps: Dependencies) {
       pending.delete(state);
       if (!attempt || attempt.expires < Date.now() || !code) fail('邮箱授权请求已失效，请重新连接');
       check(attempt.userId, attempt.projectId);
-      const data = await tokenRequest({ code, grant_type: 'authorization_code', redirect_uri: redirectUri, code_verifier: attempt.verifier });
+      // Google requires the same redirect_uri as in the authorization request.
+      const data = await tokenRequest({ code, grant_type: 'authorization_code', redirect_uri: callbackUrl(attempt.door), code_verifier: attempt.verifier });
       if (!data.scope?.split(' ').includes(SCOPE)) fail('未授予邮箱只读权限');
       const profile = await gmail(`${GMAIL}/profile`, data.access_token) as { emailAddress?: string };
       if (!profile.emailAddress) fail('无法确认 Gmail 账号', 502);
@@ -137,7 +166,7 @@ export function createProjectMailService(deps: Dependencies) {
         access_token: data.access_token, refresh_token: data.refresh_token ?? (previous?.email === profile.emailAddress ? previous.refresh_token : undefined),
         expires_at: Date.now() + (data.expires_in ?? 3600) * 1000, email: profile.emailAddress,
       });
-      return `${origin}/projects/${encodeURIComponent(attempt.projectId)}?view=mail`;
+      return `${attempt.door}/projects/${encodeURIComponent(attempt.projectId)}?view=mail`;
     },
     async search(userId: number, id: string, query: string) {
       check(userId, id);

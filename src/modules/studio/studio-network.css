@@ -1,0 +1,75 @@
+/*
+ * Settings → 连接方式 (StudioSettingsNetwork): the two front doors to the one Studio backend.
+ * Uses the --ios-* tokens from studio.css, so light and dark follow the app theme.
+ */
+
+.studio-network-door { min-height: 60px; }
+.studio-network-door .ios-row-body strong { display: flex; align-items: center; gap: 8px; }
+.studio-network-tag {
+  flex-shrink: 0; padding: 1px 7px; border-radius: 6px;
+  font-size: 12px; font-weight: 600; line-height: 18px;
+  background: var(--ios-tint-soft); color: var(--ios-tint);
+}
+.studio-network-status { display: inline-flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.studio-network-latency {
+  display: inline-flex; align-items: center; justify-content: flex-end; min-width: 52px;
+  font-size: 13px; color: var(--ios-label-2); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.studio-network-down { color: var(--ios-orange); font-weight: 600; }
+/* Reachable edge, but Cloudflare Access hides whether the tunnel behind it runs. */
+.studio-network-access { color: var(--ios-label-2); font-weight: 600; }
+.studio-network-door.is-current .status-badge { gap: 4px; }
+
+/* The password row slides open under the doors; height is animated by motion, so clip it. */
+.studio-network-password { overflow: hidden; }
+.studio-network-note { padding: 0 16px 12px; font-size: 13px; line-height: 1.5; color: var(--ios-label-2); }
+.studio-network-note .studio-network-link { margin-left: 6px; }
+
+.studio-network-preference { margin-top: 10px; }
+
+.studio-network-footer ul { margin: 8px 0 0; padding-left: 18px; list-style: disc; }
+.studio-network-footer li::marker { color: var(--ios-label-3); }
+.studio-network-footer li + li { margin-top: 4px; }
+.studio-network-actions { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 6px; }
+
+/* Text-style actions keep a 44 px touch target without looking like buttons. */
+.studio .studio-network-link {
+  display: inline-flex; align-items: center; gap: 5px; min-height: 44px;
+  font-size: 13px; font-weight: 600; color: var(--ios-tint);
+}
+.studio-network-note .studio-network-link { min-height: 0; padding: 12px 0; margin-block: -12px; }
+
+/* The network guide sheet (StudioNetworkGuide): docs/network.md rendered from Markdown. The
+   library-sheet rules style h2/h3 as sheet titles, so the article resets them for prose. */
+/* Wider than other sheets for code blocks; below 700 px studio.css makes it a full-width bottom sheet. */
+@media (min-width: 700px) { .studio-network-guide { width: min(720px, calc(100% - 32px)); } }
+.studio-network-guide-status { display: flex; justify-content: center; padding: 32px 0; font-size: 15px; color: var(--ios-label-2); }
+.studio-network-guide-body { padding: 4px 2px 8px; font-size: 15px; line-height: 1.65; color: var(--ios-label); overflow-wrap: anywhere; }
+.studio-network-guide-body > * + * { margin-top: 12px; }
+.studio-network-guide-body h1 { font-family: var(--serif); font-size: 24px; font-weight: 400; line-height: 1.3; }
+.studio-network-guide-body h2 { margin-top: 28px; font-family: var(--serif); font-size: 21px; font-weight: 400; line-height: 1.35; }
+.studio-network-guide-body h3 { margin: 22px 0 0; font-size: 16px; font-weight: 600; letter-spacing: 0; color: var(--ios-label); }
+.studio-network-guide-body ul, .studio-network-guide-body ol { padding-left: 22px; }
+.studio-network-guide-body ul { list-style: disc; }
+.studio-network-guide-body ol { list-style: decimal; }
+.studio-network-guide-body li + li { margin-top: 4px; }
+.studio-network-guide-body a { color: var(--ios-tint); text-decoration: underline; text-underline-offset: 2px; }
+.studio-network-guide-body code {
+  padding: 1px 5px; border-radius: 6px; background: var(--ios-fill);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .86em;
+}
+.studio-network-guide-body pre {
+  overflow-x: auto; padding: 12px 14px; border-radius: 12px; background: var(--ios-surface-2);
+  font-size: 13px; line-height: 1.5;
+}
+.studio-network-guide-body pre code { padding: 0; background: none; font-size: inherit; white-space: pre; }
+/* Wide tables scroll inside the sheet instead of widening the page. */
+.studio-network-guide-body table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: 14px; }
+.studio-network-guide-body th, .studio-network-guide-body td { padding: 6px 10px; border: 1px solid var(--ios-separator); text-align: left; vertical-align: top; }
+.studio-network-guide-body th { background: var(--ios-fill); font-weight: 600; }
+
+@media (max-width: 520px) {
+  /* On a phone the origin line already says where the door goes; keep the badges compact. */
+  .studio-network-latency { min-width: 0; }
+  .studio-network-status { gap: 6px; }
+}

@@ -21,3 +21,7 @@ if (typeof window.matchMedia !== 'function') {
     dispatchEvent: () => false,
   })) as typeof window.matchMedia;
 }
+
+// The product starts devices with no saved language in Chinese (src/modules/i18n/config.ts);
+// the suite asserts on the English strings, so pin English before any module reads preferences.
+localStorage.setItem('user-preferences', JSON.stringify({ userLanguage: 'en' }));

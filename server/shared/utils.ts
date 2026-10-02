@@ -30,6 +30,8 @@ import type {
   ProviderCurrentActiveModel,
   ProviderModelsDefinition,
   ProviderSkillSource,
+  StudioCloudflareAccessConfig,
+  StudioIngressOrigins,
   SubagentActivity,
   WorkspacePathValidationResult,
 } from '@/shared/types.js';
@@ -161,6 +163,123 @@ export function readSnrBasicAuthorization(env: NodeJS.ProcessEnv = process.env):
   // A Basic credential cannot carry ':' in the user name or control characters in either part (SNR's own rule).
   if (!password || user.includes(':') || /\p{Cc}/u.test(user) || /\p{Cc}/u.test(password)) throw unavailable();
   return `Basic ${Buffer.from(`${user}:${password}`, 'utf8').toString('base64')}`;
+}
+
+// ---------------------------
+//----------------- STUDIO INGRESS UTILITIES ------------
+// A bare origin is scheme + host + optional port and nothing else; one trailing slash is tolerated
+// because operators often paste it. Returns the serialized `URL.origin`, or null for anything else.
+function bareHttpOrigin(value: string): string | null {
+  try {
+    const url = new URL(value);
+    const isBare = ['http:', 'https:'].includes(url.protocol)
+      && !url.username
+      && !url.password
+      && url.pathname === '/'
+      && !url.search
+      && !url.hash;
+    return isBare ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reads the origins of Studio's two front doors from the environment:
+ * STUDIO_PUBLIC_ORIGIN (the owner's domain behind a Cloudflare Tunnel, the default door) and
+ * STUDIO_TAILNET_ORIGIN (Tailscale Serve on the laptop, reached over AJ's tailnet).
+ *
+ * Used by the auth module (handoff targets: a one-time code is bound to one of these origins),
+ * the Studio network endpoint (which door served a request), the Studio SNR gateway (write
+ * requests must come from one of these origins), the Studio router (an https door makes the
+ * SNR cookie Secure) and the Studio Gmail service (the OAuth callback goes to the door that started
+ * the flow). They pass process.env, which server/load-env.ts fills from .env once at startup, so
+ * .env edits apply after a restart.
+ *
+ * Each value must be a bare http(s) origin; http is accepted so the development runner
+ * (`npm run dev`, http://127.0.0.1:5174) keeps working. A set but malformed value is reported in
+ * `invalid` and its origin is null, so it can never match a request. Never throws, so a typo in
+ * .env disables the features that need the door instead of stopping the server.
+ */
+export function readStudioIngressOrigins(env: Record<string, string | undefined> = process.env): StudioIngressOrigins {
+  const origins: StudioIngressOrigins = { public: null, tailnet: null, invalid: [] };
+  for (const [id, variable] of [['public', 'STUDIO_PUBLIC_ORIGIN'], ['tailnet', 'STUDIO_TAILNET_ORIGIN']] as const) {
+    const raw = env[variable]?.trim();
+    if (!raw) continue;
+    origins[id] = bareHttpOrigin(raw);
+    if (origins[id] === null) origins.invalid.push(id);
+  }
+  return origins;
+}
+
+/**
+ * Tells whether a request came through Cloudflare's edge, i.e. the public tunnel door. The edge
+ * sets CF-Ray and CF-Connecting-IP on every request it proxies (overwriting client values) and adds
+ * "cloudflare" to CDN-Loop (RFC 8586 entries such as "cloudflare; loops=1"); Tailscale Serve and a
+ * browser on its own never send them. Header names are the lower-case keys Node uses.
+ *
+ * Used by the auth module: Tailscale sign-in and Tailscale-issued session tokens are refused on
+ * such requests, the optional Cloudflare Access check applies only to them, and the throttles
+ * count them in their own bucket. Only Cloudflare-proxied traffic can be told apart this way; a
+ * local or tailnet program can add the headers itself, which only ever makes it look *less*
+ * trusted.
+ */
+export function isViaCloudflareEdge(headers: Record<string, string | string[] | undefined>): boolean {
+  const text = (name: string) => {
+    const value = headers[name];
+    return (Array.isArray(value) ? value.join(', ') : value ?? '').trim();
+  };
+  return Boolean(text('cf-ray'))
+    || Boolean(text('cf-connecting-ip'))
+    || /(^|,)\s*cloudflare\s*(;|,|$)/i.test(text('cdn-loop'));
+}
+
+// A Cloudflare Zero Trust team name, the <team> in <team>.cloudflareaccess.com (one DNS label).
+const CLOUDFLARE_TEAM_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+// Access application audience tags are 64 hex characters; anything printable without spaces or
+// commas is accepted so a future format does not lock the owner out.
+const CLOUDFLARE_AUD_PATTERN = /^[\x21-\x2b\x2d-\x7e]{1,256}$/;
+
+/**
+ * Reads the optional server-side Cloudflare Access check (docs/network.md):
+ * STUDIO_CF_ACCESS_TEAM_DOMAIN is the Zero Trust team, written as `myteam`,
+ * `myteam.cloudflareaccess.com` or `https://myteam.cloudflareaccess.com`; STUDIO_CF_ACCESS_AUD is the
+ * Access application's audience (AUD) tag, or several separated by commas.
+ *
+ * Used by the auth module (the gate that verifies Cf-Access-Jwt-Assertion on requests through
+ * Cloudflare) and the Studio network endpoint (Settings guidance). Both unset is `off`; one of them
+ * alone, or a malformed value, is `invalid`, which the gate treats as "refuse everything through
+ * Cloudflare" because the owner clearly meant to turn the check on. Never throws.
+ */
+export function readCloudflareAccessConfig(env: Record<string, string | undefined> = process.env): StudioCloudflareAccessConfig {
+  const rawTeam = env.STUDIO_CF_ACCESS_TEAM_DOMAIN?.trim() ?? '';
+  const rawAudience = env.STUDIO_CF_ACCESS_AUD?.trim() ?? '';
+  if (!rawTeam && !rawAudience) {
+    return { status: 'off' };
+  }
+  if (!rawTeam || !rawAudience) {
+    return { status: 'invalid', problem: 'STUDIO_CF_ACCESS_TEAM_DOMAIN 和 STUDIO_CF_ACCESS_AUD 要一起设置' };
+  }
+  const team = rawTeam
+    .toLowerCase()
+    .replace(/^https:\/\//, '')
+    .replace(/\/$/, '')
+    .replace(/\.cloudflareaccess\.com$/, '');
+  if (!CLOUDFLARE_TEAM_PATTERN.test(team)) {
+    return { status: 'invalid', problem: 'STUDIO_CF_ACCESS_TEAM_DOMAIN 应写成 <团队名>.cloudflareaccess.com' };
+  }
+  const audience = rawAudience.split(',').map((tag) => tag.trim()).filter(Boolean);
+  if (audience.length === 0 || !audience.every((tag) => CLOUDFLARE_AUD_PATTERN.test(tag))) {
+    return { status: 'invalid', problem: 'STUDIO_CF_ACCESS_AUD 应是 Access 应用的 AUD 标签' };
+  }
+  const teamDomain = `${team}.cloudflareaccess.com`;
+  return {
+    status: 'on',
+    teamDomain,
+    issuer: `https://${teamDomain}`,
+    certsUrl: `https://${teamDomain}/cdn-cgi/access/certs`,
+    audience,
+  };
 }
 
 // ---------------------------
@@ -1393,6 +1512,22 @@ export function findServerRoot(startDirectory: string): string {
  * Resolves the application root from a source or `dist-server/server` path so
  * package-level resources work identically before and after compilation.
  */
+/**
+ * Parses `.env` text into key/value pairs (optional `export`, surrounding quotes stripped, comments ignored).
+ * Used by Studio services that read credentials from owner-provided key files per request; never log the result.
+ */
+export function parseEnvText(text: string): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.trim().match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!match) continue;
+    let value = match[2].trim();
+    if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) value = value.slice(1, -1);
+    values[match[1]] = value;
+  }
+  return values;
+}
+
 export function findApplicationRoot(startDirectory: string): string {
   const serverRoot = findServerRoot(startDirectory);
   const parentDirectory = path.dirname(serverRoot);
@@ -1644,4 +1779,21 @@ export function recordClaudeRateLimitEvent(
   };
   claudeRateSnapshotQueue = claudeRateSnapshotQueue.then(write).catch(() => {});
   return claudeRateSnapshotQueue;
+}
+
+// ---------------------------
+//----------------- STUDIO MAIL UTILITIES ------------
+/**
+ * Normalizes a mail date (a Date, or a header / API date string) to ISO-8601, or returns '' when the
+ * value is missing or unparseable.
+ *
+ * Used by the Studio mail Gmail IMAP adapter (envelope and internal dates) and by the Studio mail
+ * service (dates from every adapter, including legacy Gmail OAuth listings). Unlike
+ * normalizeProviderTimestamp it never substitutes the current time: an unknown mail date stays empty,
+ * so it sorts last and the UI shows no date instead of a wrong one.
+ */
+export function toIsoDateOrEmpty(value: Date | string | null | undefined): string {
+  if (!value) return '';
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
 }

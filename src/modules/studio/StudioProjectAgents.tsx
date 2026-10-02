@@ -7,8 +7,10 @@ import { writeSelectedProvider } from '@/shared/selectedProvider';
 import type { HubAgentProvider, HubProject, HubSession, StudioRemoteHost, StudioRemoteLaunch, StudioRemoteStatus } from '@/shared/types';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 
-// The terminal (xterm) loads only when a remote session is opened.
-const StudioRemoteTerminal = lazy(() => import('@/modules/studio/StudioRemoteTerminal'));
+// The terminal (xterm) loads only when a remote session or the local shell is opened.
+const StudioTerminalCover = lazy(() => import('@/modules/studio/StudioTerminalCover'));
+// Shown while the terminal chunk downloads.
+const terminalFallback = <div className="studio-layer terminal-loading"><StudioSpinner size={28} label="正在打开终端" /></div>;
 
 // IDE agents in display order, with their muted brand-adjacent tones.
 const AGENTS: { id: HubAgentProvider; name: string; caption: string; tone: string; mark: string }[] = [
@@ -90,8 +92,8 @@ function RemoteAgents({ project }: { project: HubProject }) {
         {status?.online && !status.tools.tmux && ' 主机上没有 tmux，会话在断开后不会保留。'}
       </p>
     </section>
-    {session && <Suspense fallback={<div className="studio-layer terminal-loading"><StudioSpinner size={28} label="正在打开终端" /></div>}>
-      <StudioRemoteTerminal launch={session} hostLabel={label} onClose={() => setSession(null)} />
+    {session && <Suspense fallback={terminalFallback}>
+      <StudioTerminalCover mode="remote" launch={session} hostLabel={label} onClose={() => setSession(null)} />
     </Suspense>}
   </div>;
 }
@@ -110,6 +112,8 @@ function LocalAgents({ project, onOpenChat }: { project: HubProject; onOpenChat:
   const [error, setError] = useState('');
   // The agent whose workspace is being registered; blocks duplicate launches.
   const [launching, setLaunching] = useState<HubAgentProvider | null>(null);
+  // The full-screen shell on this computer, opened from the 终端 card.
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const load = useCallback(async () => {
     try { setSessions(await readApiJson<HubSession[]>(await api.studio.projects.sessions(project.id))); setError(''); }
     catch (reason) { setError(reason instanceof Error ? reason.message : '会话加载失败'); }
@@ -141,7 +145,12 @@ function LocalAgents({ project, onOpenChat }: { project: HubProject; onOpenChat:
           <span className="home-icon tone-slate agent-mark" aria-hidden="true"><MessagesSquare size={22} strokeWidth={1.6} /></span>
           <span className="agent-card-text"><strong>DeepSeek</strong><small>项目对话 · API</small></span>
         </button>}
+        {project.workspacePath && <button type="button" className="agent-card ios-press" onClick={() => setTerminalOpen(true)}>
+          <span className="home-icon tone-stone agent-mark" aria-hidden="true"><SquareTerminal size={22} strokeWidth={1.6} /></span>
+          <span className="agent-card-text"><strong>终端</strong><small>本机 · 项目目录</small></span>
+        </button>}
       </div>
+      {project.workspacePath && <p className="ios-section-footer">「终端」在项目目录打开这台电脑的命令行，可以直接输入 sudo 密码；关掉后 30 分钟内再打开会回到同一个会话。</p>}
       {!project.workspacePath && agents.length > 0 && <p className="ios-section-footer">在「设置」里填写项目目录后，即可在该目录里启动 Claude Code / Codex。</p>}
       {error && <p className="studio-feedback error" role="alert">{error}</p>}
     </section>
@@ -159,5 +168,8 @@ function LocalAgents({ project, onOpenChat }: { project: HubProject; onOpenChat:
       </div>
       <p className="ios-section-footer">会话在这台电脑上运行，工作目录是项目目录；它们使用你已登录的 Claude / Codex 订阅。</p>
     </section>}
+    {terminalOpen && <Suspense fallback={terminalFallback}>
+      <StudioTerminalCover mode="local" project={project} onClose={() => setTerminalOpen(false)} />
+    </Suspense>}
   </div>;
 }
