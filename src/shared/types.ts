@@ -2159,5 +2159,26 @@ export type StudioGitHubMergeRecord = {
   createdAt: string; finishedAt: string | null;
 };
 // ── v6 track: builder — types below this line ──
+/** Lifecycle of an App Store-style AI build (server `studio_builds.state`); drives the home tile's veil and ring. */
+export type StudioBuildState = 'queued' | 'building' | 'done' | 'failed';
+/**
+ * One AI build as `/api/studio/builds` returns it. `hubProjectId` is its home-screen icon; `ideProjectId` + `sessionId`
+ * open the workbench session doing the work. `total`/`completed`/`currentTask` follow the agent's checklist;
+ * `error` explains a failed build ('已取消' when the owner stopped it).
+ */
+export type StudioBuild = {
+  id: string; hubProjectId: string; ideProjectId: string; sessionId: string; workspacePath: string;
+  state: StudioBuildState; total: number; completed: number; currentTask: string | null;
+  createdAt: string; startedAt: string | null; finishedAt: string | null; error: string | null;
+};
+/** What starting an AI build returns: the build and the hub project that became its icon (added to the home screen at once). */
+export type StudioBuildCreated = { build: StudioBuild; project: HubProject };
+/**
+ * How the server runs AI builds right now (GET /api/studio/builds/environment): `sandbox` lets the agent install, run
+ * and test inside Claude Code's OS sandbox (opt-in with STUDIO_BUILD_SANDBOX=on); `restricted`, the default, only
+ * writes code and commits. `available` says whether the sandbox could run on the server at all, and `missing` names
+ * the packages to install for it. Shown by the build composer.
+ */
+export type StudioBuildEnvironment = { mode: 'sandbox' | 'restricted'; missing: string[]; available: boolean };
 // ── v6 track: memory — types below this line ──
 // ---------------------------

@@ -23,6 +23,7 @@ import { createTrading212Router } from './trading212.routes.js';
 import { createTrading212OrdersService } from './trading212-orders.service.js';
 import { createTrading212OrdersRouter } from './trading212-orders.routes.js';
 import { createLinkChecker } from './link-check.service.js';
+import { createStudioBuildsRoutes } from './builds.module.js';
 import { createRemoteHostsService } from './remote-hosts.service.js';
 import { createRemoteHostsRouter } from './remote-hosts.routes.js';
 import { createGhRunner, resolveGhPath } from './github/github-cli.adapter.js';
@@ -213,6 +214,9 @@ export function createStudioModule() {
   });
   routes.use('/github', createGitHubRouter(github));
   // ── v6 track: builder — create its service and mount its router below this line ──
+  // App Store-style AI builds: a new ~/projects folder, a hub project (the icon) and an unattended Claude Code
+  // session per build (STUDIO_BUILDS_ROOT, STUDIO_BUILDS_MAX_PARALLEL, STUDIO_BUILD_MODEL; see builds.module.ts).
+  routes.use('/builds', createStudioBuildsRoutes(hub));
   // ── v6 track: memory — create its service and mount its router below this line ──
   return { routes, snrRoutes: createSnrGatewayRouter(gateway), mailCallbackRoutes: createProjectMailCallbackRouter(mail) };
 }

@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { createPortal } from 'react-dom';
-import { Check, ChevronLeft, ChevronRight, LayoutGrid, LogOut, Minus, Moon, Plus, RefreshCw, SlidersHorizontal, Sun } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, LayoutGrid, LogOut, Minus, Moon, Plus, RefreshCw, RotateCcw, SlidersHorizontal, Sun, X } from 'lucide-react';
 import { DndContext } from '@dnd-kit/core';
 import { SortableContext } from '@dnd-kit/sortable';
 
 import { useTheme } from '@/shared/context/ThemeContext';
-import type { StudioHomeTile, StudioSnr } from '@/shared/types';
+import type { StudioHomeTile, StudioSnr, StudioTileProgress } from '@/shared/types';
+import { StudioBuildBadge, StudioBuildProgress, StudioBuildStatus } from '@/modules/studio/StudioBuildProgress';
 import { StudioFluidBackground } from '@/modules/studio/StudioFluidBackground';
 import { StudioTileIcon } from '@/modules/studio/StudioTileIcon';
 import { StudioWidgets } from '@/modules/studio/StudioWidgets';
@@ -73,21 +74,32 @@ function orderTiles(tiles: StudioHomeTile[], order: string[] | undefined) {
 
 const preventContextMenu = (event: MouseEvent) => event.preventDefault();
 
+// The status an AI build gives its tile, in words, for the accessible name.
+const buildStatusText = (progress: StudioTileProgress) => progress.label ?? `开发中 ${Math.round(progress.value * 100)}%`;
+
 /** One sortable app icon; the slot moves (with its hide badge), the tile itself is what is pressed and dragged. */
-function SortableTile({ tile, index, last, editing, labels, iconSize, onActivate, onHide, onMove }: {
+function SortableTile({ tile, index, last, editing, labels, iconSize, onActivate, onHide, onMove, onBuildAction }: {
   tile: StudioHomeTile; index: number; editing: boolean; labels: boolean; iconSize: number;
   // Whether the icon is the last visible one, where its 后移 button has nowhere to go.
   last: boolean;
   onActivate: (tile: StudioHomeTile, event: MouseEvent<HTMLElement>) => void;
   onHide: () => void;
   onMove: (step: -1 | 1) => void;
+  onBuildAction?: (action: 'stop' | 'resume') => void;
 }) {
   const { attributes, isDragging, itemAttributes, listeners, setActivatorNodeRef, setNodeRef, style } = useHomeSortableItem(tile.id);
-  const label = `${tile.name}${tile.status ? `，${tile.status}` : ''}`;
+  const progress = tile.progress;
+  const status = progress ? buildStatusText(progress) : tile.status;
+  const label = `${tile.name}${status ? `，${status}` : ''}`;
+  // A build in progress can be stopped from edit mode (in place of hiding it); a failed one can be continued.
+  const buildRunning = progress?.state === 'queued' || progress?.state === 'building';
   const body = <>
-    <StudioTileIcon tone={tile.tone} glyph={tile.glyph} size={iconSize} />
+    <span className="home-icon-wrap" data-build={progress?.state}>
+      <StudioTileIcon tone={tile.tone} glyph={tile.glyph} size={iconSize}>{progress && <StudioBuildProgress progress={progress} />}</StudioTileIcon>
+      {progress?.state === 'failed' && !editing && <StudioBuildBadge />}
+    </span>
     <span className="home-label">{tile.name}</span>
-    {tile.status && <span className="home-status">{tile.status}</span>}
+    {progress ? <StudioBuildStatus progress={progress} /> : tile.status && <span className="home-status">{tile.status}</span>}
   </>;
   // Links and buttons are focusable already; edit mode only adds the sortable description for screen readers.
   const shared = {
@@ -101,7 +113,11 @@ function SortableTile({ tile, index, last, editing, labels, iconSize, onActivate
     {tile.href
       ? <Link to={tile.href} {...shared} onClick={event => onActivate(tile, event)}>{body}</Link>
       : <button type="button" {...shared} onClick={event => onActivate(tile, event)}>{body}</button>}
-    {editing && <button type="button" className="home-remove" aria-label={`从主屏幕隐藏 ${tile.name}`} onClick={onHide}><Minus size={14} strokeWidth={3} aria-hidden="true" /></button>}
+    {editing && (buildRunning && onBuildAction
+      ? <button type="button" className="home-remove build-stop" aria-label={`停止开发 ${tile.name}`} onClick={() => onBuildAction('stop')}><X size={14} strokeWidth={3} aria-hidden="true" /></button>
+      : <button type="button" className="home-remove" aria-label={`从主屏幕隐藏 ${tile.name}`} onClick={onHide}><Minus size={14} strokeWidth={3} aria-hidden="true" /></button>)}
+    {editing && progress?.state === 'failed' && onBuildAction && <button type="button" className="home-resume" aria-label={`继续开发 ${tile.name}`}
+      onClick={() => onBuildAction('resume')}><RotateCcw size={14} strokeWidth={2.6} aria-hidden="true" /></button>}
     {/* VoiceOver and Switch Control cannot drag, so edit mode also offers move buttons. They stay out of sight
         (the grid keeps its clean iPadOS look) until focused, when they appear under the icon. aria-disabled,
         not disabled, keeps a button focused when its icon reaches an end. */}
@@ -117,15 +133,18 @@ function SortableTile({ tile, index, last, editing, labels, iconSize, onActivate
 /**
  * Used by StudioPage as the launcher: one large icon per project or app, plus + to create a project. A long press
  * on any icon or widget enters edit mode (jiggling, drag to rearrange, hide), like the iPadOS home screen; move
- * buttons give VoiceOver and Switch Control the same rearranging.
+ * buttons give VoiceOver and Switch Control the same rearranging. Icons an AI is building dim under a progress
+ * ring (StudioBuildProgress); in edit mode they offer stop, and failed ones continue.
  */
-export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreate, onRefresh, onSignOut, refreshing }: {
+export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreate, onRefresh, onSignOut, refreshing, onBuildAction }: {
   tiles: StudioHomeTile[]; loading: boolean;
   // True while an app fully covers the home screen; the wallpaper animation pauses to save battery.
   covered: boolean;
   snr: StudioSnr | null;
   onOpen: (tile: StudioHomeTile, icon: DOMRect | null) => void;
   onCreate: () => void; onRefresh: () => void; onSignOut: () => void; refreshing: boolean;
+  // Stops a running AI build or continues a failed one (edit-mode buttons on tiles that carry `progress`).
+  onBuildAction?: (tile: StudioHomeTile, action: 'stop' | 'resume') => void;
 }) {
   const { isDarkMode, setThemeMode } = useTheme();
   // Layout choices are per device so an iPad and a MacBook can arrange tiles differently.
@@ -209,7 +228,7 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreat
         <SortableContext {...sortableProps}>
           {visible.map((tile, index) => <SortableTile key={tile.id} tile={tile} index={index} last={index === visible.length - 1} editing={editing}
             labels={layout.labels} iconSize={iconSize} onActivate={activate} onHide={() => glide(() => update({ hidden: [...layout.hidden, tile.id] }))}
-            onMove={step => move(tile.id, step)} />)}
+            onMove={step => move(tile.id, step)} onBuildAction={onBuildAction && (action => onBuildAction(tile, action))} />)}
         </SortableContext>
         {loading && !visible.length && [0, 1, 2].map(index => <div className="home-tile-slot" key={`placeholder-${index}`} aria-hidden="true"><span className="home-tile placeholder"><span className="home-icon tone-ghost" /></span></div>)}
         <div className="home-tile-slot">
