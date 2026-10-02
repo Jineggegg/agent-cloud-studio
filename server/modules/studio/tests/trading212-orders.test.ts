@@ -385,6 +385,16 @@ test('STUDIO_T212_REQUIRE_PASSKEY=1 removes the double confirmation entirely', a
   try { assert.equal(standard.orders.config(1).requirePasskey, false); } finally { standard.close(); }
 });
 
+test('concurrent wrong passwords cannot slip past the five-attempt lock', async () => {
+  const f = fixture();
+  try {
+    const attempts = await Promise.allSettled(Array.from({ length: 20 }, (_, index) => f.orders.passkeyOptions(1, 'owner', STUDIO, `guess-${index}`)));
+    assert.ok(attempts.every(result => result.status === 'rejected'));
+    assert.ok(f.passwordChecks.length <= 5, `checked ${f.passwordChecks.length} passwords`);
+    await assert.rejects(f.orders.passkeyOptions(1, 'owner', STUDIO, PASSWORD), coded('T212_STEP_UP_LOCKED'));
+  } finally { f.close(); }
+});
+
 test('adding a passkey needs the Studio password, and repeated wrong passwords lock passkey changes', async () => {
   const f = fixture();
   try {

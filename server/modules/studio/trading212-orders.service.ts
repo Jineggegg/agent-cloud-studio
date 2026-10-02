@@ -228,13 +228,14 @@ export function createTrading212OrdersService(deps: Dependencies) {
     const time = now();
     const state = passwordFailures.get(userId);
     if (state && state.lockedUntil > time) fail('Studio 密码错误次数过多，请 15 分钟后再试', 429, 'T212_STEP_UP_LOCKED');
+    // The attempt is counted before the (slow) password check, so concurrent guesses cannot all slip under
+    // the limit; a correct password clears the count. A lock that has run out starts a fresh count.
+    const count = (state && state.lockedUntil && state.lockedUntil <= time ? 0 : state?.count ?? 0) + 1;
+    passwordFailures.set(userId, { count, lockedUntil: count >= MAX_PASSWORD_FAILURES ? time + PASSWORD_LOCK_MS : 0 });
     let correct = false;
     try { correct = password.length > 0 && password.length <= MAX_PASSWORD_LENGTH && await deps.verifyPassword(userId, password); }
     catch { correct = false; }
     if (correct) { passwordFailures.delete(userId); return; }
-    // A lock that has run out starts a fresh count.
-    const count = (state && state.lockedUntil && state.lockedUntil <= time ? 0 : state?.count ?? 0) + 1;
-    passwordFailures.set(userId, { count, lockedUntil: count >= MAX_PASSWORD_FAILURES ? time + PASSWORD_LOCK_MS : 0 });
     fail('Studio 密码不正确', 403, 'T212_STEP_UP_FAILED');
   }
   // Verifies an assertion against one stored credential with user verification required, then advances its counter.
