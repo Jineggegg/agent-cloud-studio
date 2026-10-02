@@ -1946,4 +1946,40 @@ export type T212Activity = {
 // ── v4 track: network — types below this line ──
 // ── v4 track: orders — types below this line ──
 // ── v4 track: mail — types below this line ──
+//----------------- STUDIO MAIL CONTRACTS ------------
+/** How a Studio mail account is read: Gmail over IMAP (App Password), Outlook over Graph, or a legacy project Gmail OAuth link. */
+export type StudioMailProvider = 'gmail-imap' | 'outlook' | 'gmail-oauth';
+/** A mail account owned by the Studio user; the server never sends its password or tokens. */
+export type StudioMailAccount = {
+  id: string;
+  provider: StudioMailProvider;
+  email: string;
+  displayName: string;
+  // `reauth`: the provider rejected the saved credential; the user must add the account again.
+  status: 'ok' | 'error' | 'reauth';
+  lastError: string | null;
+  createdAt: string;
+};
+/** GET /api/studio/mail/accounts: the accounts plus whether the server can offer Outlook sign-in. */
+export type StudioMailAccounts = { accounts: StudioMailAccount[]; outlookConfigured: boolean };
+/** One row of the unified inbox. Untrusted plain text (no markup); render it as text, never as HTML. */
+export type StudioMailMessage = {
+  id: string;
+  accountId: string;
+  subject: string;
+  from: string;
+  fromAddress: string;
+  // ISO-8601, or empty when the provider gave no usable date.
+  date: string;
+  snippet: string;
+  unread: boolean;
+};
+/** An opened message: the row plus recipients and the capped plain-text body. */
+export type StudioMailMessageDetail = StudioMailMessage & { to: string; text: string; truncated: boolean };
+/** GET /api/studio/mail/messages: merged messages, plus per-account failures that did not stop the others. */
+export type StudioMailInbox = { messages: StudioMailMessage[]; errors: { accountId: string; email: string; message: string }[] };
+/** An Outlook device-code sign-in in progress: the code the user types at Microsoft, never the device secret. */
+export type StudioMailDeviceStart = { pollId: string; userCode: string; verificationUri: string; expiresAt: string; interval: number };
+/** One poll of an Outlook device-code sign-in. */
+export type StudioMailDevicePoll = { status: 'pending' | 'connected' | 'expired' | 'error'; account?: StudioMailAccount; message?: string };
 // ---------------------------

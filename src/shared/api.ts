@@ -194,6 +194,17 @@ export const api = {
     // ── v4 track: network — endpoints below this line ──
     // ── v4 track: orders — endpoints below this line ──
     // ── v4 track: mail — endpoints below this line ──
+    // Per-user read-only mail accounts (Gmail IMAP, Outlook) and the unified inbox; secrets only travel in addImap's body.
+    mail: {
+      accounts: () => get('/api/studio/mail/accounts'),
+      addImap: (email: string, password: string) => post('/api/studio/mail/accounts/imap', { email, password }),
+      startOutlook: () => post('/api/studio/mail/accounts/outlook/device'),
+      pollOutlook: (pollId: string) => post(`/api/studio/mail/accounts/outlook/device/${encodeURIComponent(pollId)}`),
+      removeAccount: (id: string) => del(`/api/studio/mail/accounts/${encodeURIComponent(id)}`),
+      messages: (params: { accountId?: string; q?: string; limit?: number } = {}) => get(`/api/studio/mail/messages${query(params)}`),
+      message: (accountId: string, messageId: string) =>
+        get(`/api/studio/mail/messages/${encodeURIComponent(accountId)}/${encodeURIComponent(messageId)}`),
+    },
     status: () => get('/api/studio/status'),
     snr: () => get('/api/studio/snr'),
     snrAccess: () => post('/api/studio/snr/access'),

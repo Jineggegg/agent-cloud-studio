@@ -1647,4 +1647,31 @@ export type StudioTaskInput = { title: string; prompt: string; provider: StudioA
 // ── v4 track: network — server types below this line ──
 // ── v4 track: orders — server types below this line ──
 // ── v4 track: mail — server types below this line ──
+//----------------- STUDIO MAIL CONTRACTS ------------
+/**
+ * A message body exactly as a mail adapter (Gmail IMAP, Outlook Graph, legacy Gmail OAuth) delivered it.
+ *
+ * `html` bodies must never reach the browser as markup: the Studio mail service reduces both kinds to
+ * capped plain text. The content is untrusted third-party data and is never sent to a model automatically.
+ */
+export type StudioMailRawBody = { kind: 'text' | 'html'; content: string };
+
+/**
+ * One message as an adapter read it, before the mail service cleans and caps it.
+ *
+ * Used by the Gmail IMAP and Outlook adapters and by the mail service. `id` is adapter-specific and must be
+ * accepted back by the same adapter's `read`; `date` is ISO-8601 or empty; `body` is the preview part for
+ * listings and the whole (size-capped) body for a single message; `truncated` reports a size cap was hit.
+ */
+export type StudioMailRawMessage = {
+  id: string;
+  subject: string;
+  from: string;
+  fromAddress: string;
+  to: string;
+  date: string;
+  unread: boolean;
+  body: StudioMailRawBody;
+  truncated: boolean;
+};
 

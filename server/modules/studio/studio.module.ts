@@ -15,6 +15,8 @@ import { createSnrGatewayRouter } from './snr-gateway.routes.js';
 import { createProjectHubService } from './project-hub.service.js';
 import { createProjectMailService } from './project-mail.service.js';
 import { createProjectHubRouter, createProjectMailCallbackRouter } from './project-hub.routes.js';
+import { createMailService } from './mail/mail.service.js';
+import { createMailRouter } from './mail/mail.routes.js';
 import { createTrading212Service } from './trading212.service.js';
 import { createTrading212Router } from './trading212.routes.js';
 import { createLinkChecker } from './link-check.service.js';
@@ -134,5 +136,27 @@ export function createStudioModule() {
   // ── v4 track: network — create its service and mount its router below this line ──
   // ── v4 track: orders — create its service and mount its router below this line ──
   // ── v4 track: mail — create its service and mount its router below this line ──
+  // Per-user read-only mail accounts (Gmail over IMAP, Outlook over Graph). Project-bound Gmail OAuth
+  // connections from the older project mail module appear as extra accounts in the same inbox.
+  const mailAccounts = createMailService({
+    database: getConnection(),
+    vaultDirectory,
+    outlookClientId: process.env.STUDIO_OUTLOOK_CLIENT_ID?.trim() || undefined,
+    legacyGmail: {
+      accounts: userId => hub.list(userId).filter(item => item.modules.includes('mail')).flatMap(item => {
+        try {
+          const status = mail.status(userId, item.id);
+          return status.connected && status.email ? [{ projectId: item.id, projectName: item.name, email: status.email }] : [];
+        } catch { return []; }
+      }),
+      search: (userId, projectId, query) => mail.search(userId, projectId, query),
+      message: (userId, projectId, messageId) => mail.message(userId, projectId, messageId),
+      forget(userId, projectId) {
+        hub.get(userId, projectId);
+        mail.forget(projectId);
+      },
+    },
+  });
+  routes.use('/mail', createMailRouter(mailAccounts));
   return { routes, snrRoutes: createSnrGatewayRouter(gateway), mailCallbackRoutes: createProjectMailCallbackRouter(mail) };
 }
