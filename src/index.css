@@ -715,11 +715,13 @@
       opacity: 1 !important;
     }
     
-    /* Only disable hover states for interactive elements, not containers */
-    button:hover,
-    [role="button"]:hover,
+    /* Only disable hover states for interactive elements, not containers.
+       Studio is excluded: iOS keeps :hover after a tap, and these !important
+       resets would erase its selected states, filled buttons and press springs. */
+    button:hover:not(:is(.studio, .studio-layer) *),
+    [role="button"]:hover:not(:is(.studio, .studio-layer) *),
     .cursor-pointer:hover,
-    a:hover,
+    a:hover:not(:is(.studio, .studio-layer) *),
     .hover\:bg-gray-50:hover,
     .hover\:bg-gray-100:hover,
     .hover\:text-gray-900:hover,

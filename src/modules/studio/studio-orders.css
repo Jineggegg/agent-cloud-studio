@@ -1,0 +1,184 @@
+/*
+ * Trading 212 order placement and order-safety settings (v4 "orders" track).
+ * Uses the --ios-* tokens from studio.css; the order sheet is portaled into a
+ * .studio-layer so those tokens, the dark theme and reduced motion all apply.
+ */
+
+/*
+ * studio.css loads after this file and resets buttons with `.studio :where(button)`, so button rules
+ * here are scoped with :is(.studio, .studio-layer) to outrank that reset.
+ */
+
+/* ---------- Trade entry points in the dashboard ---------- */
+.studio .ios-button.t212-trade-button { min-width: 76px; }
+.t212-row-actions { display: flex; gap: 8px; margin-top: 10px; }
+:is(.studio, .studio-layer) .t212-row-action {
+  position: relative; display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 14px; border-radius: 999px;
+  font-size: 13px; font-weight: 600; background: var(--ios-fill); color: var(--ios-label);
+  transition: transform var(--dur-slow) var(--ease-spring), background-color var(--dur-fast) ease;
+}
+/* The 30px pill keeps a 44px hit area. */
+.t212-row-action::before { content: ""; position: absolute; inset: -7px -4px; }
+.t212-row-action i { width: 6px; height: 6px; border-radius: 50%; background: var(--chart-gain); }
+.t212-row-action.sell i { background: var(--chart-loss); }
+.studio .t212-row-action:not(:disabled):active { transform: scale(.94); background: var(--ios-fill-pressed); transition-duration: var(--dur-press); }
+@media (hover: hover) { .studio .t212-row-action:not(:disabled):hover { background: var(--ios-fill-pressed); } }
+
+/* ---------- Order sheet ---------- */
+.t212-order-sheet {
+  position: absolute; left: 50%; top: 50%; display: flex; flex-direction: column;
+  width: min(480px, calc(100% - 32px)); max-height: min(780px, calc(100dvh - 48px)); overflow: hidden;
+  transform: translate(-50%, -50%); border-radius: 28px; background: var(--ios-bg); box-shadow: var(--ios-shadow-float);
+  animation: t212-sheet-in var(--dur-slow) var(--ease-out) backwards;
+}
+.closing .t212-order-sheet { animation: t212-sheet-out var(--dur-fast) ease forwards; }
+@keyframes t212-sheet-in { from { opacity: 0; transform: translate(-50%, -46%) scale(.97); } }
+@keyframes t212-sheet-out { to { opacity: 0; transform: translate(-50%, -48%) scale(.98); } }
+@keyframes t212-sheet-up { from { transform: translate(-50%, 100%); } }
+@keyframes t212-sheet-down { to { transform: translate(-50%, 100%); } }
+.t212-order-grabber { display: none; }
+.t212-order-header {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 8px;
+  min-height: 56px; padding: 6px 12px; border-bottom: .5px solid var(--ios-separator);
+}
+.t212-order-header h2 { font-size: 17px; font-weight: 600; text-align: center; }
+.studio-layer .t212-order-nav { justify-self: start; display: inline-flex; align-items: center; gap: 2px; min-height: 44px; padding: 0 6px; font-size: 17px; color: var(--ios-tint); }
+.t212-env-badge {
+  justify-self: end; display: inline-flex; align-items: center; gap: 5px; min-height: 26px; padding: 3px 10px; border-radius: 999px;
+  font-size: 13px; font-weight: 700; white-space: nowrap; background: var(--ios-green-soft); color: var(--ios-green);
+}
+.t212-env-badge.live { background: var(--ios-red-soft); color: var(--ios-red); }
+.t212-order-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px 16px 0; }
+.t212-order-step { display: flex; flex-direction: column; gap: 14px; }
+.t212-order-step .studio-feedback { padding: 0 4px; }
+
+/* Fields: one grouped inset list. */
+.t212-order-fields > * { position: relative; }
+.t212-order-fields > * + *::before { content: ""; position: absolute; top: 0; right: 0; left: 16px; height: .5px; background: var(--ios-separator); }
+.t212-order-fields .ios-field label { width: 56px; }
+.t212-order-fields .ios-field input { font-variant-numeric: tabular-nums; }
+.t212-order-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 56px; padding: 6px 16px; }
+.t212-order-row > span { font-size: 17px; }
+.t212-order-sheet .t212-order-segmented { display: flex; flex: 1; max-width: 250px; }
+.t212-order-sheet .t212-order-segmented button { flex: 1; min-height: 40px; font-size: 15px; }
+.t212-order-aside { flex-shrink: 0; font-size: 13px; color: var(--ios-label-2); white-space: nowrap; }
+.studio-layer .t212-order-all { min-height: 44px; padding: 0 4px; font-size: 15px; font-weight: 600; color: var(--ios-tint); }
+.t212-order-chips { display: flex; gap: 8px; overflow-x: auto; padding: 2px 16px 12px; scrollbar-width: none; }
+.t212-order-chips::-webkit-scrollbar { display: none; }
+.studio-layer .t212-order-chip {
+  position: relative; flex-shrink: 0; min-height: 34px; padding: 6px 14px; border-radius: 999px;
+  font-size: 14px; font-weight: 600; background: var(--ios-fill); color: var(--ios-label-2);
+  transition: background-color var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.t212-order-chip::before { content: ""; position: absolute; inset: -5px -2px; }
+.studio-layer .t212-order-chip[aria-pressed="true"] { background: var(--ios-tint-soft); color: var(--ios-tint); }
+.t212-order-hint { padding: 0 6px; font-size: 13px; line-height: 1.5; color: var(--ios-label-2); }
+
+/* Live estimate with the per-order cap as a meter. */
+.t212-order-estimate { display: grid; gap: 8px; padding: 16px; border-radius: var(--radius-card); background: var(--ios-surface); }
+.t212-order-estimate > span:first-child { font-size: 13px; color: var(--ios-label-2); }
+.t212-order-estimate strong { font-size: 30px; font-weight: 600; line-height: 1.1; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+.t212-order-meter { height: 6px; border-radius: 3px; background: var(--ios-fill); overflow: hidden; }
+.t212-order-meter span {
+  display: block; height: 100%; border-radius: 3px; background: var(--ios-tint); transform-origin: left;
+  transition: transform var(--dur-base) var(--ease-out), background-color var(--dur-fast) ease;
+}
+.t212-order-estimate.near .t212-order-meter span { background: var(--ios-orange); }
+.t212-order-estimate.over .t212-order-meter span { background: var(--ios-red); }
+.t212-order-estimate small { font-size: 13px; color: var(--ios-label-2); }
+.t212-order-estimate.over small { color: var(--ios-red); font-weight: 600; }
+
+/* Review card. */
+.t212-order-review { display: grid; justify-items: center; gap: 6px; padding: 22px 16px 6px; border-radius: var(--radius-card); background: var(--ios-surface); text-align: center; }
+.t212-order-review h3 { margin: 4px 0 0; font-size: 28px; font-weight: 600; line-height: 1.15; }
+.t212-order-review p { margin: 0; font-size: 15px; color: var(--ios-label-2); }
+.t212-order-review-value { margin-top: 2px; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.t212-order-review dl { display: grid; width: 100%; margin: 12px 0 0; }
+.t212-order-review dl div { display: flex; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: .5px solid var(--ios-separator); font-size: 15px; text-align: left; }
+.t212-order-review dt { color: var(--ios-label-2); }
+.t212-order-review dd { margin: 0; font-weight: 500; text-align: right; font-variant-numeric: tabular-nums; }
+.t212-order-warnings {
+  display: grid; gap: 8px; margin: 0; padding: 12px 14px; list-style: none; border-radius: 16px;
+  background: color-mix(in srgb, var(--ios-orange) 10%, transparent); font-size: 13px; line-height: 1.45;
+}
+.t212-order-warnings li { display: flex; align-items: flex-start; gap: 8px; }
+.t212-order-warnings svg { margin-top: 1px; color: var(--ios-orange); }
+.t212-order-timer-row { display: grid; gap: 6px; padding: 0 4px; font-size: 13px; color: var(--ios-label-2); font-variant-numeric: tabular-nums; }
+.t212-order-timer { height: 3px; border-radius: 2px; background: var(--ios-fill); overflow: hidden; }
+.t212-order-timer span { display: block; height: 100%; background: var(--ios-label-3); transform-origin: left; animation: t212-timer linear forwards; }
+.t212-order-timer.spent span { animation: none; transform: scaleX(0); }
+@keyframes t212-timer { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+.t212-order-note { padding: 0 8px; font-size: 13px; line-height: 1.5; text-align: center; color: var(--ios-label-2); }
+/* The broker may have executed the order: a red callout instead of a plain error line. */
+.t212-order-unknown {
+  display: flex; align-items: flex-start; gap: 10px; padding: 14px; border-radius: 16px;
+  background: color-mix(in srgb, var(--ios-red) 10%, transparent); font-size: 14px; line-height: 1.5;
+}
+.t212-order-unknown svg { margin-top: 2px; color: var(--ios-red); }
+.t212-order-unknown div { display: grid; gap: 4px; }
+.t212-order-unknown strong { font-size: 16px; color: var(--ios-red); }
+.t212-order-unknown span { color: var(--ios-label-2); }
+.studio-layer .ios-button.t212-order-acknowledge { width: 100%; min-height: 44px; border-radius: 12px; font-size: 15px; white-space: normal; }
+/* The enrolment form sits directly in a step, whose gap already spaces it. */
+.t212-order-step .t212-enroll { margin-top: 0; }
+
+/* Sticky actions at the bottom of the scrolling body. */
+.t212-order-actions {
+  position: sticky; bottom: 0; z-index: 1; display: grid; gap: 10px; margin: 0 -16px;
+  padding: 12px 16px calc(16px + env(safe-area-inset-bottom)); background: var(--ios-bg); border-top: .5px solid var(--ios-separator);
+}
+.studio-layer .ios-button.t212-order-primary { width: 100%; min-height: 50px; border-radius: 14px; font-size: 17px; }
+.studio-layer .ios-button.t212-order-danger { background: var(--ios-red); color: var(--ios-on-tint); }
+
+/* Trading switched off on the server. */
+.t212-order-off { display: grid; justify-items: center; gap: 12px; padding: 24px 8px 28px; text-align: center; font-size: 15px; line-height: 1.6; color: var(--ios-label-2); }
+.t212-order-off svg { color: var(--ios-label-3); }
+.t212-order-off strong { font-size: 17px; color: var(--ios-label); }
+:is(.t212-order-off, .t212-settings-note) code {
+  padding: 1px 6px; border-radius: 6px; background: var(--ios-fill); color: var(--ios-label);
+  font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap;
+}
+
+/* ---------- Settings → 交易安全 ---------- */
+.t212-settings-value { font-size: 15px; color: var(--ios-label-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.t212-passkey-current { margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 700; vertical-align: 2px; background: var(--ios-tint-soft); color: var(--ios-tint); }
+.t212-settings-note { line-height: 1.6; }
+.t212-passkey-list { margin-top: 14px; }
+/* Password field + enable row: one inset list with a separator between them. */
+.t212-enroll { margin-top: 14px; }
+.t212-enroll .ios-field + .ios-row::before { content: ""; position: absolute; top: 0; right: 0; left: 16px; height: .5px; background: var(--ios-separator); }
+
+/* Removal alert with a password step-up (and, on the passkey's own domain, Face ID). */
+.t212-stepup-field { display: grid; gap: 8px; padding: 0 16px 16px; }
+.studio-layer .t212-stepup-field input {
+  width: 100%; min-height: 44px; padding: 0 12px; border: .5px solid var(--ios-separator); border-radius: 10px;
+  background: var(--ios-bg); color: var(--ios-label); font-size: 17px; outline: none;
+}
+.studio-layer .t212-stepup-field input:focus-visible { border-color: var(--ios-tint); }
+.t212-stepup-error { font-size: 13px; line-height: 1.4; color: var(--ios-red); }
+.studio-layer .sheet-action.t212-stepup-passkey {
+  display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; border-top: .5px solid var(--ios-separator);
+}
+.studio-layer .t212-stepup .sheet-actions .sheet-action { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.t212-stepup .sheet-action:disabled { opacity: .45; }
+
+/* ---------- Phone: the order sheet rises from the bottom ---------- */
+@media (max-width: 699px) {
+  /* Account switch, badge, 交易 and refresh share one 343px row. */
+  .t212-toolbar { gap: 8px; }
+  .t212-toolbar .status-badge svg { display: none; }
+  .studio .ios-button.t212-trade-button { min-width: 0; padding: 8px 14px; }
+  .t212-order-sheet {
+    top: auto; bottom: 0; width: 100%; max-height: 92dvh; transform: translateX(-50%);
+    border-radius: 28px 28px 0 0; animation-name: t212-sheet-up;
+  }
+  .closing .t212-order-sheet { animation-name: t212-sheet-down; }
+  .t212-order-grabber { display: block; width: 36px; height: 5px; margin: 8px auto 0; border-radius: 3px; background: var(--ios-fill-pressed); }
+  .t212-order-header { min-height: 50px; padding-top: 2px; }
+  .t212-order-sheet .t212-order-segmented { max-width: none; }
+}
+
+/* Reduced motion: the expiry bar stays static instead of collapsing in one frame. */
+@media (prefers-reduced-motion: reduce) {
+  .studio-layer .t212-order-timer span { animation: none !important; }
+}

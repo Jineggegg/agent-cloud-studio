@@ -99,6 +99,18 @@ export const userDb = {
       .get() as UserPublicRow | undefined;
   },
 
+  /**
+   * Counts active users. Used by Auth's Tailscale sign-in, which may map an
+   * identity to the only account implicitly but never pick among several.
+   */
+  countActiveUsers(): number {
+    const db = getConnection();
+    const row = db.prepare('SELECT COUNT(*) as count FROM users WHERE is_active = 1').get() as {
+      count: number;
+    };
+    return row.count;
+  },
+
   /** Stores the user's preferred git name and email. */
   updateGitConfig(
     userId: number,

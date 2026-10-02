@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -82,6 +83,43 @@ test('a stale socket close cannot detach the socket that replaced it', () => {
   assert.match(replacementSocket.frames[0], /output-after-stale-close/);
 
   pty.emitExit();
+});
+
+test('plain commands sharing a long prefix get separate PTYs; the same command reattaches', () => {
+  const spawned: { command: string; pty: ReturnType<typeof createFakePty> }[] = [];
+  const dependencies = {
+    resolveProviderSessionId: () => null,
+    spawnPty: (_shell: string, args: string | string[]) => {
+      const pty = createFakePty();
+      spawned.push({ command: Array.isArray(args) ? args[args.length - 1] : args, pty });
+      return pty as never;
+    },
+  };
+  const sessionId = `remote-prefix-${Date.now()}`;
+  // Everything up to the host alias is identical, far beyond what a 16-character key prefix could tell apart.
+  const prefix = 'ssh -tt -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -- sp-remote ';
+  const claude = `${prefix}'cd ~/a; exec claude'`;
+  const codex = `${prefix}'cd ~/a; exec codex'`;
+  const init = (command: string) => {
+    const socket = createFakeSocket();
+    handleShellConnection(socket as never, dependencies);
+    socket.emit('message', JSON.stringify({
+      type: 'init', projectPath: process.cwd(), sessionId, hasSession: false,
+      provider: 'plain-shell', isPlainShell: true, initialCommand: command,
+    }));
+    return socket;
+  };
+
+  init(claude);
+  const second = init(codex);
+  assert.deepEqual(spawned.map(entry => entry.command), [claude, codex]);
+  assert.ok(!second.frames.some(frame => frame.includes('Reconnected to existing session')));
+
+  const again = init(claude);
+  assert.equal(spawned.length, 2);
+  assert.ok(again.frames.some(frame => frame.includes('Reconnected to existing session')));
+
+  for (const entry of spawned) entry.pty.emitExit();
 });
 
 test('shell output detects and normalizes a wrapped authentication URL', () => {
@@ -224,4 +262,48 @@ test('a missing project directory is reported as an error frame and starts no pt
     socket.frames.map((frame) => JSON.parse(frame) as Record<string, unknown>),
     [{ type: 'error', message: 'Invalid project path' }]
   );
+});
+
+test('a plain shell without a command starts an interactive login shell in the project directory', () => {
+  // A fresh directory keeps this test's retained PTYs apart from every other test's.
+  const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'shell-login-'));
+  const spawned: { shell: string; args: string[]; cwd: string | undefined; pty: ReturnType<typeof createFakePty> }[] = [];
+  const dependencies = {
+    resolveProviderSessionId: () => null,
+    spawnPty: (shell: string, args: string | string[], options: { cwd?: string }) => {
+      const pty = createFakePty();
+      spawned.push({ shell, args: Array.isArray(args) ? args : [args], cwd: options.cwd, pty });
+      return pty as never;
+    },
+  };
+  const init = (message: Record<string, unknown>) => {
+    const socket = createFakeSocket();
+    handleShellConnection(socket as never, dependencies);
+    socket.emit('message', JSON.stringify({ type: 'init', projectPath, sessionId: null, hasSession: false, ...message }));
+    return socket;
+  };
+
+  try {
+    // A sessionless agent shell in the same directory must not be reused as the owner's terminal.
+    init({ provider: 'claude' });
+    // This is exactly what the studio's local terminal sends: plain shell, no command.
+    const terminal = init({ provider: 'plain-shell', isPlainShell: true, initialCommand: null });
+    assert.equal(spawned.length, 2);
+    assert.ok(!terminal.frames.some(frame => frame.includes('Reconnected to existing session')));
+    const login = spawned[1];
+    if (os.platform() === 'win32') {
+      assert.deepEqual([login.shell, ...login.args], ['powershell.exe', '-NoLogo']);
+    } else {
+      assert.deepEqual([login.shell, ...login.args], ['bash', '-l']);
+    }
+    assert.equal(login.cwd, path.resolve(projectPath));
+
+    // Reopening the terminal reattaches to the same shell (a half-typed sudo prompt survives).
+    const reopened = init({ provider: 'plain-shell', isPlainShell: true, initialCommand: null });
+    assert.equal(spawned.length, 2);
+    assert.ok(reopened.frames.some(frame => frame.includes('Reconnected to existing session')));
+  } finally {
+    for (const entry of spawned) entry.pty.emitExit();
+    fs.rmSync(projectPath, { recursive: true, force: true });
+  }
 });

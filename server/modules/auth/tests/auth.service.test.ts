@@ -4,6 +4,7 @@ import test from 'node:test';
 import { AppError } from '@/shared/utils.js';
 
 import { createAuthService } from '../auth.service.js';
+import { createHandoffCodeStore } from '../handoff.service.js';
 
 type AuthDependencies = Parameters<typeof createAuthService>[0];
 
@@ -14,6 +15,8 @@ function createDependencies(overrides: Partial<AuthDependencies> = {}): AuthDepe
       createUser: (username, passwordHash) => ({ id: 1, username, password_hash: passwordHash }),
       getUserByUsername: () => undefined,
       updateLastLogin: () => undefined,
+      countActiveUsers: () => 0,
+      getFirstUser: () => undefined,
     },
     transaction: {
       begin: () => undefined,
@@ -23,6 +26,10 @@ function createDependencies(overrides: Partial<AuthDependencies> = {}): AuthDepe
     hashPassword: async () => 'hashed-password',
     comparePassword: async () => false,
     generateToken: () => 'signed-token',
+    tailscaleSignIn: () => ({ allowedLogins: [], allowedNodes: [], mappedUsername: null, pinnedOrigin: null }),
+    handoffCodes: createHandoffCodeStore(),
+    ingressOrigins: () => ({ public: null, tailnet: null, invalid: [] }),
+    logInfo: () => undefined,
     ...overrides,
   };
 }
@@ -47,6 +54,8 @@ test('register hashes credentials and commits through injected dependencies', as
       },
       getUserByUsername: () => undefined,
       updateLastLogin: (userId) => operations.push(`login:${userId}`),
+      countActiveUsers: () => 0,
+      getFirstUser: () => undefined,
     },
   }));
 
@@ -64,6 +73,8 @@ test('login rejects an invalid password without issuing a token', async () => {
       createUser: () => { throw new Error('unused'); },
       getUserByUsername: () => ({ id: 1, username: 'alice', password_hash: 'hash' }),
       updateLastLogin: () => undefined,
+      countActiveUsers: () => 1,
+      getFirstUser: () => undefined,
     },
     comparePassword: async () => false,
     generateToken: () => {
@@ -80,10 +91,10 @@ test('login rejects an invalid password without issuing a token', async () => {
 });
 
 test('refreshSession issues a replacement token for the authenticated user', () => {
-  let tokenUser: { id: number | bigint; username: string } | undefined;
+  const issued: unknown[][] = [];
   const service = createAuthService(createDependencies({
-    generateToken: (user) => {
-      tokenUser = user;
+    generateToken: (...args) => {
+      issued.push(args);
       return 'replacement-token';
     },
   }));
@@ -91,5 +102,20 @@ test('refreshSession issues a replacement token for the authenticated user', () 
   const result = service.refreshSession({ id: 7, username: 'alice' });
 
   assert.deepEqual(result, { token: 'replacement-token' });
-  assert.deepEqual(tokenUser, { id: 7, username: 'alice' });
+  assert.deepEqual(issued, [[{ id: 7, username: 'alice' }, undefined]]);
+});
+
+test('refreshSession keeps the Tailscale claim so the replacement stays revocable', () => {
+  const issued: unknown[][] = [];
+  const service = createAuthService(createDependencies({
+    generateToken: (...args) => {
+      issued.push(args);
+      return 'replacement-token';
+    },
+  }));
+  const claim = { login: 'owner@example.com', node: '100.101.102.103' };
+
+  service.refreshSession({ id: 7, username: 'alice' }, claim);
+
+  assert.deepEqual(issued, [[{ id: 7, username: 'alice' }, claim]]);
 });

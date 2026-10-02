@@ -5,6 +5,7 @@ import {
 } from '@/shared/authToken';
 import { IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
+import type { HubAgentProvider, HubProjectInput, HubTaskInput, StudioChatSpace, StudioIngressId, T212Env } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -158,6 +159,80 @@ const pluginAssetPath = (pluginName: string, assetFile: string) =>
 
 export const api = {
   studio: {
+    projects: {
+      list: () => get('/api/studio/projects'),
+      get: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}`),
+      create: (input: HubProjectInput) => post('/api/studio/projects', input),
+      update: (id: string, input: HubProjectInput) => put(`/api/studio/projects/${encodeURIComponent(id)}`, input),
+      remove: (id: string) => del(`/api/studio/projects/${encodeURIComponent(id)}`),
+      launch: (id: string, provider: HubAgentProvider) => post(`/api/studio/projects/${encodeURIComponent(id)}/launch`, { provider }),
+      launchRemote: (id: string, agent: HubAgentProvider | 'shell') => post(`/api/studio/projects/${encodeURIComponent(id)}/remote-launch`, { agent }),
+      linkStatus: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/links/status`),
+      sessions: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/sessions`),
+      tasks: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/tasks`),
+      saveTask: (id: string, input: HubTaskInput, taskId?: string) => taskId
+        ? put(`/api/studio/projects/${encodeURIComponent(id)}/tasks/${encodeURIComponent(taskId)}`, input)
+        : post(`/api/studio/projects/${encodeURIComponent(id)}/tasks`, input),
+      scheduleTask: (id: string, taskId: string, sessionId: string, scheduledFor: string) =>
+        post(`/api/studio/projects/${encodeURIComponent(id)}/tasks/${encodeURIComponent(taskId)}/schedule`, { sessionId, scheduledFor }),
+      mailStatus: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/mail/status`),
+      connectMail: (id: string) => post(`/api/studio/projects/${encodeURIComponent(id)}/mail/connect`),
+      mailMessages: (id: string, q: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/mail/messages${query({ q })}`),
+      mailMessage: (id: string, messageId: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/mail/messages/${encodeURIComponent(messageId)}`),
+    },
+    quota: () => get('/api/studio/quota'),
+    remote: {
+      hosts: () => get('/api/studio/remote/hosts'),
+      status: (name: string) => get(`/api/studio/remote/hosts/${encodeURIComponent(name)}/status`),
+    },
+    trading212: {
+      status: () => get('/api/studio/trading212/status'),
+      overview: (env: T212Env) => get(`/api/studio/trading212/overview${query({ env })}`),
+      history: (env: T212Env, days: number) => get(`/api/studio/trading212/history${query({ env, days: String(days) })}`),
+      activity: (env: T212Env) => get(`/api/studio/trading212/activity${query({ env })}`),
+    },
+    // ── v4 track: network — endpoints below this line ──
+    // Both front doors, the one serving this page and short guidance (docs/network.md).
+    network: () => get('/api/studio/network'),
+    // The network guide (docs/network.md) as Markdown, served by Studio so it opens without GitHub.
+    networkGuide: () => get('/api/studio/network/guide'),
+    // A one-time code that signs this user in on the other door; a Tailscale session needs the password for the public door.
+    handoff: (target: StudioIngressId, password?: string) => post('/api/auth/handoff', password ? { target, password } : { target }),
+    // Redeemed by the page on the target door, which has no token yet; the server checks this page's Origin.
+    redeemHandoff: (code: string) => fetch('/api/auth/handoff/redeem', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    }),
+    // ── v4 track: orders — endpoints below this line ──
+    // Trading 212 order placement (single-use previews confirmed by a passkey or a double confirmation) and passkeys.
+    // Passkey changes are stepped up with the Studio password (or, for a removal, that passkey's assertion).
+    t212Trading: {
+      config: () => get('/api/studio/trading212/trading'),
+      preview: (input: {
+        env: T212Env; ticker: string; side: 'buy' | 'sell'; type: 'market' | 'limit'; quantity: number;
+        limitPrice?: number; timeValidity?: 'DAY' | 'GOOD_TILL_CANCEL'; acknowledgeUnknown?: boolean;
+      }) => post('/api/studio/trading212/orders/preview', input),
+      confirm: (id: string, proof: { assertion: unknown } | { confirmed: true }) =>
+        post(`/api/studio/trading212/orders/${encodeURIComponent(id)}/confirm`, proof),
+      passkeyOptions: (password: string) => post('/api/studio/trading212/passkey/options', { password }),
+      registerPasskey: (response: unknown) => post('/api/studio/trading212/passkey', { response }),
+      removalOptions: (id: string) => post(`/api/studio/trading212/passkey/${encodeURIComponent(id)}/remove/options`),
+      removePasskey: (id: string, proof: { password: string } | { assertion: unknown }) =>
+        post(`/api/studio/trading212/passkey/${encodeURIComponent(id)}/remove`, proof),
+    },
+    // ── v4 track: mail — endpoints below this line ──
+    // Per-user read-only mail accounts (Gmail IMAP, Outlook) and the unified inbox; secrets only travel in addImap's body.
+    mail: {
+      accounts: () => get('/api/studio/mail/accounts'),
+      addImap: (email: string, password: string) => post('/api/studio/mail/accounts/imap', { email, password }),
+      startOutlook: () => post('/api/studio/mail/accounts/outlook/device'),
+      pollOutlook: (pollId: string) => post(`/api/studio/mail/accounts/outlook/device/${encodeURIComponent(pollId)}`),
+      removeAccount: (id: string) => del(`/api/studio/mail/accounts/${encodeURIComponent(id)}`),
+      messages: (params: { accountId?: string; q?: string; limit?: number } = {}) => get(`/api/studio/mail/messages${query(params)}`),
+      message: (accountId: string, messageId: string) =>
+        get(`/api/studio/mail/messages/${encodeURIComponent(accountId)}/${encodeURIComponent(messageId)}`),
+    },
     status: () => get('/api/studio/status'),
     snr: () => get('/api/studio/snr'),
     snrAccess: () => post('/api/studio/snr/access'),
@@ -165,8 +240,8 @@ export const api = {
     saveKey: (apiKey: string) => put('/api/studio/deepseek/key', { apiKey }),
     removeKey: () => del('/api/studio/deepseek/key'),
     testKey: () => post('/api/studio/deepseek/test'),
-    conversations: () => get('/api/studio/conversations'),
-    createConversation: (model: string) => post('/api/studio/conversations', { model }),
+    conversations: (space: StudioChatSpace) => get(`/api/studio/conversations?space=${encodeURIComponent(space)}`),
+    createConversation: (model: string, space: StudioChatSpace) => post('/api/studio/conversations', { model, space }),
     conversation: (id: string) => get(`/api/studio/conversations/${encodeURIComponent(id)}`),
     removeConversation: (id: string) => del(`/api/studio/conversations/${encodeURIComponent(id)}`),
     send: (id: string, text: string, includeSnr: boolean, signal: AbortSignal) =>
@@ -175,6 +250,8 @@ export const api = {
   // Auth endpoints (no token required)
   auth: {
     status: () => fetch('/api/auth/status'),
+    // Passwordless sign-in for the owner's own Tailscale identity; the server decides from Tailscale Serve headers.
+    tailscaleSession: () => fetch('/api/auth/tailscale-session', { method: 'POST' }),
     login: (username: string, password: string) => fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

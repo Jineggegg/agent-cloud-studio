@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-import type { Project, ProjectSession, QuickSettingsTab, SlashCommand } from '@/shared/types';
+import type { Project, ProjectSession, QuickSettingsTab, SlashCommand, StudioIngressId } from '@/shared/types';
 
 //----------------- DEPLOYMENT MODE ------------
 
@@ -10,6 +10,68 @@ import type { Project, ProjectSession, QuickSettingsTab, SlashCommand } from '@/
  * Read it to hide or gate features that only exist in one of the two deployments.
  */
 export const IS_PLATFORM = import.meta.env?.VITE_IS_PLATFORM === 'true';
+
+// ---------------------------
+
+//----------------- STUDIO FRONT DOORS (docs/network.md) ------------
+
+// Query parameter that carries a one-time handoff code to the other front door.
+const HANDOFF_QUERY_PARAM = 'handoff';
+// Per-origin localStorage key of this device's preferred door; the value is the door id.
+const INGRESS_PREFERENCE_KEY = 'studio-ingress-v1';
+
+/**
+ * Reads this device's preferred front door. Each door is its own origin with its own
+ * localStorage, so the value is written on both sides of a switch. Returns null when nothing
+ * valid is stored or storage is unavailable (private mode). Used by the studio network settings.
+ */
+export function readIngressPreference(): StudioIngressId | null {
+  try {
+    const stored = localStorage.getItem(INGRESS_PREFERENCE_KEY);
+    return stored === 'public' || stored === 'tailnet' ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Remembers this device's preferred front door on the current origin; never throws. Used by the
+ * studio network settings when the user switches, and by the auth module after it redeems a
+ * handoff, so the target origin agrees with the choice made on the source origin.
+ */
+export function writeIngressPreference(id: StudioIngressId): void {
+  try {
+    localStorage.setItem(INGRESS_PREFERENCE_KEY, id);
+  } catch {
+    // Storage can be unavailable (private mode, blocked site data); the preference is a convenience.
+  }
+}
+
+/**
+ * Builds the address on the target door that carries a one-time handoff code, keeping the
+ * current path and query so the user lands on the same screen. Used by the studio network settings.
+ */
+export function buildHandoffUrl(targetOrigin: string, code: string, current: { pathname: string; search: string } = window.location): string {
+  const url = new URL(`${current.pathname}${current.search}`, targetOrigin);
+  url.searchParams.set(HANDOFF_QUERY_PARAM, code);
+  return url.toString();
+}
+
+/**
+ * Takes a handoff code out of the address bar: returns it and removes the parameter with
+ * history.replaceState, so a reload or a shared link never replays it. Returns null when there
+ * is none. Used once per page load by the auth module before it looks for a stored session.
+ */
+export function takeHandoffCodeFromUrl(): string | null {
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get(HANDOFF_QUERY_PARAM);
+  if (code === null) {
+    return null;
+  }
+  url.searchParams.delete(HANDOFF_QUERY_PARAM);
+  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  return code || null;
+}
 
 // ---------------------------
 
@@ -250,3 +312,15 @@ export const getQuickSettingsTabId = (tab: QuickSettingsTab): string => `quick-s
 
 /** DOM id of the tabpanel a quick settings tab controls; pairs with `getQuickSettingsTabId`. */
 export const getQuickSettingsTabPanelId = (tab: QuickSettingsTab): string => `quick-settings-tabpanel-${tab}`;
+
+// ---------------------------
+
+//----------------- ERROR MESSAGES ------------
+
+/**
+ * The message of a thrown Error (readApiJson throws the server's user-facing text), or `fallback` when the
+ * reason is not an Error or has no message. Used by the studio mail inbox, reader and settings to show request
+ * failures; pass a short Chinese fallback that names the action that failed.
+ */
+export const readableErrorMessage = (reason: unknown, fallback: string): string =>
+  reason instanceof Error && reason.message ? reason.message : fallback;

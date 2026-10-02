@@ -5,8 +5,28 @@ import { IS_PLATFORM } from '@/shared/utils.js';
 
 import { userDb, appConfigDb } from '../database/index.js';
 
+import {
+  isTailnetDoorRequest,
+  isTailscaleSessionRevoked,
+  parseTailscaleSignInConfig,
+} from './tailscale-session.service.js';
+
 // Use env var if set, otherwise auto-generate a unique secret per installation
 const JWT_SECRET = process.env.JWT_SECRET || appConfigDb.getOrCreateJwtSecret();
+
+// A token issued by Tailscale sign-in carries a `tailscale` claim and stays valid only while its
+// login (and, with STUDIO_TAILSCALE_NODES, its device) is still allowlisted. Password sessions
+// carry no claim and are unaffected; rotating JWT_SECRET still revokes every session.
+const isRevokedTailscaleSession = (decoded) =>
+  isTailscaleSessionRevoked(decoded.tailscale, parseTailscaleSignInConfig(process.env));
+
+// Passwordless sign-in only vouches for a tailnet device of the owner, so a token carrying the
+// claim is accepted only on requests that came through the tailnet door (docs/network.md). On the
+// public domain or a local address it is refused like an invalid token, even before it expires.
+// `request` is an Express request or the WebSocket upgrade request; without one, fail closed.
+const isTailscaleSessionOffTailnetDoor = (decoded, request) =>
+  decoded.tailscale !== undefined
+  && !(request && isTailnetDoorRequest(request, parseTailscaleSignInConfig(process.env)));
 
 // Optional API key middleware
 const validateApiKey = (req, res, next) => {
@@ -69,17 +89,36 @@ const authenticateToken = async (req, res, next) => {
       });
     }
 
-    // Auto-refresh: if token is past halfway through its lifetime, issue a new one
+    if (isRevokedTailscaleSession(decoded)) {
+      res.setHeader('X-Auth-Error', 'invalid-token');
+      return res.status(401).json({
+        error: 'Invalid token. Tailscale sign-in no longer allows this session.',
+        code: 'AUTH_TOKEN_INVALID',
+      });
+    }
+
+    if (isTailscaleSessionOffTailnetDoor(decoded, req)) {
+      res.setHeader('X-Auth-Error', 'invalid-token');
+      return res.status(401).json({
+        error: 'Invalid token. A Tailscale sign-in session only works through the Tailscale address.',
+        code: 'AUTH_TOKEN_INVALID',
+      });
+    }
+
+    // Auto-refresh: if token is past halfway through its lifetime, issue a new one.
+    // The replacement keeps the Tailscale claim so it stays revocable.
     if (decoded.exp && decoded.iat) {
       const now = Math.floor(Date.now() / 1000);
       const halfLife = (decoded.exp - decoded.iat) / 2;
       if (now > decoded.iat + halfLife) {
-        const newToken = generateToken(user);
+        const newToken = generateToken(user, decoded.tailscale);
         res.setHeader('X-Refreshed-Token', newToken);
       }
     }
 
     req.user = user;
+    // Read by the /refresh route so an explicit refresh keeps the claim as well.
+    req.tailscaleSession = decoded.tailscale;
     next();
   } catch (error) {
     if (error instanceof jwt.TokenExpiredError) {
@@ -102,20 +141,22 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// Generate JWT token
-const generateToken = (user) => {
-  return jwt.sign(
-    {
-      userId: user.id,
-      username: user.username
-    },
-    JWT_SECRET,
-    { expiresIn: '7d' }
-  );
+// Generate JWT token. `tailscaleSession` ({ login, node }) is passed only for sessions issued by
+// Tailscale sign-in, and by every refresh of such a session.
+const generateToken = (user, tailscaleSession?) => {
+  const payload = {
+    userId: user.id,
+    username: user.username
+  };
+  if (tailscaleSession) {
+    payload.tailscale = { login: tailscaleSession.login, node: tailscaleSession.node };
+  }
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
 };
 
-// WebSocket authentication function
-const authenticateWebSocket = (token) => {
+// WebSocket authentication function. `request` is the HTTP upgrade request, needed to check which
+// door a Tailscale-issued token arrived through.
+const authenticateWebSocket = (token, request?) => {
   // Platform mode: bypass token validation, return first user
   if (IS_PLATFORM) {
     try {
@@ -139,7 +180,7 @@ const authenticateWebSocket = (token) => {
     const decoded = jwt.verify(token, JWT_SECRET);
     // Verify user actually exists in database (matches REST authenticateToken behavior)
     const user = userDb.getUserById(decoded.userId);
-    if (!user) {
+    if (!user || isRevokedTailscaleSession(decoded) || isTailscaleSessionOffTailnetDoor(decoded, request)) {
       return null;
     }
     return { userId: user.id, username: user.username };

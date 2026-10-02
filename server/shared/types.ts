@@ -1574,3 +1574,199 @@ export type CliApplication = {
 export type SandboxCommandService = {
   execute(argumentsList: string[]): Promise<number>;
 };
+
+// ---------------------------
+//----------------- STUDIO PROJECT CONTRACTS ------------
+/** A coding agent that runs inside the inherited IDE, in the project's own directory. */
+export type StudioAgentProvider = 'claude' | 'codex' | 'cursor' | 'opencode';
+
+/** Any model a project can enable: the IDE agents plus Studio's own DeepSeek API chat. */
+export type StudioProjectProvider = StudioAgentProvider | 'deepseek';
+
+/** Optional tools a project shows as tabs; integrations only appear when enabled. */
+export type StudioProjectModule = 'agents' | 'mail' | 'automations' | 'snr-lab' | 'trading212';
+
+/** A quick-browse button on a project, opened in a new tab (or embedded when the site allows it). */
+export type StudioProjectLink = { label: string; url: string };
+
+/** Editable project metadata consumed by the Studio project router and service; one project is one home-screen icon. */
+export type StudioProjectInput = {
+  name: string;
+  description: string;
+  workspacePath: string;
+  modules: StudioProjectModule[];
+  providers: StudioProjectProvider[];
+  // Home-screen icon colour family and glyph, chosen from fixed lists.
+  tone: string;
+  glyph: string;
+  // Website quick-browse buttons (http/https only).
+  links: StudioProjectLink[];
+  // Name of a configured SSH host (STUDIO_SSH_HOSTS) when agents run remotely; empty runs them on this machine.
+  remoteHost: string;
+  // Working directory on the remote host, e.g. ~/projects/super-professor.
+  remoteDir: string;
+};
+
+/** An SSH host Studio may open agent sessions on; configured by the server owner, never by the browser. */
+export type StudioRemoteHost = { name: string; label: string; target: string };
+
+/** Reachability and installed tools of a remote host, checked read-only over SSH. */
+export type StudioRemoteStatus = {
+  name: string; online: boolean; latencyMs: number | null; checkedAt: string;
+  tools: { claude: boolean; codex: boolean; tmux: boolean };
+  error?: string;
+};
+
+/** A remote agent session: the exact command the terminal runs, built by the server from validated config. */
+export type StudioRemoteLaunch = { command: string; title: string };
+
+/** Live check of a project link: whether it answers and whether it can be shown in an iframe. */
+export type StudioLinkStatus = { url: string; ok: boolean; status: number | null; latencyMs: number | null; frameable: boolean };
+
+/** One usage window of a model plan, e.g. the 5-hour or weekly limit. */
+export type StudioQuotaWindow = { id: string; label: string; usedPercent: number; windowMinutes: number | null; resetsAt: string | null };
+
+/** What the home-screen widgets know about one provider's quota; `source` says how trustworthy it is. */
+export type StudioQuotaSnapshot = {
+  provider: 'claude' | 'codex' | 'deepseek';
+  available: boolean;
+  windows: StudioQuotaWindow[];
+  balances: { currency: string; total: number; granted: number; toppedUp: number }[];
+  source: 'official' | 'statusline' | 'sdk-event' | 'local-log' | 'unavailable';
+  observedAt: string | null;
+  stale: boolean;
+  note?: string;
+};
+
+/** Persisted, user-owned project returned to the Studio UI, with no credentials or provider tokens. */
+export type StudioProjectRecord = StudioProjectInput & { id: string; updatedAt: string };
+
+/** An automation draft passed from the Studio router to its service. Saving does not execute or schedule a task. */
+export type StudioTaskInput = { title: string; prompt: string; provider: StudioAgentProvider };
+
+// ── v4 track: network — server types below this line ──
+//----------------- STUDIO INGRESS TYPES ------------
+/**
+ * One of the two front doors to the single Studio backend on the owner's laptop.
+ * `public` is the owner's domain (STUDIO_PUBLIC_ORIGIN, e.g. https://studio.ajarche.com) reached
+ * through a Cloudflare Tunnel; `tailnet` is Tailscale Serve on the laptop (STUDIO_TAILNET_ORIGIN)
+ * reached over AJ's tailnet, optionally through an exit node. Both proxy to the same process and
+ * database, so the id only says how a request arrived, never which data it sees.
+ */
+export type StudioIngressId = 'public' | 'tailnet';
+
+/**
+ * The configured origins of both front doors, as read by readStudioIngressOrigins.
+ * Each origin is normalised to `URL.origin` (no trailing slash, default port dropped) so it can be
+ * compared with a browser's Origin header by string equality; `null` means unset or invalid.
+ * `invalid` lists doors whose variable is set but is not a bare http(s) origin, so callers can
+ * fail closed and explain the misconfiguration instead of silently treating it as unset.
+ */
+export type StudioIngressOrigins = {
+  public: string | null;
+  tailnet: string | null;
+  invalid: StudioIngressId[];
+};
+
+/**
+ * Who sent a request, as the auth module's throttles count it (failed passwords, handoff
+ * redemptions). Built by auth.routes from the request; consumed by the auth service and the
+ * handoff code store through the auth module's client throttle.
+ * - `door: 'cloudflare'` means Cloudflare's edge headers are present (the public tunnel door).
+ *   Cloudflare overwrites CF-Connecting-IP, so `address` is the real client address there.
+ * - `door: 'direct'` is everything else (Tailscale Serve, loopback, LAN); `address` is the raw
+ *   socket peer. Serve and cloudflared both dial loopback, so every tailnet request shares one
+ *   address, which is why throttles also keep a separate total per door: public traffic can then
+ *   never use up the budget of the tailnet door.
+ * `address` is 'unknown' when the value is missing; it is only a bucket key, never trusted for
+ * authentication.
+ */
+export type StudioRequestClient = {
+  door: 'cloudflare' | 'direct';
+  address: string;
+};
+
+/**
+ * Optional server-side check of Cloudflare Access (docs/network.md), as read by
+ * readCloudflareAccessConfig from STUDIO_CF_ACCESS_TEAM_DOMAIN and STUDIO_CF_ACCESS_AUD.
+ * - `off`: both unset; requests through Cloudflare are not checked by Studio.
+ * - `invalid`: only one is set or a value is malformed; `problem` explains it in Chinese for the
+ *   Settings screen. Callers fail closed: every request through Cloudflare is refused.
+ * - `on`: every request through Cloudflare must carry a Cf-Access-Jwt-Assertion signed (RS256) by a
+ *   key from `certsUrl`, issued by `issuer`, for one of the `audience` tags, and not expired.
+ * Used by the auth module (the Access gate) and the Studio network endpoint (guidance).
+ */
+export type StudioCloudflareAccessConfig =
+  | { status: 'off' }
+  | { status: 'invalid'; problem: string }
+  | { status: 'on'; teamDomain: string; issuer: string; certsUrl: string; audience: string[] };
+// ---------------------------
+// ── v4 track: orders — server types below this line ──
+//----------------- STUDIO TRADING 212 ORDERS ------------
+/**
+ * Trading 212 account an order targets. Live and demo use separate key files, and
+ * STUDIO_T212_TRADING decides which of them may trade at all.
+ */
+export type StudioT212Environment = 'live' | 'demo';
+
+/**
+ * An order request after the Studio router validated its transport shape (types, enums,
+ * decimal places). `quantity` is always positive; `side` decides the sign sent to Trading 212.
+ * `limitPrice` is present exactly when `type` is 'limit'. Business checks (holdings, the
+ * per-order cap, allowed environments) are the orders service's job, not the router's.
+ */
+export type StudioT212OrderInput = {
+  env: StudioT212Environment;
+  ticker: string;
+  side: 'buy' | 'sell';
+  type: 'market' | 'limit';
+  quantity: number;
+  limitPrice?: number;
+  timeValidity: 'DAY' | 'GOOD_TILL_CANCEL';
+};
+
+/**
+ * The browser origin a trading or passkey request came from, after the orders service matched
+ * it against the configured origins. `rpId` is its hostname and doubles as the WebAuthn RP ID,
+ * so passkeys registered on one domain never authorize orders on another.
+ */
+export type StudioT212TrustedOrigin = { origin: string; rpId: string };
+// ── v4 track: mail — server types below this line ──
+//----------------- STUDIO MAIL CONTRACTS ------------
+/**
+ * A message body exactly as a mail adapter (Gmail IMAP, Outlook Graph, legacy Gmail OAuth) delivered it.
+ *
+ * `html` bodies must never reach the browser as markup: the Studio mail service reduces both kinds to
+ * capped plain text. The content is untrusted third-party data and is never sent to a model automatically.
+ */
+export type StudioMailRawBody = { kind: 'text' | 'html'; content: string };
+
+/**
+ * One message as an adapter read it, before the mail service cleans and caps it.
+ *
+ * Used by the Gmail IMAP and Outlook adapters and by the mail service. `id` is adapter-specific and must be
+ * accepted back by the same adapter's `read`; `date` is ISO-8601 or empty; `body` is the preview part for
+ * listings and the whole (size-capped) body for a single message; `truncated` reports a size cap was hit.
+ */
+export type StudioMailRawMessage = {
+  id: string;
+  subject: string;
+  from: string;
+  fromAddress: string;
+  to: string;
+  date: string;
+  unread: boolean;
+  body: StudioMailRawBody;
+  truncated: boolean;
+};
+
+/**
+ * The Microsoft identity platform tokens for one Outlook mail account.
+ *
+ * Produced by the Outlook Graph adapter (device-code sign-in and refresh) and stored by the mail service
+ * only inside its AES-256-GCM encrypted account secret; never logged or sent to the browser.
+ * `expiresAt` is the access token's expiry in epoch milliseconds. Microsoft rotates `refreshToken`, so the
+ * newest one must always replace the stored one.
+ */
+export type StudioOutlookTokens = { accessToken: string; refreshToken: string; expiresAt: number };
+

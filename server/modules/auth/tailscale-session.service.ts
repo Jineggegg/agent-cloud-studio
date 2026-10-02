@@ -1,0 +1,397 @@
+import { BlockList, isIP } from 'node:net';
+
+import { isViaCloudflareEdge } from '@/shared/utils.js';
+
+/**
+ * Passwordless sign-in policy for requests that arrive through Tailscale Serve.
+ *
+ * What Serve guarantees (see the Tailscale Serve docs, https://tailscale.com/kb/1312/serve, and
+ * ipn/ipnlocal/serve.go in tailscale/tailscale):
+ * - Serve proxies to a backend on this machine, so its requests reach Studio over loopback.
+ * - Serve deletes client-supplied Tailscale-User-Login/-Name/-Profile-Pic/Tailscale-Funnel-Request
+ *   headers, then sets them from WhoIs for the tailnet peer; tagged devices and Funnel (public)
+ *   requests never carry identity headers, and Funnel requests are marked Tailscale-Funnel-Request.
+ * - Serve's Go reverse proxy drops incoming X-Forwarded-* headers and then sets X-Forwarded-For to
+ *   exactly one address: the peer it accepted the connection from (a tailnet address for tailnet
+ *   traffic, the public client address for Funnel).
+ *
+ * What that proves, and what it does not (the real trust boundary):
+ * - Tailscale-User-Login names a Tailscale *user*, not a device or a program. Every untagged device
+ *   signed in as an allowlisted login carries it, for every program on that device: an iOS app,
+ *   a script or curl can call the Serve URL just like Safari can.
+ * - Origin and Sec-Fetch-Site are ordinary headers that any non-browser client sets at will. The
+ *   same-origin check only stops *browser pages* other than Studio from riding the ambient
+ *   identity (cross-site requests, DNS rebinding of the loopback port). It is not authentication.
+ * - STUDIO_TAILSCALE_NODES narrows the boundary to the listed devices, using the single peer
+ *   address Serve writes into X-Forwarded-For; every program on a listed device is still trusted.
+ * - Any process on this machine can reach the loopback port and forge every header checked here.
+ * - Issued sessions carry a claim that auth.middleware re-checks on every request, so disabling the
+ *   feature or removing a login or device from the allowlist revokes sessions already issued.
+ *
+ * The second front door (docs/network.md): the public domain reaches the same loopback port through
+ * a Cloudflare Tunnel, so cloudflared's requests are loopback too and Cloudflare does not strip
+ * client-supplied Tailscale-* headers. Such a request is refused three times over: its Host is the
+ * public domain, not a MagicDNS name (and STUDIO_TAILNET_ORIGIN pins the only accepted origin); it
+ * carries the CF-Ray / CF-Connecting-IP / CDN-Loop headers Cloudflare's edge always sets; and
+ * Cloudflare appends the real client address to any forged X-Forwarded-For, which makes it a list.
+ *
+ * The same door check applies to the sessions this feature issues: a token carrying the
+ * `tailscale` claim is accepted only on requests that came through the tailnet door
+ * (isTailnetDoorRequest), so a leaked passwordless token is useless on the public domain, and the
+ * "a Tailscale session needs the password to reach the public door" handoff rule actually holds.
+ */
+
+type TailscaleSignInConfig = {
+  /** Lower-cased Tailscale login names allowed to sign in; an empty list disables the feature. */
+  allowedLogins: string[];
+  /**
+   * Tailnet addresses (STUDIO_TAILSCALE_NODES) of the only devices allowed to sign in, as written
+   * by the operator; an empty list allows every device of an allowed login.
+   */
+  allowedNodes: string[];
+  /** Local Studio username the identity maps to; null means "the only active user". */
+  mappedUsername: string | null;
+  /**
+   * Exact origin the request must come from, when configured: STUDIO_TAILNET_ORIGIN, or
+   * STUDIO_PUBLIC_ORIGIN when STUDIO_TAILNET_ORIGIN is unset (the single-door setup this feature
+   * started with). It must be the https MagicDNS origin Serve answers on.
+   */
+  pinnedOrigin: string | null;
+};
+
+type TailscaleSessionRequest = {
+  /** Raw TCP peer address of the request socket (never a forwarded-for value). */
+  remoteAddress: string | undefined;
+  /** Host header as received; Serve forwards the host the browser used. */
+  host: string | undefined;
+  /** Origin header; browsers send it on every POST, same-origin included. */
+  origin: string | undefined;
+  /** Sec-Fetch-Site header, when the browser sends one. */
+  fetchSite: string | undefined;
+  /** X-Forwarded-For header; duplicates are joined with ", " by Node. */
+  forwardedFor: string | undefined;
+  /** Tailscale-User-Login header set by Serve for tailnet users. */
+  userLogin: string | undefined;
+  /** Tailscale-Funnel-Request header, which Serve sets on public Funnel traffic. */
+  funnelRequest: string | undefined;
+  /** CF-Ray header, which Cloudflare's edge sets on every request it proxies (the tunnel door). */
+  cfRay?: string;
+  /** CF-Connecting-IP header, also set by Cloudflare's edge. */
+  cfConnectingIp?: string;
+  /** CDN-Loop header; Cloudflare adds "cloudflare" to it on proxied requests. */
+  cdnLoop?: string;
+};
+
+/** What a session token issued by Tailscale sign-in records, so later requests can re-check it. */
+type TailscaleSessionClaim = {
+  /** Lower-cased allowlisted login the session was issued for. */
+  login: string;
+  /** Canonical tailnet address of the device that signed in (Serve's X-Forwarded-For). */
+  node: string;
+};
+
+type TailscaleDenialReason =
+  | 'disabled'
+  | 'pinned-origin-invalid'
+  | 'pinned-origin-not-tailnet'
+  | 'nodes-invalid'
+  | 'funnel-request'
+  | 'via-cloudflare'
+  | 'socket-not-loopback'
+  | 'forwarded-for-not-tailnet'
+  | 'node-not-allowed'
+  | 'host-not-tailnet'
+  | 'cross-site'
+  | 'identity-missing'
+  | 'login-not-allowed';
+
+type TailscaleSessionDecision =
+  | { allowed: true; login: string; session: TailscaleSessionClaim }
+  | { allowed: false; reason: TailscaleDenialReason; login: string | null; node: string | null };
+
+// Serve dials the backend over loopback; other peers can reach Studio only by bypassing Serve.
+const LOOPBACK_ADDRESSES = new BlockList();
+LOOPBACK_ADDRESSES.addSubnet('127.0.0.0', 8, 'ipv4');
+LOOPBACK_ADDRESSES.addAddress('::1', 'ipv6');
+
+// Supersets Tailscale assigns node addresses from (tailscale/net/tsaddr CGNATRange and
+// TailscaleULARange). A Funnel request carries a public address here and is refused.
+const TAILNET_ADDRESSES = new BlockList();
+TAILNET_ADDRESSES.addSubnet('100.64.0.0', 10, 'ipv4');
+TAILNET_ADDRESSES.addSubnet('fd7a:115c:a1e0::', 48, 'ipv6');
+
+const IPV4_MAPPED_PREFIX = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i;
+const HOST_HEADER_PATTERN = /^[a-z0-9.-]+(?::\d{1,5})?$/i;
+
+// Returns the address in one canonical spelling when it is a single IP inside `list`, else null.
+// The spelling lets operator-written STUDIO_TAILSCALE_NODES entries (any case, expanded or
+// compressed IPv6) compare equal to the address Serve writes.
+function canonicalAddressIn(list: BlockList, value: string | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  // Dual-stack sockets report IPv4 peers as IPv4-mapped IPv6 addresses (::ffff:127.0.0.1).
+  const trimmed = value.trim();
+  const address = IPV4_MAPPED_PREFIX.exec(trimmed)?.[1] ?? trimmed;
+  const version = isIP(address);
+  // Zone-scoped addresses (fe80::1%eth0) are never loopback or tailnet peers.
+  if (version === 0 || address.includes('%')) {
+    return null;
+  }
+  try {
+    // The WHATWG URL serializer prints IPv6 lower-cased and RFC 5952-compressed.
+    const canonical = version === 4 ? address : new URL(`http://[${address}]`).hostname.slice(1, -1);
+    return list.check(canonical, version === 4 ? 'ipv4' : 'ipv6') ? canonical : null;
+  } catch {
+    return null;
+  }
+}
+
+// Canonical STUDIO_TAILSCALE_NODES entries, or null when any entry is not a tailnet address.
+// A typo must not silently empty the list, because an empty list means "every device".
+function canonicalAllowedNodes(config: TailscaleSignInConfig): string[] | null {
+  const nodes = config.allowedNodes.map((node) => canonicalAddressIn(TAILNET_ADDRESSES, node));
+  return nodes.every((node): node is string => node !== null) ? nodes : null;
+}
+
+// The pinned origin must be a bare https origin; anything else is a configuration error that
+// refuses sign-in instead of silently skipping the pin. Returns the serialized origin, else null.
+function parsePinnedOrigin(value: string): string | null {
+  try {
+    const url = new URL(value);
+    const isBareHttpsOrigin = url.protocol === 'https:'
+      && !url.username
+      && !url.password
+      && url.pathname === '/'
+      && !url.search
+      && !url.hash;
+    return isBareHttpsOrigin ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+// MagicDNS names have the shape <machine>.<tailnet>.ts.net; certificates for Serve exist only there.
+function isTailnetHost(host: string | undefined): host is string {
+  if (!host || !HOST_HEADER_PATTERN.test(host)) {
+    return false;
+  }
+  const labels = host.split(':')[0].toLowerCase().split('.');
+  return labels.length >= 4
+    && labels.every(Boolean)
+    && labels.at(-2) === 'ts'
+    && labels.at(-1) === 'net';
+}
+
+// Cloudflare's edge headers mean the request came through the public tunnel door, never through
+// Serve. A browser never sends them on its own, so a Serve request carrying one is refused as well.
+function isViaCloudflare(request: TailscaleSessionRequest): boolean {
+  return isViaCloudflareEdge({
+    'cf-ray': request.cfRay,
+    'cf-connecting-ip': request.cfConnectingIp,
+    'cdn-loop': request.cdnLoop,
+  });
+}
+
+// Host and port compared the way a browser compares origins, so ":443" equals no port.
+function hostMatchesOrigin(host: string, origin: string): boolean {
+  try {
+    return new URL(`https://${host}`).host === new URL(origin).host;
+  } catch {
+    return false;
+  }
+}
+
+// A browser on https://<host> sends exactly that origin. Serve terminates TLS for *.ts.net, so
+// Studio's page is always https, and an http Origin (another Serve app on port 80) is cross-origin.
+// Host and port compare the way the browser does, so ":443" equals no port.
+function isSameOriginRequest(request: TailscaleSessionRequest, host: string, pinnedOrigin: string | null): boolean {
+  if (!request.origin || (request.fetchSite && request.fetchSite !== 'same-origin')) {
+    return false;
+  }
+  try {
+    const origin = new URL(request.origin);
+    if (origin.protocol !== 'https:' || (pinnedOrigin && origin.origin !== pinnedOrigin)) {
+      return false;
+    }
+    return new URL(`https://${host}`).host === origin.host;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reads the sign-in configuration from environment variables.
+ * Used by auth.module (composition root) and auth.middleware on every request. They pass
+ * process.env, which server/load-env.ts fills from .env once at startup, so .env edits apply
+ * after a restart.
+ */
+export function parseTailscaleSignInConfig(env: Record<string, string | undefined>): TailscaleSignInConfig {
+  const list = (value: string | undefined) => (value ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return {
+    allowedLogins: list(env.STUDIO_TAILSCALE_LOGINS).map((login) => login.toLowerCase()),
+    allowedNodes: list(env.STUDIO_TAILSCALE_NODES),
+    mappedUsername: env.STUDIO_TAILSCALE_USER?.trim() || null,
+    // Only an unset (or blank) STUDIO_TAILNET_ORIGIN falls back; a malformed one fails closed.
+    pinnedOrigin: env.STUDIO_TAILNET_ORIGIN?.trim() || env.STUDIO_PUBLIC_ORIGIN?.trim() || null,
+  };
+}
+
+/**
+ * Decides whether a request may be signed in as the configured Tailscale owner.
+ * Used by auth.service; every check must hold, and the first failing one is reported for logging.
+ * An allowed decision carries the claim the issued session token must record.
+ */
+export function evaluateTailscaleSessionRequest(
+  request: TailscaleSessionRequest,
+  config: TailscaleSignInConfig,
+): TailscaleSessionDecision {
+  const login = request.userLogin?.trim() || null;
+  let node: string | null = null;
+  const deny = (reason: TailscaleDenialReason): TailscaleSessionDecision => ({
+    allowed: false,
+    reason,
+    login,
+    node,
+  });
+
+  if (config.allowedLogins.length === 0) {
+    return deny('disabled');
+  }
+  // Configuration errors fail closed, before any request data is considered.
+  const pinnedOrigin = config.pinnedOrigin === null ? null : parsePinnedOrigin(config.pinnedOrigin);
+  if (config.pinnedOrigin !== null && pinnedOrigin === null) {
+    return deny('pinned-origin-invalid');
+  }
+  // E.g. STUDIO_PUBLIC_ORIGIN moved to the public domain while STUDIO_TAILNET_ORIGIN was left unset:
+  // no request could match, so say so in the log instead of reporting every request as cross-site.
+  if (pinnedOrigin !== null && !isTailnetHost(new URL(pinnedOrigin).host)) {
+    return deny('pinned-origin-not-tailnet');
+  }
+  const allowedNodes = canonicalAllowedNodes(config);
+  if (allowedNodes === null) {
+    return deny('nodes-invalid');
+  }
+  // Serve never attaches identity to public Funnel traffic; refuse it even if a login is present.
+  if (request.funnelRequest !== undefined) {
+    return deny('funnel-request');
+  }
+  if (isViaCloudflare(request)) {
+    return deny('via-cloudflare');
+  }
+  if (canonicalAddressIn(LOOPBACK_ADDRESSES, request.remoteAddress) === null) {
+    return deny('socket-not-loopback');
+  }
+  // Exactly one tailnet address, as Serve writes it. A list means another proxy appended a hop,
+  // and a missing value means the loopback caller is not Serve.
+  const forwardedFor = request.forwardedFor?.trim();
+  node = forwardedFor && !forwardedFor.includes(',')
+    ? canonicalAddressIn(TAILNET_ADDRESSES, forwardedFor)
+    : null;
+  if (node === null) {
+    return deny('forwarded-for-not-tailnet');
+  }
+  if (allowedNodes.length > 0 && !allowedNodes.includes(node)) {
+    return deny('node-not-allowed');
+  }
+  const host = request.host?.trim();
+  if (!isTailnetHost(host)) {
+    return deny('host-not-tailnet');
+  }
+  if (!isSameOriginRequest(request, host, pinnedOrigin)) {
+    return deny('cross-site');
+  }
+  if (!login) {
+    return deny('identity-missing');
+  }
+  const normalizedLogin = login.toLowerCase();
+  if (!config.allowedLogins.includes(normalizedLogin)) {
+    return deny('login-not-allowed');
+  }
+  return { allowed: true, login, session: { login: normalizedLogin, node } };
+}
+
+/**
+ * Tells whether a request came in through the tailnet door: Tailscale Serve on this machine, which
+ * dials Studio over loopback, keeps the browser's MagicDNS Host, and never adds Cloudflare's edge
+ * headers. Concretely: no CF-Ray / CF-Connecting-IP / CDN-Loop: cloudflare, not a Funnel request, a
+ * loopback socket, a *.ts.net Host, and, when an origin is pinned (STUDIO_TAILNET_ORIGIN, or
+ * STUDIO_PUBLIC_ORIGIN while that is unset), exactly the pinned host. An invalid or non-tailnet pin
+ * fails closed, like sign-in does.
+ *
+ * Used by auth.middleware for every HTTP request (including POST /api/auth/refresh) and WebSocket
+ * upgrade that presents a token with the `tailscale` claim; password sessions are not checked.
+ * Like sign-in, this cannot tell Serve from another process on this machine that forges headers.
+ */
+export function isTailnetDoorRequest(
+  request: {
+    headers: Record<string, string | string[] | undefined>;
+    socket?: { remoteAddress?: string };
+  },
+  config: TailscaleSignInConfig,
+): boolean {
+  if (isViaCloudflareEdge(request.headers) || request.headers['tailscale-funnel-request'] !== undefined) {
+    return false;
+  }
+  if (canonicalAddressIn(LOOPBACK_ADDRESSES, request.socket?.remoteAddress) === null) {
+    return false;
+  }
+  const hostHeader = request.headers.host;
+  const host = typeof hostHeader === 'string' ? hostHeader.trim() : undefined;
+  if (!isTailnetHost(host)) {
+    return false;
+  }
+  if (config.pinnedOrigin === null) {
+    return true;
+  }
+  const pinnedOrigin = parsePinnedOrigin(config.pinnedOrigin);
+  return pinnedOrigin !== null && hostMatchesOrigin(host, pinnedOrigin);
+}
+
+/**
+ * Tells whether the `tailscale` claim of a verified session token no longer matches the current
+ * settings. Used by auth.middleware for every token-authenticated HTTP request and WebSocket, so
+ * clearing STUDIO_TAILSCALE_LOGINS, removing a login, or leaving the token's device out of
+ * STUDIO_TAILSCALE_NODES revokes sessions already issued. A token without the claim (a password
+ * session) is never revoked here; a malformed claim, or invalid node settings, count as revoked.
+ */
+export function isTailscaleSessionRevoked(claim: unknown, config: TailscaleSignInConfig): boolean {
+  if (claim === undefined) {
+    return false;
+  }
+  if (
+    typeof claim !== 'object'
+    || claim === null
+    || !('login' in claim)
+    || !('node' in claim)
+    || typeof claim.login !== 'string'
+    || typeof claim.node !== 'string'
+  ) {
+    return true;
+  }
+  if (!config.allowedLogins.includes(claim.login.toLowerCase())) {
+    return true;
+  }
+  const allowedNodes = canonicalAllowedNodes(config);
+  return allowedNodes === null
+    || (allowedNodes.length > 0 && !allowedNodes.includes(claim.node));
+}
+
+/**
+ * Shortens a login for logs, e.g. "alice@example.com" -> "al***@example.com".
+ * Used by auth.service so sign-in logs never contain a full login name.
+ */
+export function maskTailscaleLogin(login: string | null): string {
+  if (!login) {
+    return '(none)';
+  }
+  const separator = login.lastIndexOf('@');
+  const localPart = separator >= 0 ? login.slice(0, separator) : login;
+  const domain = separator >= 0 ? login.slice(separator, separator + 64) : '';
+  const visible = localPart.slice(0, localPart.length > 2 ? 2 : 1);
+  // Header values may carry arbitrary bytes; keep log lines printable.
+  return `${visible}***${domain}`.replace(/[^\x20-\x7e]/g, '?');
+}

@@ -4,10 +4,13 @@ import {
   access,
   lstat,
   mkdir,
+  open,
   readFile,
   readdir,
   readlink,
   realpath,
+  rename,
+  rm,
   stat,
   writeFile,
 } from 'node:fs/promises';
@@ -27,6 +30,8 @@ import type {
   ProviderCurrentActiveModel,
   ProviderModelsDefinition,
   ProviderSkillSource,
+  StudioCloudflareAccessConfig,
+  StudioIngressOrigins,
   SubagentActivity,
   WorkspacePathValidationResult,
 } from '@/shared/types.js';
@@ -123,6 +128,158 @@ export class AppError extends Error {
 export function getGitErrorDetails(error: unknown): string {
   const details = error as { message?: string; stderr?: string; stdout?: string } | null;
   return `${details?.message ?? ''} ${details?.stderr ?? ''} ${details?.stdout ?? ''}`.trim();
+}
+
+// ---------------------------
+//----------------- SNR LAB ACCESS UTILITIES ------------
+/**
+ * Builds the `Authorization: Basic ...` value Studio sends to the local SNR lab
+ * when SNR runs with its optional single-user access (SNR_LAB_USER and
+ * SNR_LAB_PASSWORD on the SNR side).
+ *
+ * Used by the Studio SNR gateway (every proxied request) and the Studio status
+ * service (health, dataset and manifest reads), which must authenticate the same
+ * way. It is configured with `STUDIO_SNR_USER` plus `STUDIO_SNR_PASSWORD_FILE`,
+ * a file that holds only the password. The file is read on every call, so a
+ * rotated password applies without a restart and the secret never sits in env.
+ *
+ * Returns `null` when either variable is unset (SNR in local-only mode). Throws
+ * an `AppError` (503, `SNR_AUTH_UNAVAILABLE`) when it is configured but the file
+ * is unreadable or the credential is malformed. The error never names the file
+ * or the password, and callers must never log the returned header value.
+ */
+export function readSnrBasicAuthorization(env: NodeJS.ProcessEnv = process.env): string | null {
+  const user = env.STUDIO_SNR_USER?.trim();
+  const passwordFile = env.STUDIO_SNR_PASSWORD_FILE?.trim();
+  if (!user || !passwordFile) return null;
+  const unavailable = () => new AppError('SNR 认证配置不可用', { statusCode: 503, code: 'SNR_AUTH_UNAVAILABLE' });
+  let password: string;
+  try {
+    // Only a BOM and the single trailing newline an editor or `echo` adds are removed.
+    password = fs.readFileSync(passwordFile, 'utf8').replace(/^﻿/, '').replace(/\r?\n$/, '');
+  } catch {
+    throw unavailable();
+  }
+  // A Basic credential cannot carry ':' in the user name or control characters in either part (SNR's own rule).
+  if (!password || user.includes(':') || /\p{Cc}/u.test(user) || /\p{Cc}/u.test(password)) throw unavailable();
+  return `Basic ${Buffer.from(`${user}:${password}`, 'utf8').toString('base64')}`;
+}
+
+// ---------------------------
+//----------------- STUDIO INGRESS UTILITIES ------------
+// A bare origin is scheme + host + optional port and nothing else; one trailing slash is tolerated
+// because operators often paste it. Returns the serialized `URL.origin`, or null for anything else.
+function bareHttpOrigin(value: string): string | null {
+  try {
+    const url = new URL(value);
+    const isBare = ['http:', 'https:'].includes(url.protocol)
+      && !url.username
+      && !url.password
+      && url.pathname === '/'
+      && !url.search
+      && !url.hash;
+    return isBare ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reads the origins of Studio's two front doors from the environment:
+ * STUDIO_PUBLIC_ORIGIN (the owner's domain behind a Cloudflare Tunnel, the default door) and
+ * STUDIO_TAILNET_ORIGIN (Tailscale Serve on the laptop, reached over AJ's tailnet).
+ *
+ * Used by the auth module (handoff targets: a one-time code is bound to one of these origins),
+ * the Studio network endpoint (which door served a request), the Studio SNR gateway (write
+ * requests must come from one of these origins), the Studio router (an https door makes the
+ * SNR cookie Secure) and the Studio Gmail service (the OAuth callback goes to the door that started
+ * the flow). They pass process.env, which server/load-env.ts fills from .env once at startup, so
+ * .env edits apply after a restart.
+ *
+ * Each value must be a bare http(s) origin; http is accepted so the development runner
+ * (`npm run dev`, http://127.0.0.1:5174) keeps working. A set but malformed value is reported in
+ * `invalid` and its origin is null, so it can never match a request. Never throws, so a typo in
+ * .env disables the features that need the door instead of stopping the server.
+ */
+export function readStudioIngressOrigins(env: Record<string, string | undefined> = process.env): StudioIngressOrigins {
+  const origins: StudioIngressOrigins = { public: null, tailnet: null, invalid: [] };
+  for (const [id, variable] of [['public', 'STUDIO_PUBLIC_ORIGIN'], ['tailnet', 'STUDIO_TAILNET_ORIGIN']] as const) {
+    const raw = env[variable]?.trim();
+    if (!raw) continue;
+    origins[id] = bareHttpOrigin(raw);
+    if (origins[id] === null) origins.invalid.push(id);
+  }
+  return origins;
+}
+
+/**
+ * Tells whether a request came through Cloudflare's edge, i.e. the public tunnel door. The edge
+ * sets CF-Ray and CF-Connecting-IP on every request it proxies (overwriting client values) and adds
+ * "cloudflare" to CDN-Loop (RFC 8586 entries such as "cloudflare; loops=1"); Tailscale Serve and a
+ * browser on its own never send them. Header names are the lower-case keys Node uses.
+ *
+ * Used by the auth module: Tailscale sign-in and Tailscale-issued session tokens are refused on
+ * such requests, the optional Cloudflare Access check applies only to them, and the throttles
+ * count them in their own bucket. Only Cloudflare-proxied traffic can be told apart this way; a
+ * local or tailnet program can add the headers itself, which only ever makes it look *less*
+ * trusted.
+ */
+export function isViaCloudflareEdge(headers: Record<string, string | string[] | undefined>): boolean {
+  const text = (name: string) => {
+    const value = headers[name];
+    return (Array.isArray(value) ? value.join(', ') : value ?? '').trim();
+  };
+  return Boolean(text('cf-ray'))
+    || Boolean(text('cf-connecting-ip'))
+    || /(^|,)\s*cloudflare\s*(;|,|$)/i.test(text('cdn-loop'));
+}
+
+// A Cloudflare Zero Trust team name, the <team> in <team>.cloudflareaccess.com (one DNS label).
+const CLOUDFLARE_TEAM_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+// Access application audience tags are 64 hex characters; anything printable without spaces or
+// commas is accepted so a future format does not lock the owner out.
+const CLOUDFLARE_AUD_PATTERN = /^[\x21-\x2b\x2d-\x7e]{1,256}$/;
+
+/**
+ * Reads the optional server-side Cloudflare Access check (docs/network.md):
+ * STUDIO_CF_ACCESS_TEAM_DOMAIN is the Zero Trust team, written as `myteam`,
+ * `myteam.cloudflareaccess.com` or `https://myteam.cloudflareaccess.com`; STUDIO_CF_ACCESS_AUD is the
+ * Access application's audience (AUD) tag, or several separated by commas.
+ *
+ * Used by the auth module (the gate that verifies Cf-Access-Jwt-Assertion on requests through
+ * Cloudflare) and the Studio network endpoint (Settings guidance). Both unset is `off`; one of them
+ * alone, or a malformed value, is `invalid`, which the gate treats as "refuse everything through
+ * Cloudflare" because the owner clearly meant to turn the check on. Never throws.
+ */
+export function readCloudflareAccessConfig(env: Record<string, string | undefined> = process.env): StudioCloudflareAccessConfig {
+  const rawTeam = env.STUDIO_CF_ACCESS_TEAM_DOMAIN?.trim() ?? '';
+  const rawAudience = env.STUDIO_CF_ACCESS_AUD?.trim() ?? '';
+  if (!rawTeam && !rawAudience) {
+    return { status: 'off' };
+  }
+  if (!rawTeam || !rawAudience) {
+    return { status: 'invalid', problem: 'STUDIO_CF_ACCESS_TEAM_DOMAIN 和 STUDIO_CF_ACCESS_AUD 要一起设置' };
+  }
+  const team = rawTeam
+    .toLowerCase()
+    .replace(/^https:\/\//, '')
+    .replace(/\/$/, '')
+    .replace(/\.cloudflareaccess\.com$/, '');
+  if (!CLOUDFLARE_TEAM_PATTERN.test(team)) {
+    return { status: 'invalid', problem: 'STUDIO_CF_ACCESS_TEAM_DOMAIN 应写成 <团队名>.cloudflareaccess.com' };
+  }
+  const audience = rawAudience.split(',').map((tag) => tag.trim()).filter(Boolean);
+  if (audience.length === 0 || !audience.every((tag) => CLOUDFLARE_AUD_PATTERN.test(tag))) {
+    return { status: 'invalid', problem: 'STUDIO_CF_ACCESS_AUD 应是 Access 应用的 AUD 标签' };
+  }
+  const teamDomain = `${team}.cloudflareaccess.com`;
+  return {
+    status: 'on',
+    teamDomain,
+    issuer: `https://${teamDomain}`,
+    certsUrl: `https://${teamDomain}/cdn-cgi/access/certs`,
+    audience,
+  };
 }
 
 // ---------------------------
@@ -1067,6 +1224,32 @@ export function sanitizeLeafDirectoryName(inputName: string, label = 'directory 
 }
 
 // ---------------------------
+//----------------- REMOTE SSH DIRECTORY UTILITIES ------------
+/**
+ * Home-relative (`~`, `~/projects/app`) or absolute (`/srv/app`) remote path
+ * made only of letters, digits, `.`, `_`, `/` and `-`. It can never start with
+ * `-`, and contains no spaces, quotes, globs, `$`, or shell operators.
+ */
+const SAFE_REMOTE_DIRECTORY_PATTERN = /^(~|~\/[A-Za-z0-9._/-]*|\/[A-Za-z0-9._/-]+)$/;
+
+/**
+ * Reports whether a directory on an SSH host is safe to embed unquoted in a
+ * remote shell command such as `cd <dir>` (so a leading `~` still expands).
+ *
+ * Used by the Studio project hub (to validate a project's `remoteDir`) and the
+ * Studio remote-hosts service (to validate registry defaults and to re-check a
+ * directory right before building an SSH command). Beyond the character rule it
+ * rejects any `..` segment and anything longer than 300 characters. It only
+ * checks syntax; it never touches the remote filesystem.
+ */
+export function isSafeRemoteDirectory(directory: string): boolean {
+  return typeof directory === 'string'
+    && directory.length <= 300
+    && SAFE_REMOTE_DIRECTORY_PATTERN.test(directory)
+    && !directory.split('/').includes('..');
+}
+
+// ---------------------------
 //----------------- SESSION SYNCHRONIZER FILESYSTEM HELPERS ------------
 /**
  * Recursively discovers files that match one extension, with optional incremental filtering.
@@ -1251,8 +1434,9 @@ const ANSI_ESCAPE_SEQUENCE_REGEX =
 
 /**
  * Removes ANSI escape sequences from text captured off a CLI's stdout or
- * stderr. Provider runtimes, session readers, and the shell WebSocket share
- * this because every one of them forwards captured process output to a web
+ * stderr. Provider runtimes, session readers, the shell WebSocket, and the
+ * Studio remote-hosts service (for short SSH error summaries) share this
+ * because every one of them forwards captured process output to a web
  * client that renders plain text: left in, the escapes show up verbatim
  * (`[93m[1m!`) instead of as styling.
  *
@@ -1328,10 +1512,288 @@ export function findServerRoot(startDirectory: string): string {
  * Resolves the application root from a source or `dist-server/server` path so
  * package-level resources work identically before and after compilation.
  */
+/**
+ * Parses `.env` text into key/value pairs (optional `export`, surrounding quotes stripped, comments ignored).
+ * Used by Studio services that read credentials from owner-provided key files per request; never log the result.
+ */
+export function parseEnvText(text: string): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.trim().match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!match) continue;
+    let value = match[2].trim();
+    if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) value = value.slice(1, -1);
+    values[match[1]] = value;
+  }
+  return values;
+}
+
 export function findApplicationRoot(startDirectory: string): string {
   const serverRoot = findServerRoot(startDirectory);
   const parentDirectory = path.dirname(serverRoot);
   return path.basename(parentDirectory) === 'dist-server'
     ? path.dirname(parentDirectory)
     : parentDirectory;
+}
+
+// ---------------------------
+//----------------- PLAN USAGE (RATE LIMIT) SNAPSHOT UTILITIES ------------
+/**
+ * Converts a timestamp of unknown shape into epoch milliseconds, or `null`.
+ *
+ * Provider usage sources disagree on units, so this accepts:
+ * - Unix seconds, which Claude and Codex use for reset times;
+ * - epoch milliseconds, recognised as any number above 1e12 (a seconds value
+ *   that large would lie tens of thousands of years in the future);
+ * - ISO 8601 or other `Date.parse`-able strings.
+ * Non-finite, non-positive and unparsable values yield `null`, so callers can
+ * treat `null` uniformly as "unknown".
+ *
+ * Used by `recordClaudeRateLimitEvent` below and by the Studio module's Claude
+ * and Codex quota adapters, which all read reset and observation times.
+ */
+export function readEpochMilliseconds(value: unknown): number | null {
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) || parsed <= 0 ? null : parsed;
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return value > 1e12 ? Math.round(value) : Math.round(value * 1000);
+}
+
+/**
+ * Turns a user-configured path (an environment variable) into an absolute one
+ * anchored at the home directory.
+ *
+ * - `~` and `~/...` are expanded, because systemd `Environment=` lines and
+ *   quoted shell values pass a literal `~` through.
+ * - Any other relative path is taken relative to the home directory, never to
+ *   the current working directory: a file shared by several processes (for
+ *   example a Claude Code statusLine command, which runs in whichever project
+ *   is open, and this server, which runs in its service directory) must
+ *   resolve to the same place in all of them.
+ * - Absolute paths are only normalised. `~user/...` is not supported and is
+ *   treated as an ordinary relative name.
+ *
+ * Used by `resolveClaudeRateSnapshotPath` below and by the Studio module's
+ * quota service for `STUDIO_CODEX_SESSIONS_DIRS`. Callers trim and skip empty
+ * values first; an empty string resolves to the home directory itself.
+ */
+export function resolveHomeRelativePath(configured: string): string {
+  const home = os.homedir();
+  if (configured === '~') {
+    return home;
+  }
+  const expanded = configured.startsWith('~/') ? configured.slice(2) : configured;
+  return path.resolve(home, expanded);
+}
+
+/**
+ * Reads a small regular file as UTF-8 without ever blocking on a special file.
+ *
+ * The file is opened non-blocking and checked through its own descriptor, so
+ * a FIFO, socket or device placed at the path (which `readFile` would wait on,
+ * or read forever) is refused instead of holding a libuv thread. Throws:
+ * - the native error for a missing or unreadable path (`code` `ENOENT`, ...);
+ * - an `AppError` with code `NOT_A_REGULAR_FILE` for anything but a regular file;
+ * - an `AppError` with code `FILE_TOO_LARGE` when it holds more than `maxBytes`.
+ * At most `maxBytes + 1` bytes are read even if the file grows meanwhile.
+ *
+ * Used by `recordClaudeRateLimitEvent` below and by the Studio module's Claude
+ * quota adapter, which both read the plan-usage snapshot named by an
+ * environment variable.
+ */
+export async function readSmallRegularFile(filePath: string, maxBytes: number): Promise<string> {
+  // O_NONBLOCK makes opening a FIFO return at once; O_NOCTTY keeps a terminal
+  // device from becoming this process's controlling terminal. Both are absent
+  // (and unnecessary) on Windows.
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0) | (fs.constants.O_NOCTTY ?? 0);
+  const handle = await open(filePath, flags);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) {
+      throw new AppError('Not a regular file.', { code: 'NOT_A_REGULAR_FILE' });
+    }
+    if (info.size > maxBytes) {
+      throw new AppError('File is too large.', { code: 'FILE_TOO_LARGE' });
+    }
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+      if (bytesRead === 0) {
+        break;
+      }
+      length += bytesRead;
+    }
+    if (length > maxBytes) {
+      throw new AppError('File is too large.', { code: 'FILE_TOO_LARGE' });
+    }
+    return buffer.toString('utf8', 0, length);
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Upper bound for the Claude plan-usage snapshot. The real file is a few
+ * hundred bytes; anything far larger is not one of ours and is ignored.
+ *
+ * Used by `recordClaudeRateLimitEvent` below and by the Studio module's Claude
+ * quota adapter, so the writer and the reader agree on what they will read.
+ */
+export const CLAUDE_RATE_SNAPSHOT_MAX_BYTES = 64 * 1024;
+
+/**
+ * Path of the Claude plan-usage snapshot shown by Studio's home-screen quota widget.
+ *
+ * `STUDIO_CLAUDE_RATE_FILE` overrides the default
+ * `~/.claude/studio-rate-limits.json`; it goes through
+ * `resolveHomeRelativePath`, so `~` is expanded and a relative value is
+ * anchored at the home directory exactly as the statusLine script does it.
+ * This function reads the environment each time it is called: the SDK writer
+ * below calls it on every write, while the quota service calls it once when
+ * it is created (the server's environment does not change while it runs).
+ *
+ * The file holds usage percentages and reset times only, never credentials:
+ * `{ observedAt, source: "statusline" | "sdk-event", five_hour?, seven_day? }`
+ * where each window is `{ used_percentage, resets_at, observed_at? }` and
+ * `resets_at` is Unix seconds. It is written by
+ * `scripts/claude-statusline-snapshot.mjs` (a Claude Code statusLine command)
+ * and by `recordClaudeRateLimitEvent`, so both must keep that shape.
+ *
+ * Used by `recordClaudeRateLimitEvent` (writer) and by the Studio module's
+ * quota service (reader).
+ */
+export function resolveClaudeRateSnapshotPath(): string {
+  const configured = process.env.STUDIO_CLAUDE_RATE_FILE?.trim();
+  return configured
+    ? resolveHomeRelativePath(configured)
+    : path.join(os.homedir(), '.claude', 'studio-rate-limits.json');
+}
+
+// Writes are chained so parallel sessions in this process cannot interleave
+// their read-merge-rename steps and drop each other's window.
+let claudeRateSnapshotQueue: Promise<void> = Promise.resolve();
+
+// Maps an SDK `rate_limit_info` onto one snapshot window, or null when it
+// carries nothing the snapshot can hold.
+function claudeRateWindowFromSdkInfo(info: unknown) {
+  const record = readObjectRecord(info);
+  const key = record?.rateLimitType;
+  if (!record || (key !== 'five_hour' && key !== 'seven_day')) {
+    return null;
+  }
+  const utilization = record.utilization;
+  let usedPercentage: number | null = null;
+  if (typeof utilization === 'number' && Number.isFinite(utilization) && utilization >= 0) {
+    // Always a fraction, and it can pass 1 once a window is over its limit:
+    // Claude Code's own statusLine maps it as `utilization * 100` without a cap.
+    // Clamping here keeps the file in the 0..100 range the statusLine writer uses.
+    usedPercentage = Math.min(100, utilization * 100);
+  } else if (record.status === 'rejected') {
+    usedPercentage = 100;
+  }
+  if (usedPercentage === null) {
+    return null;
+  }
+  const resetsAt = readEpochMilliseconds(record.resetsAt);
+  return {
+    key: key as 'five_hour' | 'seven_day',
+    window: {
+      used_percentage: Math.round(usedPercentage * 10) / 10,
+      resets_at: resetsAt === null ? null : Math.round(resetsAt / 1000),
+    },
+  };
+}
+
+/**
+ * Merges one Claude Agent SDK `rate_limit_event` (its `rate_limit_info`) into
+ * the snapshot file named by `resolveClaudeRateSnapshotPath`.
+ *
+ * - Only the `five_hour` and `seven_day` windows are recorded; per-model weekly
+ *   and overage types have no slot in the snapshot and are ignored.
+ * - `utilization` is a fraction in the SDK that exceeds 1 once a window is
+ *   over its limit; it is stored as `utilization * 100` capped at 100. An
+ *   event without it is recorded as 100% only when its status is `rejected`;
+ *   otherwise it is skipped because it says nothing new.
+ * - An existing file that is not a small regular file (a FIFO, a device, a
+ *   huge file) is never read; the snapshot then starts afresh.
+ * - The other window from earlier writes is kept, and every window carries its
+ *   own `observed_at` so a reader can tell an old weekly figure from a fresh
+ *   5-hour one. Top-level `observedAt`/`source` describe the latest write.
+ * - The file is replaced atomically (temporary file, then rename).
+ * - Never throws and the returned promise never rejects: a disk problem must
+ *   not reach the chat stream that reported the event.
+ *
+ * Used by the providers module's Claude runtime for every SDK
+ * `rate_limit_event`, fire-and-forget; the promise exists so tests can await
+ * the write. `options` lets tests pick the file and clock.
+ */
+export function recordClaudeRateLimitEvent(
+  info: unknown,
+  options: { filePath?: string; now?: () => number } = {},
+): Promise<void> {
+  let update: ReturnType<typeof claudeRateWindowFromSdkInfo> = null;
+  try {
+    update = claudeRateWindowFromSdkInfo(info);
+  } catch {
+    update = null;
+  }
+  if (!update) {
+    return claudeRateSnapshotQueue;
+  }
+  const { key, window } = update;
+  const write = async () => {
+    const filePath = options.filePath ?? resolveClaudeRateSnapshotPath();
+    const observedAt = new Date((options.now ?? Date.now)()).toISOString();
+    let existing: AnyRecord = {};
+    try {
+      existing = readObjectRecord(JSON.parse(await readSmallRegularFile(filePath, CLAUDE_RATE_SNAPSHOT_MAX_BYTES))) ?? {};
+    } catch {
+      // Missing, unreadable or not a plain file: start a fresh snapshot. A
+      // blocking read here would stall this queue and every later write.
+    }
+    const next: AnyRecord = { observedAt, source: 'sdk-event' };
+    for (const other of ['five_hour', 'seven_day']) {
+      if (other !== key && readObjectRecord(existing[other])) {
+        next[other] = existing[other];
+      }
+    }
+    next[key] = { ...window, observed_at: observedAt };
+    // One level only (normally ~/.claude): a recursive mkdir can spin forever on
+    // special filesystems such as /proc, which would leave this queue stuck.
+    await mkdir(path.dirname(filePath)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EEXIST') throw error;
+    });
+    const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+      await rename(temporaryPath, filePath);
+    } catch (error) {
+      await rm(temporaryPath, { force: true }).catch(() => {});
+      throw error;
+    }
+  };
+  claudeRateSnapshotQueue = claudeRateSnapshotQueue.then(write).catch(() => {});
+  return claudeRateSnapshotQueue;
+}
+
+// ---------------------------
+//----------------- STUDIO MAIL UTILITIES ------------
+/**
+ * Normalizes a mail date (a Date, or a header / API date string) to ISO-8601, or returns '' when the
+ * value is missing or unparseable.
+ *
+ * Used by the Studio mail Gmail IMAP adapter (envelope and internal dates) and by the Studio mail
+ * service (dates from every adapter, including legacy Gmail OAuth listings). Unlike
+ * normalizeProviderTimestamp it never substitutes the current time: an unknown mail date stays empty,
+ * so it sorts last and the UI shows no date instead of a wrong one.
+ */
+export function toIsoDateOrEmpty(value: Date | string | null | undefined): string {
+  if (!value) return '';
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
 }

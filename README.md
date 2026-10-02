@@ -8,16 +8,34 @@ The upstream AGPL-3.0-or-later license and Section 7 additional terms in
 `LICENSE` remain applicable. This fork is public; secrets and personal runtime
 data must never be committed.
 
-## Studio v0.1
+## Studio
 
-- A responsive Chinese workspace with iPad sidebar and phone tab navigation.
-- DeepSeek API chat with user-scoped, persistent history, stop and delete controls.
+An iPad-first home screen in Apple's design language (low-saturation palette,
+glass, spring motion, light/dark, reduced motion) where every product is one
+icon, plus **+** to create more.
+
+- **Projects** (`/projects/:id`): SNR 3.0, 超级教授 and Trading 212 by default.
+  Each project has its own directory, icon, enabled models and modules.
+- **AI inside a project**: Claude Code, Codex, Cursor and OpenCode start in the
+  project directory through the inherited IDE (your subscription logins);
+  DeepSeek API chats are stored per project.
+- **Modules**: SNR K-line lab (login-protected, short-lived gateway to the local
+  lab), read-only Trading 212 analysis (balance, day P&L, equity curve,
+  positions; keys stay in a server-side key file), read-only Gmail, and
+  automation drafts with explicit one-time scheduling.
+- **Remote hosts**: a project can run on an SSH host from `STUDIO_SSH_HOSTS`
+  (reached over Tailscale); Claude Code, Codex or a shell open in a full-screen
+  terminal inside a tmux session on that host. See [docs/remote-hosts.md](docs/remote-hosts.md).
+- **Home widgets** (customisable per device): Claude / Codex plan usage with
+  reset countdowns, DeepSeek balance, Trading 212 and SNR status.
+- **Websites per project**: a globe button lists the project's links with live
+  status; embeddable sites open in an in-app browser, others in a new tab.
+- Flowing WebGL wallpaper, light / dark / system themes, icon-to-app launch
+  animation; optional passwordless sign-in for your own Tailscale identity.
 - Encrypted local API-key storage; saved keys are never returned to the browser.
-- Explicit per-message opt-in to send a small SNR health summary to DeepSeek.
-- A login-protected, short-lived gateway to an existing local SNR research app.
-- Existing Claude/Codex subscription workbench links; no provider credentials
-  are overwritten and subscriptions are not converted to API billing.
 - The original IDE remains available at `/workspace` and `/session/:sessionId`.
+
+Deployment on WSL behind Tailscale: [docs/deployment-wsl.md](docs/deployment-wsl.md).
 
 ## Local Development
 
@@ -49,10 +67,12 @@ its existing save actions. The gateway cookie is HttpOnly, SameSite Strict and
 expires after 30 minutes; reopen the lab from Studio after expiry.
 No arbitrary-network proxy or SNR auto-training is provided.
 
-Set `STUDIO_PUBLIC_ORIGIN` to the exact HTTPS origin for a reverse-proxied
-preview, so scoped cookies and write-origin checks remain correct.
-Expose only through a private authenticated channel such as Tailscale Serve.
-The computer must remain powered, awake and signed in. Do not expose port 3002
+Studio has two front doors to the same backend and database
+([docs/network.md](docs/network.md)): set `STUDIO_PUBLIC_ORIGIN` to the public
+domain served by a Cloudflare Tunnel (put Cloudflare Access in front of it) and
+`STUDIO_TAILNET_ORIGIN` to the Tailscale Serve origin, so scoped cookies,
+write-origin checks and session handoff between the doors remain correct.
+The computer must remain powered, awake and signed in. Do not open port 3002
 to the public internet or enable platform auth bypass.
 
 ## Next Work
