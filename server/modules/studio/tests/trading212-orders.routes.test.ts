@@ -17,22 +17,31 @@ import { createTrading212OrdersRouter } from '../trading212-orders.routes.js';
 
 const ORIGIN = 'https://studio.ajarche.com';
 
-async function withApp(run: (call: (route: string, init?: { method?: string; body?: unknown; origin?: string | null; user?: number | null }) => Promise<{ status: number; body: any }>, posts: () => string[]) => Promise<void>) {
+type Call = (route: string, init?: { method?: string; body?: unknown; origin?: string | null; user?: number | null }) => Promise<{ status: number; body: any }>;
+
+async function withApp(run: (call: Call, posts: () => string[], setOrderStatus: (status: number) => void) => Promise<void>) {
   const directory = mkdtempSync(path.join(os.tmpdir(), 't212-orders-routes-'));
   const envFile = path.join(directory, '.env');
   writeFileSync(envFile, 'TRADING212_API_KEY=fake-route-key\nTRADING212_API_SECRET=fake-route-secret\n');
   const database = new Database(':memory:');
   const brokerPosts: string[] = [];
+  let orderStatus = 200;
   const trading212 = createTrading212Service({
     database, envFiles: { demo: envFile },
     request: (async (url: string, init: RequestInit) => {
-      if (init.method === 'POST') { brokerPosts.push(String(init.body)); return Response.json({ id: 1, status: 'NEW' }); }
+      if (init.method === 'POST') {
+        brokerPosts.push(String(init.body));
+        return orderStatus === 200 ? Response.json({ id: 1, status: 'NEW' }) : new Response('', { status: orderStatus });
+      }
       if (String(url).endsWith('/summary')) return Response.json({ currency: 'GBP', totalValue: 100, cash: { availableToTrade: 100 }, investments: {} });
       if (String(url).includes('/positions')) return Response.json([{ instrument: { ticker: 'AAPL_US_EQ' }, quantity: 1, currentPrice: 200, walletImpact: { currentValue: 160 } }]);
       return Response.json({ items: [] });
     }) as unknown as typeof fetch,
   });
-  const orders = createTrading212OrdersService({ database, trading212, trading: 'demo', origins: [ORIGIN] });
+  const orders = createTrading212OrdersService({
+    database, trading212, trading: 'demo', origins: [ORIGIN],
+    verifyPassword: async (_userId, password) => password === 'route-password',
+  });
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -56,7 +65,7 @@ async function withApp(run: (call: (route: string, init?: { method?: string; bod
       if (init.origin !== null) headers.Origin = init.origin ?? ORIGIN;
       const response = await fetch(`${base}${route}`, { method: init.method ?? 'GET', headers, body: init.body === undefined ? undefined : JSON.stringify(init.body) });
       return { status: response.status, body: await response.json() };
-    }, () => brokerPosts);
+    }, () => brokerPosts, status => { orderStatus = status; });
   } finally {
     server.close();
     database.close();
@@ -118,7 +127,46 @@ test('preview then confirm over HTTP places one order; malformed confirmations a
     assert.equal(placed.body.order.status, 'NEW');
     assert.deepEqual(posts(), [JSON.stringify({ ticker: 'AAPL_US_EQ', quantity: -1 })]);
 
-    assert.equal((await call('/trading212/passkey/not-an-id', { method: 'DELETE' })).status, 404);
+    assert.equal((await call('/trading212/passkey/not-an-id/remove', { method: 'POST', body: { password: 'route-password' } })).status, 404);
     assert.equal((await call('/trading212/passkey', { method: 'POST', body: { response: { id: 'x' } } })).status, 400);
+  });
+});
+
+test('passkey changes need a step-up: a password to add, a password or that passkey to remove', async () => {
+  await withApp(async (call) => {
+    const id = '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f';
+    assert.equal((await call('/trading212/passkey/options', { method: 'POST', body: {} })).status, 400);
+    assert.equal((await call('/trading212/passkey/options', { method: 'POST', body: { password: 42 } })).status, 400);
+    assert.equal((await call('/trading212/passkey/options', { method: 'POST', body: { password: 'x'.repeat(1025) } })).status, 400);
+    assert.equal((await call('/trading212/passkey/options', { method: 'POST', body: { password: 'wrong' } })).status, 403);
+    assert.equal((await call('/trading212/passkey/options', { method: 'POST', body: { password: 'route-password' }, origin: 'https://evil.example' })).status, 403);
+    const options = await call('/trading212/passkey/options', { method: 'POST', body: { password: 'route-password' } });
+    assert.equal(options.status, 200);
+    assert.equal(options.body.authenticatorSelection.userVerification, 'required');
+
+    // Removal: no proof is malformed; a valid proof for a passkey that does not exist is a 404.
+    assert.equal((await call(`/trading212/passkey/${id}/remove`, { method: 'POST', body: {} })).status, 400);
+    assert.equal((await call(`/trading212/passkey/${id}/remove`, { method: 'POST', body: { assertion: { id: 'x' } } })).status, 400);
+    assert.equal((await call(`/trading212/passkey/${id}/remove`, { method: 'POST', body: { password: 'route-password' } })).status, 404);
+    assert.equal((await call(`/trading212/passkey/${id}/remove/options`, { method: 'POST' })).status, 404);
+    assert.equal((await call(`/trading212/passkey/${id}/remove`, { method: 'POST', body: { password: 'route-password' }, user: null })).status, 401);
+  });
+});
+
+test('an identical order after an unknown outcome needs acknowledgeUnknown to be literally true', async () => {
+  await withApp(async (call, posts, setOrderStatus) => {
+    const order = { env: 'demo', ticker: 'AAPL_US_EQ', side: 'sell', type: 'market', quantity: 1 };
+    setOrderStatus(504);
+    const preview = await call('/trading212/orders/preview', { method: 'POST', body: order });
+    const unknown = await call(`/trading212/orders/${preview.body.id}/confirm`, { method: 'POST', body: { confirmed: true } });
+    assert.equal(unknown.status, 502);
+    assert.match(unknown.body.error, /订单状态未知/);
+    setOrderStatus(200);
+
+    assert.equal((await call('/trading212/orders/preview', { method: 'POST', body: order })).status, 409);
+    assert.equal((await call('/trading212/orders/preview', { method: 'POST', body: { ...order, acknowledgeUnknown: 'true' } })).status, 409);
+    const acknowledged = await call('/trading212/orders/preview', { method: 'POST', body: { ...order, acknowledgeUnknown: true } });
+    assert.equal(acknowledged.status, 200);
+    assert.equal(posts().length, 1);
   });
 });

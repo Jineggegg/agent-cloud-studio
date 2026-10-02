@@ -11,6 +11,7 @@ const TICKER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
 const ID = /^[0-9a-f-]{36}$/;
 const MAX_QUANTITY = 1_000_000;
 const MAX_PRICE = 10_000_000;
+const MAX_PASSWORD_LENGTH = 1024;
 
 type AuthenticatedRequest = express.Request & { user?: { id?: number; username?: string } };
 
@@ -66,6 +67,23 @@ function proof(body: unknown) {
   if (input.confirmed === true) return { confirmed: true as const };
   return invalid('需要面容 ID / 触控 ID 验证或二次确认');
 }
+// The Studio account password for a passkey change; bcrypt only reads 72 bytes, the cap just bounds the request.
+function password(body: unknown) {
+  const value = record(body).password;
+  if (typeof value !== 'string' || !value || value.length > MAX_PASSWORD_LENGTH) invalid('需要输入 Studio 登录密码');
+  return value;
+}
+// Removing a passkey needs the Studio password or an assertion from that passkey.
+function stepUp(body: unknown) {
+  const input = record(body);
+  if (input.assertion !== undefined) return { assertion: credentialJson(input.assertion) as unknown as AuthenticationResponseJSON };
+  return { password: password(body) };
+}
+function passkeyId(value: unknown) {
+  const id = String(value);
+  if (!ID.test(id)) throw new AppError('找不到这把通行密钥', { statusCode: 404 });
+  return id;
+}
 function previewId(value: unknown) {
   const id = String(value);
   if (!ID.test(id)) throw new AppError('这笔订单预览不存在、已使用或已过期，请重新预览', { statusCode: 404, code: 'T212_PREVIEW_GONE' });
@@ -75,6 +93,7 @@ function previewId(value: unknown) {
 /**
  * Used by studio.module, mounted at /api/studio/trading212 behind authentication next to the read-only
  * router, for passkey-gated order placement and passkey management. Read paths stay on the read-only router.
+ * Every passkey change needs a step-up (the Studio password, or that passkey for its own removal).
  */
 export function createTrading212OrdersRouter(service: ReturnType<typeof createTrading212OrdersService>) {
   const router = express.Router();
@@ -83,7 +102,9 @@ export function createTrading212OrdersRouter(service: ReturnType<typeof createTr
   router.post('/orders/preview', asyncHandler(async (req, res) => {
     const userId = user(req);
     const origin = service.trustedOrigin(req.get('origin'));
-    res.json(await service.preview(userId, origin, orderInput(req.body)));
+    // Only a literal true acknowledges that an identical order with an unknown outcome did not go through.
+    const acknowledgeUnknown = record(req.body).acknowledgeUnknown === true;
+    res.json(await service.preview(userId, origin, orderInput(req.body), { acknowledgeUnknown }));
   }));
   router.post('/orders/:id/confirm', asyncHandler(async (req, res) => {
     const userId = user(req);
@@ -92,7 +113,8 @@ export function createTrading212OrdersRouter(service: ReturnType<typeof createTr
   }));
   router.post('/passkey/options', asyncHandler(async (req, res) => {
     const userId = user(req);
-    res.json(await service.passkeyOptions(userId, (req as AuthenticatedRequest).user?.username, service.trustedOrigin(req.get('origin'))));
+    const origin = service.trustedOrigin(req.get('origin'));
+    res.json(await service.passkeyOptions(userId, (req as AuthenticatedRequest).user?.username, origin, password(req.body)));
   }));
   router.post('/passkey', asyncHandler(async (req, res) => {
     const userId = user(req);
@@ -100,10 +122,15 @@ export function createTrading212OrdersRouter(service: ReturnType<typeof createTr
     const response = credentialJson(record(req.body).response) as unknown as RegistrationResponseJSON;
     res.status(201).json(await service.registerPasskey(userId, origin, response, req.get('user-agent')));
   }));
-  router.delete('/passkey/:id', (req, res) => {
-    const id = String(req.params.id);
-    if (!ID.test(id)) throw new AppError('找不到这把通行密钥', { statusCode: 404 });
-    res.json(service.removePasskey(user(req), id));
-  });
+  router.post('/passkey/:id/remove/options', asyncHandler(async (req, res) => {
+    const userId = user(req);
+    const origin = service.trustedOrigin(req.get('origin'));
+    res.json(await service.removalOptions(userId, origin, passkeyId(req.params.id)));
+  }));
+  router.post('/passkey/:id/remove', asyncHandler(async (req, res) => {
+    const userId = user(req);
+    const origin = service.trustedOrigin(req.get('origin'));
+    res.json(await service.removePasskey(userId, origin, passkeyId(req.params.id), stepUp(req.body)));
+  }));
   return router;
 }

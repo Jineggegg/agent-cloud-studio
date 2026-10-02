@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowDownRight, ArrowUpRight, Minus, RefreshCw, ShieldCheck } from 'lucide-react';
 
 import { api, readApiJson } from '@/shared/api';
@@ -55,21 +55,36 @@ export function StudioTrading212() {
   const [trading, setTrading] = useState<T212TradingConfig | null>(null);
   // The open order sheet and what it was opened with (a position's ticker and side, or nothing from the toolbar).
   const [orderSheet, setOrderSheet] = useState<{ ticker?: string; side?: T212OrderSide } | null>(null);
+  // Numbers the latest load, so a slower response for a previously selected account is dropped.
+  const loadSequence = useRef(0);
 
   const load = useCallback(async (target: T212Env) => {
+    const sequence = ++loadSequence.current;
     setLoading(true); setError('');
     try {
       const next = await readApiJson<T212Overview>(await api.studio.trading212.overview(target));
+      if (sequence !== loadSequence.current) return;
       setOverview(next);
       // History and activity are secondary; their failure must not hide the balance.
       const [history, recent] = await Promise.all([
         api.studio.trading212.history(target, days).then(readApiJson<T212Point[]>).catch(() => [] as T212Point[]),
         api.studio.trading212.activity(target).then(readApiJson<T212Activity[]>).catch(() => [] as T212Activity[]),
       ]);
+      if (sequence !== loadSequence.current) return;
       setPoints(history); setActivity(recent);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Trading 212 读取失败'); }
-    finally { setLoading(false); }
+    } catch (reason) {
+      if (sequence === loadSequence.current) setError(reason instanceof Error ? reason.message : 'Trading 212 读取失败');
+    } finally { if (sequence === loadSequence.current) setLoading(false); }
   }, [days]);
+  // Re-read the trading settings, e.g. after the order sheet enabled Face ID for this domain.
+  const reloadTrading = useCallback(async () => {
+    try { setTrading(await readApiJson<T212TradingConfig>(await api.studio.t212Trading.config())); } catch { /* keep the last settings */ }
+  }, []);
+  // Switching accounts drops the other account's numbers at once, so its positions can never feed an order sheet here.
+  const switchEnv = (next: T212Env) => {
+    if (next === env) return;
+    setEnv(next); setOverview(null); setPoints([]); setActivity([]); setOrderSheet(null); setError('');
+  };
 
   useEffect(() => {
     let active = true;
@@ -97,28 +112,30 @@ export function StudioTrading212() {
     </section>;
   }
 
-  const format = money(overview?.currency ?? 'GBP');
-  const total = overview?.positions.reduce((sum, position) => sum + position.value, 0) || 1;
+  // Only an overview of the selected account is shown or traded from; anything else is stale.
+  const current = overview?.env === env ? overview : null;
+  const format = money(current?.currency ?? 'GBP');
+  const total = current?.positions.reduce((sum, position) => sum + position.value, 0) || 1;
   const tradable = Boolean(trading?.allowedEnvs.includes(env));
   return <div className="t212 studio-stagger">
     <div className="t212-toolbar">
       {configured.length > 1 && <div className="segmented" role="radiogroup" aria-label="账户">
-        {configured.map(item => <button key={item.env} type="button" role="radio" aria-checked={env === item.env} onClick={() => setEnv(item.env)}>{item.env === 'live' ? '实盘' : '模拟'}</button>)}
+        {configured.map(item => <button key={item.env} type="button" role="radio" aria-checked={env === item.env} onClick={() => switchEnv(item.env)}>{item.env === 'live' ? '实盘' : '模拟'}</button>)}
       </div>}
       <span className={`status-badge ${tradable ? (env === 'live' ? 'warn' : 'good') : ''}`}><ShieldCheck size={14} aria-hidden="true" />{tradable ? '可交易' : '只读'} · {env === 'live' ? '实盘' : '模拟'}</span>
-      {trading && overview && <button type="button" className="ios-button tinted t212-trade-button" onClick={() => setOrderSheet({})}>交易</button>}
+      {trading && current && <button type="button" className="ios-button tinted t212-trade-button" onClick={() => setOrderSheet({})}>交易</button>}
       <button type="button" className={`icon-button ${loading ? 'refreshing' : ''}`} aria-label="刷新" title="刷新" disabled={loading} onClick={() => void load(env)}><RefreshCw size={18} className="refresh-icon" aria-hidden="true" /></button>
     </div>
 
     {error && <p className="studio-feedback error" role="alert">{error}</p>}
 
-    {!overview && loading && <div className="studio-skeleton" role="status" aria-label="正在读取账户"><div className="skeleton-block" style={{ height: 120 }} /><div className="skeleton-block" style={{ height: 240 }} /></div>}
+    {!current && loading && <div className="studio-skeleton" role="status" aria-label="正在读取账户"><div className="skeleton-block" style={{ height: 120 }} /><div className="skeleton-block" style={{ height: 240 }} /></div>}
 
-    {overview && <>
+    {current && <>
       <section className="t212-hero" aria-label="总资产">
         <span className="t212-hero-label">总资产</span>
-        <strong className="t212-hero-value">{format(overview.totalValue)}</strong>
-        <Delta change={overview.changes.today} format={format} label="今日" />
+        <strong className="t212-hero-value">{format(current.totalValue)}</strong>
+        <Delta change={current.changes.today} format={format} label="今日" />
       </section>
 
       <section className="t212-card">
@@ -129,24 +146,24 @@ export function StudioTrading212() {
           </div>
         </div>
         {points.length >= 2
-          ? <StudioEquityChart points={points} format={format} axisFormat={money(overview.currency, 0)} />
-          : <p className="t212-chart-empty">曲线从 Studio 首次读取账户时开始记录，每 30 分钟一个点；{overview.recordedSince ? `已于 ${new Date(overview.recordedSince).toLocaleString('zh-CN')} 开始记录。` : '稍后回来就能看到。'}</p>}
+          ? <StudioEquityChart points={points} format={format} axisFormat={money(current.currency, 0)} />
+          : <p className="t212-chart-empty">曲线从 Studio 首次读取账户时开始记录，每 30 分钟一个点；{current.recordedSince ? `已于 ${new Date(current.recordedSince).toLocaleString('zh-CN')} 开始记录。` : '稍后回来就能看到。'}</p>}
       </section>
 
       <div className="t212-stats">
-        <div className="t212-stat"><span>昨日盈亏</span><Delta change={overview.changes.yesterday} format={format} label="" /></div>
-        <div className="t212-stat"><span>持仓浮动盈亏</span><strong>{signed(format, overview.investments.unrealized)}</strong></div>
-        <div className="t212-stat"><span>已实现盈亏</span><strong>{signed(format, overview.investments.realized)}</strong></div>
-        <div className="t212-stat"><span>可用现金</span><strong>{format(overview.cash.available)}</strong></div>
-        <div className="t212-stat"><span>持仓市值</span><strong>{format(overview.investments.value)}</strong></div>
-        <div className="t212-stat"><span>投入成本</span><strong>{format(overview.investments.cost)}</strong></div>
+        <div className="t212-stat"><span>昨日盈亏</span><Delta change={current.changes.yesterday} format={format} label="" /></div>
+        <div className="t212-stat"><span>持仓浮动盈亏</span><strong>{signed(format, current.investments.unrealized)}</strong></div>
+        <div className="t212-stat"><span>已实现盈亏</span><strong>{signed(format, current.investments.realized)}</strong></div>
+        <div className="t212-stat"><span>可用现金</span><strong>{format(current.cash.available)}</strong></div>
+        <div className="t212-stat"><span>持仓市值</span><strong>{format(current.investments.value)}</strong></div>
+        <div className="t212-stat"><span>投入成本</span><strong>{format(current.investments.cost)}</strong></div>
       </div>
-      {(overview.changes.today && !overview.changes.today.flowAdjusted) && <p className="ios-section-footer">资金流水暂时读取失败，今日盈亏未扣除入金 / 出金。</p>}
+      {(current.changes.today && !current.changes.today.flowAdjusted) && <p className="ios-section-footer">资金流水暂时读取失败，今日盈亏未扣除入金 / 出金。</p>}
 
       <section className="ios-section">
-        <div className="ios-section-header"><h2>持仓</h2><span className="caption">{overview.positions.length} 只 · 按市值</span></div>
+        <div className="ios-section-header"><h2>持仓</h2><span className="caption">{current.positions.length} 只 · 按市值</span></div>
         <div className="ios-list">
-          {overview.positions.map(position => {
+          {current.positions.map(position => {
             const pct = position.cost ? position.pnl / position.cost * 100 : 0;
             const direction = position.pnl > 0 ? 'gain' : position.pnl < 0 ? 'loss' : 'flat';
             return <div className="ios-row t212-position" key={position.ticker}>
@@ -166,7 +183,7 @@ export function StudioTrading212() {
               </span>
             </div>;
           })}
-          {!overview.positions.length && <div className="ios-row no-icon"><span className="ios-row-body"><small>当前没有持仓</small></span></div>}
+          {!current.positions.length && <div className="ios-row no-icon"><span className="ios-row-body"><small>当前没有持仓</small></span></div>}
         </div>
       </section>
 
@@ -184,13 +201,13 @@ export function StudioTrading212() {
           </div>)}
         </div>
       </section>}
-      <p className="ios-section-footer">数据来自 Trading 212 公共 API（Beta），{new Date(overview.fetchedAt).toLocaleTimeString('zh-CN')} 更新。{tradable && trading
+      <p className="ios-section-footer">数据来自 Trading 212 公共 API（Beta），{new Date(current.fetchedAt).toLocaleTimeString('zh-CN')} 更新。{tradable && trading
         ? `每笔订单都要经过面容 ID / 触控 ID 或二次确认，单笔上限 ${format(trading.maxOrderValue)}。`
         : '当前账户只读，不会下单或修改账户。'}</p>
     </>}
 
-    {orderSheet && trading && overview && <StudioT212OrderSheet env={env} config={trading} positions={overview.positions} format={format}
+    {orderSheet && trading && current && <StudioT212OrderSheet env={env} config={trading} positions={current.positions} format={format}
       initialTicker={orderSheet.ticker} initialSide={orderSheet.side}
-      onClose={() => setOrderSheet(null)} onPlaced={() => void load(env)} />}
+      onClose={() => setOrderSheet(null)} onPlaced={() => void load(env)} onTradingChange={reloadTrading} />}
   </div>;
 }

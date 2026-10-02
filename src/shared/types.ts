@@ -1958,10 +1958,14 @@ export type T212TradingConfig = {
   maxOrderValue: number;
   // Account currency from the last stored balance snapshot; absent before the account was first read.
   currency?: string;
+  // This user's passkeys on every domain; once there is one, a domain without its own passkey cannot trade.
   passkeys: T212Passkey[];
-  // Origins allowed to trade and register passkeys; localhost is also allowed while the server runs in development.
+  // Origins allowed to trade and register passkeys.
   trustedOrigins: string[];
+  // STUDIO_T212_ALLOW_LOCALHOST=1: http://localhost, 127.0.0.1 and [::1] are trusted as well.
   allowLocalhost: boolean;
+  // STUDIO_T212_REQUIRE_PASSKEY=1: the double confirmation is off, so every domain needs its own passkey.
+  requirePasskey: boolean;
 };
 // ── v4 track: mail — types below this line ──
 // ---------------------------

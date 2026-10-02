@@ -1,6 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { existsSync, realpathSync } from 'node:fs';
+import { createRequire } from 'node:module';
 
 import { getConnection, getDatabasePath, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { createProject } from '@/modules/projects/index.js';
@@ -135,15 +136,25 @@ export function createStudioModule() {
   routes.use('/quota', createQuotaRouter(quota));
   // ── v4 track: network — create its service and mount its router below this line ──
   // ── v4 track: orders — create its service and mount its router below this line ──
-  // Order placement is off unless STUDIO_T212_TRADING allows an account; each order is capped and needs a passkey or a
-  // double confirmation. Only requests from these origins (plus localhost in development) may trade.
+  // Order placement is off unless STUDIO_T212_TRADING allows an account; each order is capped and needs a passkey (or,
+  // only while the user has none, a double confirmation). Only requests from these origins may trade; localhost only
+  // with STUDIO_T212_ALLOW_LOCALHOST=1. Passkey changes are stepped up with the Studio account password.
+  // bcrypt has no TypeScript declarations here, so its compare function is narrowed like in the auth module.
+  const bcrypt = createRequire(import.meta.url)('bcrypt') as { compare(password: string, passwordHash: string): Promise<boolean> };
   const trading212Orders = createTrading212OrdersService({
     database: getConnection(),
     trading212,
     trading: process.env.STUDIO_T212_TRADING,
     maxOrderValue: process.env.STUDIO_T212_MAX_ORDER_VALUE,
+    requirePasskey: process.env.STUDIO_T212_REQUIRE_PASSKEY,
+    allowLocalhost: process.env.STUDIO_T212_ALLOW_LOCALHOST,
     origins: [process.env.STUDIO_PUBLIC_ORIGIN, process.env.STUDIO_TAILNET_ORIGIN],
-    development: process.env.NODE_ENV !== 'production',
+    async verifyPassword(userId, password) {
+      // getUserById omits the hash, so the active account is re-read by username for the comparison.
+      const account = userDb.getUserById(userId);
+      const row = account ? userDb.getUserByUsername(account.username) : undefined;
+      return row ? bcrypt.compare(password, row.password_hash) : false;
+    },
   });
   routes.use('/trading212', createTrading212OrdersRouter(trading212Orders));
   // ── v4 track: mail — create its service and mount its router below this line ──

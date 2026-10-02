@@ -109,6 +109,18 @@
 .t212-order-timer.spent span { animation: none; transform: scaleX(0); }
 @keyframes t212-timer { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 .t212-order-note { padding: 0 8px; font-size: 13px; line-height: 1.5; text-align: center; color: var(--ios-label-2); }
+/* The broker may have executed the order: a red callout instead of a plain error line. */
+.t212-order-unknown {
+  display: flex; align-items: flex-start; gap: 10px; padding: 14px; border-radius: 16px;
+  background: color-mix(in srgb, var(--ios-red) 10%, transparent); font-size: 14px; line-height: 1.5;
+}
+.t212-order-unknown svg { margin-top: 2px; color: var(--ios-red); }
+.t212-order-unknown div { display: grid; gap: 4px; }
+.t212-order-unknown strong { font-size: 16px; color: var(--ios-red); }
+.t212-order-unknown span { color: var(--ios-label-2); }
+.studio-layer .ios-button.t212-order-acknowledge { width: 100%; min-height: 44px; border-radius: 12px; font-size: 15px; white-space: normal; }
+/* The enrolment form sits directly in a step, whose gap already spaces it. */
+.t212-order-step .t212-enroll { margin-top: 0; }
 
 /* Sticky actions at the bottom of the scrolling body. */
 .t212-order-actions {
@@ -132,6 +144,23 @@
 .t212-passkey-current { margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 700; vertical-align: 2px; background: var(--ios-tint-soft); color: var(--ios-tint); }
 .t212-settings-note { line-height: 1.6; }
 .t212-passkey-list { margin-top: 14px; }
+/* Password field + enable row: one inset list with a separator between them. */
+.t212-enroll { margin-top: 14px; }
+.t212-enroll .ios-field + .ios-row::before { content: ""; position: absolute; top: 0; right: 0; left: 16px; height: .5px; background: var(--ios-separator); }
+
+/* Removal alert with a password step-up (and, on the passkey's own domain, Face ID). */
+.t212-stepup-field { display: grid; gap: 8px; padding: 0 16px 16px; }
+.studio-layer .t212-stepup-field input {
+  width: 100%; min-height: 44px; padding: 0 12px; border: .5px solid var(--ios-separator); border-radius: 10px;
+  background: var(--ios-bg); color: var(--ios-label); font-size: 17px; outline: none;
+}
+.studio-layer .t212-stepup-field input:focus-visible { border-color: var(--ios-tint); }
+.t212-stepup-error { font-size: 13px; line-height: 1.4; color: var(--ios-red); }
+.studio-layer .sheet-action.t212-stepup-passkey {
+  display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; border-top: .5px solid var(--ios-separator);
+}
+.studio-layer .t212-stepup .sheet-actions .sheet-action { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.t212-stepup .sheet-action:disabled { opacity: .45; }
 
 /* ---------- Phone: the order sheet rises from the bottom ---------- */
 @media (max-width: 699px) {

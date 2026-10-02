@@ -26,6 +26,15 @@ const POSITIONS = [
   { instrument: { ticker: 'AAPL_US_EQ', name: 'Apple', currency: 'USD' }, quantity: 2, currentPrice: 200, averagePricePaid: 150, walletImpact: { currentValue: 320, totalCost: 260, unrealizedProfitLoss: 60 } },
   { instrument: { ticker: 'MSFT_US_EQ', name: 'Microsoft', currency: 'USD' }, quantity: 1, currentPrice: 400, averagePricePaid: 380, walletImpact: { currentValue: 300, totalCost: 300, unrealizedProfitLoss: 0 } },
 ];
+// Quote currencies from /equity/metadata/instruments; VODl_EQ is quoted in pence.
+const INSTRUMENTS = [
+  { ticker: 'AAPL_US_EQ', currencyCode: 'USD', name: 'Apple' },
+  { ticker: 'MSFT_US_EQ', currencyCode: 'USD', name: 'Microsoft' },
+  { ticker: 'TSLA_US_EQ', currencyCode: 'USD', name: 'Tesla' },
+  { ticker: 'VODl_EQ', currencyCode: 'GBX', name: 'Vodafone' },
+  { ticker: 'SAP_DE_EQ', currencyCode: 'EUR', name: 'SAP' },
+];
+const PASSWORD = 'correct horse battery staple';
 const ORDER = { id: 9001, status: 'NEW', ticker: 'AAPL_US_EQ', side: 'BUY', type: 'MARKET', quantity: 1.5, filledQuantity: 0, createdAt: '2026-10-02T10:00:00Z', strategy: 'QUANTITY' };
 
 function fakeWebAuthn() {
@@ -53,7 +62,12 @@ function fakeWebAuthn() {
   return { webauthn, calls };
 }
 
-function fixture(options: { trading?: string; maxOrderValue?: string; development?: boolean } = {}) {
+type FixtureOptions = {
+  trading?: string; maxOrderValue?: string; allowLocalhost?: string; requirePasskey?: string;
+  summary?: Record<string, unknown>; positions?: unknown[];
+};
+
+function fixture(options: FixtureOptions = {}) {
   const directory = mkdtempSync(path.join(os.tmpdir(), 't212-orders-test-'));
   const live = path.join(directory, 'live.env');
   const demo = path.join(directory, 'demo.env');
@@ -69,21 +83,28 @@ function fixture(options: { trading?: string; maxOrderValue?: string; developmen
       const headers = init.headers as Record<string, string>;
       calls.push({ url: String(url), method: String(init.method), body: init.body as string | undefined, contentType: headers['Content-Type'] });
       if (init.method === 'POST') return respondToOrder(String(url));
-      if (String(url).endsWith('/equity/account/summary')) return Response.json(SUMMARY);
-      if (String(url).includes('/equity/positions')) return Response.json(POSITIONS);
+      if (String(url).endsWith('/equity/account/summary')) return Response.json(options.summary ?? SUMMARY);
+      if (String(url).includes('/equity/positions')) return Response.json(options.positions ?? POSITIONS);
+      if (String(url).endsWith('/equity/metadata/instruments')) return Response.json(INSTRUMENTS);
       return Response.json({ items: [], nextPagePath: null });
     }) as unknown as typeof fetch,
   });
   const { webauthn, calls: webauthnCalls } = fakeWebAuthn();
+  const passwordChecks: string[] = [];
   const orders = createTrading212OrdersService({
     database, trading212, webauthn, now: () => clock,
     trading: 'trading' in options ? options.trading : 'both',
     maxOrderValue: options.maxOrderValue,
+    requirePasskey: options.requirePasskey,
+    allowLocalhost: options.allowLocalhost,
     origins: [STUDIO.origin, `${TAILNET.origin}/`, undefined],
-    development: options.development ?? false,
+    async verifyPassword(userId, password) {
+      passwordChecks.push(password);
+      return userId === 1 && password === PASSWORD;
+    },
   });
   return {
-    orders, calls, database, webauthnCalls,
+    orders, calls, database, webauthnCalls, passwordChecks,
     posts: () => calls.filter(call => call.method === 'POST'),
     advance: (ms: number) => { clock += ms; },
     onOrder: (respond: (url: string) => Response) => { respondToOrder = respond; },
@@ -98,10 +119,11 @@ const order = (input: Partial<StudioT212OrderInput>): StudioT212OrderInput => ({
 const goodAssertion = { id: 'cred-1', rawId: 'cred-1', type: 'public-key', response: { signature: 'good-signature' }, clientExtensionResults: {} } as any;
 const badAssertion = { ...goodAssertion, response: { signature: 'forged' } } as any;
 
-async function registerPasskey(f: ReturnType<typeof fixture>) {
-  await f.orders.passkeyOptions(1, 'owner', STUDIO);
-  return f.orders.registerPasskey(1, STUDIO, { id: 'cred-1', rawId: 'cred-1', response: { attestationObject: 'x' } } as any, 'Mozilla/5.0 (iPad; CPU OS 18_0)');
+async function registerPasskey(f: ReturnType<typeof fixture>, origin = STUDIO) {
+  await f.orders.passkeyOptions(1, 'owner', origin, PASSWORD);
+  return f.orders.registerPasskey(1, origin, { id: 'cred-1', rawId: 'cred-1', response: { attestationObject: 'x' } } as any, 'Mozilla/5.0 (iPad; CPU OS 18_0)');
 }
+const coded = (code: string, pattern?: RegExp) => (error: Error & { code?: string }) => error.code === code && (!pattern || pattern.test(error.message));
 
 test('trading is off by default and refuses every account before contacting the broker', async () => {
   const off = fixture({ trading: undefined });
@@ -186,11 +208,12 @@ test('the per-order cap is enforced server-side and unheld tickers need a limit 
     await assert.rejects(f.orders.preview(1, STUDIO, order({ quantity: 4 })), (error: Error & { code?: string }) =>
       error.code === 'T212_ORDER_CAP' && error.message.includes('£640.00') && error.message.includes('£500.00'));
     await assert.rejects(f.orders.preview(1, STUDIO, order({ ticker: 'TSLA_US_EQ' })), /改用限价单/);
-    await assert.rejects(f.orders.preview(1, STUDIO, order({ ticker: 'TSLA_US_EQ', type: 'limit', quantity: 2, limitPrice: 300 })), /超过单笔上限/);
+    // TSLA is quoted in USD like the AAPL holding, whose value gives £0.80 per dollar: 3 × $300 is £720.
+    await assert.rejects(f.orders.preview(1, STUDIO, order({ ticker: 'TSLA_US_EQ', type: 'limit', quantity: 3, limitPrice: 300 })), /超过单笔上限/);
     const unheld = await f.orders.preview(1, STUDIO, order({ ticker: 'TSLA_US_EQ', type: 'limit', quantity: 1, limitPrice: 300 }));
-    assert.equal(unheld.estimatedValue, 300);
+    assert.equal(unheld.estimatedValue, 240);
     assert.equal(unheld.timeValidity, 'DAY');
-    assert.ok(unheld.warnings.some(warning => warning.includes('没有换算汇率')));
+    assert.ok(unheld.warnings.some(warning => warning.includes('AAPL_US_EQ') && warning.includes('USD')));
     assert.equal(f.posts().length, 0);
     assert.equal(f.orders.config(1).maxOrderValue, 500);
   } finally { f.close(); }
@@ -233,8 +256,8 @@ test('passkeys are per domain: Face ID is required where one exists and a failed
     assert.deepEqual(f.orders.config(1).passkeys.map(item => item.rpId), ['studio.ajarche.com']);
     assert.deepEqual(f.orders.config(2).passkeys, [], 'passkeys belong to one user');
 
-    const tailnet = await f.orders.preview(1, TAILNET, order({}));
-    assert.equal(tailnet.requires, 'confirm', 'the Tailscale domain has no passkey of its own');
+    await assert.rejects(f.orders.preview(1, TAILNET, order({})), coded('T212_PASSKEY_REQUIRED', /studio\.ajarche\.com/),
+      'a domain without its own passkey cannot fall back to the double confirmation');
 
     const preview = await f.orders.preview(1, STUDIO, order({}));
     assert.equal(preview.requires, 'passkey');
@@ -260,9 +283,9 @@ test('passkeys are per domain: Face ID is required where one exists and a failed
     assert.ok(stored.last_used_at);
     assert.deepEqual(f.attempts().map(row => [row.method, row.status]), [['confirm', 'failed'], ['passkey', 'failed'], ['passkey', 'placed']]);
 
-    assert.deepEqual(f.orders.removePasskey(1, passkey.id), { removed: true });
-    assert.throws(() => f.orders.removePasskey(1, passkey.id), /找不到/);
-    assert.equal((await f.orders.preview(1, STUDIO, order({}))).requires, 'confirm');
+    assert.deepEqual(await f.orders.removePasskey(1, STUDIO, passkey.id, { password: PASSWORD }), { removed: true });
+    await assert.rejects(f.orders.removePasskey(1, STUDIO, passkey.id, { password: PASSWORD }), /找不到/);
+    assert.equal((await f.orders.preview(1, STUDIO, order({}))).requires, 'confirm', 'without any passkey left, the double confirmation is back');
   } finally { f.close(); }
 });
 
@@ -276,19 +299,30 @@ test('a passkey enabled after a preview makes that double confirmation insuffici
   } finally { f.close(); }
 });
 
-test('only configured origins may trade; localhost only in development', () => {
-  const production = fixture();
-  const development = fixture({ development: true });
+test('only configured origins may trade; localhost only with STUDIO_T212_ALLOW_LOCALHOST=1, whatever NODE_ENV says', () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  delete process.env.NODE_ENV;
+  const standard = fixture();
+  const local = fixture({ allowLocalhost: '1' });
+  const disabled = fixture({ allowLocalhost: '0' });
   try {
-    assert.deepEqual(production.orders.trustedOrigin('https://studio.ajarche.com'), STUDIO);
-    assert.deepEqual(production.orders.trustedOrigin('https://desktop.tail1234.ts.net'), TAILNET);
-    for (const header of [undefined, 'null', 'https://evil.example', 'https://studio.ajarche.com/x', 'http://localhost:5173']) {
-      assert.throws(() => production.orders.trustedOrigin(header), (error: Error & { statusCode?: number }) => error.statusCode === 403, String(header));
+    assert.deepEqual(standard.orders.trustedOrigin('https://studio.ajarche.com'), STUDIO);
+    assert.deepEqual(standard.orders.trustedOrigin('https://desktop.tail1234.ts.net'), TAILNET);
+    const refused = [undefined, 'null', 'https://evil.example', 'https://studio.ajarche.com/x', 'http://localhost:3002', 'http://127.0.0.1:3001', 'http://[::1]:3001'];
+    for (const header of refused) {
+      assert.throws(() => standard.orders.trustedOrigin(header), (error: Error & { statusCode?: number }) => error.statusCode === 403, String(header));
     }
-    assert.deepEqual(development.orders.trustedOrigin('http://localhost:5173'), { origin: 'http://localhost:5173', rpId: 'localhost' });
-    assert.throws(() => development.orders.trustedOrigin('https://localhost.evil.example'));
-    assert.deepEqual(production.orders.config(1).trustedOrigins, [STUDIO.origin, TAILNET.origin]);
-  } finally { production.close(); development.close(); }
+    assert.throws(() => disabled.orders.trustedOrigin('http://localhost:3002'), /白名单/);
+    assert.equal(standard.orders.config(1).allowLocalhost, false);
+    assert.deepEqual(local.orders.trustedOrigin('http://localhost:5173'), { origin: 'http://localhost:5173', rpId: 'localhost' });
+    assert.deepEqual(local.orders.trustedOrigin('http://127.0.0.1:3001'), { origin: 'http://127.0.0.1:3001', rpId: '127.0.0.1' });
+    assert.throws(() => local.orders.trustedOrigin('https://localhost.evil.example'));
+    assert.equal(local.orders.config(1).allowLocalhost, true);
+    assert.deepEqual(standard.orders.config(1).trustedOrigins, [STUDIO.origin, TAILNET.origin]);
+  } finally {
+    standard.close(); local.close(); disabled.close();
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previousNodeEnv;
+  }
 });
 
 test('broker failures are recorded, reported as unknown outcomes and never retried', async () => {
@@ -296,22 +330,199 @@ test('broker failures are recorded, reported as unknown outcomes and never retri
   try {
     f.onOrder(() => new Response('', { status: 500 }));
     const first = await f.orders.preview(1, STUDIO, order({}));
-    await assert.rejects(f.orders.confirm(1, STUDIO, first.id, { confirmed: true }), /订单状态未知/);
+    await assert.rejects(f.orders.confirm(1, STUDIO, first.id, { confirmed: true }), coded('T212_ORDER_UNKNOWN', /订单状态未知/));
     assert.equal(f.posts().length, 1);
 
     f.onOrder(() => Response.json({ code: 'InsufficientFreeForStocksBuy', clarification: 'Insufficient funds <script>' }, { status: 400 }));
-    const second = await f.orders.preview(1, STUDIO, order({}));
-    await assert.rejects(f.orders.confirm(1, STUDIO, second.id, { confirmed: true }), (error: Error) =>
-      error.message.includes('Insufficient funds') && !error.message.includes('<'));
+    const second = await f.orders.preview(1, STUDIO, order({ quantity: 2 }));
+    await assert.rejects(f.orders.confirm(1, STUDIO, second.id, { confirmed: true }), (error: Error & { code?: string }) =>
+      error.code === 'TRADING212_ERROR' && error.message.includes('Insufficient funds') && !error.message.includes('<'));
     assert.equal(f.posts().length, 2);
 
     f.onOrder(() => { throw new Error('ECONNRESET fake-live-secret'); });
-    const third = await f.orders.preview(1, STUDIO, order({}));
-    await assert.rejects(f.orders.confirm(1, STUDIO, third.id, { confirmed: true }), (error: Error) =>
-      /不会自动重试/.test(error.message) && !error.message.includes('fake-live'));
+    const third = await f.orders.preview(1, STUDIO, order({ quantity: 0.5 }));
+    await assert.rejects(f.orders.confirm(1, STUDIO, third.id, { confirmed: true }), (error: Error & { code?: string }) =>
+      error.code === 'T212_ORDER_UNKNOWN' && /不会自动重试/.test(error.message) && !error.message.includes('fake-live'));
     assert.equal(f.posts().length, 3);
     const attempts = f.attempts();
-    assert.deepEqual(attempts.map(row => row.status), ['failed', 'failed', 'failed']);
+    assert.deepEqual(attempts.map(row => row.status), ['unknown', 'failed', 'unknown'], 'only a definite refusal is audited as failed');
     assert.ok(!JSON.stringify(attempts).includes('fake-live'));
+  } finally { f.close(); }
+});
+
+test('once any passkey exists the double confirmation is refused on every other domain, also at confirm time', async () => {
+  const f = fixture({ allowLocalhost: '1' });
+  const LOCALHOST = { origin: 'http://localhost:3002', rpId: 'localhost' };
+  try {
+    // Previewed while the user still had no passkey anywhere.
+    const early = await f.orders.preview(1, TAILNET, order({}));
+    assert.equal(early.requires, 'confirm');
+    await registerPasskey(f);
+
+    await assert.rejects(f.orders.confirm(1, TAILNET, early.id, { confirmed: true }), coded('T212_PASSKEY_REQUIRED'));
+    await assert.rejects(f.orders.preview(1, TAILNET, order({})), coded('T212_PASSKEY_REQUIRED', /desktop\.tail1234\.ts\.net/));
+    await assert.rejects(f.orders.preview(1, LOCALHOST, order({ env: 'demo' })), coded('T212_PASSKEY_REQUIRED'), 'a localhost origin is no way around Face ID');
+    assert.equal(f.posts().length, 0);
+    assert.deepEqual(f.attempts().map(row => [row.method, row.status]), [['confirm', 'failed']]);
+
+    // The domain that owns the passkey still trades with Face ID.
+    const studio = await f.orders.preview(1, STUDIO, order({}));
+    assert.equal(studio.requires, 'passkey');
+    assert.equal((await f.orders.confirm(1, STUDIO, studio.id, { assertion: goodAssertion })).method, 'passkey');
+  } finally { f.close(); }
+});
+
+test('STUDIO_T212_REQUIRE_PASSKEY=1 removes the double confirmation entirely', async () => {
+  const f = fixture({ requirePasskey: '1' });
+  try {
+    assert.equal(f.orders.config(1).requirePasskey, true);
+    await assert.rejects(f.orders.preview(1, STUDIO, order({})), coded('T212_PASSKEY_REQUIRED', /STUDIO_T212_REQUIRE_PASSKEY/));
+    assert.equal(f.calls.length, 0, 'refused before the broker is contacted');
+    await registerPasskey(f);
+    assert.equal((await f.orders.preview(1, STUDIO, order({}))).requires, 'passkey');
+  } finally { f.close(); }
+  const standard = fixture();
+  try { assert.equal(standard.orders.config(1).requirePasskey, false); } finally { standard.close(); }
+});
+
+test('adding a passkey needs the Studio password, and repeated wrong passwords lock passkey changes', async () => {
+  const f = fixture();
+  try {
+    await assert.rejects(f.orders.passkeyOptions(1, 'owner', STUDIO, 'guess'), coded('T212_STEP_UP_FAILED'));
+    await assert.rejects(f.orders.passkeyOptions(1, 'owner', STUDIO, ''), coded('T212_STEP_UP_FAILED'));
+    assert.equal(f.webauthnCalls.registration.length, 0, 'no registration challenge without the password');
+    // Without a password-gated challenge the attestation is refused.
+    await assert.rejects(f.orders.registerPasskey(1, STUDIO, { id: 'cred-1', rawId: 'cred-1', response: { attestationObject: 'x' } } as any), coded('T212_PASSKEY_FAILED'));
+    assert.deepEqual(f.orders.config(1).passkeys, []);
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await assert.rejects(f.orders.passkeyOptions(1, 'owner', STUDIO, `guess-${attempt}`), coded('T212_STEP_UP_FAILED'));
+    }
+    // Five wrong passwords in a row: even the right one is refused for fifteen minutes.
+    await assert.rejects(f.orders.passkeyOptions(1, 'owner', STUDIO, PASSWORD), (error: Error & { code?: string; statusCode?: number }) =>
+      error.code === 'T212_STEP_UP_LOCKED' && error.statusCode === 429);
+    const checks = f.passwordChecks.length;
+    f.advance(15 * 60_000 + 1);
+    const passkey = await registerPasskey(f);
+    assert.equal(f.passwordChecks.length, checks + 1);
+    assert.equal(f.passwordChecks.at(-1), PASSWORD);
+    assert.equal(passkey.rpId, STUDIO.rpId);
+  } finally { f.close(); }
+});
+
+test('removing a passkey needs the Studio password, or that passkey itself on its own domain', async () => {
+  const f = fixture();
+  try {
+    const passkey = await registerPasskey(f);
+    await assert.rejects(f.orders.removePasskey(1, STUDIO, passkey.id, { password: 'guess' }), coded('T212_STEP_UP_FAILED'));
+    await assert.rejects(f.orders.removePasskey(2, STUDIO, passkey.id, { password: PASSWORD }), /找不到/, 'another user cannot remove it');
+    await assert.rejects(f.orders.removePasskey(1, STUDIO, passkey.id, { assertion: goodAssertion }), coded('T212_STEP_UP_FAILED'),
+      'an assertion needs a removal challenge first');
+
+    // Only the passkey's own domain can authorise its removal with it.
+    await assert.rejects(f.orders.removalOptions(1, TAILNET, passkey.id), coded('T212_STEP_UP_FAILED', /studio\.ajarche\.com/));
+    const options = await f.orders.removalOptions(1, STUDIO, passkey.id);
+    assert.equal(options.userVerification, 'required');
+    assert.deepEqual(options.allowCredentials?.map(item => item.id), ['cred-1']);
+    await assert.rejects(f.orders.removePasskey(1, STUDIO, passkey.id, { assertion: badAssertion }), coded('T212_STEP_UP_FAILED'));
+    assert.equal(f.orders.config(1).passkeys.length, 1, 'still enabled after failed step-ups');
+
+    await f.orders.removalOptions(1, STUDIO, passkey.id);
+    assert.deepEqual(await f.orders.removePasskey(1, STUDIO, passkey.id, { assertion: goodAssertion }), { removed: true });
+    const verification = f.webauthnCalls.verifyAuthentication.at(-1);
+    assert.equal(verification.expectedRPID, STUDIO.rpId);
+    assert.equal(verification.requireUserVerification, true);
+    assert.deepEqual(f.orders.config(1).passkeys, []);
+
+    // The password works from any trusted domain.
+    const again = await registerPasskey(f);
+    assert.deepEqual(await f.orders.removePasskey(1, TAILNET, again.id, { password: PASSWORD }), { removed: true });
+    assert.equal(f.posts().length, 0);
+  } finally { f.close(); }
+});
+
+test('a limit sell is valued at no less than the shares are worth, so a low limit cannot slip past the cap', async () => {
+  const f = fixture({ maxOrderValue: '300' });
+  try {
+    // Two AAPL shares are worth £320.
+    await assert.rejects(f.orders.preview(1, STUDIO, order({ side: 'sell', quantity: 2 })), coded('T212_ORDER_CAP'));
+    await assert.rejects(f.orders.preview(1, STUDIO, order({ side: 'sell', quantity: 2, type: 'limit', limitPrice: 0.01 })),
+      coded('T212_ORDER_CAP', /£320\.00/));
+    const one = await f.orders.preview(1, STUDIO, order({ side: 'sell', quantity: 1, type: 'limit', limitPrice: 0.01 }));
+    assert.equal(one.estimatedValue, 160);
+    // A limit buy is still valued at its limit: 1 × $100 × 0.8.
+    assert.equal((await f.orders.preview(1, STUDIO, order({ quantity: 1, type: 'limit', limitPrice: 100 }))).estimatedValue, 80);
+    assert.equal(f.posts().length, 0);
+  } finally { f.close(); }
+});
+
+test('unheld tickers are converted from their quote currency, and refused when no exchange rate is known', async () => {
+  const f = fixture();
+  const instrumentReads = () => f.calls.filter(call => call.url.endsWith('/equity/metadata/instruments')).length;
+  try {
+    // GBX is pence: 100 shares at 150p are £150.
+    const vodafone = await f.orders.preview(1, STUDIO, order({ ticker: 'VODl_EQ', type: 'limit', quantity: 100, limitPrice: 150 }));
+    assert.equal(vodafone.estimatedValue, 150);
+    assert.ok(vodafone.warnings.some(warning => warning.includes('GBX')));
+    await assert.rejects(f.orders.preview(1, STUDIO, order({ ticker: 'SAP_DE_EQ', type: 'limit', quantity: 1, limitPrice: 100 })),
+      coded('T212_FX_UNKNOWN', /EUR.*1:1/));
+    await assert.rejects(f.orders.preview(1, STUDIO, order({ ticker: 'NOPE_US_EQ', type: 'limit', quantity: 1, limitPrice: 1 })), coded('T212_UNKNOWN_INSTRUMENT'));
+
+    // The instrument list is read once a day, also across orders (which drop the account caches).
+    const tesla = await f.orders.preview(1, STUDIO, order({ ticker: 'TSLA_US_EQ', type: 'limit', quantity: 1, limitPrice: 100 }));
+    await f.orders.confirm(1, STUDIO, tesla.id, { confirmed: true });
+    await f.orders.preview(1, STUDIO, order({ ticker: 'TSLA_US_EQ', type: 'limit', quantity: 2, limitPrice: 100 }));
+    assert.equal(instrumentReads(), 1);
+    f.advance(24 * 60 * 60_000 + 1);
+    await f.orders.preview(1, STUDIO, order({ ticker: 'TSLA_US_EQ', type: 'limit', quantity: 2, limitPrice: 100 }));
+    assert.equal(instrumentReads(), 2);
+  } finally { f.close(); }
+
+  // A forint account: a dollar is worth hundreds of HUF, so 1:1 would understate the order hundreds of times.
+  const forint = { ...SUMMARY, currency: 'HUF', cash: { availableToTrade: 1_000_000, reservedForOrders: 0, inPies: 0 } };
+  const noDollars = fixture({ summary: forint, positions: [] });
+  try {
+    await assert.rejects(noDollars.orders.preview(1, STUDIO, order({ ticker: 'TSLA_US_EQ', type: 'limit', quantity: 1, limitPrice: 200 })),
+      coded('T212_FX_UNKNOWN', /HUF/));
+  } finally { noDollars.close(); }
+  const withDollars = fixture({
+    summary: forint,
+    positions: [{ instrument: { ticker: 'AAPL_US_EQ', name: 'Apple', currency: 'USD' }, quantity: 2, currentPrice: 200, walletImpact: { currentValue: 144_000, totalCost: 140_000, unrealizedProfitLoss: 4000 } }],
+  });
+  try {
+    // 360 HUF per dollar from the AAPL holding: 1 × $200 is 72,000 HUF, far above the 500 cap.
+    await assert.rejects(withDollars.orders.preview(1, STUDIO, order({ ticker: 'TSLA_US_EQ', type: 'limit', quantity: 1, limitPrice: 200 })),
+      coded('T212_ORDER_CAP', /72,000/));
+    assert.equal(withDollars.posts().length, 0);
+  } finally { withDollars.close(); }
+});
+
+test('after an unknown outcome an identical order is held back for a few minutes unless explicitly acknowledged', async () => {
+  const f = fixture();
+  try {
+    const parallel = await f.orders.preview(1, STUDIO, order({}));
+    f.onOrder(() => new Response('', { status: 503 }));
+    const first = await f.orders.preview(1, STUDIO, order({}));
+    await assert.rejects(f.orders.confirm(1, STUDIO, first.id, { confirmed: true }), coded('T212_ORDER_UNKNOWN'));
+    assert.deepEqual(f.attempts().map(row => row.status), ['unknown']);
+    f.onOrder(() => Response.json(ORDER));
+
+    await assert.rejects(f.orders.preview(1, STUDIO, order({})), (error: Error & { code?: string; statusCode?: number }) =>
+      error.code === 'T212_ORDER_UNKNOWN_PENDING' && error.statusCode === 409 && /Trading 212/.test(error.message));
+    await assert.rejects(f.orders.confirm(1, STUDIO, parallel.id, { confirmed: true }), coded('T212_ORDER_UNKNOWN_PENDING'),
+      'a preview made before the unknown outcome cannot place the same order either');
+    assert.equal(f.posts().length, 1);
+
+    // A different order is not affected; the same order goes through once acknowledged.
+    assert.equal((await f.orders.preview(1, STUDIO, order({ quantity: 2 }))).requires, 'confirm');
+    assert.equal((await f.orders.preview(1, STUDIO, order({ env: 'demo' }))).env, 'demo');
+    const acknowledged = await f.orders.preview(1, STUDIO, order({}), { acknowledgeUnknown: true });
+    assert.ok(acknowledged.warnings.some(warning => warning.includes('状态未知')));
+    await f.orders.confirm(1, STUDIO, acknowledged.id, { confirmed: true });
+    assert.equal(f.posts().length, 2);
+
+    // The hold ends after five minutes.
+    f.advance(5 * 60_000 + 1);
+    assert.equal((await f.orders.preview(1, STUDIO, order({}))).requires, 'confirm');
   } finally { f.close(); }
 });
