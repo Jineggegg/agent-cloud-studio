@@ -31,6 +31,7 @@ iPad / iPhone / 电脑 ─┤  https://laptop-acgghbuq.tail6e45f0.ts.net:8443  �
 
 在 Studio 的「设置 → 连接方式」里可以看到两个入口、它们现在通不通（延迟），以及你正在用哪一个。
 点另一个入口会**带着登录一起切过去**（见下文「切换入口」），不用重新输入密码。
+那里的「设置说明」直接在 Studio 里打开这份文档（由 Studio 自己提供，不依赖 GitHub，在国内走 Tailscale 通道时也能看）。
 
 ## 入口 A：公网域名（Cloudflare Tunnel）
 
@@ -111,9 +112,40 @@ Studio 能在这台笔记本上运行 Claude Code、Codex 和终端，**等于�
 WebSocket（对话、终端）在 Access 后面照常工作。
 
 - iPad「添加到主屏幕」后，主屏幕 App 有自己独立的 Cookie，第一次打开时要在里面再做一次邮箱验证。
-- 如果主屏幕图标或名称显示不对，是因为 Access 挡住了 `manifest.json`：再建一个只针对
-  `studio.ajarche.com/manifest.json` 和 `studio.ajarche.com/icons/*` 的 Access 应用，Policy 选 **Bypass**。
-- 设置页里「延迟」检测请求的是 `/health`，在 Access 后面也能测出「通不通」，不需要为它放行。
+- **建议再建一个 Bypass 应用**，只放行三个公开路径：`studio.ajarche.com/health`、`studio.ajarche.com/manifest.json`
+  和 `studio.ajarche.com/icons/*`（Add an application → Self-hosted，填这三个路径，Policy 的 Action 选 **Bypass**）。
+  它们不含任何数据：`/health` 只回答「在运行」和版本号，另外两个是主屏幕图标和名称。
+  - 放行 `/health` 后，设置页的检测能穿过 Access 直接问到 Studio：显示延迟就说明隧道和 Studio 都在运行；
+    显示「不可达」就是隧道断了或电脑没开。
+  - 不放行时，检测只能碰到 Access 的登录跳转：浏览器读得到这个跳转时显示「需 Access 验证」，
+    读不到时（Access 的跳转不带跨域头）会显示「不可达」。这两种情况都**看不出隧道本身是否在运行**。
+  - 放行 `manifest.json` 和 `icons/*` 能避免主屏幕图标或名称显示不对。
+
+### 6b. 可选：让 Studio 自己核对 Access
+
+Access 只在 Cloudflare 后台配置。万一哪天 Access 应用被删、域名改了、Policy 写错，公网域名就只剩 Studio 的密码。
+在 `.env` 里加两项，Studio 会自己核对每个经 Cloudflare 进来的请求确实通过了 Access：
+
+```ini
+STUDIO_CF_ACCESS_TEAM_DOMAIN=<团队名>.cloudflareaccess.com
+STUDIO_CF_ACCESS_AUD=<Access 应用的 AUD 标签>
+```
+
+- 团队名：Zero Trust → Settings → Custom Pages 里的 **Team domain**（`<团队名>.cloudflareaccess.com`）。
+- AUD 标签：Zero Trust → Access → Applications → 你的 Studio 应用 → Overview 里的 **Application Audience (AUD) Tag**
+  （64 位十六进制）。有多个应用时可以用逗号写多个。
+
+开启后：
+
+- 经 Cloudflare 进来的请求（带 `CF-Ray` / `CF-Connecting-IP` / `CDN-Loop: cloudflare`）必须带有效的
+  `Cf-Access-Jwt-Assertion`：RS256 签名、密钥来自 `https://<团队名>.cloudflareaccess.com/cdn-cgi/access/certs`、
+  `iss` 是这个团队地址、`aud` 包含上面的标签、没有过期。否则一律返回 403，网页、接口、WebSocket 都一样。
+- 例外只有上面 Bypass 放行的三个公开路径（`GET /health`、`/manifest.json`、`/icons/*.png|svg`），因为 Access 放行时不会附带这个头。
+- Tailscale 通道和本机访问不经过 Cloudflare，不受影响。
+- 密钥会缓存一小时；遇到没见过的密钥 ID 时最多每分钟重新拉取一次。拉取失败时继续用已缓存的密钥。
+- 只写了其中一项、或格式不对时，Studio 会**拒绝所有**经 Cloudflare 的请求（宁可打不开，也不放行），
+  设置页「连接方式」会说明是哪一项的问题。两项都不写就是不开启。
+- 修改后需要重启 `agent-cloud-studio.service`。
 
 ### 7. 告诉 Studio 公网地址
 
@@ -131,8 +163,11 @@ STUDIO_TAILNET_ORIGIN=https://laptop-acgghbuq.tail6e45f0.ts.net:8443
 - **两个都要写。** 以前 `STUDIO_PUBLIC_ORIGIN` 写的是 ts.net 地址；现在它改成公网域名，
   ts.net 地址要挪到 `STUDIO_TAILNET_ORIGIN`。只改前者、不写后者时，Tailscale 免密码登录会全部拒绝
   （日志原因 `pinned-origin-not-tailnet`），不会误放行。
-- 如果你用了 Gmail 邮箱模块：OAuth 回调地址跟着 `STUDIO_PUBLIC_ORIGIN` 走，要在 Google Cloud Console
-  里把授权回调改成（或加上）`https://studio.ajarche.com/api/studio/gmail/callback`。连接完成后会回到公网域名。
+- 如果你用了 Gmail 邮箱模块：Studio 会记住你是从哪个入口点的「连接 Gmail」，Google 授权完成后回调到**同一个入口**，
+  你也会回到那个入口上已登录的页面。所以要在 Google Cloud Console → APIs & Services → Credentials →
+  你的 OAuth 客户端 → Authorized redirect URIs 里**两个都加上**：
+  - `https://studio.ajarche.com/api/studio/gmail/callback`
+  - `https://laptop-acgghbuq.tail6e45f0.ts.net:8443/api/studio/gmail/callback`
 
 ### 公网入口与免密码登录
 
@@ -145,6 +180,18 @@ Tailscale 免密码登录**只在** Tailscale 通道上生效。经隧道进来�
 3. Cloudflare 会把真实客户端地址追加到伪造的 `X-Forwarded-For` 后面，变成多个地址，同样被拒绝。
 
 所以公网入口永远要输密码（加上 Access 的邮箱验证）。
+
+免密码登录发出的会话也**只在 Tailscale 通道上有效**：带 Tailscale 标记的 token 只接受经 Tailscale Serve 进来的请求
+（本机回环连接、Host 是 `*.ts.net` 并且和 `STUDIO_TAILNET_ORIGIN` 一致、不带上面那些 Cloudflare 头）。
+同一个 token 拿到公网域名或本机地址上用，HTTP 接口、WebSocket 和 `/api/auth/refresh` 都会返回 401。
+密码登录的会话不受影响，两个入口都能用。
+
+公网入口上的密码登录有失败次数限制（和切换入口时输入的密码共用一套计数）：
+
+- 同一个客户端 10 分钟内输错 5 次，就要等 10 分钟。经 Cloudflare 的请求按 `CF-Connecting-IP`（Cloudflare 填写，客户端改不了）区分，
+  其他请求按连接地址区分。
+- 每个入口另有一个总数：10 分钟内所有客户端合计输错 20 次，这个入口的密码登录也暂停 10 分钟。
+  公网和 Tailscale 通道分开计数，所以公网上有人乱试，最多让公网入口暂时登不上，Tailscale 通道照常可用，已登录的会话也不受影响。
 
 ## 入口 B：Tailscale · AJ 通道
 
@@ -169,7 +216,8 @@ tailscale serve --bg --https=8443 http://127.0.0.1:3002
    服务器只存它的哈希，**60 秒**内有效、只能用一次，并且绑定你的账号和目标入口的网址。
 2. 浏览器打开目标入口的同一个页面，地址里带着 `?handoff=<切换码>`。
 3. 目标页面一启动就把切换码从地址栏里删掉，再用它换取登录（`POST /api/auth/handoff/redeem`）。
-   服务器会核对请求的 Origin 必须就是目标入口；换取接口有频率限制。
+   服务器会核对请求的 Origin 必须就是目标入口；换取接口有频率限制：每个客户端每分钟 10 次，每个入口每分钟合计 30 次，
+   公网和 Tailscale 通道分开计数，所以公网上的刷量挡不住从 Tailscale 通道切换。
 4. 换取成功后和正常登录一样保存 token；失败（过期、已用过、网址不对）时照常显示登录页并说明原因。
 
 会话类型的规则：**切换后得到的会话不会比原来的更「宽」。**
@@ -212,8 +260,39 @@ iPad 小提示：主屏幕上的 Web App 绑定在一个网址上。两个入口
 **你这边要做的：**
 
 - **笔记本也要选出口节点**，不只是 iPad：Claude Code / Codex 是在笔记本上运行的，它们访问 API 的流量要从
-  AJ 的服务器出去。在 Windows 右下角 Tailscale 菜单 → Exit node → 选 AJ 的服务器；WSL 用的是镜像网络，会跟着走。
+  AJ 的服务器出去。在 Windows 右下角 Tailscale 菜单 → Exit node → 选 AJ 的服务器。
   建议同时勾选 **Allow local network access**，免得局域网设备（打印机、NAS）连不上。
+- **确认 WSL 的流量也走了出口节点。** 这台笔记本的 WSL 现在是 **NAT 模式**（在 WSL 里运行 `wslinfo --networking-mode`
+  会输出 `nat`）：WSL 的流量先经 Windows 转发再出去，一般会跟着 Windows 的出口节点走，但没有保证，DNS 也可能不同。
+  出发去国内之前先验证一次：
+
+  ```bash
+  # 在 Windows 上选好 AJ 的出口节点之后，在 WSL 里运行：
+  curl -s https://ifconfig.me; echo
+  # 输出应该是 AJ 服务器的出口 IP（在 Windows 的 PowerShell 里运行 curl.exe -s https://ifconfig.me 对照，两边应该一样）。
+  # 再确认 Claude / Codex 的 API 能连上（返回任何 HTTP 状态码都说明连通了，超时才是问题）：
+  curl -sS -o /dev/null -w '%{http_code}\n' https://api.anthropic.com
+  curl -sS -o /dev/null -w '%{http_code}\n' https://api.openai.com
+  ```
+
+  如果 WSL 里看到的 IP 和 Windows 不一样（还是本地宽带的 IP），或者 API 连不上，就把 WSL 改成**镜像网络**，
+  让 WSL 直接用 Windows 的网卡和路由（[WSL 部署](deployment-wsl.md) 第 1 步也是这样建议的）：
+
+  1. 在 Windows 的 `%UserProfile%\.wslconfig` 里写入（没有这个文件就新建）：
+
+     ```ini
+     [wsl2]
+     networkingMode=mirrored
+     ```
+
+  2. 在 PowerShell 里运行 `wsl --shutdown`。这会停止**所有** WSL 进程（包括 Studio 和正在运行的 AI 任务），请在空闲时做。
+  3. 重新打开 WSL，`systemctl --user status agent-cloud-studio.service studio-tunnel.service` 确认两个服务都起来了。
+  4. 重新确认各条连接都还正常：
+     - 在 WSL 里再跑一次上面的 `curl -s https://ifconfig.me`，应该是 AJ 服务器的 IP；
+     - 在 Windows 的 PowerShell 里运行 `curl.exe -s http://127.0.0.1:3002/health`，应该返回 `"status":"ok"`
+       （Tailscale Serve 转发到的就是这个地址）；然后在 iPad 上打开 Tailscale 通道的地址；
+     - 在 WSL 里运行 `curl -s http://127.0.0.1:8768/api/health`，应该返回 SNR 的健康信息（镜像网络下 SNR 走 Windows 的回环地址）；
+     - 如果用了公网入口：`journalctl --user -u studio-tunnel -n 20` 里应该能看到 `Registered tunnel connection`。
 - **iPad / iPhone：** Tailscale App → Exit Node → 选 AJ 的服务器，然后打开 Tailscale 通道的地址。
 - 可以做一个 iOS 快捷指令，一键完成：用 Tailscale App 提供的快捷指令动作「连接」和「使用出口节点」
   （不同版本名称可能略有差别），最后加一个「打开 URL」动作：
@@ -240,9 +319,12 @@ iPad 小提示：主屏幕上的 Web App 绑定在一个网址上。两个入口
 
 | 变量 | 作用 |
 | --- | --- |
-| `STUDIO_PUBLIC_ORIGIN` | 公网入口的完整地址，例如 `https://studio.ajarche.com`（不带路径）。也用于 Gmail OAuth 回调。 |
-| `STUDIO_TAILNET_ORIGIN` | Tailscale 入口的完整地址，例如 `https://laptop-acgghbuq.tail6e45f0.ts.net:8443`。免密码登录只接受这个地址的页面。 |
+| `STUDIO_PUBLIC_ORIGIN` | 公网入口的完整地址，例如 `https://studio.ajarche.com`（不带路径）。从这个入口发起的 Gmail 连接回调到这里。 |
+| `STUDIO_TAILNET_ORIGIN` | Tailscale 入口的完整地址，例如 `https://laptop-acgghbuq.tail6e45f0.ts.net:8443`。免密码登录只接受这个地址的页面，免密码会话也只在这里有效。 |
+| `STUDIO_CF_ACCESS_TEAM_DOMAIN` | 可选，和下一项一起设置：Zero Trust 团队，例如 `myteam.cloudflareaccess.com`。见第 6b 步。 |
+| `STUDIO_CF_ACCESS_AUD` | 可选：Access 应用的 AUD 标签。设置后经 Cloudflare 的请求必须通过 Access 校验，否则 403。 |
 
-两者都写成 `https://主机[:端口]`，不带路径（本地开发 `npm run dev` 用的 `http://127.0.0.1:5174` 也接受）。
-写错时设置页会提示「格式不对」，对应入口不能切换；免密码登录则全部拒绝（日志 `pinned-origin-invalid`）。
+两个入口地址都写成 `https://主机[:端口]`，不带路径（本地开发 `npm run dev` 用的 `http://127.0.0.1:5174` 也接受）。
+写错时 Studio 照常启动，只是关掉依赖这个地址的功能：设置页会提示「格式不对」，对应入口不能切换；
+从这个入口不能连接 Gmail；免密码登录全部拒绝（日志 `pinned-origin-invalid`）。
 修改 `.env` 后需要重启 `agent-cloud-studio.service`。
