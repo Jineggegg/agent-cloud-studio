@@ -1067,6 +1067,32 @@ export function sanitizeLeafDirectoryName(inputName: string, label = 'directory 
 }
 
 // ---------------------------
+//----------------- REMOTE SSH DIRECTORY UTILITIES ------------
+/**
+ * Home-relative (`~`, `~/projects/app`) or absolute (`/srv/app`) remote path
+ * made only of letters, digits, `.`, `_`, `/` and `-`. It can never start with
+ * `-`, and contains no spaces, quotes, globs, `$`, or shell operators.
+ */
+const SAFE_REMOTE_DIRECTORY_PATTERN = /^(~|~\/[A-Za-z0-9._/-]*|\/[A-Za-z0-9._/-]+)$/;
+
+/**
+ * Reports whether a directory on an SSH host is safe to embed unquoted in a
+ * remote shell command such as `cd <dir>` (so a leading `~` still expands).
+ *
+ * Used by the Studio project hub (to validate a project's `remoteDir`) and the
+ * Studio remote-hosts service (to validate registry defaults and to re-check a
+ * directory right before building an SSH command). Beyond the character rule it
+ * rejects any `..` segment and anything longer than 300 characters. It only
+ * checks syntax; it never touches the remote filesystem.
+ */
+export function isSafeRemoteDirectory(directory: string): boolean {
+  return typeof directory === 'string'
+    && directory.length <= 300
+    && SAFE_REMOTE_DIRECTORY_PATTERN.test(directory)
+    && !directory.split('/').includes('..');
+}
+
+// ---------------------------
 //----------------- SESSION SYNCHRONIZER FILESYSTEM HELPERS ------------
 /**
  * Recursively discovers files that match one extension, with optional incremental filtering.
@@ -1251,8 +1277,9 @@ const ANSI_ESCAPE_SEQUENCE_REGEX =
 
 /**
  * Removes ANSI escape sequences from text captured off a CLI's stdout or
- * stderr. Provider runtimes, session readers, and the shell WebSocket share
- * this because every one of them forwards captured process output to a web
+ * stderr. Provider runtimes, session readers, the shell WebSocket, and the
+ * Studio remote-hosts service (for short SSH error summaries) share this
+ * because every one of them forwards captured process output to a web
  * client that renders plain text: left in, the escapes show up verbatim
  * (`[93m[1m!`) instead of as styling.
  *
