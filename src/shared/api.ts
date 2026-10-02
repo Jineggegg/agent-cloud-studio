@@ -193,6 +193,19 @@ export const api = {
     },
     // ── v4 track: network — endpoints below this line ──
     // ── v4 track: orders — endpoints below this line ──
+    // Trading 212 order placement (single-use previews confirmed by a passkey or a double confirmation) and passkeys.
+    t212Trading: {
+      config: () => get('/api/studio/trading212/trading'),
+      preview: (input: {
+        env: T212Env; ticker: string; side: 'buy' | 'sell'; type: 'market' | 'limit'; quantity: number;
+        limitPrice?: number; timeValidity?: 'DAY' | 'GOOD_TILL_CANCEL';
+      }) => post('/api/studio/trading212/orders/preview', input),
+      confirm: (id: string, proof: { assertion: unknown } | { confirmed: true }) =>
+        post(`/api/studio/trading212/orders/${encodeURIComponent(id)}/confirm`, proof),
+      passkeyOptions: () => post('/api/studio/trading212/passkey/options'),
+      registerPasskey: (response: unknown) => post('/api/studio/trading212/passkey', { response }),
+      removePasskey: (id: string) => del(`/api/studio/trading212/passkey/${encodeURIComponent(id)}`),
+    },
     // ── v4 track: mail — endpoints below this line ──
     status: () => get('/api/studio/status'),
     snr: () => get('/api/studio/snr'),

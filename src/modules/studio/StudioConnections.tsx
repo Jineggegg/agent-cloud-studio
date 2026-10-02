@@ -151,7 +151,7 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
     </section>
 
     <section className="ios-section" aria-labelledby="studio-t212-heading">
-      <div className="ios-section-header"><h2 id="studio-t212-heading">Trading 212</h2><span className="caption">只读</span></div>
+      <div className="ios-section-header"><h2 id="studio-t212-heading">Trading 212</h2><span className="caption">密钥文件</span></div>
       <div className="ios-list">
         {(t212 ?? []).map(item => <div className="ios-row" key={item.env}>
           <span className="home-icon small tone-moss" aria-hidden="true"><CandlestickChart size={17} strokeWidth={1.6} /></span>
@@ -160,7 +160,7 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
         </div>)}
         {t212 === null && <div className="ios-row no-icon"><span className="ios-row-body"><small>正在检查…</small></span></div>}
       </div>
-      <p className="ios-section-footer">密钥只保存在服务器指定的 .env 文件里（STUDIO_T212_ENV_FILE / STUDIO_T212_DEMO_ENV_FILE），Studio 只发送读取请求，不会下单。</p>
+      <p className="ios-section-footer">密钥只保存在服务器指定的 .env 文件里（STUDIO_T212_ENV_FILE / STUDIO_T212_DEMO_ENV_FILE），下单默认关闭，开启方式和安全设置见下方「交易安全」。</p>
     </section>
 
     <StudioSettingsTrading />

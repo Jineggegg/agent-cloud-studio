@@ -4,8 +4,14 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 
 import { AppError, parseEnvText } from '@/shared/utils.js';
+import type { StudioT212Environment } from '@/shared/types.js';
 
-type Environment = 'live' | 'demo';
+type Environment = StudioT212Environment;
+// Exactly the body Trading 212 documents for POST /equity/orders/market and /equity/orders/limit;
+// a negative quantity sells.
+type OrderBody =
+  | { ticker: string; quantity: number }
+  | { ticker: string; quantity: number; limitPrice: number; timeValidity: 'DAY' | 'GOOD_TILL_CANCEL' };
 type Dependencies = {
   database: Database.Database;
   // `.env` files holding TRADING212_API_KEY / TRADING212_API_SECRET, one per environment.
@@ -42,14 +48,29 @@ function obj(value: unknown): Json {
 function londonDay(timestamp: number) {
   return DAY_FORMAT.format(new Date(timestamp));
 }
+// Broker validation text such as "InsufficientFreeForStocksBuy" helps the owner; it is reduced to plain
+// characters and a short length so nothing unexpected from the response body is echoed.
+async function brokerReason(response: Response) {
+  const body = obj(await response.json().catch(() => null));
+  const text = [body.clarification, body.message, body.errorMessage, body.code, body.type]
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  const clean = text?.replace(/[^\p{L}\p{N} .,:;()'%_/-]/gu, '').trim().slice(0, 160);
+  return clean ? `：${clean}` : '';
+}
 
-/** Used by studio.module for a read-only Trading 212 dashboard; it only issues GET requests and never places orders. */
+/**
+ * Used by studio.module for the Trading 212 dashboard (GET reads with caches and balance snapshots) and by
+ * trading212-orders.service, which is the only caller of `placeOrder`. Orders are POSTed exactly once and
+ * never retried; gating, previews and passkey checks live in the orders service.
+ */
 export function createTrading212Service(deps: Dependencies) {
   const db = deps.database;
   const request = deps.request ?? fetch;
   const now = deps.now ?? Date.now;
   const cache = new Map<string, { at: number; value: unknown }>();
   const inflight = new Map<string, Promise<unknown>>();
+  // Bumped by `invalidate`; reads that began under an older generation are not cached.
+  const generation: Record<Environment, number> = { live: 0, demo: 0 };
   db.exec(`
     CREATE TABLE IF NOT EXISTS studio_t212_snapshots (
       env TEXT NOT NULL, taken_at TEXT NOT NULL, currency TEXT NOT NULL, total_value REAL NOT NULL,
@@ -75,12 +96,13 @@ export function createTrading212Service(deps: Dependencies) {
     if (running) return running as Promise<T>;
     const auth = credentials(env);
     if (!auth) fail(`未配置 Trading 212 ${env === 'live' ? '实盘' : '模拟盘'}密钥文件`, 503);
+    const startedIn = generation[env];
     const task = (async () => {
       let response: Response;
       try {
         response = await request(`${BASE_URL[env]}${route}`, {
           method: 'GET',
-          headers: { Accept: 'application/json', Authorization: `Basic ${Buffer.from(`${auth.key}:${auth.secret}`).toString('base64')}` },
+          headers: { Accept: 'application/json', Authorization: basicAuth(auth) },
           signal: AbortSignal.timeout(15000), redirect: 'error',
         });
       } catch {
@@ -90,11 +112,48 @@ export function createTrading212Service(deps: Dependencies) {
       if (response.status === 429) fail('Trading 212 请求过于频繁，请稍后再试', 429);
       if (!response.ok) fail(`Trading 212 暂时不可用（${response.status}）`);
       const value = await response.json() as T;
-      cache.set(cacheKey, { at: now(), value });
+      // A read that started before an order was placed must not repopulate the cache with pre-order data.
+      if (generation[env] === startedIn) cache.set(cacheKey, { at: now(), value });
       return value;
     })();
     inflight.set(cacheKey, task);
-    try { return await task; } finally { inflight.delete(cacheKey); }
+    try { return await task; } finally { if (inflight.get(cacheKey) === task) inflight.delete(cacheKey); }
+  }
+  function basicAuth(auth: { key: string; secret: string }) {
+    return `Basic ${Buffer.from(`${auth.key}:${auth.secret}`).toString('base64')}`;
+  }
+  // Drops every cached read of one account so balances and positions are fetched fresh after an order.
+  function invalidate(env: Environment) {
+    generation[env] += 1;
+    for (const key of [...cache.keys(), ...inflight.keys()]) {
+      if (key.startsWith(`${env}:`)) { cache.delete(key); inflight.delete(key); }
+    }
+  }
+  // Trading 212's order endpoints are not idempotent, so an order is POSTed exactly once: a timeout or a
+  // 5xx leaves the outcome unknown and is reported as such instead of being retried.
+  async function placeOrder(env: Environment, type: 'market' | 'limit', body: OrderBody) {
+    const auth = credentials(env);
+    if (!auth) fail(`未配置 Trading 212 ${env === 'live' ? '实盘' : '模拟盘'}密钥文件`, 503);
+    let response: Response;
+    try {
+      response = await request(`${BASE_URL[env]}/equity/orders/${type}`, {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: basicAuth(auth) },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15000), redirect: 'error',
+      });
+    } catch {
+      invalidate(env);
+      fail('Trading 212 没有响应，订单状态未知：请先在 Trading 212 里确认，Studio 不会自动重试');
+    }
+    invalidate(env);
+    if (response.status === 400) fail(`Trading 212 拒绝了这笔订单${await brokerReason(response)}`, 400);
+    if (response.status === 401) fail('Trading 212 认证失败：请检查 API Key / Secret 与实盘或模拟环境');
+    if (response.status === 403) fail('Trading 212 拒绝下单：API Key 需要开启 orders:execute 权限，或检查 IP 限制');
+    if (response.status === 408) fail('Trading 212 处理超时，订单状态未知：请先在 Trading 212 里确认', 504);
+    if (response.status === 429) fail('Trading 212 下单过于频繁，请稍后再试', 429);
+    if (!response.ok) fail(`Trading 212 返回 ${response.status}，订单状态未知：请先在 Trading 212 里确认`);
+    return obj(await response.json().catch(() => null));
   }
 
   function record(env: Environment, summary: Json) {
@@ -177,6 +236,12 @@ export function createTrading212Service(deps: Dependencies) {
       }));
     },
     overview,
+    placeOrder,
+    // Account currency from the latest stored snapshot, so settings can show the cap without calling the broker.
+    lastCurrency(env: Environment) {
+      const row = db.prepare('SELECT currency FROM studio_t212_snapshots WHERE env = ? ORDER BY taken_at DESC LIMIT 1').get(env) as { currency: string } | undefined;
+      return row?.currency || null;
+    },
     history(env: Environment, days: number) {
       const rows = snapshots(env, days > 0 ? now() - days * 86_400_000 : 0);
       // Keep charts light: at most ~400 evenly spaced points.

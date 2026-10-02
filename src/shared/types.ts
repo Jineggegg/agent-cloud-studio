@@ -1945,5 +1945,23 @@ export type T212Activity = {
 };
 // ── v4 track: network — types below this line ──
 // ── v4 track: orders — types below this line ──
+//----------------- STUDIO TRADING 212 ORDERS ------------
+/** Buy or sell in the Trading 212 order sheet; the server turns a sell into a negative quantity. */
+export type T212OrderSide = 'buy' | 'sell';
+/** A Face ID / Touch ID passkey registered for one Studio domain (its RP ID); a passkey never authorizes another domain. */
+export type T212Passkey = { id: string; rpId: string; label: string | null; createdAt: string; lastUsedAt: string | null };
+/** Server order-safety settings shared by the order sheet and Settings: tradable accounts, the per-order cap and passkeys. */
+export type T212TradingConfig = {
+  // Accounts STUDIO_T212_TRADING allows to trade; empty means trading is off.
+  allowedEnvs: T212Env[];
+  // STUDIO_T212_MAX_ORDER_VALUE, in the account currency.
+  maxOrderValue: number;
+  // Account currency from the last stored balance snapshot; absent before the account was first read.
+  currency?: string;
+  passkeys: T212Passkey[];
+  // Origins allowed to trade and register passkeys; localhost is also allowed while the server runs in development.
+  trustedOrigins: string[];
+  allowLocalhost: boolean;
+};
 // ── v4 track: mail — types below this line ──
 // ---------------------------

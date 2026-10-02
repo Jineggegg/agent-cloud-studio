@@ -2,8 +2,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { ArrowDownRight, ArrowUpRight, Minus, RefreshCw, ShieldCheck } from 'lucide-react';
 
 import { api, readApiJson } from '@/shared/api';
-import type { T212Activity, T212Change, T212Env, T212Overview, T212Point, T212Status } from '@/shared/types';
+import type { T212Activity, T212Change, T212Env, T212OrderSide, T212Overview, T212Point, T212Status, T212TradingConfig } from '@/shared/types';
 import { StudioEquityChart } from '@/modules/studio/StudioEquityChart';
+import { StudioT212OrderSheet } from '@/modules/studio/StudioT212OrderSheet';
+import '@/modules/studio/studio-orders.css';
 
 const RANGES = [{ days: 7, label: '1周' }, { days: 30, label: '1月' }, { days: 90, label: '3月' }, { days: 0, label: '全部' }];
 
@@ -28,7 +30,10 @@ function Delta({ change, format, label }: { change: T212Change | null; format: (
   </span>;
 }
 
-/** Used by StudioPage's project app as the read-only Trading 212 analysis view; it never places or changes orders. */
+/**
+ * Used by StudioPage's project app as the Trading 212 view: balances, curve, positions and activity, plus order
+ * placement through StudioT212OrderSheet when the server allows trading for the selected account.
+ */
 export function StudioTrading212() {
   // Server-side key files per environment; the keys themselves never reach the browser.
   const [status, setStatus] = useState<T212Status[] | null>(null);
@@ -46,6 +51,10 @@ export function StudioTrading212() {
   const [loading, setLoading] = useState(true);
   // Broker or configuration failure shown in place of numbers.
   const [error, setError] = useState('');
+  // Server order-safety settings (allowed accounts, cap, passkeys); null until loaded or when unavailable.
+  const [trading, setTrading] = useState<T212TradingConfig | null>(null);
+  // The open order sheet and what it was opened with (a position's ticker and side, or nothing from the toolbar).
+  const [orderSheet, setOrderSheet] = useState<{ ticker?: string; side?: T212OrderSide } | null>(null);
 
   const load = useCallback(async (target: T212Env) => {
     setLoading(true); setError('');
@@ -70,6 +79,8 @@ export function StudioTrading212() {
       const preferred = value.find(item => item.env === 'live' && item.configured) ? 'live' : value.find(item => item.configured)?.env;
       if (preferred) { setEnv(preferred); } else { setLoading(false); }
     }).catch(reason => { if (active) { setError(reason instanceof Error ? reason.message : '状态读取失败'); setLoading(false); } });
+    // Trading settings are optional: without them the view simply stays read-only.
+    void api.studio.t212Trading.config().then(readApiJson<T212TradingConfig>).then(value => { if (active) setTrading(value); }).catch(() => {});
     return () => { active = false; };
   }, []);
   const configured = status?.filter(item => item.configured) ?? [];
@@ -88,12 +99,14 @@ export function StudioTrading212() {
 
   const format = money(overview?.currency ?? 'GBP');
   const total = overview?.positions.reduce((sum, position) => sum + position.value, 0) || 1;
+  const tradable = Boolean(trading?.allowedEnvs.includes(env));
   return <div className="t212 studio-stagger">
     <div className="t212-toolbar">
       {configured.length > 1 && <div className="segmented" role="radiogroup" aria-label="账户">
         {configured.map(item => <button key={item.env} type="button" role="radio" aria-checked={env === item.env} onClick={() => setEnv(item.env)}>{item.env === 'live' ? '实盘' : '模拟'}</button>)}
       </div>}
-      <span className="status-badge"><ShieldCheck size={14} aria-hidden="true" />只读 · {env === 'live' ? '实盘' : '模拟'}</span>
+      <span className={`status-badge ${tradable ? (env === 'live' ? 'warn' : 'good') : ''}`}><ShieldCheck size={14} aria-hidden="true" />{tradable ? '可交易' : '只读'} · {env === 'live' ? '实盘' : '模拟'}</span>
+      {trading && overview && <button type="button" className="ios-button tinted t212-trade-button" onClick={() => setOrderSheet({})}>交易</button>}
       <button type="button" className={`icon-button ${loading ? 'refreshing' : ''}`} aria-label="刷新" title="刷新" disabled={loading} onClick={() => void load(env)}><RefreshCw size={18} className="refresh-icon" aria-hidden="true" /></button>
     </div>
 
@@ -141,6 +154,10 @@ export function StudioTrading212() {
                 <strong>{position.name}</strong>
                 <small>{position.ticker.replace(/(_[A-Z]{2})?_EQ$/, '').replace(/l$/, '')} · {position.quantity.toLocaleString('zh-CN', { maximumFractionDigits: 4 })} 股 · 均价 {position.averagePrice.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}</small>
                 <span className="t212-weight" aria-hidden="true"><span style={{ width: `${Math.max(2, position.value / total * 100)}%` }} /></span>
+                {tradable && <span className="t212-row-actions">
+                  <button type="button" className="t212-row-action buy" aria-label={`买入 ${position.name}`} onClick={() => setOrderSheet({ ticker: position.ticker, side: 'buy' })}><i aria-hidden="true" />买入</button>
+                  <button type="button" className="t212-row-action sell" aria-label={`卖出 ${position.name}`} onClick={() => setOrderSheet({ ticker: position.ticker, side: 'sell' })}><i aria-hidden="true" />卖出</button>
+                </span>}
               </span>
               <span className="t212-position-figures">
                 <strong>{format(position.value)}</strong>
@@ -167,7 +184,13 @@ export function StudioTrading212() {
           </div>)}
         </div>
       </section>}
-      <p className="ios-section-footer">数据来自 Trading 212 公共 API（Beta），{new Date(overview.fetchedAt).toLocaleTimeString('zh-CN')} 更新。本页只读取，不会下单或修改账户。</p>
+      <p className="ios-section-footer">数据来自 Trading 212 公共 API（Beta），{new Date(overview.fetchedAt).toLocaleTimeString('zh-CN')} 更新。{tradable && trading
+        ? `每笔订单都要经过面容 ID / 触控 ID 或二次确认，单笔上限 ${format(trading.maxOrderValue)}。`
+        : '当前账户只读，不会下单或修改账户。'}</p>
     </>}
+
+    {orderSheet && trading && overview && <StudioT212OrderSheet env={env} config={trading} positions={overview.positions} format={format}
+      initialTicker={orderSheet.ticker} initialSide={orderSheet.side}
+      onClose={() => setOrderSheet(null)} onPlaced={() => void load(env)} />}
   </div>;
 }
