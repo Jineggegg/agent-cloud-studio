@@ -5,7 +5,7 @@ import {
 } from '@/shared/authToken';
 import { IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
-import type { HubAgentProvider, HubProjectInput, HubTaskInput, StudioChatSpace, StudioIngressId, T212Env } from '@/shared/types';
+import type { HubAgentProvider, HubProjectInput, HubTaskInput, StudioChatSpace, StudioIngressId, T212CapsInput, T212Env } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -215,7 +215,8 @@ export const api = {
     }),
     // ── v4 track: orders — endpoints below this line ──
     // Trading 212 order placement (single-use previews confirmed by a passkey or a double confirmation) and passkeys.
-    // Passkey changes are stepped up with the Studio password (or, for a removal, that passkey's assertion).
+    // Passkey changes are stepped up with the Studio password (or, for a removal, that passkey's assertion); order caps
+    // are lowered with the session and raised only with Face ID / Touch ID.
     t212Trading: {
       config: () => get('/api/studio/trading212/trading'),
       preview: (input: {
@@ -229,6 +230,11 @@ export const api = {
       removalOptions: (id: string) => post(`/api/studio/trading212/passkey/${encodeURIComponent(id)}/remove/options`),
       removePasskey: (id: string, proof: { password: string } | { assertion: unknown }) =>
         post(`/api/studio/trading212/passkey/${encodeURIComponent(id)}/remove`, proof),
+      // Raising caps: a single-use 60 s Face ID / Touch ID challenge bound to exactly these values and this origin.
+      capsChallenge: (input: T212CapsInput) => post('/api/studio/trading212/caps/challenge', input),
+      // Lowering needs only the session; a raise carries the challenge id and the assertion over it.
+      updateCaps: (input: T212CapsInput, proof?: { challengeId: string; assertion: unknown }) =>
+        put('/api/studio/trading212/caps', proof ? { ...input, ...proof } : input),
     },
     // ── v4 track: mail — endpoints below this line ──
     // Per-user read-only mail accounts (Gmail IMAP, Outlook) and the unified inbox; secrets only travel in addImap's body.

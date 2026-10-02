@@ -86,7 +86,10 @@
 .t212-order-estimate.near .t212-order-meter span { background: var(--ios-orange); }
 .t212-order-estimate.over .t212-order-meter span { background: var(--ios-red); }
 .t212-order-estimate small { font-size: 13px; color: var(--ios-label-2); }
-.t212-order-estimate.over small { color: var(--ios-red); font-weight: 600; }
+.t212-order-estimate.over small:not(.t212-order-daily) { color: var(--ios-red); font-weight: 600; }
+/* The rolling-24-hour allowance: red only when this estimate would not fit in it. */
+.t212-order-estimate small.t212-order-daily { font-variant-numeric: tabular-nums; }
+.t212-order-estimate small.t212-order-daily.over { color: var(--ios-red); font-weight: 600; }
 
 /* Review card. */
 .t212-order-review { display: grid; justify-items: center; gap: 6px; padding: 22px 16px 6px; border-radius: var(--radius-card); background: var(--ios-surface); text-align: center; }
@@ -140,13 +143,27 @@
 }
 
 /* ---------- Settings → 交易安全 ---------- */
-.t212-settings-value { font-size: 15px; color: var(--ios-label-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .t212-passkey-current { margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 700; vertical-align: 2px; background: var(--ios-tint-soft); color: var(--ios-tint); }
 .t212-settings-note { line-height: 1.6; }
 .t212-passkey-list { margin-top: 14px; }
 /* Password field + enable row: one inset list with a separator between them. */
 .t212-enroll { margin-top: 14px; }
-.t212-enroll .ios-field + .ios-row::before { content: ""; position: absolute; top: 0; right: 0; left: 16px; height: .5px; background: var(--ios-separator); }
+:is(.t212-enroll, .t212-caps-form) .ios-field + .ios-row::before { content: ""; position: absolute; top: 0; right: 0; left: 16px; height: .5px; background: var(--ios-separator); }
+
+/* Caps per account: a grouped-list sub-header with the account switch, the two fields, today's usage and the save row. */
+.t212-caps-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 36px; margin-top: 24px; padding: 0 16px 6px; }
+.t212-caps-heading h3 { font-size: 13px; font-weight: 600; letter-spacing: .02em; color: var(--ios-label-2); }
+.t212-caps-form .ios-field label { width: 4.4em; }
+.t212-caps-form .ios-field input { font-variant-numeric: tabular-nums; }
+.t212-caps-form .ios-row-body small { font-variant-numeric: tabular-nums; }
+.t212-order-meter.t212-caps-meter { flex-shrink: 0; width: 72px; }
+.t212-caps-meter.near span { background: var(--ios-orange); }
+.t212-caps-meter.full span { background: var(--ios-red); }
+.studio-feedback.t212-caps-blocked { line-height: 1.5; color: var(--ios-orange); }
+.t212-caps-history .ios-row { align-items: flex-start; }
+.t212-caps-history .home-icon.small { margin-top: 2px; }
+.t212-caps-history .ios-row-body small { font-variant-numeric: tabular-nums; }
+.studio .t212-caps-more { min-height: 44px; padding: 0 16px; font-size: 15px; color: var(--ios-tint); }
 
 /* Removal alert with a password step-up (and, on the passkey's own domain, Face ID). */
 .t212-stepup-field { display: grid; gap: 8px; padding: 0 16px 16px; }

@@ -37,12 +37,16 @@ const OVERVIEW = {
     { ticker: 'MSFT_US_EQ', name: 'Microsoft', currency: 'USD', quantity: 1, averagePrice: 350, currentPrice: 330, value: 334.5, cost: 300, pnl: -5, fx: null, openedAt: '' },
   ],
 };
-const TRADING_OFF = { allowedEnvs: [], maxOrderValue: 500, passkeys: [], trustedOrigins: [], allowLocalhost: true, requirePasskey: false };
+const accountCaps = (dailyUsed = 0) => ({
+  maxOrderValue: 500, dailyLimit: 2000, custom: false, updatedAt: null, dailyUsed, dailyRemaining: 2000 - dailyUsed, currency: 'GBP',
+});
+const CAPS = { ceiling: 10_000, defaults: { maxOrderValue: 500, dailyLimit: 2000 }, envs: { live: accountCaps(), demo: accountCaps() } };
+const TRADING_OFF = { allowedEnvs: [], caps: CAPS, capChanges: [], passkeys: [], trustedOrigins: [], allowLocalhost: true, requirePasskey: false };
 const TRADING_LIVE = { ...TRADING_OFF, allowedEnvs: ['live'], currency: 'GBP' };
 const PREVIEW = {
   id: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', env: 'live', ticker: 'AAPL_US_EQ', side: 'buy', type: 'market', quantity: 1,
-  estimatedValue: 400, currency: 'GBP', maxOrderValue: 500, warnings: ['实盘账户：这笔订单会用真实资金成交'],
-  expiresAt: '2026-10-02T09:01:00Z', requires: 'confirm',
+  estimatedValue: 400, currency: 'GBP', maxOrderValue: 500, dailyLimit: 2000, dailyUsed: 300, dailyRemaining: 1700,
+  warnings: ['实盘账户：这笔订单会用真实资金成交'], expiresAt: '2026-10-02T09:01:00Z', requires: 'confirm',
 };
 const TAILNET_PASSKEY = { id: 'k-tailnet', rpId: 'desktop.tail1234.ts.net', label: 'Windows', createdAt: '2026-09-01T00:00:00Z', lastUsedAt: null };
 const LOCAL_PASSKEY = { id: 'k-local', rpId: window.location.hostname, label: 'iPad', createdAt: '2026-10-02T00:00:00Z', lastUsedAt: null };
@@ -134,6 +138,23 @@ test('the estimate is checked against the cap before any preview is requested', 
   expect(trading.preview).not.toHaveBeenCalled();
 });
 
+test('the form shows the remaining daily allowance; an order over it is flagged and the server refusal refreshes the caps', async () => {
+  account({ ...TRADING_LIVE, caps: { ...CAPS, envs: { ...CAPS.envs, live: accountCaps(1800) } } });
+  trading.preview.mockImplementation(json('超过每日上限：过去 24 小时已下单 £1,800.00，这笔约 £400.00，每日上限 £2,000.00（还剩 £200.00）', 400, 'T212_DAILY_CAP'));
+  const sheet = await openBuyApple();
+  expect(within(sheet).getByText('今日剩余额度 £200.00 · 每日上限 £2,000.00（滚动 24 小时）')).toBeTruthy();
+  fireEvent.change(within(sheet).getByLabelText('数量'), { target: { value: '1' } });
+  expect(within(sheet).getByText(/超过今日剩余额度 £200\.00，服务器会拒绝/)).toBeTruthy();
+  // The allowance may be stale, so the server still decides.
+  const next = within(sheet).getByRole('button', { name: '下一步' }) as HTMLButtonElement;
+  expect(next.disabled).toBe(false);
+  expect(trading.config).toHaveBeenCalledTimes(1);
+  fireEvent.click(next);
+  expect((await within(sheet).findByRole('alert')).textContent).toContain('超过每日上限');
+  await waitFor(() => expect(trading.config).toHaveBeenCalledTimes(2));
+  expect(trading.confirm).not.toHaveBeenCalled();
+});
+
 test('a limit sell at a token price is still valued at what the shares are worth', async () => {
   account(TRADING_LIVE);
   const sheet = await openOrder('卖出 Apple');
@@ -197,6 +218,8 @@ test('without a passkey an order needs the review and a second destructive confi
   expect(trading.preview).toHaveBeenCalledWith({ env: 'live', ticker: 'AAPL_US_EQ', side: 'buy', type: 'market', quantity: 1 });
   expect(within(sheet).getByText('实盘账户：这笔订单会用真实资金成交')).toBeTruthy();
   expect(within(sheet).getByText('二次确认')).toBeTruthy();
+  // The server's own figure for today's allowance, before and after this order.
+  expect(within(sheet).getByText('£1,700.00 · 下单后 £1,300.00')).toBeTruthy();
 
   // Cancelling the alert places nothing.
   fireEvent.click(within(sheet).getByRole('button', { name: '买入下单' }));

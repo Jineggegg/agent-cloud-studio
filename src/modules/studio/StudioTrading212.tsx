@@ -51,7 +51,7 @@ export function StudioTrading212() {
   const [loading, setLoading] = useState(true);
   // Broker or configuration failure shown in place of numbers.
   const [error, setError] = useState('');
-  // Server order-safety settings (allowed accounts, cap, passkeys); null until loaded or when unavailable.
+  // Server order-safety settings (allowed accounts, caps and daily usage, passkeys); null until loaded or when unavailable.
   const [trading, setTrading] = useState<T212TradingConfig | null>(null);
   // The open order sheet and what it was opened with (a position's ticker and side, or nothing from the toolbar).
   const [orderSheet, setOrderSheet] = useState<{ ticker?: string; side?: T212OrderSide } | null>(null);
@@ -202,12 +202,12 @@ export function StudioTrading212() {
         </div>
       </section>}
       <p className="ios-section-footer">数据来自 Trading 212 公共 API（Beta），{new Date(current.fetchedAt).toLocaleTimeString('zh-CN')} 更新。{tradable && trading
-        ? `每笔订单都要经过面容 ID / 触控 ID 或二次确认，单笔上限 ${format(trading.maxOrderValue)}。`
+        ? `每笔订单都要经过面容 ID / 触控 ID 或二次确认，单笔上限 ${format(trading.caps.envs[env].maxOrderValue)}，今日还可下单 ${format(trading.caps.envs[env].dailyRemaining)}（每日上限 ${format(trading.caps.envs[env].dailyLimit)}）。`
         : '当前账户只读，不会下单或修改账户。'}</p>
     </>}
 
     {orderSheet && trading && current && <StudioT212OrderSheet env={env} config={trading} positions={current.positions} format={format}
       initialTicker={orderSheet.ticker} initialSide={orderSheet.side}
-      onClose={() => setOrderSheet(null)} onPlaced={() => void load(env)} onTradingChange={reloadTrading} />}
+      onClose={() => setOrderSheet(null)} onPlaced={() => { void load(env); void reloadTrading(); }} onTradingChange={reloadTrading} />}
   </div>;
 }

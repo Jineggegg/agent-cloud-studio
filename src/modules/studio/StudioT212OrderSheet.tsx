@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 
 import { api, readApiJson } from '@/shared/api';
 import type { T212Env, T212OrderSide, T212Position, T212TradingConfig } from '@/shared/types';
+import { decimalInputProblem, parseDecimalInput } from '@/shared/utils';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 import { StudioT212PasskeyEnroll } from '@/modules/studio/StudioT212Passkeys';
@@ -19,6 +20,8 @@ type TimeValidity = 'DAY' | 'GOOD_TILL_CANCEL';
 type OrderPreview = {
   id: string; env: T212Env; ticker: string; side: T212OrderSide; type: OrderType; quantity: number;
   limitPrice?: number; timeValidity?: TimeValidity; estimatedValue: number; currency: string; maxOrderValue: number;
+  // The rolling-24-hour cap and what other orders already used of it, before this one.
+  dailyLimit: number; dailyUsed: number; dailyRemaining: number;
   warnings: string[]; expiresAt: string; requires: 'passkey' | 'confirm'; authentication?: PublicKeyCredentialRequestOptionsJSON;
 };
 type ReviewedOrder = OrderPreview & { deadline: number };
@@ -39,23 +42,6 @@ const STEP_VARIANTS = {
   center: { opacity: 1, x: 0, transition: { type: 'spring' as const, stiffness: 420, damping: 38 } },
   exit: (direction: number) => ({ opacity: 0, x: -28 * direction, transition: { duration: 0.14, ease: 'easeIn' as const } }),
 };
-const DECIMAL = /^(\d+(\.\d*)?|\.\d+)$/;
-
-// Positive decimal text with at most `places` decimals; a comma is accepted as the decimal point.
-function parseAmount(value: string, places: number) {
-  const normalized = value.trim().replace(',', '.');
-  if (!DECIMAL.test(normalized)) return null;
-  const parsed = Number(normalized);
-  const fraction = normalized.split('.')[1] ?? '';
-  return Number.isFinite(parsed) && parsed > 0 && fraction.length <= places ? parsed : null;
-}
-// Why typed text is not a valid amount; empty while the field is empty or valid.
-function amountProblem(value: string, places: number, label: string) {
-  const normalized = value.trim().replace(',', '.');
-  if (!normalized || parseAmount(value, places) !== null) return '';
-  if (DECIMAL.test(normalized) && (normalized.split('.')[1] ?? '').length > places) return `${label}最多 ${places} 位小数`;
-  return `${label}必须是大于 0 的数字`;
-}
 // Plain decimal text (never exponent notation such as 1e-7), without trailing zeros.
 function decimalText(value: number) {
   return value.toFixed(12).replace(/\.?0+$/, '');
@@ -95,8 +81,8 @@ function errorCode(reason: unknown) {
 }
 
 /**
- * Used by StudioTrading212 to place one Trading 212 order: form with a live estimate against the cap, a
- * server-checked review, then Face ID / Touch ID (passkey) or, while the user has no passkey anywhere, a second
+ * Used by StudioTrading212 to place one Trading 212 order: form with a live estimate against the per-order cap
+ * and the remaining rolling-24-hour allowance (both per account, edited in Settings), a server-checked review, then Face ID / Touch ID (passkey) or, while the user has no passkey anywhere, a second
  * destructive confirmation. Where a passkey is required but missing, it offers to enable one for this domain.
  */
 export function StudioT212OrderSheet({ env, config, positions, format, initialTicker, initialSide, onClose, onPlaced, onTradingChange }: {
@@ -148,19 +134,22 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
   const position = positions.find(item => item.ticker === code && item.quantity > 0);
   const orderType: OrderType = position ? type : 'limit';
   const orderSide: T212OrderSide = position ? side : 'buy';
-  const quantity = parseAmount(quantityText, QUANTITY_PLACES);
-  const limitPrice = orderType === 'limit' ? parseAmount(limitText, PRICE_PLACES) : null;
+  const quantity = parseDecimalInput(quantityText, QUANTITY_PLACES);
+  const limitPrice = orderType === 'limit' ? parseDecimalInput(limitText, PRICE_PLACES) : null;
   const sellAllText = position ? sellableQuantity(position.quantity) : '';
   const remainder = position ? position.quantity - Number(sellAllText) : 0;
   // "全部" rounded the holding down; the leftover fraction is explained instead of silently disappearing.
   const showRemainder = Boolean(position && orderSide === 'sell' && quantityText === sellAllText && remainder > 1e-12);
-  const quantityProblem = showRemainder && sellAllText === '0' ? '' : amountProblem(quantityText, QUANTITY_PLACES, '数量');
-  const limitProblem = orderType === 'limit' ? amountProblem(limitText, PRICE_PLACES, '限价') : '';
+  const quantityProblem = showRemainder && sellAllText === '0' ? '' : decimalInputProblem(quantityText, QUANTITY_PLACES, '数量');
+  const limitProblem = orderType === 'limit' ? decimalInputProblem(limitText, PRICE_PLACES, '限价') : '';
   const estimate = quantity === null ? 0 : estimateValue(position, orderSide, orderType, quantity, limitPrice);
-  const cap = config.maxOrderValue;
+  const caps = config.caps.envs[env];
+  const cap = caps.maxOrderValue;
   // Only a held ticker's estimate is in the account currency; the server converts and checks the others.
   const converted = Boolean(position);
   const overCap = converted && estimate > cap;
+  // Informational only: the allowance can be stale (the 24-hour window rolls on), so the server has the last word.
+  const overDaily = converted && !overCap && estimate > caps.dailyRemaining;
   const overHolding = Boolean(orderSide === 'sell' && position && quantity !== null && quantity > position.quantity + 1e-9);
   const ready = enabled && TICKER.test(code) && quantity !== null && (orderType === 'market' || limitPrice !== null) && !overCap && !overHolding;
   const orderKey = `${env}|${code}|${orderSide}|${quantity ?? ''}`;
@@ -206,6 +195,8 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
       // Both refusals are handled on their own step: enabling Face ID here, or acknowledging the unknown order.
       if (kind === 'T212_PASSKEY_REQUIRED') { setPasskeyRefused(true); setPreview(null); }
       if (kind === 'T212_ORDER_UNKNOWN_PENDING') { setUnknownPendingOrder(orderKey); setPreview(null); }
+      // The caps may have changed elsewhere (Settings, another device): refresh what the form shows.
+      if (kind === 'T212_ORDER_CAP' || kind === 'T212_DAILY_CAP') void onTradingChange();
       setError(reasonText(reason, '无法生成订单预览'));
     } finally { setBusy(null); }
   };
@@ -232,6 +223,7 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
       }
       // Previews are single use: whatever went wrong, confirming again needs a fresh preview.
       setSpent(true);
+      if (errorCode(reason) === 'T212_ORDER_CAP' || errorCode(reason) === 'T212_DAILY_CAP') void onTradingChange();
       setUnknownOutcome(unknown);
       setError(message);
     } finally { if (mounted.current) setBusy(null); }
@@ -274,8 +266,11 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
   const direction = preview ? 1 : -1;
   const estimateText = estimate <= 0 ? '—' : converted ? `≈ ${format(estimate)}` : `≈ ${estimate.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`;
   const estimateNote = !converted && estimate > 0
-    ? `按标的计价货币计算；预览时服务器换算成账户货币，再按单笔上限 ${format(cap)} 检查`
+    ? `按标的计价货币计算；预览时服务器换算成账户货币，再按单笔上限 ${format(cap)} 和今日剩余额度检查`
     : overCap ? `超过单笔上限 ${format(cap)}，请减少数量` : `单笔上限 ${format(cap)}`;
+  const dailyNote = overDaily
+    ? `超过今日剩余额度 ${format(caps.dailyRemaining)}，服务器会拒绝；可以在「设置 → 交易安全」调整每日上限`
+    : `今日剩余额度 ${format(caps.dailyRemaining)} · 每日上限 ${format(caps.dailyLimit)}（滚动 24 小时）`;
 
   const form = <m.form key="form" className="t212-order-step" custom={direction} variants={STEP_VARIANTS} initial="enter" animate="center" exit="exit"
     onSubmit={event => { event.preventDefault(); void requestPreview(); }}>
@@ -335,6 +330,7 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
       <strong>{estimateText}</strong>
       {converted && <span className="t212-order-meter" aria-hidden="true"><span style={{ transform: `scaleX(${ratio})` }} /></span>}
       <small>{estimateNote}</small>
+      <small className={`t212-order-daily ${overDaily ? 'over' : ''}`}>{dailyNote}</small>
     </section>
     {(quantityProblem || limitProblem) && <p className="studio-feedback error" role="alert">{quantityProblem || limitProblem}</p>}
     {overHolding && position && <p className="studio-feedback error" role="alert">卖出数量超过持仓（持有 {decimalText(position.quantity)} 股）</p>}
@@ -359,6 +355,7 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
         <div><dt>账户</dt><dd>{preview.env === 'live' ? '实盘 · 真实资金' : '模拟盘'}</dd></div>
         <div><dt>类型</dt><dd>{preview.type === 'market' ? '市价单' : `限价 ${preview.limitPrice} · ${preview.timeValidity === 'GOOD_TILL_CANCEL' ? '撤单前有效' : '当日有效'}`}</dd></div>
         <div><dt>单笔上限</dt><dd>{format(preview.maxOrderValue)}</dd></div>
+        <div><dt>今日剩余额度</dt><dd>{format(preview.dailyRemaining)} · 下单后 {format(Math.max(0, preview.dailyRemaining - preview.estimatedValue))}</dd></div>
         <div><dt>确认方式</dt><dd>{preview.requires === 'passkey' ? '面容 ID / 触控 ID' : '二次确认'}</dd></div>
       </dl>
     </section>
@@ -416,7 +413,7 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
       <ShieldCheck size={32} strokeWidth={1.5} aria-hidden="true" />
       <strong>{env === 'live' ? '实盘' : '模拟盘'}下单未开启</strong>
       <span>在服务器的 .env 里设置 <code>STUDIO_T212_TRADING={env}</code>（或 <code>both</code> 同时开启实盘和模拟盘），然后重启 Studio。</span>
-      <span>单笔上限由 <code>STUDIO_T212_MAX_ORDER_VALUE</code> 控制，默认 500（账户货币）。开启后每笔订单都要经过面容 ID / 触控 ID 或二次确认。</span>
+      <span>单笔和每日上限默认取 <code>STUDIO_T212_MAX_ORDER_VALUE</code> 和 <code>STUDIO_T212_MAX_DAILY_VALUE</code>，可以在「设置 → 交易安全」修改（提高需要面容 ID / 触控 ID）。开启后每笔订单都要经过面容 ID / 触控 ID 或二次确认。</span>
     </div>
     <div className="t212-order-actions"><button type="button" className="ios-button tinted t212-order-primary" onClick={close}>好</button></div>
   </m.div>;
