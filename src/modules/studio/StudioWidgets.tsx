@@ -2,7 +2,7 @@ import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'r
 import type { KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject, SyntheticEvent } from 'react';
 import NumberFlow from '@number-flow/react';
 import { AnimatePresence, m } from 'motion/react';
-import { ArrowDownRight, ArrowUpRight, Minus } from 'lucide-react';
+import { ArrowDownRight, ArrowUpRight, Eye, EyeOff, Minus } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { DndContext, DragOverlay, useDndContext } from '@dnd-kit/core';
 import { SortableContext } from '@dnd-kit/sortable';
@@ -13,7 +13,7 @@ import { StudioTileIcon } from '@/modules/studio/StudioTileIcon';
 import { useHomeSortableItem, useHomeSortableList } from '@/modules/studio/hooks/useHomeSortable';
 import '@/modules/studio/studio-home.css';
 
-type WidgetType = 'claude' | 'codex' | 'deepseek' | 'trading212' | 'snr';
+export type WidgetType = 'claude' | 'codex' | 'deepseek' | 'trading212' | 'snr';
 // iPadOS widget sizes: small is one grid cell, medium two cells wide, large two wide and two tall.
 type WidgetSize = 'small' | 'medium' | 'large';
 type WidgetConfig = { id: string; type: WidgetType; size: WidgetSize };
@@ -22,6 +22,9 @@ const SIZE_LABEL: Record<WidgetSize, string> = { small: '小', medium: '中', la
 
 // Per-device widget layout, like iPadOS (each device arranges its own home screen).
 const STORAGE_KEY = 'studio-widgets-v1';
+// Whether the Trading 212 widget hides its amounts; per device, like the layout (someone may be looking at this screen).
+const MASK_STORAGE_KEY = 'studio-widgets-hide-amounts';
+const MASKED = '••••••';
 const DEFAULT_WIDGETS: WidgetConfig[] = [
   { id: 'w-claude', type: 'claude', size: 'medium' },
   { id: 'w-codex', type: 'codex', size: 'small' },
@@ -212,30 +215,40 @@ function useTradingReading(enabled: boolean): TradingReading {
   return reading;
 }
 
-function TradingWidget({ size, reading: { overview, points }, still }: { size: WidgetSize; reading: TradingReading; still: boolean }) {
+function TradingWidget({ size, reading: { overview, points }, still, masked, onToggleMask }: {
+  size: WidgetSize; reading: TradingReading; still: boolean;
+  // Amounts replaced by dots; the curve stays, as it shows no figures.
+  masked: boolean; onToggleMask: () => void;
+}) {
   const change = overview && overview !== 'off' ? overview.changes.today : null;
+  const hide = (text: string) => masked ? MASKED : text;
   return <>
-    <header className="widget-head"><StudioTileIcon tone="moss" glyph="candles" size={14} variant="small" /><span>Trading 212</span></header>
+    <header className="widget-head"><StudioTileIcon tone="moss" glyph="candles" size={14} variant="small" /><span>Trading 212</span>
+      {overview && overview !== 'off' && <button type="button" className="widget-eye" aria-pressed={masked} aria-label={masked ? '显示金额' : '隐藏金额'}
+        tabIndex={still ? -1 : undefined} onClick={onToggleMask} {...stopDragStart}>
+        {masked ? <EyeOff size={15} aria-hidden="true" /> : <Eye size={15} aria-hidden="true" />}</button>}
+    </header>
     {overview === null ? <div className="widget-loading" aria-label="读取中"><span /><span /></div>
       : overview === 'off' ? <p className="widget-note">未接入账户</p>
         : <>
           <div className="widget-figure">
-            <strong><NumberFlow value={overview.totalValue} format={{ style: 'currency', currency: overview.currency || 'GBP', maximumFractionDigits: size === 'small' ? 0 : 2 }} locales="zh-CN" animated={!still} /></strong>
-            {change ? <small className={`widget-delta ${change.amount >= 0 ? 'gain' : 'loss'}`}>{change.amount >= 0 ? <ArrowUpRight size={13} aria-hidden="true" /> : <ArrowDownRight size={13} aria-hidden="true" />}
+            {masked ? <strong className="widget-masked">{money(0, overview.currency, 0).replace(/[\d.,\s]/g, '')} {MASKED}</strong>
+              : <strong><NumberFlow value={overview.totalValue} format={{ style: 'currency', currency: overview.currency || 'GBP', maximumFractionDigits: size === 'small' ? 0 : 2 }} locales="zh-CN" animated={!still} /></strong>}
+            {masked ? <small>金额已隐藏</small> : change ? <small className={`widget-delta ${change.amount >= 0 ? 'gain' : 'loss'}`}>{change.amount >= 0 ? <ArrowUpRight size={13} aria-hidden="true" /> : <ArrowDownRight size={13} aria-hidden="true" />}
               {change.amount >= 0 ? '+' : '−'}{Math.abs(change.amount).toFixed(2)}（{Math.abs(change.percent).toFixed(2)}%）今日</small> : <small>今日变化记录中</small>}
             {size !== 'small' && <Sparkline points={points} />}
           </div>
           {/* Large adds where the money sits and the biggest positions. */}
           {size === 'large' && <>
             <dl className="widget-stats">
-              <div><dt>可用现金</dt><dd>{money(overview.cash.available, overview.currency, 0)}</dd></div>
-              <div><dt>持仓市值</dt><dd>{money(overview.investments.value, overview.currency, 0)}</dd></div>
-              <div><dt>未实现盈亏</dt><dd className={`widget-delta ${overview.investments.unrealized >= 0 ? 'gain' : 'loss'}`}>{money(overview.investments.unrealized, overview.currency, 0)}</dd></div>
+              <div><dt>可用现金</dt><dd>{hide(money(overview.cash.available, overview.currency, 0))}</dd></div>
+              <div><dt>持仓市值</dt><dd>{hide(money(overview.investments.value, overview.currency, 0))}</dd></div>
+              <div><dt>未实现盈亏</dt><dd className={masked ? undefined : `widget-delta ${overview.investments.unrealized >= 0 ? 'gain' : 'loss'}`}>{hide(money(overview.investments.unrealized, overview.currency, 0))}</dd></div>
             </dl>
             {overview.positions.length > 0 && <ul className="widget-rows">
               {[...overview.positions].sort((a, b) => b.value - a.value).slice(0, 3).map(position => <li key={position.ticker}>
                 <span>{position.name || position.ticker}</span>
-                <strong className={`widget-delta ${position.pnl >= 0 ? 'gain' : 'loss'}`}>{position.pnl >= 0 ? '+' : '−'}{money(Math.abs(position.pnl), overview.currency)}</strong>
+                <strong className={masked ? undefined : `widget-delta ${position.pnl >= 0 ? 'gain' : 'loss'}`}>{hide(`${position.pnl >= 0 ? '+' : '−'}${money(Math.abs(position.pnl), overview.currency)}`)}</strong>
               </li>)}
             </ul>}
           </>}
@@ -349,7 +362,9 @@ function WidgetResizeHandle({ name, size, onResize }: { name: string; size: Widg
 const SortableWidget = forwardRef<HTMLDivElement, {
   widget: WidgetConfig; name: string; editing: boolean; children: ReactNode;
   onRemove: () => void; onResize: (size: WidgetSize) => void;
-}>(function SortableWidget({ widget, name, editing, children, onRemove, onResize }, ref) {
+  // Opens the widget's app; the card's rectangle is where the app zooms out of.
+  onOpen: (card: DOMRect) => void;
+}>(function SortableWidget({ widget, name, editing, children, onRemove, onResize, onOpen }, ref) {
   const { attributes, isDragging, itemAttributes, listeners, setActivatorNodeRef, setNodeRef, style } = useHomeSortableItem(widget.id);
   const setCardRef = useCallback((node: HTMLElement | null) => { setNodeRef(node); setActivatorNodeRef(node); }, [setNodeRef, setActivatorNodeRef]);
   // Focusable and described as sortable only in edit mode, where the keyboard can move it.
@@ -358,6 +373,10 @@ const SortableWidget = forwardRef<HTMLDivElement, {
     initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.85 }} transition={PRESENCE_SPRING}>
     <article ref={setCardRef} {...itemAttributes} {...editAttributes} {...listeners} style={style} onContextMenu={preventContextMenu}
       className={`widget widget-${widget.size} ${isDragging ? 'is-placeholder' : ''}`} aria-label={name}>
+      {/* A tap anywhere on the card opens its app: this button covers the card under its own controls. A long press
+          still lifts the card (the card's listeners see the press), and the click that ends a drag is swallowed. */}
+      {!editing && <button type="button" className="widget-open" aria-label={`打开 ${name}`}
+        onClick={event => onOpen((event.currentTarget.parentElement ?? event.currentTarget).getBoundingClientRect())} />}
       {children}
       {editing && <div className="widget-edit" role="group" aria-label={`调整 ${name}`} {...stopDragStart}>
         <button type="button" className="home-remove widget-remove" aria-label={`移除 ${name}`} onClick={onRemove}><Minus size={14} strokeWidth={3} aria-hidden="true" /></button>
@@ -389,8 +408,10 @@ function WidgetDragOverlay({ widgets, cardRef, renderBody }: {
  * reflows live, so what you see while dragging is where the widget lands, or move with the keyboard) and resize
  * between small, medium and large by dragging their corner.
  */
-export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, galleryOpen, onGalleryClose }: {
+export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, onOpen, galleryOpen, onGalleryClose }: {
   editing: boolean; snr: StudioSnr | null; paused?: boolean;
+  // Called when a widget is tapped outside edit mode, with the card's rectangle for the zoom.
+  onOpen: (type: WidgetType, card: DOMRect) => void;
   // Called when a long press lifts a widget outside edit mode.
   onEnterEdit: () => void;
   // The widget gallery is opened from the home screen's edit-mode toolbar, as on iPadOS.
@@ -398,6 +419,11 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, galle
 }) {
   // The widgets this device shows, in order, with their sizes.
   const [widgets, setWidgets] = useState<WidgetConfig[]>(readWidgets);
+  const [masked, setMasked] = useState(() => { try { return localStorage.getItem(MASK_STORAGE_KEY) === '1'; } catch { return false; } });
+  const toggleMask = () => setMasked(previous => {
+    try { localStorage.setItem(MASK_STORAGE_KEY, previous ? '0' : '1'); } catch { /* Private mode: hidden for this visit only. */ }
+    return !previous;
+  });
   // Quota snapshots for Claude / Codex / DeepSeek; null until the first response.
   const [quota, setQuota] = useState<StudioQuotaSnapshot[] | null>(null);
 
@@ -445,7 +471,7 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, galle
     {widget.type === 'claude' && <QuotaWidget snapshot={find('claude')} size={widget.size} title="Claude Code" tone="clay" glyph="sparkles" still={still} />}
     {widget.type === 'codex' && <QuotaWidget snapshot={find('codex')} size={widget.size} title="Codex" tone="graphite" glyph="terminal" still={still} />}
     {widget.type === 'deepseek' && <DeepSeekWidget snapshot={find('deepseek')} size={widget.size} still={still} />}
-    {widget.type === 'trading212' && <TradingWidget size={widget.size} reading={trading} still={still} />}
+    {widget.type === 'trading212' && <TradingWidget size={widget.size} reading={trading} still={still} masked={masked} onToggleMask={toggleMask} />}
     {widget.type === 'snr' && <SnrWidget snr={snr} size={widget.size} />}
   </>;
   const add = (type: WidgetType, size: WidgetSize) => {
@@ -479,7 +505,7 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, galle
         {/* popLayout takes a removed widget out of the flow at once, so its neighbours can glide into the gap. */}
         <AnimatePresence initial={false} mode="popLayout">
           {widgets.map(widget => <SortableWidget key={widget.id} widget={widget} name={nameOf(widget.type)} editing={editing}
-            onRemove={() => remove(widget.id)} onResize={size => resize(widget.id, size)}>
+            onRemove={() => remove(widget.id)} onResize={size => resize(widget.id, size)} onOpen={card => onOpen(widget.type, card)}>
             {renderBody(widget, false)}
           </SortableWidget>)}
         </AnimatePresence>

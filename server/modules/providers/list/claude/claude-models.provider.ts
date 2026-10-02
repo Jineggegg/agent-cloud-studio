@@ -45,7 +45,7 @@ export const CLAUDE_PREDEFINED_MODELS: ProviderModelsDefinition = {
     {
       value: 'best',
       label: 'Best available',
-      description: 'Use Fable 5 when available, otherwise the latest Opus model.',
+      description: 'Use Fable when available, otherwise the latest Opus model.',
       effort: {
         default: 'high',
         values: [
@@ -60,8 +60,8 @@ export const CLAUDE_PREDEFINED_MODELS: ProviderModelsDefinition = {
     },
     {
       value: 'fable',
-      label: 'Fable 5',
-      description: 'Most capable Claude model for the hardest, longest-running tasks.',
+      label: 'Fable (latest)',
+      description: 'Latest Fable model, the most capable Claude model for the hardest, longest-running tasks.',
       effort: {
         default: 'high',
         values: [
@@ -142,6 +142,60 @@ export const CLAUDE_PREDEFINED_MODELS: ProviderModelsDefinition = {
       value: 'haiku',
       label: 'Haiku',
       description: 'Fast and efficient Claude model for simple tasks.',
+    },
+    // Pinned versions of the current models, for sessions that must not move when an alias above is repointed.
+    {
+      value: 'claude-fable-5-1',
+      label: 'Fable 5.1',
+      description: 'Pinned Fable 5.1.',
+      effort: {
+        default: 'high',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+          ULTRACODE_EFFORT_OPTION,
+        ],
+      },
+    },
+    {
+      value: 'claude-opus-5-5',
+      label: 'Opus 5.5',
+      description: 'Pinned Opus 5.5.',
+      effort: {
+        default: 'high',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+          ULTRACODE_EFFORT_OPTION,
+        ],
+      },
+    },
+    {
+      value: 'claude-sonnet-5-5',
+      label: 'Sonnet 5.5',
+      description: 'Pinned Sonnet 5.5.',
+      effort: {
+        default: 'high',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+          ULTRACODE_EFFORT_OPTION,
+        ],
+      },
+    },
+    {
+      value: 'claude-haiku-4-5-20251001',
+      label: 'Haiku 4.5',
+      description: 'Pinned Haiku 4.5.',
     },
     {
       value: 'opusplan',
