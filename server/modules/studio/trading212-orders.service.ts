@@ -10,8 +10,12 @@ import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simp
 import type Database from 'better-sqlite3';
 
 import { AppError, describePasskeyDevice } from '@/shared/utils.js';
-import type { StudioRequestClient, StudioT212Environment, StudioT212OrderInput, StudioT212TrustedOrigin } from '@/shared/types.js';
+import type {
+  StudioRequestClient, StudioT212CapsInput, StudioT212CapsProof, StudioT212Environment, StudioT212OrderInput,
+  StudioT212TrustedOrigin,
+} from '@/shared/types.js';
 
+import { createTrading212CapsService } from './trading212-caps.service.js';
 import type { createTrading212Service } from './trading212.service.js';
 
 type WebAuthn = {
@@ -26,8 +30,12 @@ type Dependencies = {
   trading212: Pick<Trading212, 'overview' | 'placeOrder' | 'lastCurrency' | 'instrumentCurrency'>;
   // STUDIO_T212_TRADING: off (default) | demo | live | both.
   trading?: string;
-  // STUDIO_T212_MAX_ORDER_VALUE: hard cap per order in the account currency (default 500).
+  // STUDIO_T212_MAX_ORDER_VALUE: default per-order cap in the account currency (default 500); users may edit theirs.
   maxOrderValue?: string;
+  // STUDIO_T212_MAX_DAILY_VALUE: default rolling-24-hour cap (default four times the per-order default).
+  maxDailyValue?: string;
+  // STUDIO_T212_CAP_CEILING: no cap, default or edited, may exceed this (default 10000).
+  capCeiling?: string;
   // STUDIO_T212_REQUIRE_PASSKEY: "1" removes the double confirmation entirely, so every order needs a passkey.
   requirePasskey?: string;
   // STUDIO_T212_ALLOW_LOCALHOST: "1" also trusts http://localhost, 127.0.0.1 and [::1] on any port (default off).
@@ -68,8 +76,9 @@ const PREVIEW_TTL_MS = 60_000;
 const CEREMONY_TTL_MS = 5 * 60_000;
 // After an order whose outcome is unknown, an identical order is refused for this long unless acknowledged.
 const UNKNOWN_HOLD_MS = 5 * 60_000;
+// The daily cap covers orders placed (or with an unknown outcome) in the last 24 hours.
+const DAILY_WINDOW_MS = 24 * 60 * 60_000;
 const MAX_PASSWORD_LENGTH = 1024;
-const DEFAULT_MAX_ORDER_VALUE = 500;
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
 const ENV_LABEL: Record<StudioT212Environment, string> = { live: '实盘', demo: '模拟盘' };
 const SIDE_LABEL = { buy: '买入', sell: '卖出' } as const;
@@ -96,13 +105,6 @@ function allowedEnvironments(value: string | undefined): StudioT212Environment[]
   if (setting === 'live' || setting === 'demo') return [setting];
   if (setting && setting !== 'off') console.warn(`[studio] STUDIO_T212_TRADING="${setting}" is not off|demo|live|both; trading stays off`);
   return [];
-}
-function orderCap(value: string | undefined) {
-  if (value === undefined || value.trim() === '') return DEFAULT_MAX_ORDER_VALUE;
-  const parsed = Number(value);
-  if (Number.isFinite(parsed) && parsed > 0) return parsed;
-  console.warn(`[studio] STUDIO_T212_MAX_ORDER_VALUE is not a positive number; using ${DEFAULT_MAX_ORDER_VALUE}`);
-  return DEFAULT_MAX_ORDER_VALUE;
 }
 // Boolean env switches are on only for an explicit 1 / true / yes / on.
 function enabledFlag(value: string | undefined) {
@@ -139,8 +141,10 @@ const round2 = (value: number) => Math.round(value * 100) / 100;
 
 /**
  * Used by studio.module (through trading212-orders.routes) to place Trading 212 orders safely: environment
- * gating, a hard per-order cap in the account currency, single-use 60-second previews, and a Face ID / Touch ID
- * passkey for the request's domain. A double confirmation is accepted only while the user has no passkey at all
+ * gating, per-user per-order and rolling-24-hour caps in the account currency (edited through the caps service;
+ * raising needs Face ID / Touch ID), single-use 60-second previews, and a Face ID / Touch ID passkey for the
+ * request's domain. A confirmation reserves its value against the daily cap before the broker call, so parallel
+ * confirmations cannot exceed it. A double confirmation is accepted only while the user has no passkey at all
  * (and never with STUDIO_T212_REQUIRE_PASSKEY=1). Adding or removing a passkey needs the Studio password (removal
  * also accepts that passkey's own assertion). Every confirmation attempt is recorded in studio_t212_orders
  * without secrets; an unknown broker outcome holds back an identical order for a few minutes.
@@ -150,7 +154,6 @@ export function createTrading212OrdersService(deps: Dependencies) {
   const now = deps.now ?? Date.now;
   const webauthn = deps.webauthn ?? DEFAULT_WEBAUTHN;
   const allowedEnvs = allowedEnvironments(deps.trading);
-  const maxOrderValue = orderCap(deps.maxOrderValue);
   const requirePasskey = enabledFlag(deps.requirePasskey);
   const allowLocalhost = enabledFlag(deps.allowLocalhost);
   const origins = configuredOrigins(deps.origins);
@@ -159,6 +162,8 @@ export function createTrading212OrdersService(deps: Dependencies) {
   const registrations = new Map<string, Pending>();
   // Removal challenges per user and passkey id, for removals authorised by that passkey.
   const removals = new Map<string, Pending>();
+  // Confirmations waiting for the broker, by preview id: their value already counts against the daily cap.
+  const reservations = new Map<string, { userId: number; env: StudioT212Environment; amount: number }>();
   db.exec(`
     CREATE TABLE IF NOT EXISTS studio_t212_passkeys (
       id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, rp_id TEXT NOT NULL, credential_id TEXT NOT NULL UNIQUE,
@@ -174,6 +179,21 @@ export function createTrading212OrdersService(deps: Dependencies) {
     );
     CREATE INDEX IF NOT EXISTS studio_t212_orders_user_time ON studio_t212_orders (user_id, created_at);
   `);
+  // Caps are raised only with a passkey of the request's domain, verified here against the stored credential.
+  const caps = createTrading212CapsService({
+    database: db, now, maxOrderValue: deps.maxOrderValue, maxDailyValue: deps.maxDailyValue, ceiling: deps.capCeiling,
+    passkeys: {
+      rpIds: userId => [...new Set(passkeys(userId).map(row => row.rp_id))],
+      options: (userId, rpId, challenge, timeoutMs) => webauthn.generateAuthenticationOptions({
+        rpID: rpId, userVerification: 'required', timeout: timeoutMs, challenge,
+        allowCredentials: passkeys(userId, rpId).map(row => ({ id: row.credential_id, transports: transports(row) })),
+      }),
+      async verify(userId, rpId, assertion, challenge, origin) {
+        const row = passkeys(userId, rpId).find(item => item.credential_id === assertion.id);
+        return row && await verifyAssertion(row, assertion, challenge, origin) ? row.id : null;
+      },
+    },
+  });
 
   const isoNow = () => new Date(now()).toISOString();
   function passkeys(userId: number, rpId?: string) {
@@ -270,6 +290,35 @@ export function createTrading212OrdersService(deps: Dependencies) {
     }
     fail(`${ticker} 以 ${quoted} 计价，账户货币是 ${overview.currency || '未知'}：账户里没有同币种的持仓可以推算汇率，Studio 不会按 1:1 估算，订单没有生成。可以直接在 Trading 212 里下这笔单`, 400, 'T212_FX_UNKNOWN');
   }
+  // Value of this user's placed and unknown-outcome orders in the last 24 hours, plus confirmations in flight.
+  function dailyUsed(userId: number, env: StudioT212Environment) {
+    const row = db.prepare(`SELECT COALESCE(SUM(estimated_value), 0) AS total FROM studio_t212_orders WHERE user_id = ? AND env = ?
+      AND status IN ('placed', 'unknown') AND created_at > ?`).get(userId, env, new Date(now() - DAILY_WINDOW_MS).toISOString()) as { total: number };
+    let reserved = 0;
+    for (const item of reservations.values()) if (item.userId === userId && item.env === env) reserved += item.amount;
+    return round2(row.total + reserved);
+  }
+  function capsView(userId: number, env: StudioT212Environment) {
+    const limits = caps.limits(userId, env);
+    const used = dailyUsed(userId, env);
+    const currency = deps.trading212.lastCurrency(env);
+    return { ...limits, dailyUsed: used, dailyRemaining: Math.max(0, round2(limits.dailyLimit - used)), ...(currency ? { currency } : {}) };
+  }
+  function dailyCapMessage(used: number, value: number, limit: number, currency: string) {
+    const remaining = Math.max(0, round2(limit - used));
+    return `超过每日上限：过去 24 小时已下单 ${money(used, currency)}，这笔约 ${money(value, currency)}，每日上限 ${money(limit, currency)}`
+      + `（还剩 ${money(remaining, currency)}）。可以在「设置 → 交易安全」调整`;
+  }
+  function matchOrigin(header: string | undefined): StudioT212TrustedOrigin | null {
+    let url: URL | null = null;
+    try { url = header ? new URL(header) : null; } catch { url = null; }
+    // An Origin header is exactly scheme://host[:port]; anything else, including "null", is refused.
+    if (url && url.origin === header) {
+      if (origins.includes(url.origin)) return { origin: url.origin, rpId: url.hostname };
+      if (allowLocalhost && url.protocol === 'http:' && LOCAL_HOSTNAMES.has(url.hostname)) return { origin: url.origin, rpId: url.hostname };
+    }
+    return null;
+  }
   function record(preview: Preview, method: Method, attempt: Attempt) {
     db.prepare(`INSERT INTO studio_t212_orders (preview_id, user_id, env, ticker, side, type, quantity, limit_price, estimated_value,
       currency, method, rp_id, status, broker_order_id, broker_status, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
@@ -282,22 +331,24 @@ export function createTrading212OrdersService(deps: Dependencies) {
   return {
     // Matches the browser's Origin header against the configured origins; its hostname becomes the RP ID.
     trustedOrigin(header: string | undefined): StudioT212TrustedOrigin {
-      let url: URL | null = null;
-      try { url = header ? new URL(header) : null; } catch { url = null; }
-      // An Origin header is exactly scheme://host[:port]; anything else, including "null", is refused.
-      if (url && url.origin === header) {
-        if (origins.includes(url.origin)) return { origin: url.origin, rpId: url.hostname };
-        if (allowLocalhost && url.protocol === 'http:' && LOCAL_HOSTNAMES.has(url.hostname)) return { origin: url.origin, rpId: url.hostname };
-      }
+      const trusted = matchOrigin(header);
+      if (trusted) return trusted;
       fail('当前网址不在下单白名单：请在服务器 .env 把 STUDIO_PUBLIC_ORIGIN 或 STUDIO_TAILNET_ORIGIN 设为你打开 Studio 的地址', 403, 'T212_UNTRUSTED_ORIGIN');
+    },
+
+    // Like trustedOrigin, but null instead of a refusal: lowering caps does not need an allowlisted page.
+    optionalTrustedOrigin(header: string | undefined) {
+      return matchOrigin(header);
     },
 
     config(userId: number) {
       const currency = [...allowedEnvs, 'live', 'demo'].map(env => deps.trading212.lastCurrency(env as StudioT212Environment)).find(Boolean);
       return {
-        allowedEnvs, maxOrderValue, ...(currency ? { currency } : {}),
+        allowedEnvs, ...(currency ? { currency } : {}),
         passkeys: passkeys(userId).map(summary),
         trustedOrigins: origins, allowLocalhost, requirePasskey,
+        caps: { ceiling: caps.ceiling, defaults: caps.defaults, envs: { live: capsView(userId, 'live'), demo: capsView(userId, 'demo') } },
+        capChanges: caps.history(userId),
       };
     },
 
@@ -344,9 +395,13 @@ export function createTrading212OrdersService(deps: Dependencies) {
       if (input.type === 'limit' && input.timeValidity === 'GOOD_TILL_CANCEL') warnings.push('撤单前有效：未成交前订单会一直挂着，可以在 Trading 212 里撤单');
       const estimatedValue = round2(estimate);
       if (!(estimatedValue > 0)) fail('无法估算这笔订单的金额，请改用限价单', 400);
+      const limits = caps.limits(userId, input.env);
+      const maxOrderValue = limits.maxOrderValue;
       if (estimatedValue > maxOrderValue) {
-        fail(`预计金额 ${money(estimatedValue, currency)} 超过单笔上限 ${money(maxOrderValue, currency)}（STUDIO_T212_MAX_ORDER_VALUE）`, 400, 'T212_ORDER_CAP');
+        fail(`预计金额 ${money(estimatedValue, currency)} 超过单笔上限 ${money(maxOrderValue, currency)}（可在「设置 → 交易安全」调整）`, 400, 'T212_ORDER_CAP');
       }
+      const used = dailyUsed(userId, input.env);
+      if (round2(used + estimatedValue) > limits.dailyLimit) fail(dailyCapMessage(used, estimatedValue, limits.dailyLimit, currency), 400, 'T212_DAILY_CAP');
       if (input.side === 'buy' && estimatedValue > overview.cash.available) warnings.push(`可用现金 ${money(overview.cash.available, currency)}，可能不足以成交`);
       if (acknowledgedUnknown) warnings.push('你已确认之前状态未知的相同订单没有成交');
 
@@ -363,7 +418,8 @@ export function createTrading212OrdersService(deps: Dependencies) {
       return {
         id: preview.id, env: preview.env, ticker: preview.ticker, side: preview.side, type: preview.type, quantity: preview.quantity,
         ...(preview.type === 'limit' ? { limitPrice: preview.limitPrice, timeValidity: preview.timeValidity } : {}),
-        estimatedValue, currency, maxOrderValue, warnings, expiresAt: new Date(preview.expiresAt).toISOString(),
+        estimatedValue, currency, maxOrderValue, dailyLimit: limits.dailyLimit, dailyUsed: used,
+        dailyRemaining: Math.max(0, round2(limits.dailyLimit - used)), warnings, expiresAt: new Date(preview.expiresAt).toISOString(),
         requires: preview.requires, ...(authentication ? { authentication } : {}),
       };
     },
@@ -399,26 +455,53 @@ export function createTrading212OrdersService(deps: Dependencies) {
         if (refusal) refuse(refusal, 403, 'T212_PASSKEY_REQUIRED');
       }
 
-      const quantity = preview.side === 'sell' ? -preview.quantity : preview.quantity;
-      const body = preview.type === 'market'
-        ? { ticker: preview.ticker, quantity }
-        : { ticker: preview.ticker, quantity, limitPrice: preview.limitPrice ?? 0, timeValidity: preview.timeValidity };
-      let placed: Record<string, unknown>;
-      try {
-        placed = await deps.trading212.placeOrder(preview.env, preview.type, body);
-      } catch (error) {
-        // A timeout, 408 or 5xx may still have executed the order, so it is not recorded as a refusal.
-        const unknown = error instanceof AppError && error.code === 'T212_ORDER_UNKNOWN';
-        record(preview, method, { status: unknown ? 'unknown' : 'failed', error: error instanceof Error ? error.message : '下单失败' });
-        throw error;
+      // Caps may have been lowered since the preview, and other orders may have used the daily allowance meanwhile.
+      // From here to the reservation nothing awaits, so two parallel confirmations cannot both fit into the same room.
+      const limits = caps.limits(userId, preview.env);
+      if (preview.estimatedValue > limits.maxOrderValue) {
+        refuse(`单笔上限已改为 ${money(limits.maxOrderValue, preview.currency)}，这笔约 ${money(preview.estimatedValue, preview.currency)}，订单没有提交`, 400, 'T212_ORDER_CAP');
       }
-      const order = {
-        id: text(placed.id), status: text(placed.status), ticker: text(placed.ticker) ?? preview.ticker,
-        side: text(placed.side), type: text(placed.type), quantity: numberOrNull(placed.quantity),
-        filledQuantity: numberOrNull(placed.filledQuantity), limitPrice: numberOrNull(placed.limitPrice), createdAt: text(placed.createdAt),
-      };
-      record(preview, method, { status: 'placed', brokerOrderId: order.id, brokerStatus: order.status });
-      return { order, method, env: preview.env, estimatedValue: preview.estimatedValue, currency: preview.currency };
+      const used = dailyUsed(userId, preview.env);
+      if (round2(used + preview.estimatedValue) > limits.dailyLimit) {
+        refuse(dailyCapMessage(used, preview.estimatedValue, limits.dailyLimit, preview.currency), 400, 'T212_DAILY_CAP');
+      }
+      reservations.set(preview.id, { userId, env: preview.env, amount: preview.estimatedValue });
+      try {
+        const quantity = preview.side === 'sell' ? -preview.quantity : preview.quantity;
+        const body = preview.type === 'market'
+          ? { ticker: preview.ticker, quantity }
+          : { ticker: preview.ticker, quantity, limitPrice: preview.limitPrice ?? 0, timeValidity: preview.timeValidity };
+        let placed: Record<string, unknown>;
+        try {
+          placed = await deps.trading212.placeOrder(preview.env, preview.type, body);
+        } catch (error) {
+          // A timeout, 408 or 5xx may still have executed the order, so it is not recorded as a refusal.
+          const unknown = error instanceof AppError && error.code === 'T212_ORDER_UNKNOWN';
+          record(preview, method, { status: unknown ? 'unknown' : 'failed', error: error instanceof Error ? error.message : '下单失败' });
+          throw error;
+        }
+        const order = {
+          id: text(placed.id), status: text(placed.status), ticker: text(placed.ticker) ?? preview.ticker,
+          side: text(placed.side), type: text(placed.type), quantity: numberOrNull(placed.quantity),
+          filledQuantity: numberOrNull(placed.filledQuantity), limitPrice: numberOrNull(placed.limitPrice), createdAt: text(placed.createdAt),
+        };
+        record(preview, method, { status: 'placed', brokerOrderId: order.id, brokerStatus: order.status });
+        return { order, method, env: preview.env, estimatedValue: preview.estimatedValue, currency: preview.currency };
+      } finally {
+        // The recorded row (placed or unknown) now counts instead; a failed order frees its share again.
+        reservations.delete(preview.id);
+      }
+    },
+
+    // Issues the Face ID / Touch ID challenge for raising caps, bound to exactly these values.
+    capsChallenge(userId: number, origin: StudioT212TrustedOrigin, input: StudioT212CapsInput) {
+      return caps.challenge(userId, origin, input);
+    },
+
+    // Saves caps (lowering with the session alone, raising with the bound assertion) and returns them with usage.
+    async updateCaps(userId: number, origin: StudioT212TrustedOrigin | null, input: StudioT212CapsInput, proof?: StudioT212CapsProof) {
+      const result = await caps.update(userId, origin, input, proof);
+      return { env: input.env, ...result, caps: capsView(userId, input.env) };
     },
 
     // Starts adding a passkey for the request's domain; the password step-up comes before any challenge is issued.

@@ -224,11 +224,11 @@ test('the per-order cap is enforced server-side and unheld tickers need a limit 
     assert.equal(unheld.timeValidity, 'DAY');
     assert.ok(unheld.warnings.some(warning => warning.includes('AAPL_US_EQ') && warning.includes('USD')));
     assert.equal(f.posts().length, 0);
-    assert.equal(f.orders.config(1).maxOrderValue, 500);
+    assert.equal(f.orders.config(1).caps.envs.live.maxOrderValue, 500);
   } finally { f.close(); }
   const invalidCap = fixture({ maxOrderValue: 'lots' });
   try {
-    assert.equal(invalidCap.orders.config(1).maxOrderValue, 500, 'an invalid cap falls back to the default');
+    assert.equal(invalidCap.orders.config(1).caps.envs.live.maxOrderValue, 500, 'an invalid cap falls back to the default');
   } finally { invalidCap.close(); }
 });
 

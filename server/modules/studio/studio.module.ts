@@ -152,6 +152,8 @@ export function createStudioModule() {
   // Both front doors (STUDIO_PUBLIC_ORIGIN, STUDIO_TAILNET_ORIGIN) reach this one backend.
   routes.use('/network', createStudioNetworkRouter(createStudioNetworkService()));
   // ── v4 track: orders — create its service and mount its router below this line ──
+  // Caps (per order and per rolling 24 hours) default to the env values, are edited per user in Settings (raising needs
+  // Face ID / Touch ID) and never exceed STUDIO_T212_CAP_CEILING.
   // Order placement is off unless STUDIO_T212_TRADING allows an account; each order is capped and needs a passkey (or,
   // only while the user has none, a double confirmation). Only requests from these origins may trade; localhost only
   // with STUDIO_T212_ALLOW_LOCALHOST=1. Passkey changes are stepped up with the Studio account password, through
@@ -161,6 +163,8 @@ export function createStudioModule() {
     trading212,
     trading: process.env.STUDIO_T212_TRADING,
     maxOrderValue: process.env.STUDIO_T212_MAX_ORDER_VALUE,
+    maxDailyValue: process.env.STUDIO_T212_MAX_DAILY_VALUE,
+    capCeiling: process.env.STUDIO_T212_CAP_CEILING,
     requirePasskey: process.env.STUDIO_T212_REQUIRE_PASSKEY,
     allowLocalhost: process.env.STUDIO_T212_ALLOW_LOCALHOST,
     origins: [process.env.STUDIO_PUBLIC_ORIGIN, process.env.STUDIO_TAILNET_ORIGIN],

@@ -81,7 +81,9 @@ test('both routers share /trading212 and the orders routes require a signed-in u
     const config = await call('/trading212/trading');
     assert.equal(config.status, 200);
     assert.deepEqual(config.body.allowedEnvs, ['demo']);
-    assert.equal(config.body.maxOrderValue, 500);
+    assert.equal(config.body.caps.envs.demo.maxOrderValue, 500);
+    assert.equal(config.body.caps.envs.demo.dailyLimit, 2000);
+    assert.equal(config.body.caps.ceiling, 10000);
     assert.equal((await call('/trading212/trading', { user: null })).status, 401);
 
     const valid = { env: 'demo', ticker: 'AAPL_US_EQ', side: 'buy', type: 'market', quantity: 0.5 };
@@ -152,6 +154,40 @@ test('passkey changes need a step-up: a password to add, a password or that pass
     assert.equal((await call(`/trading212/passkey/${id}/remove`, { method: 'POST', body: { password: 'route-password' } })).status, 404);
     assert.equal((await call(`/trading212/passkey/${id}/remove/options`, { method: 'POST' })).status, 404);
     assert.equal((await call(`/trading212/passkey/${id}/remove`, { method: 'POST', body: { password: 'route-password' }, user: null })).status, 401);
+  });
+});
+
+test('cap edits are validated in the route; lowering works from any page, raising needs a trusted origin and a passkey', async () => {
+  await withApp(async (call) => {
+    const invalid = [
+      {}, { env: 'paper', maxOrderValue: 100, dailyLimit: 200 }, { env: 'demo', maxOrderValue: '100', dailyLimit: 200 },
+      { env: 'demo', maxOrderValue: 0, dailyLimit: 200 }, { env: 'demo', maxOrderValue: -1, dailyLimit: 200 },
+      { env: 'demo', maxOrderValue: 100.123, dailyLimit: 200 }, { env: 'demo', maxOrderValue: 100, dailyLimit: null },
+      { env: 'demo', maxOrderValue: 100, dailyLimit: 1e12 },
+      { env: 'demo', maxOrderValue: 100, dailyLimit: 200, challengeId: 'not-an-id', assertion: { id: 'x', rawId: 'x', response: { a: 1 } } },
+      { env: 'demo', maxOrderValue: 100, dailyLimit: 200, challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f' },
+    ];
+    for (const body of invalid) {
+      assert.equal((await call('/trading212/caps', { method: 'PUT', body })).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await call('/trading212/caps', { method: 'PUT', body: { env: 'demo', maxOrderValue: 100, dailyLimit: 200 }, user: null })).status, 401);
+
+    // Lowering needs neither a passkey nor an allowlisted page.
+    const lowered = await call('/trading212/caps', { method: 'PUT', body: { env: 'demo', maxOrderValue: 100, dailyLimit: 200 }, origin: null });
+    assert.equal(lowered.status, 200);
+    assert.equal(lowered.body.method, 'session');
+    assert.equal(lowered.body.caps.maxOrderValue, 100);
+    assert.equal(lowered.body.caps.dailyRemaining, 200);
+    const config = await call('/trading212/trading');
+    assert.equal(config.body.caps.envs.demo.dailyLimit, 200);
+    assert.equal(config.body.capChanges[0].direction, 'lower');
+
+    // Above the ceiling, from an untrusted page, or without any passkey, nothing is raised.
+    assert.equal((await call('/trading212/caps', { method: 'PUT', body: { env: 'demo', maxOrderValue: 100, dailyLimit: 10_001 } })).status, 400);
+    assert.equal((await call('/trading212/caps/challenge', { method: 'POST', body: { env: 'demo', maxOrderValue: 300, dailyLimit: 600 }, origin: 'https://evil.example' })).status, 403);
+    assert.equal((await call('/trading212/caps/challenge', { method: 'POST', body: { env: 'demo', maxOrderValue: 300, dailyLimit: 600 } })).status, 403);
+    assert.equal((await call('/trading212/caps', { method: 'PUT', body: { env: 'demo', maxOrderValue: 300, dailyLimit: 600 } })).status, 403);
+    assert.equal((await call('/trading212/trading')).body.caps.envs.demo.maxOrderValue, 100);
   });
 });
 

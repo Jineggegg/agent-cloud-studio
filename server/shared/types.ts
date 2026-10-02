@@ -1,6 +1,8 @@
 import type { IncomingMessage } from 'node:http';
 import type { Readable } from 'node:stream';
 
+import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
+
 //----------------- HTTP RESPONSE SHAPES ------------
 /**
  * Canonical success envelope used by backend APIs that return a structured payload.
@@ -1753,6 +1755,23 @@ export type StudioT212OrderInput = {
  * so passkeys registered on one domain never authorize orders on another.
  */
 export type StudioT212TrustedOrigin = { origin: string; rpId: string };
+
+/**
+ * New order caps for one Trading 212 account, in that account's currency, after the Studio router checked
+ * the transport shape (finite, positive, at most two decimals). `dailyLimit` is a rolling 24-hour cap on
+ * placed and unknown-outcome orders. The ceiling (STUDIO_T212_CAP_CEILING), per-order ≤ daily and whether
+ * the change is a raise (which needs a passkey) are checked by the caps service, not the router.
+ * Used by trading212-orders.routes, trading212-orders.service and trading212-caps.service.
+ */
+export type StudioT212CapsInput = { env: StudioT212Environment; maxOrderValue: number; dailyLimit: number };
+
+/**
+ * Face ID / Touch ID proof for raising order caps: the id of the single-use challenge the caps service issued
+ * for exactly these values, and the browser's WebAuthn assertion over it (verified cryptographically by the
+ * service against the stored passkey). Used by trading212-orders.routes, trading212-orders.service and
+ * trading212-caps.service.
+ */
+export type StudioT212CapsProof = { challengeId: string; assertion: AuthenticationResponseJSON };
 // ── v4 track: mail — server types below this line ──
 //----------------- STUDIO MAIL CONTRACTS ------------
 /**
