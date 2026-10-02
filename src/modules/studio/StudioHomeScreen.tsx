@@ -17,8 +17,8 @@ import '@/modules/studio/studio-home.css';
 // Per-device layout preferences (hidden tiles, labels, icon size, icon order).
 const LAYOUT_STORAGE_KEY = 'studio-home-layout-v1';
 // Integrations that are planned but not built; listed honestly as not connected.
-const PLANNED = [
-  { name: 'Outlook 邮件', caption: '需要注册 Microsoft OAuth 应用', tone: 'rose', glyph: 'mail' },
+const PLANNED: { name: string; caption: string; tone: string; glyph: string }[] = [
+  // Outlook mail is built now (Settings → 邮箱账户); nothing else is planned at the moment.
 ];
 // Taps on these keep edit mode; a tap anywhere else (the wallpaper, gaps between icons) ends it, as on iPadOS.
 // `.studio-layer` covers the sheets, whose clicks bubble here through their React portals.
@@ -236,15 +236,17 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreat
           </div>)}
           {!hidden.length && <div className="ios-row no-icon"><span className="ios-row-body"><small>所有应用都在主屏幕上</small></span></div>}
         </div>
-        <h3>规划中的接入</h3>
-        <div className="ios-list">
-          {PLANNED.map(item => <div className="ios-row" key={item.name} aria-disabled="true">
-            <StudioTileIcon tone={item.tone} glyph={item.glyph} size={17} variant="small" />
-            <span className="ios-row-body"><strong>{item.name}</strong><small>{item.caption}</small></span>
-            <span className="status-badge">未接入</span>
-          </div>)}
-        </div>
-        <p className="ios-section-footer">新项目请用主屏幕上的「新建」。规划中的接入在接好真实 API 之前不会显示任何数据。</p>
+        {PLANNED.length > 0 && <>
+          <h3>规划中的接入</h3>
+          <div className="ios-list">
+            {PLANNED.map(item => <div className="ios-row" key={item.name} aria-disabled="true">
+              <StudioTileIcon tone={item.tone} glyph={item.glyph} size={17} variant="small" />
+              <span className="ios-row-body"><strong>{item.name}</strong><small>{item.caption}</small></span>
+              <span className="status-badge">未接入</span>
+            </div>)}
+          </div>
+        </>}
+        <p className="ios-section-footer">新项目请用主屏幕上的「新建」。{PLANNED.length > 0 && '规划中的接入在接好真实 API 之前不会显示任何数据。'}</p>
       </div>
     </div>, document.body)}
   </div>;

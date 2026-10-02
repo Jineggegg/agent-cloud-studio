@@ -250,3 +250,15 @@ export const getQuickSettingsTabId = (tab: QuickSettingsTab): string => `quick-s
 
 /** DOM id of the tabpanel a quick settings tab controls; pairs with `getQuickSettingsTabId`. */
 export const getQuickSettingsTabPanelId = (tab: QuickSettingsTab): string => `quick-settings-tabpanel-${tab}`;
+
+// ---------------------------
+
+//----------------- ERROR MESSAGES ------------
+
+/**
+ * The message of a thrown Error (readApiJson throws the server's user-facing text), or `fallback` when the
+ * reason is not an Error or has no message. Used by the studio mail inbox, reader and settings to show request
+ * failures; pass a short Chinese fallback that names the action that failed.
+ */
+export const readableErrorMessage = (reason: unknown, fallback: string): string =>
+  reason instanceof Error && reason.message ? reason.message : fallback;

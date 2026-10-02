@@ -70,7 +70,7 @@ test('labels and hidden tiles are customised in edit mode and remembered on this
 
   fireEvent.click(screen.getByRole('button', { name: '资源库' }));
   const library = screen.getByRole('dialog', { name: 'App 资源库' });
-  expect(within(library).getByText('未接入')).toBeTruthy();
+  expect(within(library).queryByText(/Outlook|未接入|规划中/)).toBeNull(); // Outlook mail is built; nothing is planned.
   fireEvent.click(within(library).getByRole('button', { name: '添加到主屏幕' }));
   expect(screen.getByRole('button', { name: 'DeepSeek' })).toBeTruthy();
 });

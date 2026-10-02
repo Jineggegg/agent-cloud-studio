@@ -4,11 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { StudioProjectAgents } from '@/modules/studio/StudioProjectAgents';
 import { StudioProjectEditor } from '@/modules/studio/StudioProjectEditor';
-import { StudioProjectMail } from '@/modules/studio/StudioProjectMail';
 import type { HubProject } from '@/shared/types';
 
+// The project mail tab (StudioProjectMail) is covered by StudioMail.test.tsx.
 const mocks = vi.hoisted(() => ({
-  api: { list: vi.fn(), create: vi.fn(), update: vi.fn(), launch: vi.fn(), launchRemote: vi.fn(), sessions: vi.fn(), mailStatus: vi.fn(), mailMessages: vi.fn(), saveTask: vi.fn(), mailMessage: vi.fn() },
+  api: { list: vi.fn(), create: vi.fn(), update: vi.fn(), launch: vi.fn(), launchRemote: vi.fn(), sessions: vi.fn() },
   remote: { hosts: vi.fn(), status: vi.fn() },
   writeSelectedProvider: vi.fn(),
 }));
@@ -39,7 +39,6 @@ describe('Studio projects', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.api.sessions.mockResolvedValue(Response.json([{ id: 's1', provider: 'claude', title: '课程大纲' }]));
-    mocks.api.mailStatus.mockResolvedValue(Response.json({ configured: false, connected: false, email: null, access: 'readonly' }));
     mocks.remote.hosts.mockImplementation(async () => Response.json([{ name: 'aj', label: 'AJ 服务器', target: 'sp-remote' }]));
   });
 
@@ -132,29 +131,5 @@ describe('Studio projects', () => {
     const terminal = await screen.findByRole('dialog', { name: 'Claude Code · AJ 服务器' });
     expect(terminal.textContent).toContain('ssh sp-remote tmux new-session -A');
     expect(mocks.api.launchRemote).toHaveBeenCalledWith('professor', 'claude');
-  });
-
-  it('does not query mail, read credentials or generate tasks when OAuth is unconfigured', async () => {
-    render(<StudioProjectMail project={project} />);
-    expect(await screen.findByText('OAuth 未配置')).toBeTruthy();
-    expect((screen.getByRole('button', { name: '连接 Gmail' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(mocks.api.mailMessages).not.toHaveBeenCalled();
-    expect(mocks.api.saveTask).not.toHaveBeenCalled();
-  });
-
-  it('does not query or share mailbox data automatically, and drafts summaries for an IDE agent', async () => {
-    mocks.api.mailStatus.mockResolvedValue(Response.json({ configured: true, connected: true, email: 'fake@example.test', access: 'readonly' }));
-    mocks.api.mailMessages.mockResolvedValue(Response.json([{ id: 'a123', subject: '事项', from: 'fake@example.test', date: '', snippet: '不可信邮件资料' }]));
-    mocks.api.saveTask.mockResolvedValue(Response.json({ id: 'draft' }));
-    render(<StudioProjectMail project={{ ...project, providers: ['deepseek', 'claude'] }} />);
-    await screen.findByRole('textbox', { name: '搜索邮件' });
-    expect(mocks.api.mailMessages).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: '搜索邮件' }));
-    await screen.findByText('事项');
-    expect(mocks.api.mailMessage).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: '保存摘要草稿' }));
-    await screen.findByText('摘要草稿已保存到自动化，尚未执行');
-    expect(mocks.api.saveTask.mock.calls[0][1].provider).toBe('claude');
-    expect(mocks.api.saveTask.mock.calls[0][1].prompt).toContain('不可信资料');
   });
 });
