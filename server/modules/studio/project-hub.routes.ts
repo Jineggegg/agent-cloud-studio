@@ -20,11 +20,18 @@ function projectInput(body: Record<string, unknown>): StudioProjectInput {
       !Array.isArray(body.providers) || !body.providers.every(item => typeof item === 'string')) {
     throw new AppError('项目模块或助手格式无效', { statusCode: 400 });
   }
+  const links = body.links === undefined ? [] : body.links;
+  if (!Array.isArray(links) || !links.every(link => link && typeof link === 'object' && typeof link.label === 'string' && typeof link.url === 'string')) {
+    throw new AppError('网站链接格式无效', { statusCode: 400 });
+  }
   return {
     name: text(body.name), description: text(body.description), workspacePath: text(body.workspacePath),
     modules: body.modules as StudioProjectInput['modules'], providers: body.providers as StudioProjectInput['providers'],
-    // Older clients omit the icon; the service validates the values against fixed lists.
+    // Older clients omit icon, links and remote fields; the service validates every value.
     tone: body.tone === undefined ? 'stone' : text(body.tone), glyph: body.glyph === undefined ? 'folder' : text(body.glyph),
+    links: links.map(link => ({ label: link.label as string, url: link.url as string })),
+    remoteHost: body.remoteHost === undefined ? '' : text(body.remoteHost),
+    remoteDir: body.remoteDir === undefined ? '' : text(body.remoteDir),
   };
 }
 function taskInput(body: Record<string, unknown>): StudioTaskInput {
@@ -43,6 +50,8 @@ export function createProjectHubRouter(hub: ReturnType<typeof createProjectHubSe
   router.put('/:id', asyncHandler(async (req, res) => { res.json(hub.update(user(req), String(req.params.id), projectInput(req.body ?? {}))); }));
   router.delete('/:id', asyncHandler(async (req, res) => { res.json(hub.remove(user(req), String(req.params.id))); }));
   router.post('/:id/launch', asyncHandler(async (req, res) => { res.json(await hub.launch(user(req), String(req.params.id), text(req.body?.provider))); }));
+  router.post('/:id/remote-launch', asyncHandler(async (req, res) => { res.json(hub.launchRemote(user(req), String(req.params.id), text(req.body?.agent))); }));
+  router.get('/:id/links/status', asyncHandler(async (req, res) => { res.json(await hub.linkStatus(user(req), String(req.params.id))); }));
   router.get('/:id/sessions', asyncHandler(async (req, res) => { res.json(hub.sessions(user(req), String(req.params.id))); }));
   router.get('/:id/tasks', asyncHandler(async (req, res) => { res.json(hub.tasks(user(req), String(req.params.id))); }));
   router.post('/:id/tasks', asyncHandler(async (req, res) => { res.status(201).json(hub.saveTask(user(req), String(req.params.id), taskInput(req.body ?? {}))); }));

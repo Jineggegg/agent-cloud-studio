@@ -22,7 +22,7 @@ const TONES: Record<string, string> = { sage: '青灰绿', clay: '陶土', slate
 const GLYPHS: Record<StudioGlyph, string> = {
   folder: '文件夹', activity: '波形', graduation: '学位帽', candles: 'K 线', chart: '折线', mail: '邮件', terminal: '终端', sparkles: '星芒', book: '书', globe: '地球',
 };
-const EMPTY: HubProjectInput = { name: '', description: '', workspacePath: '', modules: ['agents'], providers: ['claude', 'codex', 'deepseek'], tone: 'slate', glyph: 'folder' };
+const EMPTY: HubProjectInput = { name: '', description: '', workspacePath: '', modules: ['agents'], providers: ['claude', 'codex', 'deepseek'], tone: 'slate', glyph: 'folder', links: [], remoteHost: '', remoteDir: '' };
 
 /** Used by StudioPage to create a project and by its settings tab to edit one; never touches secrets or the filesystem. */
 export function StudioProjectEditor({ project, onSaved, onCancel, onDelete }: {

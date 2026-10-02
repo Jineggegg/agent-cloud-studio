@@ -166,6 +166,8 @@ export const api = {
       update: (id: string, input: HubProjectInput) => put(`/api/studio/projects/${encodeURIComponent(id)}`, input),
       remove: (id: string) => del(`/api/studio/projects/${encodeURIComponent(id)}`),
       launch: (id: string, provider: HubAgentProvider) => post(`/api/studio/projects/${encodeURIComponent(id)}/launch`, { provider }),
+      launchRemote: (id: string, agent: HubAgentProvider | 'shell') => post(`/api/studio/projects/${encodeURIComponent(id)}/remote-launch`, { agent }),
+      linkStatus: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/links/status`),
       sessions: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/sessions`),
       tasks: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/tasks`),
       saveTask: (id: string, input: HubTaskInput, taskId?: string) => taskId
@@ -177,6 +179,11 @@ export const api = {
       connectMail: (id: string) => post(`/api/studio/projects/${encodeURIComponent(id)}/mail/connect`),
       mailMessages: (id: string, q: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/mail/messages${query({ q })}`),
       mailMessage: (id: string, messageId: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/mail/messages/${encodeURIComponent(messageId)}`),
+    },
+    quota: () => get('/api/studio/quota'),
+    remote: {
+      hosts: () => get('/api/studio/remote/hosts'),
+      status: (name: string) => get(`/api/studio/remote/hosts/${encodeURIComponent(name)}/status`),
     },
     trading212: {
       status: () => get('/api/studio/trading212/status'),
@@ -201,6 +208,8 @@ export const api = {
   // Auth endpoints (no token required)
   auth: {
     status: () => fetch('/api/auth/status'),
+    // Passwordless sign-in for the owner's own Tailscale identity; the server decides from Tailscale Serve headers.
+    tailscaleSession: () => fetch('/api/auth/tailscale-session', { method: 'POST' }),
     login: (username: string, password: string) => fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

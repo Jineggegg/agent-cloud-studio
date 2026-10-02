@@ -1852,6 +1852,35 @@ export type StudioConversation = {
 export type StudioSnr = {
   connected: boolean; reason?: string; phase?: number;
   tradingEnabled?: boolean; rulesApproved?: boolean; datasetCount?: number;
+  // Read-only integration manifest the lab publishes (name, version, capabilities).
+  manifest?: { name?: string; version?: string; capabilities?: string[] };
+};
+/** A quick-browse button on a project. */
+export type StudioProjectLink = { label: string; url: string };
+/** An SSH host Studio may open agent sessions on (server-configured). */
+export type StudioRemoteHost = { name: string; label: string; target: string };
+/** Reachability and installed tools of a remote host. */
+export type StudioRemoteStatus = {
+  name: string; online: boolean; latencyMs: number | null; checkedAt: string;
+  tools: { claude: boolean; codex: boolean; tmux: boolean };
+  error?: string;
+};
+/** A remote agent session command built by the server from validated config. */
+export type StudioRemoteLaunch = { command: string; title: string };
+/** Live check of a project link. */
+export type StudioLinkStatus = { url: string; ok: boolean; status: number | null; latencyMs: number | null; frameable: boolean };
+/** One usage window of a model plan, e.g. the 5-hour or weekly limit. */
+export type StudioQuotaWindow = { id: string; label: string; usedPercent: number; windowMinutes: number | null; resetsAt: string | null };
+/** What the home-screen widgets know about one provider's quota; `source` says how trustworthy it is. */
+export type StudioQuotaSnapshot = {
+  provider: 'claude' | 'codex' | 'deepseek';
+  available: boolean;
+  windows: StudioQuotaWindow[];
+  balances: { currency: string; total: number; granted: number; toppedUp: number }[];
+  source: 'official' | 'statusline' | 'sdk-event' | 'local-log' | 'unavailable';
+  observedAt: string | null;
+  stale: boolean;
+  note?: string;
 };
 //----------------- STUDIO PROJECT CONTRACTS ------------
 /** A coding agent that runs in the inherited IDE inside the project's directory. */
@@ -1869,6 +1898,10 @@ export type HubProjectInput = {
   providers: HubProvider[];
   tone: string;
   glyph: StudioGlyph;
+  links: StudioProjectLink[];
+  // Configured SSH host name when agents run remotely (e.g. AJ); empty runs them on this machine.
+  remoteHost: string;
+  remoteDir: string;
 };
 /** Project identity and editable configuration displayed by Studio. */
 export type HubProject = HubProjectInput & { id: string; updatedAt: string };

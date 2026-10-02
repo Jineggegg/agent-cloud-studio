@@ -16,6 +16,9 @@ import { createProjectMailService } from './project-mail.service.js';
 import { createProjectHubRouter, createProjectMailCallbackRouter } from './project-hub.routes.js';
 import { createTrading212Service } from './trading212.service.js';
 import { createTrading212Router } from './trading212.routes.js';
+import { createLinkChecker } from './link-check.service.js';
+
+const linkChecker = createLinkChecker();
 
 // An explicit env path wins; otherwise a conventional checkout under ~/projects is used when it exists.
 function defaultWorkspace(variable: string, folder: string) {
@@ -23,6 +26,14 @@ function defaultWorkspace(variable: string, folder: string) {
   if (configured) return configured;
   const candidate = path.join(os.homedir(), 'projects', folder);
   return existsSync(candidate) ? candidate : '';
+}
+
+// "label=url; label=url" from env, e.g. STUDIO_SUPER_PROFESSOR_LINKS. Invalid entries are left for the hub to reject.
+function linksFromEnv(variable: string) {
+  return (process.env[variable] ?? '').split(';').map(entry => entry.trim()).filter(Boolean).map(entry => {
+    const split = entry.indexOf('=');
+    return { label: entry.slice(0, split).trim(), url: entry.slice(split + 1).trim() };
+  }).filter(link => link.label && link.url);
 }
 
 /** Used by server/index to assemble Studio independently of the inherited CLI providers. */
@@ -37,6 +48,8 @@ export function createStudioModule() {
     professorPath: defaultWorkspace('STUDIO_SUPER_PROFESSOR_PATH', 'super-professor'),
     snrPath: defaultWorkspace('STUDIO_SNR_PATH', 'snr3-lab'),
     trading212Path: defaultWorkspace('STUDIO_TRADING212_PATH', 'trading212'),
+    professorLinks: linksFromEnv('STUDIO_SUPER_PROFESSOR_LINKS'),
+    checkLinks: links => linkChecker.check(links),
     async resolveWorkspace(directory) {
       if (!existsSync(directory)) throw new AppError('工作目录不存在', { statusCode: 400 });
       const canonical = realpathSync(directory);

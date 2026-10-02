@@ -215,5 +215,7 @@ export function createStudioService(deps: Dependencies) {
       }
     },
     snrStatus,
+    // Server-internal: the decrypted DeepSeek key for read-only account calls (balance). Never sent to the browser.
+    deepseekApiKey: secret,
   };
 }

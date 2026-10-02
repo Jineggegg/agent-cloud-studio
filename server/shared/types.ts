@@ -1586,6 +1586,9 @@ export type StudioProjectProvider = StudioAgentProvider | 'deepseek';
 /** Optional tools a project shows as tabs; integrations only appear when enabled. */
 export type StudioProjectModule = 'agents' | 'mail' | 'automations' | 'snr-lab' | 'trading212';
 
+/** A quick-browse button on a project, opened in a new tab (or embedded when the site allows it). */
+export type StudioProjectLink = { label: string; url: string };
+
 /** Editable project metadata consumed by the Studio project router and service; one project is one home-screen icon. */
 export type StudioProjectInput = {
   name: string;
@@ -1596,6 +1599,43 @@ export type StudioProjectInput = {
   // Home-screen icon colour family and glyph, chosen from fixed lists.
   tone: string;
   glyph: string;
+  // Website quick-browse buttons (http/https only).
+  links: StudioProjectLink[];
+  // Name of a configured SSH host (STUDIO_SSH_HOSTS) when agents run remotely; empty runs them on this machine.
+  remoteHost: string;
+  // Working directory on the remote host, e.g. ~/projects/super-professor.
+  remoteDir: string;
+};
+
+/** An SSH host Studio may open agent sessions on; configured by the server owner, never by the browser. */
+export type StudioRemoteHost = { name: string; label: string; target: string };
+
+/** Reachability and installed tools of a remote host, checked read-only over SSH. */
+export type StudioRemoteStatus = {
+  name: string; online: boolean; latencyMs: number | null; checkedAt: string;
+  tools: { claude: boolean; codex: boolean; tmux: boolean };
+  error?: string;
+};
+
+/** A remote agent session: the exact command the terminal runs, built by the server from validated config. */
+export type StudioRemoteLaunch = { command: string; title: string };
+
+/** Live check of a project link: whether it answers and whether it can be shown in an iframe. */
+export type StudioLinkStatus = { url: string; ok: boolean; status: number | null; latencyMs: number | null; frameable: boolean };
+
+/** One usage window of a model plan, e.g. the 5-hour or weekly limit. */
+export type StudioQuotaWindow = { id: string; label: string; usedPercent: number; windowMinutes: number | null; resetsAt: string | null };
+
+/** What the home-screen widgets know about one provider's quota; `source` says how trustworthy it is. */
+export type StudioQuotaSnapshot = {
+  provider: 'claude' | 'codex' | 'deepseek';
+  available: boolean;
+  windows: StudioQuotaWindow[];
+  balances: { currency: string; total: number; granted: number; toppedUp: number }[];
+  source: 'official' | 'statusline' | 'sdk-event' | 'local-log' | 'unavailable';
+  observedAt: string | null;
+  stale: boolean;
+  note?: string;
 };
 
 /** Persisted, user-owned project returned to the Studio UI, with no credentials or provider tokens. */

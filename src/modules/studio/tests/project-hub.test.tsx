@@ -23,7 +23,7 @@ vi.mock('@/shared/selectedProvider', () => ({ writeSelectedProvider: mocks.write
 
 const project: HubProject = {
   id: 'professor', name: '超级教授', description: '', workspacePath: '/home/me/projects/professor',
-  modules: ['agents', 'mail', 'automations'], providers: ['claude', 'codex', 'deepseek'], tone: 'clay', glyph: 'graduation', updatedAt: '',
+  modules: ['agents', 'mail', 'automations'], providers: ['claude', 'codex', 'deepseek'], tone: 'clay', glyph: 'graduation', links: [], remoteHost: '', remoteDir: '', updatedAt: '',
 };
 
 afterEach(cleanup);

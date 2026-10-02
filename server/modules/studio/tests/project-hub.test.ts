@@ -22,7 +22,7 @@ function fixture(pendingSchedules = 0) {
   const professor = (userId = 1) => service.list(userId).find(project => project.name === '超级教授')!;
   return { database, service, scheduled, registered, forgotten, professor };
 }
-const input: StudioProjectInput = { name: '新项目', description: '', workspacePath: '/projects/new', modules: ['agents'], providers: ['claude'], tone: 'slate', glyph: 'folder' };
+const input: StudioProjectInput = { name: '新项目', description: '', workspacePath: '/projects/new', modules: ['agents'], providers: ['claude'], tone: 'slate', glyph: 'folder', links: [], remoteHost: '', remoteDir: '' };
 
 test('built-in products are seeded once per user in home-screen order without touching the filesystem', () => {
   const f = fixture();
@@ -114,4 +114,40 @@ test('saving automation is draft-only and scheduling checks time, owner, project
     f.service.update(1, project.id, { ...project, modules: ['agents'] });
     assert.throws(() => f.service.scheduleTask(1, project.id, task.id, 'claude-session', future), /启用/);
   } finally { f.database.close(); }
+});
+
+test('links and remote hosts are validated; remote projects launch only server-built commands', async () => {
+  const database = new Database(':memory:');
+  const commands: unknown[] = [];
+  const service = createProjectHubService({
+    database,
+    resolveWorkspace: async directory => ({ projectId: 'native', path: directory }),
+    listSessions: () => [], pendingSchedules: () => 0, schedule: () => ({ id: 'x' }),
+    professorLinks: [{ label: '网站', url: 'https://example.test/' }],
+    remoteHosts: () => ['aj'],
+    remoteSeeds: () => [{ host: 'aj', label: 'AJ 服务器', dir: '~/projects/app' }],
+    remoteCommand: (host, dir, agent) => { commands.push([host, dir, agent]); return { command: `ssh ${host}`, title: agent }; },
+  });
+  try {
+    const seeded = service.list(1);
+    assert.deepEqual(seeded.map(project => project.name), ['SNR 3.0', '超级教授', 'Trading 212', 'AJ 服务器']);
+    assert.deepEqual(seeded[1].links, [{ label: '网站', url: 'https://example.test/' }]);
+    const aj = seeded[3];
+    assert.equal(aj.remoteHost, 'aj');
+
+    assert.throws(() => service.create(1, { ...input, links: [{ label: 'x', url: 'javascript:alert(1)' }] }), /链接/);
+    assert.throws(() => service.create(1, { ...input, links: Array.from({ length: 9 }, (_, i) => ({ label: `l${i}`, url: 'https://a.test' })) }), /链接/);
+    assert.throws(() => service.create(1, { ...input, remoteHost: 'elsewhere', remoteDir: '~/x' }), /未在服务器配置/);
+    assert.throws(() => service.create(1, { ...input, remoteHost: 'aj', remoteDir: '~/x; rm -rf ~' }), /远程目录/);
+    assert.throws(() => service.create(1, { ...input, remoteHost: 'aj', remoteDir: '~/../etc' }), /远程目录/);
+    assert.throws(() => service.create(1, { ...input, remoteDir: '~/x' }), /未选择远程主机/);
+
+    await assert.rejects(service.launch(1, aj.id, 'claude'), /远程会话/);
+    assert.deepEqual(service.launchRemote(1, aj.id, 'claude'), { command: 'ssh aj', title: 'claude' });
+    assert.deepEqual(service.launchRemote(1, aj.id, 'shell'), { command: 'ssh aj', title: 'shell' });
+    assert.throws(() => service.launchRemote(1, aj.id, 'cursor'), /只支持/);
+    assert.throws(() => service.launchRemote(2, aj.id, 'claude'), /不存在/);
+    assert.throws(() => service.launchRemote(1, seeded[0].id, 'claude'), /没有配置远程主机/);
+    assert.deepEqual(commands, [['aj', '~/projects/app', 'claude'], ['aj', '~/projects/app', 'shell']]);
+  } finally { database.close(); }
 });
