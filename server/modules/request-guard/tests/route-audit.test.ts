@@ -1,12 +1,20 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import http from 'node:http';
 import type { Server } from 'node:http';
+import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import { WebSocket } from 'ws';
+
+import { PUBLIC_ENDPOINTS, REQUEST_TIER_LIMITS } from '../request-guard.service.js';
+import { startCloudflaredListener } from '../tunnel-listener.service.js';
+
+// jsonwebtoken ships no TypeScript declarations here; the test only needs `sign`.
+const jwt = createRequire(import.meta.url)('jsonwebtoken') as { sign(payload: object, secret: string, options: { expiresIn: string }): string };
 
 // The whole server is assembled in-process (server/app.ts) on a throwaway home directory and
 // database, and every route it mounts is called without credentials. Environment first: modules
@@ -25,7 +33,7 @@ for (const name of Object.keys(process.env)) {
 
 const database = await import('@/modules/database/index.js');
 await database.initializeDatabase();
-database.userDb.createUser('andrew', '$2b$12$tGGCKzQOSdxNXD/GlV9lc.3ajYv0196H6VwHboOo.SJQJ9G/KFQH2');
+const ownerId = Number(database.userDb.createUser('andrew', '$2b$12$tGGCKzQOSdxNXD/GlV9lc.3ajYv0196H6VwHboOo.SJQJ9G/KFQH2').id);
 // The application root is not a feature module; the test walks exactly what the entrypoint serves.
 // eslint-disable-next-line boundaries/no-unknown
 const { createStudioServer } = await import('../../../app.js');
@@ -221,8 +229,8 @@ test('oversized bodies are refused before authentication or routing reads them',
 });
 
 test('the HTTP server carries the DoS limits', () => {
-  assert.ok(server.headersTimeout > 0 && server.headersTimeout <= 120_000);
-  assert.ok(server.requestTimeout > 0 && server.requestTimeout <= 300_000);
+  assert.ok(server.headersTimeout > 0 && server.headersTimeout <= 30_000);
+  assert.ok(server.requestTimeout > 0 && server.requestTimeout <= 600_000);
   assert.ok(server.keepAliveTimeout > 0);
   assert.ok((server.maxRequestsPerSocket ?? 0) > 0);
   assert.ok(server.maxConnections > 0);
@@ -258,4 +266,107 @@ test('five wrong passwords from different public clients lock password sign-in w
   assert.equal(locked.status, 429);
   assert.equal(locked.headers.get('retry-after'), '900');
   assert.equal(((await locked.json()) as { error: { code: string } }).error.code, 'AUTH_ACCOUNT_LOCKED');
+});
+
+// fetch() never sends a caller's Host header; node:http does, which Tailscale-looking requests need.
+function request(targetPort: number, requestPath: string, options: { method?: string; headers?: Record<string, string>; body?: string } = {}) {
+  return new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const outgoing = http.request({ host: '127.0.0.1', port: targetPort, path: requestPath, method: options.method ?? 'GET', headers: options.headers }, (incoming) => {
+      let body = '';
+      incoming.setEncoding('utf8');
+      incoming.on('data', (chunk: string) => { body += chunk; });
+      incoming.on('end', () => resolve({ status: incoming.statusCode ?? 0, body }));
+    });
+    outgoing.on('error', reject);
+    outgoing.end(options.body);
+  });
+}
+const SERVE_HEADERS = { host: 'laptop-acgghbuq.tail6e45f0.ts.net:8443', 'x-forwarded-for': '100.101.102.103' };
+
+// Every public endpoint in the spellings Express also routes to it (any case, one trailing slash),
+// plus doubled slashes; how each is called and what the canonical form may answer.
+const PUBLIC_METHODS: Record<string, string> = { '/health': 'GET', '/api/auth/status': 'GET' };
+function spellings(endpoint: string): string[] {
+  return [endpoint.toUpperCase(), `${endpoint}/`, endpoint.replace(/(^|\/)([a-z])/g, (_m, slash: string, letter: string) => `${slash}${letter.toUpperCase()}`), endpoint.replace(/\//g, '//')];
+}
+
+test('case and slash variants of every public route answer no data and spend the public budget', async () => {
+  const local = {};
+  const exhaust = async () => {
+    for (let request = 0; request < 200; request += 1) {
+      if ((await fetch(`${baseUrl}/health`, { headers: local })).status === 429) return;
+    }
+    assert.fail('the public budget never ran out');
+  };
+  const failures: string[] = [];
+  for (const endpoint of PUBLIC_ENDPOINTS) {
+    const method = PUBLIC_METHODS[endpoint] ?? 'POST';
+    for (const spelling of spellings(endpoint)) {
+      await exhaust();
+      const statuses: number[] = [];
+      // Two in a row: at most one token can have come back since the bucket ran dry.
+      for (let request = 0; request < 2; request += 1) {
+        const response = await fetch(`${baseUrl}${spelling}`, {
+          method,
+          headers: { ...local, ...(method === 'POST' ? { 'content-type': 'application/json' } : {}) },
+          body: method === 'POST' ? '{}' : undefined,
+          redirect: 'manual',
+        });
+        const text = await response.text();
+        statuses.push(response.status);
+        if (/"token"|"user"|"username"|password_hash/.test(text)) failures.push(`${method} ${spelling} leaked ${text.slice(0, 80)}`);
+      }
+      if (!statuses.includes(429)) failures.push(`${method} ${spelling} skipped the public tier (${statuses.join(', ')})`);
+    }
+  }
+  assert.deepEqual(failures, []);
+  assert.ok(REQUEST_TIER_LIMITS.public.perClient.capacity < 200);
+});
+
+test('退出所有设备 through the real app revokes tokens, API keys and live sockets, and API keys need the password', async () => {
+  const token = jwt.sign({ userId: ownerId, username: 'andrew', ver: 0 }, 'route-audit-test-secret', { expiresIn: '1h' });
+  // A tailnet client, so the public budgets the tests above used up do not matter.
+  const headers = { ...SERVE_HEADERS, authorization: `Bearer ${token}`, 'content-type': 'application/json' };
+  const createKey = (body: object) => request(port, '/api/settings/api-keys', { method: 'POST', headers, body: JSON.stringify(body) });
+  const withoutPassword = await createKey({ keyName: 'ci' });
+  assert.equal(withoutPassword.status, 400);
+  assert.equal((JSON.parse(withoutPassword.body) as { error: { code: string } }).error.code, 'AUTH_STEP_UP_REQUIRED');
+  assert.equal((await createKey({ keyName: 'ci', password: 'not the password' })).status, 403);
+
+  const apiKey = database.apiKeysDb.createApiKey(ownerId, 'script').apiKey;
+  assert.ok(database.apiKeysDb.validateApiKey(apiKey));
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/shell?token=${token}`, { headers: SERVE_HEADERS });
+  await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
+  const closed = new Promise<number>((resolve) => socket.once('close', (code) => resolve(code)));
+
+  const revoke = await request(port, '/api/auth/security/revoke-all', { method: 'POST', headers });
+  assert.equal(revoke.status, 200);
+  const body = JSON.parse(revoke.body) as { revoked: Record<string, unknown> };
+  assert.equal(body.revoked.apiKeys, 1);
+  assert.equal(body.revoked.webSockets, 1);
+  assert.equal(await closed, 1006);
+  assert.equal(database.apiKeysDb.validateApiKey(apiKey), undefined);
+  assert.equal((await request(port, '/api/auth/user', { headers })).status, 401);
+});
+
+test('with STUDIO_CLOUDFLARED_PORT set, the cloudflared listener is the public door and nothing else is', async () => {
+  const listener = await startCloudflaredListener(server, 0);
+  const tunnelPort = (listener.address() as AddressInfo).port;
+  process.env.STUDIO_CLOUDFLARED_PORT = String(tunnelPort);
+  try {
+    const statuses: number[] = [];
+    for (let request = 0; request <= REQUEST_TIER_LIMITS.public.perClient.capacity; request += 1) {
+      statuses.push((await fetch(`http://127.0.0.1:${tunnelPort}/health`)).status);
+    }
+    // No Cloudflare headers needed: the listener alone makes it the public door (one client here).
+    assert.equal(statuses.at(-1), 429);
+    // A tailnet device forging Cloudflare headers on the main port stays its own tailnet client.
+    const forged = await request(port, '/health', {
+      headers: { ...SERVE_HEADERS, 'x-forwarded-for': '100.101.102.104', 'cf-ray': 'x-HKG', 'cf-connecting-ip': '198.51.100.250' },
+    });
+    assert.equal(forged.status, 200);
+  } finally {
+    delete process.env.STUDIO_CLOUDFLARED_PORT;
+    listener.close();
+  }
 });

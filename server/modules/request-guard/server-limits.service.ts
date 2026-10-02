@@ -4,17 +4,22 @@ import express from 'express';
 import type { RequestHandler } from 'express';
 
 /**
- * Timeouts and caps of the HTTP server (see applyHttpServerLimits). keepAliveTimeout stays above
- * the idle time proxies keep a connection for reuse, and headersTimeout above keepAliveTimeout,
- * as Node recommends behind cloudflared and Tailscale Serve; both proxies deliver complete
- * headers quickly, so only a direct slow client ever waits that long.
+ * Timeouts and caps of the HTTP server (see applyHttpServerLimits).
+ * - headersTimeout counts from the first byte of each request (Node 18+ does not count the idle
+ *   time of a keep-alive connection), so it can be short: cloudflared and Tailscale Serve deliver
+ *   complete headers at once, and only a slowloris client ever gets near it.
+ * - requestTimeout must let the largest upload through: the file tree accepts 200 MB, which takes
+ *   10 minutes at 2.7 Mbit/s. Response streams (event streams, streamed chat answers) are not
+ *   affected; it only covers receiving the request.
+ * - keepAliveTimeout stays above the idle time the proxies keep a connection for reuse.
+ * A client holding many slow requests is bounded by the request guard's in-flight cap.
  * Used by applyHttpServerLimits and its tests.
  */
 export const HTTP_SERVER_LIMITS = {
-  /** Whole request (headers and body) must arrive within this; covers a 50 MB upload on a slow link. */
-  requestTimeoutMs: 180_000,
-  /** Headers must be complete within this (slowloris). */
-  headersTimeoutMs: 66_000,
+  /** Whole request (headers and body) must arrive within this. */
+  requestTimeoutMs: 600_000,
+  /** Headers must be complete within this, counted from the request's first byte (slowloris). */
+  headersTimeoutMs: 20_000,
   /** An idle keep-alive connection is closed after this. */
   keepAliveTimeoutMs: 65_000,
   /** Requests served on one connection before it is closed, so one socket cannot be pinned forever. */

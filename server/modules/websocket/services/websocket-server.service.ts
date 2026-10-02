@@ -48,24 +48,16 @@ function rememberUserSocket(ws: WebSocket, request: AuthenticatedWebSocketReques
 }
 
 /**
- * Closes every open WebSocket of a user with 4401 ("session revoked"), returning how many. Used by
- * the server entrypoint after the auth module's "退出所有设备", whose token-version bump already
- * refuses the user's old tokens on any new upgrade.
+ * Terminates every open WebSocket of a user at once (no closing handshake a client could stall),
+ * returning how many. Used by the server entrypoint after the auth module's "退出所有设备", whose
+ * token-version bump already refuses the user's old tokens on any new upgrade.
  */
 export function closeUserWebSockets(userId: number | string): number {
   const sockets = socketsByUser.get(String(userId));
   if (!sockets) return 0;
-  let closed = 0;
-  for (const ws of [...sockets]) {
-    try {
-      ws.close(4401, 'Session revoked');
-      closed += 1;
-    } catch {
-      ws.terminate();
-      closed += 1;
-    }
-  }
-  return closed;
+  const terminated = sockets.size;
+  for (const ws of [...sockets]) ws.terminate();
+  return terminated;
 }
 
 /**

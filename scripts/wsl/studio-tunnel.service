@@ -1,5 +1,5 @@
 [Unit]
-Description=Cloudflare Tunnel for Agent Cloud Studio (studio.ajarche.com -> 127.0.0.1:3002)
+Description=Cloudflare Tunnel for Agent Cloud Studio (studio.ajarche.com -> 127.0.0.1:3012)
 Documentation=https://github.com/Jineggegg/agent-cloud-studio/blob/main/docs/network.md
 # Studio may restart independently; the tunnel answers 502 meanwhile and recovers on its own.
 After=agent-cloud-studio.service
@@ -10,6 +10,8 @@ Type=simple
 #   systemctl --user daemon-reload && systemctl --user enable --now studio-tunnel.service
 # cloudflared comes from scripts/wsl/install-cloudflared.sh. The tunnel UUID, credentials file and
 # ingress rules live in ~/.cloudflared/config.yml (docs/network.md), never in this repository.
+# The ingress should target Studio's cloudflared listener (STUDIO_CLOUDFLARED_PORT, e.g. 3012), not
+# the port Tailscale Serve uses; scripts/wsl/cloudflared-config.example.yml shows the file.
 ExecStart=%h/.local/bin/cloudflared tunnel --no-autoupdate --config %h/.cloudflared/config.yml run
 Restart=on-failure
 RestartSec=5

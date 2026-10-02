@@ -48,7 +48,7 @@ import { assetsRoutes } from './modules/assets/index.js';
 import { fileTreeRoutes } from './modules/file-tree/index.js';
 import { worktreesRoutes } from './modules/worktrees/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
-import { sessionsDb } from './modules/database/index.js';
+import { apiKeysDb, sessionsDb } from './modules/database/index.js';
 import { createStudioModule } from './modules/studio/index.js';
 import { createWebClientModule } from './modules/web-client/index.js';
 
@@ -138,10 +138,14 @@ export function createStudioServer(): { app: express.Express; server: http.Serve
         },
         getPluginPort,
     });
-    // "退出所有设备" refuses the user's old tokens from now on; their open sockets close here.
-    onSessionsRevoked((userId) => {
-        closeUserWebSockets(userId);
-    });
+    const studioModule = createStudioModule();
+    // "退出所有设备" refuses the user's old tokens from now on; what outlives a token goes here:
+    // open sockets are terminated, API keys deactivated and SNR gateway cookies dropped.
+    onSessionsRevoked((userId) => ({
+        webSockets: closeUserWebSockets(userId),
+        apiKeys: apiKeysDb.deactivateAllForUser(userId),
+        snrAccess: studioModule.revokeSnrAccess(userId),
+    }));
 
     app.use(cors({ exposedHeaders: ['X-Refreshed-Token', 'X-Auth-Error', 'Retry-After'] }));
     // 429 with Retry-After before any other work, per client and per door (docs/security.md).
@@ -173,7 +177,6 @@ export function createStudioServer(): { app: express.Express; server: http.Serve
     // Authentication routes (public sign-in endpoints; the session and Settings → 安全 routes inside
     // apply authenticateToken themselves)
     app.use('/api/auth', publicBodies, authRoutes);
-    const studioModule = createStudioModule();
     // The SNR gateway checks its own short-lived cookie; the Gmail OAuth callback is a GET whose
     // state binds it to a signed-in user and project.
     app.use('/api/studio/snr-site', gatewayBodies, studioModule.snrRoutes);

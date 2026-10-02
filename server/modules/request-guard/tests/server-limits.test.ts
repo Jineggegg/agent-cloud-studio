@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,6 +10,7 @@ import express from 'express';
 
 import { findApplicationRoot, getModuleDirectory } from '@/shared/utils.js';
 
+import { startCloudflaredListener } from '../tunnel-listener.service.js';
 import {
   applyHttpServerLimits,
   BODY_LIMITS,
@@ -27,8 +29,8 @@ test('the HTTP server gets request, header and keep-alive timeouts and connectio
   assert.equal(server.keepAliveTimeout, HTTP_SERVER_LIMITS.keepAliveTimeoutMs);
   assert.equal(server.maxRequestsPerSocket, HTTP_SERVER_LIMITS.maxRequestsPerSocket);
   assert.equal(server.maxConnections, HTTP_SERVER_LIMITS.maxConnections);
-  // Node's own guidance behind proxies, and every value non-zero (zero means "no limit").
-  assert.ok(server.headersTimeout > server.keepAliveTimeout);
+  // Every value non-zero (zero means "no limit"); headers have to come quickly.
+  assert.ok(server.headersTimeout <= 30_000);
   assert.ok(server.requestTimeout >= server.headersTimeout);
   assert.ok(Object.values(HTTP_SERVER_LIMITS).every((value) => value > 0));
 });
@@ -108,4 +110,74 @@ test('every body parser and upload handler in the server states a size limit', (
   }
   assert.ok(parsers >= 2, 'the scan found the body parsers');
   assert.deepEqual(findings, []);
+});
+
+// A raw HTTP/1.1 exchange on one socket, so keep-alive and slow headers can be observed.
+function rawSocket(port: number) {
+  const socket = net.connect(port, '127.0.0.1');
+  let received = '';
+  socket.on('data', (chunk) => { received += chunk.toString('utf8'); });
+  return {
+    socket,
+    write: (text: string) => socket.write(text),
+    waitFor: (pattern: RegExp, timeoutMs = 3000) => new Promise<string>((resolve, reject) => {
+      const started = Date.now();
+      const check = () => {
+        if (pattern.test(received)) return resolve(received);
+        if (Date.now() - started > timeoutMs) return reject(new Error(`no match for ${pattern}: ${received}`));
+        setTimeout(check, 20);
+      };
+      check();
+    }),
+    closed: () => new Promise<void>((resolve) => { if (socket.destroyed) resolve(); else socket.once('close', () => resolve()); }),
+  };
+}
+
+test('headersTimeout counts from each request\'s first byte: idle keep-alive survives it, slow headers do not', async () => {
+  const server = http.createServer({ connectionsCheckingInterval: 50 }, (_req, res) => { res.end('ok'); });
+  applyHttpServerLimits(server, { ...HTTP_SERVER_LIMITS, headersTimeoutMs: 300, requestTimeoutMs: 1000, keepAliveTimeoutMs: 3000 });
+  server.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  const { port } = server.address() as AddressInfo;
+  try {
+    const keepAlive = rawSocket(port);
+    keepAlive.write('GET /one HTTP/1.1\r\nHost: x\r\n\r\n');
+    await keepAlive.waitFor(/ok$/);
+    // Idle for longer than headersTimeout, then a second request on the same connection.
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    keepAlive.write('GET /two HTTP/1.1\r\nHost: x\r\n\r\n');
+    await keepAlive.waitFor(/ok[\s\S]*ok$/);
+    keepAlive.socket.destroy();
+
+    const slow = rawSocket(port);
+    slow.write('GET /slow HTTP/1.1\r\nHost: x\r\n');
+    await slow.waitFor(/408/, 3000);
+    await slow.closed();
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('the cloudflared listener hands its connections to the main server, which sees the listener port', async () => {
+  const seenPorts: number[] = [];
+  const server = http.createServer((req, res) => {
+    seenPorts.push(req.socket.localPort ?? 0);
+    res.end('ok');
+  });
+  server.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  const listener = await startCloudflaredListener(server, 0, { maxConnections: 10 });
+  const mainPort = (server.address() as AddressInfo).port;
+  const tunnelPort = (listener.address() as AddressInfo).port;
+  try {
+    assert.equal(await (await fetch(`http://127.0.0.1:${tunnelPort}/`)).text(), 'ok');
+    assert.equal(await (await fetch(`http://127.0.0.1:${mainPort}/`)).text(), 'ok');
+    assert.deepEqual(seenPorts, [tunnelPort, mainPort]);
+    assert.equal(listener.maxConnections, 10);
+  } finally {
+    listener.close();
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

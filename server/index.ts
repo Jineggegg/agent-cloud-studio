@@ -5,7 +5,7 @@ import fs, { promises as fsPromises } from 'fs';
 import path from 'path';
 import os from 'os';
 
-import { terminalTextStyles } from '@/shared/utils.js';
+import { readCloudflaredPort, terminalTextStyles } from '@/shared/utils.js';
 import {
     closeSessionsWatcher,
     initializeSessionsWatcher,
@@ -21,6 +21,7 @@ import {
     closeScheduledMessageDispatcher,
     initializeScheduledMessageDispatcher,
 } from './modules/scheduled-messages/index.js';
+import { HTTP_SERVER_LIMITS, startCloudflaredListener } from './modules/request-guard/index.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { initializeDatabase } from './modules/database/index.js';
 import { configureWebPush } from './modules/notifications/index.js';
@@ -121,6 +122,17 @@ async function startServer() {
             console.log(`${terminalTextStyles.info('[INFO]')} Installed at: ${terminalTextStyles.dim(appInstallPath)}`);
             console.log(`${terminalTextStyles.tip('[TIP]')}  Run "cloudcli status" for full configuration details`);
             console.log('');
+
+            // The public door's own loopback port (docs/security.md): only connections arriving
+            // there count as Cloudflare traffic once STUDIO_CLOUDFLARED_PORT is set.
+            const tunnelPort = readCloudflaredPort(process.env);
+            if (tunnelPort !== null) {
+                await startCloudflaredListener(server, tunnelPort, { maxConnections: HTTP_SERVER_LIMITS.maxConnections })
+                    .then(() => console.log(`${terminalTextStyles.info('[INFO]')} Cloudflare Tunnel listener: http://127.0.0.1:${tunnelPort}`))
+                    .catch((error) => console.error('[ERROR] Could not open the Cloudflare Tunnel listener:', getErrorMessage(error)));
+            } else if (process.env.STUDIO_CLOUDFLARED_PORT?.trim()) {
+                console.warn('[WARN] STUDIO_CLOUDFLARED_PORT is not a usable port (or equals SERVER_PORT); Cloudflare traffic is recognised by its headers only');
+            }
 
             // Start watching the projects folder for changes
             await initializeSessionsWatcher();

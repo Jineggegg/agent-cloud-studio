@@ -77,7 +77,7 @@ test('a refused upgrade is answered 429 with Retry-After before the token is che
   }
 });
 
-test('closeUserWebSockets closes only that user\'s sockets, with 4401, and releases their slots', async () => {
+test('closeUserWebSockets terminates only that user\'s sockets and releases their slots', async () => {
   const gateway = await startGateway(() => ({ allowed: true }));
   try {
     const first = await open(gateway.url('user-7'));
@@ -88,8 +88,9 @@ test('closeUserWebSockets closes only that user\'s sockets, with 4401, and relea
     const firstClosed = closed(first);
     const secondClosed = closed(second);
     assert.equal(closeUserWebSockets(7), 2);
-    assert.deepEqual(await firstClosed, { code: 4401, reason: 'Session revoked' });
-    assert.deepEqual(await secondClosed, { code: 4401, reason: 'Session revoked' });
+    // Terminated, not closed: no closing handshake the client could stall (1006 on its side).
+    assert.equal((await firstClosed).code, 1006);
+    assert.equal((await secondClosed).code, 1006);
     assert.equal(other.readyState, WebSocket.OPEN);
     // Released once per closed socket.
     await new Promise((resolve) => setTimeout(resolve, 20));
