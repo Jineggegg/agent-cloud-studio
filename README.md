@@ -8,16 +8,25 @@ The upstream AGPL-3.0-or-later license and Section 7 additional terms in
 `LICENSE` remain applicable. This fork is public; secrets and personal runtime
 data must never be committed.
 
-## Studio v0.1
+## Studio
 
-- A responsive Chinese workspace with iPad sidebar and phone tab navigation.
-- DeepSeek API chat with user-scoped, persistent history, stop and delete controls.
+An iPad-first home screen in Apple's design language (low-saturation palette,
+glass, spring motion, light/dark, reduced motion) where every product is one
+icon, plus **+** to create more.
+
+- **Projects** (`/projects/:id`): SNR 3.0, 超级教授 and Trading 212 by default.
+  Each project has its own directory, icon, enabled models and modules.
+- **AI inside a project**: Claude Code, Codex, Cursor and OpenCode start in the
+  project directory through the inherited IDE (your subscription logins);
+  DeepSeek API chats are stored per project.
+- **Modules**: SNR K-line lab (login-protected, short-lived gateway to the local
+  lab), read-only Trading 212 analysis (balance, day P&L, equity curve,
+  positions; keys stay in a server-side key file), read-only Gmail, and
+  automation drafts with explicit one-time scheduling.
 - Encrypted local API-key storage; saved keys are never returned to the browser.
-- Explicit per-message opt-in to send a small SNR health summary to DeepSeek.
-- A login-protected, short-lived gateway to an existing local SNR research app.
-- Existing Claude/Codex subscription workbench links; no provider credentials
-  are overwritten and subscriptions are not converted to API billing.
 - The original IDE remains available at `/workspace` and `/session/:sessionId`.
+
+Deployment on WSL behind Tailscale: [docs/deployment-wsl.md](docs/deployment-wsl.md).
 
 ## Local Development
 
