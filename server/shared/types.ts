@@ -1828,22 +1828,55 @@ export type StudioMemoryFolder = {
 };
 
 /**
- * GET /api/studio/memory/status: whether the shared server answers, where its notes live, and which clients
- * are wired to it. Client checks only read config files (never print them): `claude` looks at the user-scope
- * `mcpServers` of ~/.claude.json, `codex` at `[mcp_servers.studio-memory]` in ~/.codex/config.toml, and
- * `conventions` at the delimited block in ~/.claude/CLAUDE.md / ~/.codex/AGENTS.md. `deepseek` is Studio's own
- * bridge (STUDIO_MEMORY_DEEPSEEK); it only works while the server is reachable.
+ * One agent installation the memory status reports: Claude Code or Codex inside WSL (the Linux home Studio runs
+ * in) or on Windows (the desktop apps' configs under C:\Users\<name>, read from WSL through /mnt/c).
+ */
+export type StudioMemoryAgentId = 'claude-wsl' | 'codex-wsl' | 'claude-windows' | 'codex-windows';
+
+/**
+ * The one step that wires an agent to the shared memory: where to run it (a short Chinese phrase such as
+ * 「在 WSL 的仓库目录运行」) and the exact command. Shown verbatim on the status card.
+ */
+export type StudioMemoryAgentFix = { where: string; command: string };
+
+/**
+ * How one agent installation is wired, read from its own config files (only presence and the URL; nothing is
+ * printed). Claude Code: the user-scope `mcpServers` of `.claude.json` and the delimited block in
+ * `.claude/CLAUDE.md`; Codex: `[mcp_servers.studio-memory]` in `.codex/config.toml` and the block in
+ * `.codex/AGENTS.md`.
+ * - `installed`: the agent's config or config directory exists; an absent agent is not a fault.
+ * - `registered`/`transport`: a `studio-memory` entry exists, over 'http', 'stdio' (its own process) or another type.
+ * - `shared`: registered over HTTP at the URL Studio uses, i.e. the one shared server (localhost = 127.0.0.1).
+ * - `conventions`: the usage rules are in that agent's global instructions.
+ * - `config`: where the registration lives, as the owner finds it (`~/.claude.json`, `C:\Users\…\.codex\config.toml`).
+ * - `fix`: the step that completes the wiring, or null when the agent is wired or not installed.
+ */
+export type StudioMemoryAgentStatus = {
+  id: StudioMemoryAgentId;
+  installed: boolean;
+  registered: boolean;
+  transport: string | null;
+  shared: boolean;
+  conventions: boolean;
+  config: string;
+  fix: StudioMemoryAgentFix | null;
+};
+
+/**
+ * GET /api/studio/memory/status: whether the shared server answers (`slow`: it accepted the connection but did
+ * not answer the ping in time, so `reachable` is false without the server being stopped), where its notes live,
+ * and how each agent is wired: the WSL Claude Code and Codex always, the Windows ones when Studio runs under WSL
+ * and finds the Windows home. `deepseek` is Studio's own bridge (STUDIO_MEMORY_DEEPSEEK); it only works while the
+ * server is reachable.
  */
 export type StudioMemoryStatus = {
   reachable: boolean;
+  slow: boolean;
   url: string;
   project: string | null;
   notesPath: string | null;
-  clients: {
-    claude: { registered: boolean; transport: string | null; conventions: boolean };
-    codex: { registered: boolean; transport: string | null; conventions: boolean };
-    deepseek: { enabled: boolean };
-  };
+  agents: StudioMemoryAgentStatus[];
+  deepseek: { enabled: boolean };
 };
 
 //----------------- STUDIO DEEPSEEK CHAT WIRE SHAPES ------------

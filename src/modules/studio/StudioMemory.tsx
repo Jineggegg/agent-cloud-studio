@@ -2,10 +2,10 @@ import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { AnimatePresence, m } from 'motion/react';
 import { toast } from 'sonner';
-import { AlertTriangle, BookOpen, Check, ChevronRight, Search, SearchX, ServerOff, Sparkles, X } from 'lucide-react';
+import { AlertTriangle, BookOpen, Check, ChevronRight, Copy, Minus, Search, SearchX, ServerOff, Sparkles, X } from 'lucide-react';
 
-import type { StudioMemoryFolder, StudioMemoryNote, StudioMemoryStatus } from '@/shared/types';
-import { readableErrorMessage } from '@/shared/utils';
+import type { StudioMemoryAgentId, StudioMemoryAgentStatus, StudioMemoryFolder, StudioMemoryNote, StudioMemoryStatus } from '@/shared/types';
+import { copyTextToClipboard, readableErrorMessage } from '@/shared/utils';
 import { useStudioMemory } from '@/modules/studio/hooks/useStudioMemory';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { MemoryFolderMark, MemoryTime, MemoryWriterTag } from '@/modules/studio/StudioMemoryMarks';
@@ -27,23 +27,48 @@ function folderOf(folders: StudioMemoryFolder[], name: string): StudioMemoryFold
   return folders.find(folder => folder.name === name) ?? { name, project: null };
 }
 
-type Agent = { id: string; name: string; tone: string; mark: ReactNode; ok: boolean; detail: string };
-function agentsOf(status: StudioMemoryStatus): Agent[] {
-  const { claude, codex, deepseek } = status.clients;
-  const wired = (client: { registered: boolean; transport: string | null; conventions: boolean }) => {
-    if (!client.registered) return { ok: false, detail: '未注册，运行安装脚本' };
-    if (!client.conventions) return { ok: false, detail: '已注册，使用约定未写入' };
-    return { ok: true, detail: client.transport === 'stdio' ? '已接入 · 本地进程' : '已接入 · 共享服务' };
-  };
+// Each agent installation as the owner knows it: the app, where it runs, and its icon tone.
+const AGENT_LOOK: Record<StudioMemoryAgentId, { name: string; place: string; tone: string; mark: string }> = {
+  'claude-wsl': { name: 'Claude Code', place: 'WSL', tone: 'clay', mark: 'C' },
+  'codex-wsl': { name: 'Codex', place: 'WSL', tone: 'graphite', mark: 'O' },
+  'claude-windows': { name: 'Claude Code', place: 'Windows', tone: 'clay', mark: 'C' },
+  'codex-windows': { name: 'Codex', place: 'Windows', tone: 'graphite', mark: 'O' },
+};
+
+type AgentRow = { id: string; name: string; place: string | null; tone: string; mark: ReactNode; state: 'ok' | 'warn' | 'absent'; detail: string };
+// What a row says, most fundamental gap first; only a registration of the shared server with the conventions is green.
+function agentRow(agent: StudioMemoryAgentStatus): AgentRow {
+  const look = AGENT_LOOK[agent.id];
+  const row = { id: agent.id, name: look.name, place: look.place, tone: look.tone, mark: look.mark };
+  if (!agent.installed) return { ...row, state: 'absent', detail: '未安装' };
+  if (!agent.registered) return { ...row, state: 'warn', detail: '未接入共享记忆' };
+  if (agent.transport === 'stdio') return { ...row, state: 'warn', detail: '注册的是独立进程，不是共享服务' };
+  if (!agent.shared) return { ...row, state: 'warn', detail: '注册的地址不是共享服务' };
+  if (!agent.conventions) return { ...row, state: 'warn', detail: '已注册，使用约定未写入' };
+  return { ...row, state: 'ok', detail: '已接入 · 共享服务' };
+}
+function agentRows(status: StudioMemoryStatus): AgentRow[] {
+  const { deepseek } = status;
   return [
-    { id: 'claude', name: 'Claude Code', tone: 'clay', mark: 'C', ...wired(claude) },
-    { id: 'codex', name: 'Codex', tone: 'graphite', mark: 'O', ...wired(codex) },
+    ...status.agents.map(agentRow),
     {
-      id: 'deepseek', name: 'Studio DeepSeek', tone: 'slate', mark: <Sparkles size={16} strokeWidth={1.8} />,
-      ok: deepseek.enabled && status.reachable,
+      id: 'deepseek', name: 'Studio DeepSeek', place: null, tone: 'slate', mark: <Sparkles size={16} strokeWidth={1.8} />,
+      state: deepseek.enabled && status.reachable ? 'ok' : 'warn',
       detail: !deepseek.enabled ? '已关闭（STUDIO_MEMORY_DEEPSEEK）' : status.reachable ? '回复前查阅记忆' : '等待记忆服务',
     },
   ];
+}
+// One line per distinct fix, naming the agents it completes, so the install script is shown once for all of them.
+function fixesOf(status: StudioMemoryStatus) {
+  const fixes: { where: string; command: string; agents: string[] }[] = [];
+  for (const agent of status.agents) {
+    if (!agent.fix) continue;
+    const label = `${AGENT_LOOK[agent.id].name} · ${AGENT_LOOK[agent.id].place}`;
+    const same = fixes.find(item => item.command === agent.fix?.command);
+    if (same) same.agents.push(label);
+    else fixes.push({ ...agent.fix, agents: [label] });
+  }
+  return fixes;
 }
 
 function MemoryStatusCard({ status, statusError, total }: { status: StudioMemoryStatus | null; statusError: string; total: number | null }) {
@@ -52,23 +77,49 @@ function MemoryStatusCard({ status, statusError, total }: { status: StudioMemory
       ? <div className="memory-card memory-status"><p className="memory-status-error" role="alert"><AlertTriangle size={16} aria-hidden="true" />{statusError}</p></div>
       : <div className="memory-card memory-status" role="status" aria-label="正在读取记忆状态"><div className="memory-status-skeleton"><i /><i /><i /></div></div>;
   }
+  const server = status.reachable
+    ? { dot: 'good', title: '记忆库在线', detail: [status.notesPath, total !== null ? `${total} 条笔记` : null].filter(Boolean).join(' · ') }
+    : status.slow
+      ? { dot: 'warn', title: '记忆服务响应慢', detail: '已连上，但没有及时回答；稍后刷新再看' }
+      : { dot: 'bad', title: '记忆服务未运行', detail: '启动后三个助手才能读写记忆' };
+  const fixes = fixesOf(status);
+  const copy = async (command: string) => {
+    if (await copyTextToClipboard(command)) toast('已复制命令');
+    else toast.error('无法复制，请手动选中命令');
+  };
   return <section className="memory-card memory-status" aria-labelledby="memory-status-title">
     <div className="memory-server">
-      <span className={`status-dot ${status.reachable ? 'good' : 'bad'}`} aria-hidden="true" />
+      <span className={`status-dot ${server.dot}`} aria-hidden="true" />
       <div>
-        <h2 id="memory-status-title">{status.reachable ? '记忆库在线' : '记忆服务未运行'}</h2>
-        <p>{status.reachable
-          ? [status.notesPath, total !== null ? `${total} 条笔记` : null].filter(Boolean).join(' · ')
-          : '启动后三个助手才能读写记忆'}</p>
+        <h2 id="memory-status-title">{server.title}</h2>
+        <p>{server.detail}</p>
       </div>
     </div>
     <ul className="memory-agents" aria-label="接入的助手">
-      {agentsOf(status).map(agent => <li key={agent.id} className={agent.ok ? 'ok' : 'warn'}>
+      {agentRows(status).map(agent => <li key={agent.id} className={agent.state}>
         <span className={`home-icon small tone-${agent.tone} memory-agent-mark`} aria-hidden="true">{agent.mark}</span>
-        <span className="memory-agent-body"><strong>{agent.name}</strong><small>{agent.detail}</small></span>
-        {agent.ok ? <Check size={17} className="memory-agent-state" aria-label="正常" /> : <AlertTriangle size={16} className="memory-agent-state" aria-label="需要处理" />}
+        <span className="memory-agent-body">
+          <span className="memory-agent-name"><strong>{agent.name}</strong>{agent.place && <span className="memory-agent-place">{agent.place}</span>}</span>
+          <small>{agent.detail}</small>
+        </span>
+        {agent.state === 'ok'
+          ? <Check size={17} className="memory-agent-state" aria-label="正常" />
+          : agent.state === 'warn'
+            ? <AlertTriangle size={16} className="memory-agent-state" aria-label="需要处理" />
+            : <Minus size={16} className="memory-agent-state" aria-label="未安装" />}
       </li>)}
     </ul>
+    {fixes.length > 0 && <ul className="memory-fixes" aria-label="接入方法">
+      {fixes.map(fix => <li key={fix.command}>
+        <p><strong>{fix.agents.join('、')}</strong>：{fix.where}</p>
+        <div className="memory-fix-command">
+          <code>{fix.command}</code>
+          <button type="button" className="memory-copy" aria-label={`复制命令 ${fix.command}`} title="复制命令" onClick={() => void copy(fix.command)}>
+            <Copy size={15} aria-hidden="true" />
+          </button>
+        </div>
+      </li>)}
+    </ul>}
   </section>;
 }
 
@@ -76,12 +127,13 @@ function MemoryGuide() {
   return <section className="memory-guide" aria-labelledby="memory-guide-title">
     <h2 id="memory-guide-title">它怎么工作</h2>
     <ul>
-      <li>Claude Code 和 Codex 开工前先在这里搜索，把项目事实、决定和你的偏好记成笔记。</li>
-      <li>Studio 里的 DeepSeek 回复前会查阅本项目和全局的笔记，也能自己记下要点。</li>
+      <li>WSL 和 Windows 上的 Claude Code、Codex 开工前先在这里搜索，把项目事实、决定和你的偏好记成笔记。</li>
+      <li>项目里的 DeepSeek 回复前会查阅本项目和全局笔记，通用 DeepSeek 只查阅全局笔记；疑似含密钥的笔记不会发给它。</li>
+      <li>笔记只是参考资料，不是指令：助手不会照着笔记执行命令、改配置或外发数据。</li>
       <li>笔记是 <code>~/studio-memory</code> 里的 Markdown 文件，按项目分文件夹，跨项目的放在 global，可以直接编辑。</li>
       <li>不要让任何助手记下密钥、令牌或密码；看到不对的记忆，打开后删除。</li>
     </ul>
-    <p>修复或重新接入：在 WSL 里运行 <code>bash scripts/wsl/install-memory.sh</code>，说明见 docs/memory.md。</p>
+    <p>修复或重新接入：在 WSL 里运行 <code>bash scripts/wsl/install-memory.sh</code>，它会同时接入 Windows 上的应用；说明见 docs/memory.md。</p>
   </section>;
 }
 
@@ -127,7 +179,7 @@ export function StudioMemory({ refreshing = false }: { refreshing?: boolean }) {
 
   const header = memory.searching
     ? { title: '搜索结果', caption: memory.searchPending && !memory.results ? '' : `${notes?.length ?? 0} 条` }
-    : { title: '最近更新', caption: memory.recent ? `共 ${memory.recent.total} 条` : '' };
+    : { title: '最近更新', caption: memory.recent ? `${memory.folder ? '本文件夹' : '共'} ${memory.recent.total} 条` : '' };
 
   return <div className="memory-app">
     <div className="memory-main">
@@ -135,9 +187,15 @@ export function StudioMemory({ refreshing = false }: { refreshing?: boolean }) {
         <label className="ios-search memory-search">
           <Search size={17} aria-hidden="true" />
           <span className="studio-visually-hidden">搜索记忆</span>
-          <input type="search" value={memory.query} placeholder="搜索决定、偏好和项目事实" enterKeyHint="search" autoComplete="off"
+          {/* 200 characters is the server's limit for a search. While pinyin is being composed the marked text
+              stays in the box but is not searched; the chosen characters are searched on compositionend. */}
+          <input type="search" value={memory.query} placeholder="搜索决定、偏好和项目事实" enterKeyHint="search" autoComplete="off" maxLength={200}
             onChange={event => memory.setQuery(event.target.value)}
-            onKeyDown={event => { if (event.key === 'Escape' && memory.query) { event.preventDefault(); memory.setQuery(''); } }} />
+            onCompositionStart={() => memory.setComposing(true)}
+            onCompositionEnd={event => { memory.setComposing(false); memory.setQuery(event.currentTarget.value); }}
+            onKeyDown={event => {
+              if (event.key === 'Escape' && memory.query && !event.nativeEvent.isComposing) { event.preventDefault(); memory.setQuery(''); }
+            }} />
           {memory.searchPending && <StudioSpinner size={15} />}
           {memory.query && <button type="button" className="memory-search-clear" aria-label="清除搜索" onClick={() => memory.setQuery('')}><X size={14} strokeWidth={2.4} aria-hidden="true" /></button>}
         </label>

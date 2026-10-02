@@ -21,8 +21,9 @@ export function createFakeMemory(notes: Array<Partial<FakeNote> & { permalink: s
     });
   }
   const calls: Call[] = [];
-  // `slowTools` time out the way a busy server does (the session stays up; ping still answers).
-  const state = { down: false, delayMs: 0, slowTools: [] as string[] };
+  // `slowTools` time out the way a busy server does (the session stays up; ping still answers); `slowPing` makes the
+  // ping time out too, like a server that accepts connections but cannot answer yet.
+  const state = { down: false, delayMs: 0, slowTools: [] as string[], slowPing: false };
 
   const row = (note: FakeNote) => ({
     title: note.title, type: 'entity', score: -1, entity: note.permalink, permalink: note.permalink,
@@ -46,17 +47,31 @@ export function createFakeMemory(notes: Array<Partial<FakeNote> & { permalink: s
         return { results: results.map(row), current_page: 1, page_size: args.page_size ?? 10, total: results.length, has_more: false };
       }
       case 'list_directory': {
-        const folders = [...new Set(all.filter(note => note.filePath.includes('/')).map(note => note.filePath.split('/')[0]))];
-        return {
-          nodes: [
-            ...folders.map(folder => ({ name: folder, directory_path: `/${folder}`, type: 'directory', children: [], permalink: null, updated_at: null })),
-            ...all.map(note => ({
-              name: note.filePath.split('/').at(-1), file_path: note.filePath, directory_path: `/${note.filePath}`, type: 'file', children: [],
-              title: note.title, permalink: note.permalink, content_type: 'text/markdown', updated_at: note.updatedAt,
-            })),
-          ],
-          total: folders.length + all.length,
-        };
+        // Like basic-memory 0.23: every node `depth` levels below `dir_name`, flat, directories first; the glob only
+        // filters which nodes are returned (directories never match `*.md`); `total` counts them all before paging.
+        const dir = String(args.dir_name ?? '/').replace(/^\/+|\/+$/g, '');
+        const depth = Number(args.depth ?? 1);
+        const glob = typeof args.file_name_glob === 'string' ? args.file_name_glob : null;
+        const page = Number(args.page ?? 1);
+        const size = Number(args.page_size ?? 10);
+        const directories = new Set<string>();
+        const files: FakeNote[] = [];
+        for (const note of all) {
+          if (dir && !note.filePath.startsWith(`${dir}/`)) continue;
+          const parts = (dir ? note.filePath.slice(dir.length + 1) : note.filePath).split('/');
+          for (let level = 1; level < parts.length && level <= depth; level++) directories.add([dir, ...parts.slice(0, level)].filter(Boolean).join('/'));
+          if (parts.length <= depth && (!glob || (glob === '*.md' && note.filePath.endsWith('.md')))) files.push(note);
+        }
+        if (args.sort === 'updated_desc') files.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        const nodes = [
+          ...(glob ? [] : [...directories].sort().map(directory => ({ name: directory.split('/').at(-1), directory_path: `/${directory}`, type: 'directory', children: [], permalink: null, updated_at: null }))),
+          ...files.map(note => ({
+            name: note.filePath.split('/').at(-1), file_path: note.filePath, directory_path: `/${note.filePath}`, type: 'file', children: [],
+            title: note.title, permalink: note.permalink, content_type: 'text/markdown', updated_at: note.updatedAt,
+          })),
+        ];
+        const start = (page - 1) * size;
+        return { nodes: nodes.slice(start, start + size), page, page_size: size, total: nodes.length, has_more: start + size < nodes.length };
       }
       case 'read_note': {
         const identifier = String(args.identifier);
@@ -103,6 +118,7 @@ export function createFakeMemory(notes: Array<Partial<FakeNote> & { permalink: s
     call,
     async ping() {
       if (state.down) throw new AppError('共享记忆服务未运行或无法连接', { statusCode: 503, code: 'MEMORY_UNAVAILABLE' });
+      if (state.slowPing) throw new AppError('共享记忆服务响应超时，请稍后重试', { statusCode: 504, code: 'MEMORY_TIMEOUT' });
     },
   };
   return { client, store, calls, state, callsNamed: (name: string) => calls.filter(item => item.name === name) };

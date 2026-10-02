@@ -45,13 +45,20 @@ const RECENT: StudioMemoryRecent = {
   ],
   total: 3,
 };
+const SCRIPT = { where: '在 WSL 的仓库目录运行', command: 'bash scripts/wsl/install-memory.sh' };
+const WINDOWS_CLAUDE_COMMAND = 'claude mcp add -s user -t http studio-memory http://127.0.0.1:8770/mcp';
 const STATUS: StudioMemoryStatus = {
-  reachable: true, url: 'http://127.0.0.1:8770/mcp', project: 'studio', notesPath: '~/studio-memory',
-  clients: {
-    claude: { registered: true, transport: 'http', conventions: true },
-    codex: { registered: true, transport: 'http', conventions: false },
-    deepseek: { enabled: true },
-  },
+  reachable: true, slow: false, url: 'http://127.0.0.1:8770/mcp', project: 'studio', notesPath: '~/studio-memory',
+  agents: [
+    { id: 'claude-wsl', installed: true, registered: true, transport: 'http', shared: true, conventions: true, config: '~/.claude.json', fix: null },
+    { id: 'codex-wsl', installed: true, registered: true, transport: 'http', shared: true, conventions: false, config: '~/.codex/config.toml', fix: SCRIPT },
+    {
+      id: 'claude-windows', installed: true, registered: false, transport: null, shared: false, conventions: false, config: 'C:\\Users\\owner\\.claude.json',
+      fix: { where: '在 Windows PowerShell 运行', command: WINDOWS_CLAUDE_COMMAND },
+    },
+    { id: 'codex-windows', installed: true, registered: true, transport: 'stdio', shared: false, conventions: true, config: 'C:\\Users\\owner\\.codex\\config.toml', fix: SCRIPT },
+  ],
+  deepseek: { enabled: true },
 };
 const DETAIL: StudioMemoryNoteDetail = {
   ...NOTES[0], tags: ['claude', 'ops'], truncated: false,
@@ -63,7 +70,10 @@ afterEach(() => cleanup());
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.memory.status.mockImplementation(async () => Response.json(STATUS));
-  mocks.memory.recent.mockImplementation(async (folder?: string) => Response.json({ ...RECENT, notes: folder ? NOTES.filter(note => note.folder === folder) : NOTES }));
+  mocks.memory.recent.mockImplementation(async (folder?: string) => {
+    const notes = folder ? NOTES.filter(note => note.folder === folder) : NOTES;
+    return Response.json({ ...RECENT, notes, total: notes.length });
+  });
   mocks.memory.search.mockImplementation(async (q: string) => Response.json({
     notes: q.includes('部署') ? [{ ...NOTES[0], snippet: '部署使用 systemd 用户服务，端口 3002。' }] : [],
   }));
@@ -86,6 +96,43 @@ describe('记忆 app', () => {
     expect(within(agents).getByText('已接入 · 共享服务')).toBeTruthy();
     expect(within(agents).getByText('已注册，使用约定未写入')).toBeTruthy();
     expect(within(agents).getByText('回复前查阅记忆')).toBeTruthy();
+  });
+
+  it('reports every agent installation truthfully and shows each fix once, ready to copy', async () => {
+    render(<StudioMemory />);
+    const agents = await screen.findByRole('list', { name: '接入的助手' });
+    const rows = within(agents).getAllByRole('listitem');
+    expect(rows.map(row => row.querySelector('.memory-agent-body')?.textContent)).toEqual([
+      'Claude CodeWSL已接入 · 共享服务',
+      'CodexWSL已注册，使用约定未写入',
+      'Claude CodeWindows未接入共享记忆',
+      'CodexWindows注册的是独立进程，不是共享服务',
+      'Studio DeepSeek回复前查阅记忆',
+    ]);
+    // Only a shared registration with the conventions is green; the Windows apps are not.
+    expect(rows.map(row => row.className)).toEqual(['ok', 'warn', 'warn', 'warn', 'ok']);
+    const fixes = within(screen.getByRole('list', { name: '接入方法' })).getAllByRole('listitem');
+    expect(fixes).toHaveLength(2);
+    expect(fixes[0].textContent).toContain('Codex · WSL、Codex · Windows：在 WSL 的仓库目录运行');
+    expect(fixes[1].textContent).toContain(WINDOWS_CLAUDE_COMMAND);
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    fireEvent.click(within(fixes[0]).getByRole('button', { name: '复制命令 bash scripts/wsl/install-memory.sh' }));
+    await waitFor(() => expect(mocks.toast).toHaveBeenCalledWith('已复制命令'));
+    expect(writeText).toHaveBeenCalledWith('bash scripts/wsl/install-memory.sh');
+  });
+
+  it('keeps a missing app quiet and tells a slow server apart from a stopped one', async () => {
+    mocks.memory.status.mockImplementation(async () => Response.json({
+      ...STATUS, reachable: false, slow: true,
+      agents: [{ ...STATUS.agents[0] }, { ...STATUS.agents[1], installed: false, registered: false, transport: null, shared: false, conventions: false, fix: null }],
+    }));
+    render(<StudioMemory />);
+    expect(await screen.findByText('记忆服务响应慢')).toBeTruthy();
+    const rows = within(screen.getByRole('list', { name: '接入的助手' })).getAllByRole('listitem');
+    expect(rows[1].className).toBe('absent');
+    expect(within(rows[1]).getByText('未安装')).toBeTruthy();
+    expect(screen.queryByRole('list', { name: '接入方法' })).toBeNull();
   });
 
   it('searches after typing pauses, marks the words and explains an empty result', async () => {
@@ -112,6 +159,26 @@ describe('记忆 app', () => {
     await waitFor(() => expect(mocks.memory.recent).toHaveBeenLastCalledWith('global', expect.any(AbortSignal)));
     await waitFor(() => expect(screen.queryByRole('button', { name: /部署方式/ })).toBeNull());
     expect(within(chips).getByRole('button', { name: '全局' }).getAttribute('aria-pressed')).toBe('true');
+    // The count follows the filter instead of repeating the whole memory's total.
+    expect(screen.getByText('本文件夹 1 条')).toBeTruthy();
+    expect(screen.queryByText('共 3 条')).toBeNull();
+  });
+
+  it('waits for pinyin to become characters before searching, and caps the query at the server limit', async () => {
+    render(<StudioMemory />);
+    await screen.findByRole('button', { name: /部署方式/ });
+    const box = screen.getByPlaceholderText('搜索决定、偏好和项目事实') as HTMLInputElement;
+    expect(box.maxLength).toBe(200);
+    fireEvent.compositionStart(box);
+    fireEvent.change(box, { target: { value: "bu'shu" } });
+    await new Promise(resolve => setTimeout(resolve, 400));
+    expect(mocks.memory.search).not.toHaveBeenCalled();
+    expect(screen.queryByText(/没有找到/)).toBeNull();
+    expect(screen.getByRole('button', { name: /部署方式/ })).toBeTruthy();
+    fireEvent.change(box, { target: { value: '部署' } });
+    fireEvent.compositionEnd(box);
+    await waitFor(() => expect(mocks.memory.search).toHaveBeenCalledWith('部署', undefined, expect.any(AbortSignal)));
+    expect(mocks.memory.search).toHaveBeenCalledTimes(1);
   });
 
   it('reads a note as escaped Markdown and turns its keywords into searches', async () => {

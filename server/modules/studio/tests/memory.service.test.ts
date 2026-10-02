@@ -11,7 +11,8 @@ const NOTES = [
   { permalink: 'studio/snr3-lab/回放', title: '回放', content: 'K 线回放只读，不交易。', tags: ['codex'] },
 ];
 
-function fixture(files: Record<string, string> = {}, notes = NOTES) {
+// `files` are readable text files; `dirs` list directory entries (a directory not named here is missing).
+function fixture(files: Record<string, string> = {}, notes: Parameters<typeof createFakeMemory>[0] = NOTES, options: { windowsHome?: string; dirs?: Record<string, string[]> } = {}) {
   const fake = createFakeMemory(notes);
   let clock = 1_000_000;
   const service = createMemoryService({
@@ -19,7 +20,9 @@ function fixture(files: Record<string, string> = {}, notes = NOTES) {
     url: 'http://127.0.0.1:8770/mcp',
     deepseekEnabled: true,
     home: '/home/owner',
-    readText: file => files[file] ?? null,
+    windowsHome: options.windowsHome ?? null,
+    readText: async file => files[file] ?? null,
+    listDir: dir => options.dirs?.[dir] ?? [],
     now: () => clock,
     projects: userId => (userId === 1 ? [{ id: 'p1', name: 'Agent Cloud Studio', tone: 'slate', glyph: 'terminal', folder: 'agent-cloud-studio' }] : []),
   });
@@ -76,7 +79,31 @@ test('recent lists the newest notes first with decorated folders', async () => {
   assert.equal(all.folders[0].project, null);
   const scoped = await service.recent({ userId: 2, folder: 'global' });
   assert.deepEqual(scoped.notes.map(note => note.id), ['studio/global/语言偏好']);
+  assert.equal(scoped.total, 1, 'the total counts the selected folder only');
   assert.equal(scoped.folders[1].project, null, 'another user sees no project icons');
+});
+
+test('recent stays right past one listing page: quiet folders, deep notes and exact totals', async () => {
+  // 230 fresh notes in one folder would fill the first 200-node page; the older notes elsewhere must still show.
+  const busy = Array.from({ length: 230 }, (_, index) => ({
+    permalink: `studio/busy/n${index}`, title: `n${index}`, updatedAt: `2026-10-02T${String(10 + Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}:00Z`,
+  }));
+  const quiet = [
+    { permalink: 'studio/quiet/old', title: 'old', updatedAt: '2026-01-01T10:00:00Z' },
+    { permalink: 'studio/quiet/older', title: 'older', updatedAt: '2025-06-01T10:00:00Z' },
+    { permalink: 'studio/quiet/a/b/c/deep', title: 'deep', filePath: 'quiet/a/b/c/deep.md', updatedAt: '2025-01-01T10:00:00Z' },
+  ];
+  const { fake, service } = fixture({}, [...busy, ...quiet]);
+  const all = await service.recent({ limit: 40 });
+  assert.equal(all.total, 233, 'every note counts, not just one page');
+  assert.equal(all.notes.length, 40);
+  assert.equal(all.notes[0].title, 'n229', 'newest first');
+  assert.deepEqual(all.folders.map(folder => folder.name), ['busy', 'quiet'], 'a folder whose notes are all old keeps its chip');
+  const scoped = await service.recent({ folder: 'quiet' });
+  assert.deepEqual(scoped.notes.map(note => note.title), ['old', 'older', 'deep'], 'notes in subfolders are listed too');
+  assert.equal(scoped.total, 3);
+  // The folder is listed on the server, never filtered out of a capped global page.
+  assert.ok(fake.callsNamed('list_directory').some(item => item.args.dir_name === '/quiet' && item.args.file_name_glob === '*.md'));
 });
 
 test('read returns the body without frontmatter and refuses title fallbacks', async () => {
@@ -141,6 +168,11 @@ test('secret-looking content is rejected without echoing the value', async () =>
     'postgres://owner:s3cretpass@localhost:5432/db',
     'AKIAIOSFODNN7EXAMPLE',
     'x9F2kQ7pL0vB3nM8zR4tY6wE1aS5dG7hJ2kL9',
+    // Natural-language forms a model copies from the user's words.
+    'my password is Hunter2xyz',
+    'the api key is 9f8e7d6c5b4a',
+    '密码 Hunter2xyz',
+    'wifi password Hunter2xyz!',
   ];
   for (const content of secrets) {
     await assert.rejects(service.write({ ...base, content }), (error: { statusCode?: number; message: string }) => {
@@ -152,36 +184,124 @@ test('secret-looking content is rejected without echoing the value', async () =>
   assert.equal(fake.callsNamed('write_note').length, 0);
   // Ordinary technical notes still pass: hex hashes, paths, the word password in prose.
   const harmless = 'commit 0baef82c4f9e1a2b3c4d5e6f7a8b9c0d1e2f3a4b；文件 server/modules/studio/memory/memory-chat.service.ts；'
-    + '密码由 1Password 管理，不写在这里。端口 8770。';
+    + '密码由 1Password 管理，不写在这里。端口 8770。The token is stored in the vault; token budget 4096; '
+    + 'SSH private key ed25519 lives at private key ~/.ssh/id_ed25519；私钥 放在 ~/.ssh 里。';
   assert.equal((await service.write({ ...base, title: '约定', content: harmless })).action, 'created');
 });
 
-test('status reports reachability, the notes path and each client', async () => {
+test('a model may only overwrite its own notes', async () => {
+  const notes = [
+    { permalink: 'studio/global/部署约定', title: '部署约定', content: 'Claude 记下的约定。', tags: ['claude'] },
+    { permalink: 'studio/global/手写', title: '手写', content: '主人自己写的。', tags: [] },
+    { permalink: 'studio/global/回答风格', title: '回答风格', content: '简洁。', tags: ['deepseek'] },
+  ];
+  const { fake, service } = fixture({}, notes);
+  const base = { content: '改写后的内容', folder: 'global', tags: [], keywords: [], overwrite: true, source: 'deepseek' as const };
+  await assert.rejects(service.write({ ...base, title: '部署约定' }), (error: { statusCode?: number; code?: string; message: string }) =>
+    error.statusCode === 409 && error.code === 'MEMORY_NOTE_PROTECTED' && /Claude Code/.test(error.message));
+  await assert.rejects(service.write({ ...base, title: '手写' }), /别人/);
+  assert.equal(fake.callsNamed('write_note').length, 0, 'protected notes never reach write_note');
+  assert.equal((await service.write({ ...base, title: '回答风格' })).action, 'updated', 'its own note can be replaced');
+  assert.equal((await service.write({ ...base, title: '新主题' })).action, 'created', 'overwrite without a namesake just creates');
+});
+
+const MEMORY_URL = 'http://127.0.0.1:8770/mcp';
+const MARKED = '# 语言\n\n<!-- studio-memory:begin -->\n...\n<!-- studio-memory:end -->\n';
+const WIN = '/mnt/c/Users/owner';
+
+test('status reports reachability, the notes path and each WSL agent', async () => {
   const files = {
-    '/home/owner/.claude.json': JSON.stringify({ oauthAccount: { secret: 'x' }, mcpServers: { 'studio-memory': { type: 'http', url: 'http://127.0.0.1:8770/mcp' } } }),
-    '/home/owner/.codex/config.toml': '[mcp_servers.other]\ncommand = "x"\n\n[mcp_servers.studio-memory]\nurl = "http://127.0.0.1:8770/mcp"\n',
-    '/home/owner/.claude/CLAUDE.md': '# 语言\n\n<!-- studio-memory:begin -->\n...\n<!-- studio-memory:end -->\n',
+    '/home/owner/.claude.json': JSON.stringify({ oauthAccount: { secret: 'x' }, mcpServers: { 'studio-memory': { type: 'http', url: MEMORY_URL } } }),
+    '/home/owner/.codex/config.toml': `[mcp_servers.other]\ncommand = "x"\n\n[mcp_servers.studio-memory]\nurl = "${MEMORY_URL}"\n`,
+    '/home/owner/.claude/CLAUDE.md': MARKED,
   };
   const { fake, service } = fixture(files);
   const status = await service.status();
   assert.deepEqual(status, {
-    reachable: true, url: 'http://127.0.0.1:8770/mcp', project: 'studio', notesPath: '~/studio-memory',
-    clients: {
-      claude: { registered: true, transport: 'http', conventions: true },
-      codex: { registered: true, transport: 'http', conventions: false },
-      deepseek: { enabled: true },
-    },
+    reachable: true, slow: false, url: MEMORY_URL, project: 'studio', notesPath: '~/studio-memory',
+    agents: [
+      { id: 'claude-wsl', installed: true, registered: true, transport: 'http', shared: true, conventions: true, config: '~/.claude.json', fix: null },
+      {
+        id: 'codex-wsl', installed: true, registered: true, transport: 'http', shared: true, conventions: false, config: '~/.codex/config.toml',
+        fix: { where: '在 WSL 的仓库目录运行', command: 'bash scripts/wsl/install-memory.sh' },
+      },
+    ],
+    deepseek: { enabled: true },
   });
   assert.ok(!JSON.stringify(status).includes('oauthAccount'));
 
   fake.state.down = true;
   const offline = await fixture({}).service.status();
-  assert.equal(offline.clients.claude.registered, false);
-  assert.equal(offline.clients.codex.registered, false);
+  assert.equal(offline.agents[0].installed, false, 'an agent without any config is not installed');
+  assert.equal(offline.agents[0].fix, null, 'and is not asked to be fixed');
   const down = await service.status();
   assert.equal(down.reachable, false);
+  assert.equal(down.slow, false);
   assert.equal(down.notesPath, null);
-  assert.equal(down.clients.claude.registered, true, 'client checks do not need the server');
+  assert.equal(down.agents[0].shared, true, 'agent checks do not need the server');
+});
+
+test('status checks the Windows desktop apps from their own configs, and is only green when they share the server', async () => {
+  const files = {
+    [`${WIN}/.claude.json`]: JSON.stringify({ projects: {}, mcpServers: {} }),
+    [`${WIN}/.claude/CLAUDE.md`]: '# 语言\n',
+    // localhost and 127.0.0.1 name the same server (Windows reaches WSL's loopback through localhost forwarding).
+    [`${WIN}/.codex/config.toml`]: '[mcp_servers.node_repl]\ncommand = "node"\n\n[mcp_servers.studio-memory]\nurl = "http://localhost:8770/mcp/"\n',
+    [`${WIN}/.codex/AGENTS.md`]: MARKED,
+  };
+  // The Store app's %APPDATA% is virtualized: WSL finds its CLI under Packages\Claude_*\LocalCache\Roaming.
+  const bundled = `${WIN}/AppData/Local/Packages/Claude_pzs8/LocalCache/Roaming/Claude/claude-code`;
+  const dirs = {
+    [`${WIN}/AppData/Local/Packages`]: ['Microsoft.Photos_8wek', 'Claude_pzs8'],
+    [bundled]: ['2.1.286'], [`${bundled}/2.1.286`]: ['635c'], [`${bundled}/2.1.286/635c`]: ['claude.exe'],
+  };
+  const { service } = fixture(files, NOTES, { windowsHome: WIN, dirs });
+  const status = await service.status();
+  assert.deepEqual(status.agents.map(agent => agent.id), ['claude-wsl', 'codex-wsl', 'claude-windows', 'codex-windows']);
+  const [, , claude, codex] = status.agents;
+  // Windows Claude Code is registered through its own CLI on Windows (here the desktop app's bundled one, which is
+  // not on PATH), never by editing its .claude.json.
+  assert.deepEqual(claude, {
+    id: 'claude-windows', installed: true, registered: false, transport: null, shared: false, conventions: false,
+    config: 'C:\\Users\\owner\\.claude.json',
+    fix: {
+      where: '在 Windows PowerShell 运行',
+      command: String.raw`$claude = (Get-ChildItem "$env:LOCALAPPDATA\Packages\Claude_*\LocalCache\Roaming\Claude\claude-code\*\*\claude.exe", `
+        + String.raw`"$env:APPDATA\Claude\claude-code\*\*\claude.exe" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1).FullName; `
+        + `& $claude mcp add -s user -t http studio-memory ${MEMORY_URL}`,
+    },
+  });
+  assert.deepEqual(codex, {
+    id: 'codex-windows', installed: true, registered: true, transport: 'http', shared: true, conventions: true,
+    config: 'C:\\Users\\owner\\.codex\\config.toml', fix: null,
+  });
+
+  // No CLI at all: install one first. A wrong entry is removed before the right one is added.
+  const wrong = { ...files, [`${WIN}/.claude.json`]: JSON.stringify({ mcpServers: { 'studio-memory': { type: 'stdio', command: 'basic-memory' } } }) };
+  const manual = await fixture(wrong, NOTES, { windowsHome: WIN }).service.status();
+  assert.deepEqual(manual.agents[2].fix, {
+    where: '先在 Windows 安装 Claude Code 命令行，再在 PowerShell 运行',
+    command: `claude mcp remove studio-memory -s user; claude mcp add -s user -t http studio-memory ${MEMORY_URL}`,
+  });
+  // Registered and shared, only the conventions missing: the WSL script writes them through /mnt/c.
+  const registered = { ...files, [`${WIN}/.claude.json`]: JSON.stringify({ mcpServers: { 'studio-memory': { type: 'http', url: MEMORY_URL } } }) };
+  assert.equal((await fixture(registered, NOTES, { windowsHome: WIN }).service.status()).agents[2].fix?.command, 'bash scripts/wsl/install-memory.sh');
+});
+
+test('a registration that is not the shared server is not reported as wired', async () => {
+  const { service } = fixture({
+    '/home/owner/.claude.json': JSON.stringify({ mcpServers: { 'studio-memory': { type: 'http', url: 'http://127.0.0.1:9999/mcp' } } }),
+    '/home/owner/.claude/CLAUDE.md': MARKED,
+    '/home/owner/.codex/config.toml': '[mcp_servers."studio-memory"]\ncommand = "basic-memory"\nargs = ["mcp"]\n[mcp_servers.next]\nurl = "x"\n',
+    '/home/owner/.codex/AGENTS.md': MARKED,
+  });
+  const [claude, codex] = (await service.status()).agents;
+  assert.equal(claude.registered, true);
+  assert.equal(claude.shared, false, 'another port is another server');
+  assert.notEqual(claude.fix, null);
+  assert.equal(codex.transport, 'stdio');
+  assert.equal(codex.shared, false, 'a stdio registration runs its own basic-memory process');
+  assert.notEqual(codex.fix, null);
 });
 
 test('a server that answers the ping but is slow with its tools is still reported as running', async () => {
@@ -193,8 +313,10 @@ test('a server that answers the ping but is slow with its tools is still reporte
   assert.equal(status.notesPath, null);
 });
 
-test('a stdio registration in Codex is reported as such', async () => {
-  const { service } = fixture({ '/home/owner/.codex/config.toml': '[mcp_servers."studio-memory"]\ncommand = "basic-memory"\nargs = ["mcp"]\n[mcp_servers.next]\nurl = "x"\n' });
+test('a server that does not answer the ping in time is reported as slow, not stopped', async () => {
+  const { fake, service } = fixture();
+  fake.state.slowPing = true;
   const status = await service.status();
-  assert.deepEqual(status.clients.codex, { registered: true, transport: 'stdio', conventions: false });
+  assert.equal(status.reachable, false);
+  assert.equal(status.slow, true);
 });

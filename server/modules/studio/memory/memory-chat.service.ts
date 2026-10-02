@@ -7,9 +7,11 @@ import type {
 } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
+import { findMemorySecret } from './memory.service.js';
 import type { createMemoryService } from './memory.service.js';
 
-// The memory folder a conversation belongs to: a hub project's folder, or null for the general DeepSeek app.
+// The memory folder a conversation belongs to: a hub project's folder, or null for the general DeepSeek app
+// (which only sees `global`).
 type Scope = { folder: string | null; project: string | null };
 type Dependencies = {
   memory: ReturnType<typeof createMemoryService>;
@@ -42,9 +44,14 @@ function record(value: unknown): Json | null {
 function strings(value: unknown, limit: number) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').slice(0, limit) : [];
 }
+// Notes leave this machine for the DeepSeek API; one that looks like it holds a credential (Claude Code and Codex
+// write without Studio's checks) is withheld. Only the text that would be sent is checked.
+function sendable(note: StudioMemoryNoteSummary, excerpt = note.snippet) {
+  return findMemorySecret(`${note.title}\n${excerpt}`) === null;
+}
 
 function toolsFor(scope: Scope): StudioDeepseekTool[] {
-  const where = scope.folder ? `本项目文件夹（${scope.folder}）和 global` : '整个记忆库';
+  const where = scope.folder ? `本项目文件夹（${scope.folder}）和 global` : '全局笔记（global）';
   return [
     {
       type: 'function',
@@ -92,7 +99,7 @@ function toolsFor(scope: Scope): StudioDeepseekTool[] {
 }
 
 function background(scope: Scope, hits: StudioMemoryNoteSummary[], others: StudioMemoryNoteSummary[]) {
-  const where = scope.project ? `项目「${scope.project.slice(0, 80)}」（文件夹 ${scope.folder}）和 global` : '共享记忆库';
+  const where = scope.project ? `项目「${scope.project.slice(0, 80)}」（文件夹 ${scope.folder}）和 global` : '全局笔记（global）';
   const lines = [
     '',
     '',
@@ -119,20 +126,24 @@ function background(scope: Scope, hits: StudioMemoryNoteSummary[], others: Studi
 
 /**
  * Used by studio.module to connect Studio's DeepSeek chat to the shared memory: before each reply it searches the
- * conversation's project folder and `global` for the user's message and frames the top notes as untrusted
- * background data in the system prompt, then lets DeepSeek search, read and write notes through function calls
- * (at most four per reply, writes validated by the memory service). A memory server that is down only removes the
- * context and the tools; the reply itself goes ahead.
+ * conversation's project folder and `global` (only `global` in the general DeepSeek app) for the user's message
+ * and frames the top notes as untrusted background data in the system prompt, then lets DeepSeek search, read and
+ * write notes in the same scope through function calls (at most four per reply, writes validated by the memory
+ * service). Notes that look like they hold a credential are never sent. A memory server that is down only
+ * removes the context and the tools; the reply itself goes ahead.
  */
 export function createMemoryChatBridge(deps: Dependencies): StudioDeepseekMemoryBridge {
-  const allowed = (scope: Scope) => (scope.folder ? [scope.folder, GLOBAL] : null);
+  // Other projects' notes never reach the external API: a project conversation sees its folder and global, the
+  // general app global only.
+  const allowed = (scope: Scope) => (scope.folder ? [scope.folder, GLOBAL] : [GLOBAL]);
 
   async function context(scope: Scope, query: string, signal: AbortSignal) {
     try {
-      const hits = await deps.memory.search(query, { folders: allowed(scope), limit: CONTEXT_NOTES, mode: 'terms', signal });
+      const hits = (await deps.memory.search(query, { folders: allowed(scope), limit: CONTEXT_NOTES, mode: 'terms', signal })).filter(note => sendable(note));
       // A thin result in a project still shows what the project has recorded lately (titles only).
       const others = scope.folder && hits.length < 3
-        ? (await deps.memory.recent({ folder: scope.folder, limit: 6, signal })).notes.filter(note => !hits.some(hit => hit.id === note.id)).slice(0, 4)
+        ? (await deps.memory.recent({ folder: scope.folder, limit: 6, signal })).notes
+          .filter(note => !hits.some(hit => hit.id === note.id) && sendable(note, '')).slice(0, 4)
         : [];
       return { text: background(scope, hits, others), available: true };
     } catch (error) {
@@ -152,15 +163,19 @@ export function createMemoryChatBridge(deps: Dependencies): StudioDeepseekMemory
       if (call.function.name === 'memory_search') {
         const query = typeof args.query === 'string' ? args.query.trim() : '';
         if (!query || query.length > 200) return json({ error: 'query 需为 1–200 个字符' });
-        const notes = await deps.memory.search(query, { folders, limit: 6, signal });
-        return json({ notes: notes.map(note => ({ id: note.id, title: note.title, folder: note.folder, excerpt: quote(note.snippet, TOOL_EXCERPT) })) });
+        const found = (await deps.memory.search(query, { folders, limit: 6, signal }))
+          .map(note => ({ id: note.id, title: note.title, folder: note.folder, excerpt: quote(note.snippet, TOOL_EXCERPT) }));
+        const notes = found.filter(note => findMemorySecret(`${note.title}\n${note.excerpt}`) === null);
+        return json({ notes, ...(notes.length < found.length ? { withheld: found.length - notes.length, note: '疑似包含凭据的笔记不会发送' } : {}) });
       }
       if (call.function.name === 'memory_read') {
         const id = typeof args.id === 'string' ? args.id.trim() : '';
         if (!id || id.length > 400) return json({ error: 'id 无效' });
         const note = await deps.memory.read(id, signal);
-        if (folders && !folders.includes(note.folder)) return json({ error: '这条笔记不属于本项目或 global，无法读取' });
-        return json({ id: note.id, title: note.title, folder: note.folder, content: quote(note.content, TOOL_READ_CHARS) });
+        if (!folders.includes(note.folder)) return json({ error: scope.folder ? '这条笔记不属于本项目或 global，无法读取' : '通用对话只能读取 global 的笔记' });
+        const content = quote(note.content, TOOL_READ_CHARS);
+        if (!sendable(note, content)) return json({ error: '这条笔记疑似包含凭据，不会发送' });
+        return json({ id: note.id, title: note.title, folder: note.folder, content });
       }
       if (call.function.name === 'memory_write') {
         const target = args.folder === 'project' ? scope.folder : args.folder === GLOBAL ? GLOBAL : null;

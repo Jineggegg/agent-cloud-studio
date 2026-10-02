@@ -124,15 +124,48 @@
 .memory-server h2 { font-size: 17px; font-weight: 600; }
 .memory-server p { margin-top: 2px; font-size: 13px; color: var(--ios-label-2); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .status-dot.bad { background: var(--ios-red); }
+/* Connected but not answering in time: busy or starting, not stopped. */
+.status-dot.warn { background: var(--ios-orange); }
 .memory-agents { margin: 0; padding: 0 0 4px; list-style: none; }
 .memory-agents li { position: relative; display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 8px 16px; }
 .memory-agents li::before { content: ""; position: absolute; top: 0; right: 0; left: 60px; height: .5px; background: var(--ios-separator); }
 .memory-agent-mark { font-size: 15px; font-weight: 700; color: #fff; }
 .memory-agent-body { flex: 1; min-width: 0; display: grid; gap: 1px; }
-.memory-agent-body strong { font-size: 15px; font-weight: 500; }
+.memory-agent-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.memory-agent-body strong { font-size: 15px; font-weight: 500; white-space: nowrap; }
+/* Where the agent runs, as a quiet capsule: the same app appears once per environment. */
+.memory-agent-place {
+  flex-shrink: 0; padding: 0 6px; border-radius: 6px; font-size: 11.5px; font-weight: 600; line-height: 18px; letter-spacing: .01em;
+  color: var(--ios-label-2); background: var(--ios-fill);
+}
 .memory-agent-body small { font-size: 12.5px; line-height: 1.35; color: var(--ios-label-2); }
 .memory-agents li.ok .memory-agent-state { color: var(--ios-green); }
 .memory-agents li.warn :is(.memory-agent-state, small) { color: var(--ios-orange); }
+/* An app that is not installed is not a fault: it recedes instead of warning. */
+.memory-agents li.absent :is(strong, small, .memory-agent-state) { color: var(--ios-label-3); }
+.memory-agents li.absent .memory-agent-mark { opacity: .4; filter: saturate(.3); }
+
+/* The steps that finish the wiring, once per distinct command, selectable and copyable. */
+.memory-fixes { display: grid; gap: 14px; margin: 0; padding: 14px 16px 16px; list-style: none; border-top: .5px solid var(--ios-separator); }
+.memory-fixes p { font-size: 12.5px; line-height: 1.45; color: var(--ios-label-2); }
+.memory-fixes p strong { font-weight: 600; color: var(--ios-label); }
+.memory-fix-command { display: flex; align-items: center; gap: 4px; margin-top: 6px; padding: 5px 5px 5px 10px; border-radius: 10px; background: var(--ios-fill); }
+/* A long command (the Windows PowerShell line) stays four lines tall and scrolls inside its well instead of
+   taking over the card; copying or selecting still takes all of it. */
+.memory-status .memory-fix-command code {
+  flex: 1; min-width: 0; max-height: calc(1.45em * 4); overflow-y: auto; overscroll-behavior: contain; padding: 0; background: none;
+  font-size: 12.5px; line-height: 1.45; -webkit-user-select: all; user-select: all;
+  scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ios-label-3) 60%, transparent) transparent;
+}
+.memory-copy {
+  position: relative; flex-shrink: 0; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; color: var(--ios-tint);
+  transition: background-color var(--dur-fast) ease, transform var(--dur-slow) var(--ease-spring);
+}
+/* 32px glyph box, 44px hit area. */
+.memory-copy::before { content: ""; position: absolute; inset: -6px; }
+.memory-copy:active { transform: scale(.9); transition-duration: var(--dur-press); }
+.memory-copy:focus-visible { outline: 2px solid var(--ios-tint); outline-offset: 1px; }
+@media (hover: hover) { .memory-copy:hover { background: var(--ios-fill-pressed); } }
 .memory-status-error { display: flex; align-items: flex-start; gap: 8px; padding: 16px; font-size: 14px; color: var(--ios-red); }
 .memory-status-skeleton { display: grid; gap: 12px; padding: 18px 16px; }
 .memory-status-skeleton i { display: block; height: 12px; border-radius: 6px; background: var(--ios-fill); }

@@ -13,10 +13,10 @@ import { createMemoryMcpClient } from '../memory/memory-client.adapter.js';
 
 // A tiny in-process MCP server (no basic-memory needed): `echo` answers with structured content, `plain` with JSON
 // text, `broken` with a tool error, `slow` after 300 ms; any other name is a protocol error. `forget()` drops every session the way a
-// server restart does.
+// server restart does; `stats.initializeDelayMs` holds back the answer to initialize, like a server still starting.
 async function fakeServer(port = 0) {
   const sessions = new Map<string, StreamableHTTPServerTransport>();
-  const stats = { initialized: 0 };
+  const stats = { initialized: 0, initializeDelayMs: 0 };
   const app = express();
   app.use(express.json());
   app.post('/mcp', async (req, res) => {
@@ -26,6 +26,11 @@ async function fakeServer(port = 0) {
       if (id || !isInitializeRequest(req.body)) {
         res.status(404).json({ jsonrpc: '2.0', error: { code: -32001, message: 'Session not found' }, id: null });
         return;
+      }
+      if (stats.initializeDelayMs) {
+        await new Promise(resolve => setTimeout(resolve, stats.initializeDelayMs));
+        // The client gave up meanwhile; answering a closed socket would only throw.
+        if (res.destroyed || res.writableEnded) return;
       }
       stats.initialized += 1;
       const created = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), onsessioninitialized: value => { sessions.set(value, created); } });
@@ -112,6 +117,18 @@ test('a slow tool times out without marking the server down or dropping the sess
     assert.deepEqual(await client.call('echo', { next: true }), { next: true });
     await client.ping();
     assert.equal(server.stats.initialized, 1, 'the session that timed out is reused');
+  } finally { await server.close(); }
+});
+
+test('a slow initialize is a timeout, not a stopped server: the next call connects at once', async () => {
+  const server = await fakeServer();
+  // The clock never moves, so any fail-fast window would refuse the second call.
+  const client = createMemoryMcpClient({ url: server.url, now: () => 0, connectTimeoutMs: 80 });
+  try {
+    server.stats.initializeDelayMs = 400;
+    await assert.rejects(client.ping(), (error: { code?: string; statusCode?: number }) => error.code === 'MEMORY_TIMEOUT' && error.statusCode === 504);
+    server.stats.initializeDelayMs = 0;
+    assert.deepEqual(await client.call('echo', { after: 'timeout' }), { after: 'timeout' });
   } finally { await server.close(); }
 });
 

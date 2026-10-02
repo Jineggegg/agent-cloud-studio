@@ -30,7 +30,7 @@ import { createStudioNetworkRouter } from './network.routes.js';
 import { createQuotaService } from './quota/quota.service.js';
 import { createQuotaRouter } from './quota/quota.routes.js';
 import { createMemoryMcpClient } from './memory/memory-client.adapter.js';
-import { createMemoryService, memoryFolderName } from './memory/memory.service.js';
+import { createMemoryService, findWindowsHome, memoryFolderName } from './memory/memory.service.js';
 import { createMemoryChatBridge } from './memory/memory-chat.service.js';
 import { createMemoryRouter } from './memory/memory.routes.js';
 
@@ -199,14 +199,21 @@ export function createStudioModule() {
   // One MCP session with the shared basic-memory server (scripts/wsl/install-memory.sh, docs/memory.md) serves the
   // 记忆 app and the DeepSeek bridge. STUDIO_MEMORY_URL overrides the endpoint; STUDIO_MEMORY_DEEPSEEK=0 keeps
   // DeepSeek replies away from memory. A hub project's notes live in the folder named after its workspace.
+  // The status card also checks the Windows Claude Code and Codex apps: their home is found under /mnt/c/Users,
+  // or named by STUDIO_MEMORY_WINDOWS_HOME (empty or 0 turns the Windows checks off).
   const memoryUrl = process.env.STUDIO_MEMORY_URL?.trim() || 'http://127.0.0.1:8770/mcp';
-  const memoryForDeepseek = !['0', 'false', 'off', 'no'].includes((process.env.STUDIO_MEMORY_DEEPSEEK ?? '').trim().toLowerCase());
+  const memoryOff = (value: string) => ['0', 'false', 'off', 'no'].includes(value.trim().toLowerCase());
+  const memoryForDeepseek = !memoryOff(process.env.STUDIO_MEMORY_DEEPSEEK ?? '');
+  const memoryWindowsSetting = process.env.STUDIO_MEMORY_WINDOWS_HOME;
+  const memoryWindowsHome = memoryWindowsSetting === undefined ? findWindowsHome()
+    : memoryOff(memoryWindowsSetting) || !memoryWindowsSetting.trim() ? null : memoryWindowsSetting.trim();
   const memoryFolder = (item: { id: string; name: string; workspacePath: string; remoteDir: string }) =>
     memoryFolderName([item.workspacePath, item.remoteDir, item.name], item.id);
   const memory = createMemoryService({
     client: createMemoryMcpClient({ url: memoryUrl }),
     url: memoryUrl,
     deepseekEnabled: memoryForDeepseek,
+    windowsHome: memoryWindowsHome,
     projects: userId => hub.list(userId).map(item => ({ id: item.id, name: item.name, tone: item.tone, glyph: item.glyph, folder: memoryFolder(item) })),
   });
   if (memoryForDeepseek) {

@@ -180,6 +180,46 @@ test('stopping a reply aborts the memory lookup instead of answering without it'
   assert.equal(deepseek.bodies.length, 0);
 });
 
+test('the general DeepSeek app only sees global notes: context, search and read', async () => {
+  const { fake, bridge } = bridgeFixture();
+  const deepseek = scripted([
+    { tool_calls: [
+      toolCall('s1', 'memory_search', { query: '部署' }),
+      toolCall('r1', 'memory_read', { id: 'studio/agent-cloud-studio/部署' }),
+      toolCall('r2', 'memory_read', { id: 'studio/global/语言偏好' }),
+    ] },
+    { content: '好' },
+  ]);
+  await bridge.reply({ userId: 1, space: 'deepseek', query: '部署端口和语言偏好', system: 'BASE', messages: user('部署端口和语言偏好'), complete: deepseek.complete, signal: signal() });
+  const system = String(deepseek.bodies[0].messages[0].content);
+  assert.ok(system.includes('语言偏好'), 'global notes are context');
+  assert.ok(!system.includes('3002') && !system.includes('回放'), 'project notes never leave for the DeepSeek API');
+  assert.match(String(deepseek.bodies[0].tools?.[0].function.description), /global/);
+  const [search, projectRead, globalRead] = deepseek.bodies[1].messages.filter(message => message.role === 'tool').map(message => String(message.content));
+  assert.ok(!search.includes('agent-cloud-studio') && !search.includes('snr3-lab'), `search stays in global: ${search}`);
+  assert.match(projectRead, /只能读取 global/);
+  assert.match(globalRead, /简体中文/);
+  assert.ok(fake.callsNamed('read_note').length >= 1);
+});
+
+test('notes that look like they hold a credential are never sent to DeepSeek', async () => {
+  const { bridge } = bridgeFixture([
+    { permalink: 'studio/global/服务器', title: '服务器', content: 'AJ 服务器 root password is Hunter2xyz', tags: ['claude'] },
+    { permalink: 'studio/global/语言偏好', title: '语言偏好', content: '服务器相关回答使用简体中文。', tags: ['deepseek'] },
+  ]);
+  const deepseek = scripted([
+    { tool_calls: [toolCall('s1', 'memory_search', { query: '服务器' }), toolCall('r1', 'memory_read', { id: 'studio/global/服务器' })] },
+    { content: '好' },
+  ]);
+  await bridge.reply({ userId: 1, space: 'deepseek', query: '服务器', system: 'BASE', messages: user('服务器'), complete: deepseek.complete, signal: signal() });
+  const sent = JSON.stringify(deepseek.bodies);
+  assert.ok(!sent.includes('Hunter2xyz'), 'the credential never appears in any request');
+  assert.ok(sent.includes('简体中文'), 'harmless notes still go through');
+  const [search, read] = deepseek.bodies[1].messages.filter(message => message.role === 'tool').map(message => String(message.content));
+  assert.match(search, /"withheld":1/);
+  assert.match(read, /疑似包含凭据/);
+});
+
 test('the Studio service routes DeepSeek replies through an attached memory bridge', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'studio-memory-'));
   const database = new Database(':memory:');

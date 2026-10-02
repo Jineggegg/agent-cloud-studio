@@ -16,7 +16,8 @@ const failure = (reason: unknown, fallback: string) => ({
 
 /**
  * Used by StudioMemory (the 记忆 app): loads the shared-memory status and the newest notes, runs debounced
- * searches (a newer keystroke cancels the older request), filters by folder and removes notes.
+ * searches (a newer keystroke cancels the older request, and nothing is sent while an input method is still
+ * composing), filters by folder and removes notes.
  */
 export function useStudioMemory() {
   // Reachability of the memory server and how each agent is wired; null until the first status read settles.
@@ -29,6 +30,9 @@ export function useStudioMemory() {
   const [error, setError] = useState<{ message: string; offline: boolean } | null>(null);
   // The search box text; an empty box shows the newest notes instead of results.
   const [query, setQuery] = useState('');
+  // True while an input method is composing (pinyin on iPad): the box shows the marked text, but nothing is
+  // searched until the characters are chosen.
+  const [composing, setComposing] = useState(false);
   // The folder chip in effect; undefined means every folder.
   const [folder, setFolder] = useState<string | undefined>(undefined);
   // Hits together with the query and folder they answer, so a stale answer is never shown for a newer query.
@@ -64,7 +68,7 @@ export function useStudioMemory() {
 
   const trimmed = query.trim();
   useEffect(() => {
-    if (!trimmed) return undefined;
+    if (!trimmed || composing) return undefined;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       api.studio.memory.search(trimmed, folder, controller.signal).then(readApiJson<{ notes: StudioMemoryNote[] }>).then(
@@ -81,9 +85,10 @@ export function useStudioMemory() {
       );
     }, SEARCH_DEBOUNCE_MS);
     return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [trimmed, folder, round]);
+  }, [trimmed, folder, round, composing]);
 
-  const searching = trimmed.length > 0;
+  // The first word still being composed keeps the newest notes on screen rather than an empty "loading" list.
+  const searching = trimmed.length > 0 && !(composing && results === null);
   const settled = results !== null && results.query === trimmed && results.folder === folder;
   return {
     status, statusError, recent, error, query, folder,
@@ -93,6 +98,8 @@ export function useStudioMemory() {
     // Results for the current query, or the previous query's results while the new search runs.
     results: searching ? results?.notes ?? null : null,
     setQuery,
+    // Called on compositionstart/compositionend of the search box; see `composing`.
+    setComposing,
     setFolder,
     refresh() {
       setRound(value => value + 1);

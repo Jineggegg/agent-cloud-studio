@@ -2073,19 +2073,30 @@ export type StudioMemoryNote = {
 export type StudioMemoryNoteDetail = StudioMemoryNote & { content: string; tags: string[]; truncated: boolean };
 /** A top-level memory folder, with the hub project it belongs to (for its icon) when one matches. */
 export type StudioMemoryFolder = { name: string; project: { id: string; name: string; tone: string; glyph: string } | null };
-/** GET /api/studio/memory/notes: the newest notes (optionally of one folder), every folder, and the note count. */
-export type StudioMemoryRecent = { notes: StudioMemoryNote[]; folders: StudioMemoryFolder[]; total: number };
 /**
- * GET /api/studio/memory/status: whether the shared server answers and which clients are wired to it.
- * `transport` is 'http' (shared server) or 'stdio'; `conventions` means the usage rules were added to that
- * agent's global instructions; `deepseek.enabled` is Studio's own bridge.
+ * GET /api/studio/memory/notes: the newest notes (optionally of one folder), every folder, and `total`, the number
+ * of notes in the listed scope (the selected folder, or the whole memory).
+ */
+export type StudioMemoryRecent = { notes: StudioMemoryNote[]; folders: StudioMemoryFolder[]; total: number };
+/** Which agent installation a status row describes: Claude Code or Codex, inside WSL or on Windows. */
+export type StudioMemoryAgentId = 'claude-wsl' | 'codex-wsl' | 'claude-windows' | 'codex-windows';
+/**
+ * How one agent installation is wired, read from its own config: `shared` means registered over HTTP at the
+ * shared server's URL; `conventions` means the usage rules are in its global instructions; `config` is where the
+ * registration lives; `fix` is the exact step (where to run it and the command) that completes it, or null.
+ */
+export type StudioMemoryAgentStatus = {
+  id: StudioMemoryAgentId; installed: boolean; registered: boolean; transport: string | null; shared: boolean;
+  conventions: boolean; config: string; fix: { where: string; command: string } | null;
+};
+/**
+ * GET /api/studio/memory/status: whether the shared server answers (`slow`: connected but no answer in time),
+ * where the notes live, each agent's wiring (Windows rows only when Studio runs under WSL) and whether Studio's
+ * own DeepSeek bridge is on.
  */
 export type StudioMemoryStatus = {
-  reachable: boolean; url: string; project: string | null; notesPath: string | null;
-  clients: {
-    claude: { registered: boolean; transport: string | null; conventions: boolean };
-    codex: { registered: boolean; transport: string | null; conventions: boolean };
-    deepseek: { enabled: boolean };
-  };
+  reachable: boolean; slow: boolean; url: string; project: string | null; notesPath: string | null;
+  agents: StudioMemoryAgentStatus[];
+  deepseek: { enabled: boolean };
 };
 // ---------------------------
