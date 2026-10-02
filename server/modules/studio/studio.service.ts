@@ -4,19 +4,24 @@ import path from 'node:path';
 
 import type Database from 'better-sqlite3';
 
-import { AppError } from '@/shared/utils.js';
+import { AppError, readSnrBasicAuthorization } from '@/shared/utils.js';
 
 type Dependencies = {
   database: Database.Database;
   vaultDirectory: string;
   request?: typeof fetch;
   snrBaseUrl?: string;
+  // SNR's optional Basic credential for status reads (STUDIO_SNR_USER + STUDIO_SNR_PASSWORD_FILE by default).
+  snrAuthorization?: () => string | null;
   agentWorkbenchUrl?: string;
   // Looks up a user-owned project so its chat space and persona can be scoped to it.
   project?: (userId: number, id: string) => { name: string; description: string } | null;
 };
 type Conversation = { id: string; title: string; model: string; updated_at: string; space: string };
 type Message = { role: 'user' | 'assistant'; content: string; status: string };
+// Same shape as StudioSnr['manifest'] in the client contract.
+type SnrManifest = { name?: string; version?: string; capabilities?: string[] };
+type Json = Record<string, unknown>;
 const MODELS = ['deepseek-flash', 'deepseek-v4-pro'];
 const API_BASE = 'https://api.deepseek.com';
 const BASE_PROMPT = '你是 Agent Cloud Studio 的中文工作助手。SNR 是研究实验室，不是已验证的交易策略；不要声称已训练、已批准规则或已执行交易。';
@@ -26,6 +31,71 @@ const COLUMNS = 'id, title, model, updated_at, space';
 
 function fail(message: string, statusCode = 400): never {
   throw new AppError(message, { statusCode, code: 'STUDIO_ERROR' });
+}
+
+// The integration manifest is untrusted lab output: it is size-capped and reduced to a few short strings,
+// because it reaches both the browser and, on explicit opt-in, the DeepSeek prompt.
+const MANIFEST_BYTES = 64 * 1024;
+const MANIFEST_TEXT = 80;
+const MANIFEST_CAPABILITIES = 20;
+const CAPABILITY = /^[A-Za-z0-9 ._:/-]+$/;
+
+function record(value: unknown): Json | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Json : null;
+}
+// Reads at most `limit` bytes; a larger, unreadable or malformed body yields undefined instead of throwing.
+async function boundedJson(response: Response, limit: number): Promise<unknown> {
+  if (!response.body) return undefined;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.length;
+      if (size > limit) {
+        await reader.cancel();
+        return undefined;
+      }
+      chunks.push(value);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    return undefined;
+  } finally { reader.releaseLock(); }
+}
+// Letters, digits and a little punctuation only; control, format and markup characters become spaces.
+function manifestText(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value !== 'string') return undefined;
+  const text = value.slice(0, MANIFEST_TEXT * 4).replace(/[^\p{L}\p{N} ._:/()+#-]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, MANIFEST_TEXT).trim();
+  return text || undefined;
+}
+// Items outside the allowed charset or length are dropped rather than repaired.
+function manifestCapabilities(value: unknown[]) {
+  const items = new Set<string>();
+  for (const item of value.slice(0, 200)) {
+    if (items.size >= MANIFEST_CAPABILITIES) break;
+    const text = typeof item === 'string' ? item.trim() : '';
+    if (text && text.length <= MANIFEST_TEXT && CAPABILITY.test(text)) items.add(text);
+  }
+  return items.size ? [...items] : undefined;
+}
+function sanitiseManifest(data: unknown): SnrManifest | undefined {
+  const manifest = record(data);
+  if (!manifest) return undefined;
+  const api = record(manifest.api) ?? {};
+  // SNR 3 publishes no top-level `version` or `capabilities`, so its API version and the endpoint names it
+  // advertises under `api` stand in; explicit fields take precedence when the lab publishes them.
+  const advertised = Object.keys(api).filter(key => typeof api[key] === 'string' || record(api[key]));
+  const name = manifestText(manifest.name);
+  const version = manifestText(manifest.version) ?? manifestText(api.version);
+  const capabilities = manifestCapabilities(Array.isArray(manifest.capabilities) ? manifest.capabilities : advertised);
+  const result: SnrManifest = {
+    ...(name ? { name } : {}), ...(version ? { version } : {}), ...(capabilities ? { capabilities } : {}),
+  };
+  return Object.keys(result).length ? result : undefined;
 }
 
 /** Used by studio.module and its tests to isolate encrypted credentials, chat history and read-only SNR access. */
@@ -92,12 +162,37 @@ export function createStudioService(deps: Dependencies) {
   }
   async function snrStatus() {
     const base = deps.snrBaseUrl ?? 'http://127.0.0.1:8768';
+    let headers: Record<string, string>;
     try {
-      const healthResponse = await request(new URL('/api/health', base), { signal: AbortSignal.timeout(4000), redirect: 'error' });
-      if (!healthResponse.ok) return { connected: false, reason: healthResponse.status === 401 ? 'SNR 需要认证' : `SNR 响应 ${healthResponse.status}` };
+      const credential = (deps.snrAuthorization ?? readSnrBasicAuthorization)();
+      headers = credential ? { Authorization: credential } : {};
+    } catch {
+      return { connected: false, reason: 'SNR 认证配置不可用' };
+    }
+    const read = (pathname: string) => request(new URL(pathname, base), { headers, signal: AbortSignal.timeout(4000), redirect: 'error' });
+    // Optional: an older lab or any failure simply leaves the manifest out of the status.
+    async function manifest() {
+      try {
+        const response = await read('/api/integration/v1/manifest');
+        if (!response.ok) {
+          await response.body?.cancel();
+          return undefined;
+        }
+        return sanitiseManifest(await boundedJson(response, MANIFEST_BYTES));
+      } catch {
+        return undefined;
+      }
+    }
+    try {
+      const healthResponse = await read('/api/health');
+      if (!healthResponse.ok) {
+        const unauthorized = headers.Authorization ? 'SNR 拒绝了配置的认证' : 'SNR 需要认证';
+        return { connected: false, reason: healthResponse.status === 401 ? unauthorized : `SNR 响应 ${healthResponse.status}` };
+      }
       const health = await healthResponse.json() as Record<string, unknown>;
       if (health.status !== 'ok') return { connected: false, reason: 'SNR 健康响应无效' };
-      const dataResponse = await request(new URL('/api/datasets', base), { signal: AbortSignal.timeout(4000), redirect: 'error' });
+      // The manifest read never rejects, so a dataset failure still reports the lab as unreachable.
+      const [dataResponse, labManifest] = await Promise.all([read('/api/datasets'), manifest()]);
       const data: unknown = dataResponse.ok ? await dataResponse.json() : null;
       const datasets = Array.isArray(data) ? data : (data && typeof data === 'object' && 'datasets' in data && Array.isArray(data.datasets) ? data.datasets : []);
       return {
@@ -105,6 +200,7 @@ export function createStudioService(deps: Dependencies) {
         tradingEnabled: health.trading_enabled === true,
         rulesApproved: health.rules_approved === true,
         datasetCount: datasets.length,
+        ...(labManifest ? { manifest: labManifest } : {}),
       };
     } catch {
       return { connected: false, reason: 'SNR 本地服务尚未运行或不可访问' };

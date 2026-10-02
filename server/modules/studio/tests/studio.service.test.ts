@@ -8,12 +8,12 @@ import Database from 'better-sqlite3';
 
 import { createStudioService } from '../studio.service.js';
 
-function fixture(request?: typeof fetch) {
+function fixture(request?: typeof fetch, snrAuthorization: () => string | null = () => null) {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'studio-test-'));
   const database = new Database(':memory:');
   // User 1 owns project p1; nobody owns p2.
   const project = (userId: number, id: string) => userId === 1 && id === 'p1' ? { name: '超级教授', description: '教学网站' } : null;
-  const service = createStudioService({ database, vaultDirectory: directory, request, project });
+  const service = createStudioService({ database, vaultDirectory: directory, request, project, snrAuthorization });
   return { service, database, directory, close: () => { database.close(); rmSync(directory, { recursive: true }); } };
 }
 
@@ -134,13 +134,14 @@ test('API errors do not leak provider response bodies or stored secrets', async 
   } finally { f.close(); }
 });
 
-test('explicit SNR context only reads health and dataset endpoints', async () => {
+test('explicit SNR context only reads health, dataset and manifest endpoints', async () => {
   const urls: string[] = [];
   let sent = '';
   const f = fixture((async (url, init) => {
     urls.push(String(url));
     if (String(url).endsWith('/api/health')) return Response.json({ status: 'ok', phase: 5, trading_enabled: false, rules_approved: false });
     if (String(url).endsWith('/api/datasets')) return Response.json([{ id: 1 }]);
+    if (String(url).endsWith('/api/integration/v1/manifest')) return Response.json({ name: 'SNR3.0', api: { version: 1, health: '/api/health' } });
     sent = String(init?.body);
     return Response.json({ choices: [{ message: { content: '测试回复' } }] });
   }) as typeof fetch);
@@ -148,10 +149,115 @@ test('explicit SNR context only reads health and dataset endpoints', async () =>
     f.service.saveKey(1, 'fake-unit-test-key-not-valid');
     const row = f.service.createConversation(1, 'deepseek-v4-pro');
     await f.service.send(1, row.id, '看研究状态', true, new AbortController().signal);
-    assert.deepEqual(urls, ['http://127.0.0.1:8768/api/health', 'http://127.0.0.1:8768/api/datasets', 'https://api.deepseek.com/chat/completions']);
+    assert.deepEqual(urls, [
+      'http://127.0.0.1:8768/api/health', 'http://127.0.0.1:8768/api/datasets',
+      'http://127.0.0.1:8768/api/integration/v1/manifest', 'https://api.deepseek.com/chat/completions',
+    ]);
     assert.ok(sent.includes('datasetCount'));
+    assert.ok(sent.includes('SNR3.0'));
     assert.ok(!sent.includes('"id":1'));
+    assert.ok(!sent.includes('/api/health'));
   } finally { f.close(); }
+});
+
+// A fake SNR whose manifest endpoint answers with `manifest`; health and datasets are healthy.
+function snrFixture(manifest: () => Response | Promise<Response>, snrAuthorization?: () => string | null) {
+  const calls: { url: string; authorization?: string }[] = [];
+  const f = fixture((async (url, init) => {
+    calls.push({ url: String(url), authorization: (init?.headers as Record<string, string> | undefined)?.Authorization });
+    if (String(url).endsWith('/api/health')) return Response.json({ status: 'ok', phase: 5, trading_enabled: false, rules_approved: false });
+    if (String(url).endsWith('/api/datasets')) return Response.json({ datasets: [{ id: 'a' }, { id: 'b' }] });
+    return manifest();
+  }) as typeof fetch, snrAuthorization);
+  return { ...f, calls };
+}
+
+test('SNR status carries a short manifest derived from the lab integration endpoint', async () => {
+  // Trimmed copy of what snr3-lab's app/integration.py publishes.
+  const f = snrFixture(() => Response.json({
+    schema_version: 1, application_id: 'snr3-lab', name: 'SNR3.0',
+    icon: { path: '/static/app-icon.svg', media_type: 'image/svg+xml' },
+    api: {
+      version: 1, manifest: '/api/integration/v1/manifest', health: '/api/health', datasets: '/api/datasets',
+      session: '/api/sessions/{session_id}', context: '/api/integration/v1/sessions/{session_id}/context',
+      context_required_query: ['expected_as_of', 'expected_timeframe'],
+      exports: { drawings: '/api/sessions/{session_id}/levels/export' },
+    },
+    security: { authentication: 'local_only' },
+  }));
+  try {
+    assert.deepEqual(await f.service.snrStatus(), {
+      connected: true, phase: 5, tradingEnabled: false, rulesApproved: false, datasetCount: 2,
+      manifest: { name: 'SNR3.0', version: '1', capabilities: ['manifest', 'health', 'datasets', 'session', 'context', 'exports'] },
+    });
+  } finally { f.close(); }
+});
+
+test('an untrusted manifest is reduced to capped, plain strings', async () => {
+  const f = snrFixture(() => Response.json({
+    name: `Lab\u0000‮<script>alert(1)</script>${'x'.repeat(500)}`,
+    version: { nested: true },
+    api: { version: '9.9.9-rc+1' },
+    capabilities: [
+      'replay', 'replay', 'session:read', 'export/drawings', 'ok-1', 42, null, { a: 1 },
+      '<img src=x>', 'tab\there', 'a'.repeat(81), ' padded ',
+      ...Array.from({ length: 40 }, (_, index) => `cap.${index}`),
+    ],
+  }));
+  try {
+    const status = await f.service.snrStatus() as { manifest?: { name?: string; version?: string; capabilities?: string[] } };
+    const manifest = status.manifest!;
+    assert.ok(manifest.name!.length <= 80);
+    assert.ok(manifest.name!.startsWith('Lab script alert(1) /script xxx'));
+    assert.match(manifest.name!, /^[\p{L}\p{N} ._:/()+#-]+$/u);
+    assert.equal(manifest.version, '9.9.9-rc+1');
+    assert.equal(manifest.capabilities!.length, 20);
+    assert.deepEqual(manifest.capabilities!.slice(0, 6), ['replay', 'session:read', 'export/drawings', 'ok-1', 'padded', 'cap.0']);
+    for (const capability of manifest.capabilities!) assert.match(capability, /^[A-Za-z0-9 ._:/-]{1,80}$/);
+  } finally { f.close(); }
+});
+
+test('manifest failures leave SNR connected and simply omit the manifest', async () => {
+  const cases: [string, () => Response | Promise<Response>][] = [
+    ['missing endpoint', () => new Response('not found', { status: 404 })],
+    ['network error', () => Promise.reject(new Error('offline'))],
+    ['invalid JSON', () => new Response('{"name":', { headers: { 'Content-Type': 'application/json' } })],
+    ['oversized body', () => new Response(JSON.stringify({ name: 'SNR3.0', padding: 'x'.repeat(70 * 1024) }))],
+    ['not an object', () => Response.json(['SNR3.0'])],
+    ['nothing usable', () => Response.json({ name: '\u0000\u0001', capabilities: ['<b>'] })],
+  ];
+  for (const [label, manifest] of cases) {
+    const f = snrFixture(manifest);
+    try {
+      const status = await f.service.snrStatus();
+      assert.equal(status.connected, true, label);
+      assert.equal('manifest' in status, false, label);
+      assert.equal((status as { datasetCount?: number }).datasetCount, 2, label);
+    } finally { f.close(); }
+  }
+});
+
+test('a configured SNR credential goes to every status read; a broken one makes no request', async () => {
+  const credential = 'Basic dW5pdC10ZXN0OmZha2UtcGFzc3dvcmQ=';
+  const f = snrFixture(() => Response.json({ name: 'SNR3.0' }), () => credential);
+  try {
+    await f.service.snrStatus();
+    assert.deepEqual(f.calls.map(call => call.authorization), [credential, credential, credential]);
+  } finally { f.close(); }
+  const rejected = fixture((async () => new Response('{"detail":"Authentication required"}', { status: 401 })) as typeof fetch, () => credential);
+  try {
+    assert.deepEqual(await rejected.service.snrStatus(), { connected: false, reason: 'SNR 拒绝了配置的认证' });
+  } finally { rejected.close(); }
+  const broken = snrFixture(() => Response.json({}), () => { throw new Error('unreadable password file'); });
+  try {
+    assert.deepEqual(await broken.service.snrStatus(), { connected: false, reason: 'SNR 认证配置不可用' });
+    assert.equal(broken.calls.length, 0);
+  } finally { broken.close(); }
+  const open = snrFixture(() => Response.json({}));
+  try {
+    await open.service.snrStatus();
+    assert.ok(open.calls.every(call => call.authorization === undefined));
+  } finally { open.close(); }
 });
 
 test('concurrent sends and deletion are rejected while a reply is pending', async () => {

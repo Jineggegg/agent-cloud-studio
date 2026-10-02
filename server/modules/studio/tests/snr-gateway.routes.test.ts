@@ -9,7 +9,7 @@ import { createSnrGatewayRouter } from '../snr-gateway.routes.js';
 test('gateway requires its capability and rejects foreign or malformed write origins', async () => {
   let calls = 0;
   const gateway = createSnrGateway({
-    baseUrl: 'http://127.0.0.1:8768', validUser: () => true,
+    baseUrl: 'http://127.0.0.1:8768', validUser: () => true, authorization: () => null,
     request: (async () => { calls++; return Response.json({ status: 'ok' }); }) as typeof fetch,
   });
   const app = express();
@@ -41,5 +41,13 @@ test('gateway requires its capability and rejects foreign or malformed write ori
     });
     assert.equal(permitted.status, 200);
     assert.equal(calls, 2);
+    // The integration manifest is readable, but even a same-origin write to it never reaches SNR.
+    const manifest = await fetch(`${base}/gateway/api/integration/v1/manifest`, { headers: { Cookie: cookie } });
+    assert.equal(manifest.status, 200);
+    const write = await fetch(`${base}/gateway/api/integration/v1/manifest`, {
+      method: 'POST', headers: { Cookie: cookie, Origin: base, 'Content-Type': 'application/json' }, body: '{}',
+    });
+    assert.equal(write.status, 405);
+    assert.equal(calls, 3);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
 });

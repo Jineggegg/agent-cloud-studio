@@ -126,6 +126,41 @@ export function getGitErrorDetails(error: unknown): string {
 }
 
 // ---------------------------
+//----------------- SNR LAB ACCESS UTILITIES ------------
+/**
+ * Builds the `Authorization: Basic ...` value Studio sends to the local SNR lab
+ * when SNR runs with its optional single-user access (SNR_LAB_USER and
+ * SNR_LAB_PASSWORD on the SNR side).
+ *
+ * Used by the Studio SNR gateway (every proxied request) and the Studio status
+ * service (health, dataset and manifest reads), which must authenticate the same
+ * way. It is configured with `STUDIO_SNR_USER` plus `STUDIO_SNR_PASSWORD_FILE`,
+ * a file that holds only the password. The file is read on every call, so a
+ * rotated password applies without a restart and the secret never sits in env.
+ *
+ * Returns `null` when either variable is unset (SNR in local-only mode). Throws
+ * an `AppError` (503, `SNR_AUTH_UNAVAILABLE`) when it is configured but the file
+ * is unreadable or the credential is malformed. The error never names the file
+ * or the password, and callers must never log the returned header value.
+ */
+export function readSnrBasicAuthorization(env: NodeJS.ProcessEnv = process.env): string | null {
+  const user = env.STUDIO_SNR_USER?.trim();
+  const passwordFile = env.STUDIO_SNR_PASSWORD_FILE?.trim();
+  if (!user || !passwordFile) return null;
+  const unavailable = () => new AppError('SNR 认证配置不可用', { statusCode: 503, code: 'SNR_AUTH_UNAVAILABLE' });
+  let password: string;
+  try {
+    // Only a BOM and the single trailing newline an editor or `echo` adds are removed.
+    password = fs.readFileSync(passwordFile, 'utf8').replace(/^﻿/, '').replace(/\r?\n$/, '');
+  } catch {
+    throw unavailable();
+  }
+  // A Basic credential cannot carry ':' in the user name or control characters in either part (SNR's own rule).
+  if (!password || user.includes(':') || /\p{Cc}/u.test(user) || /\p{Cc}/u.test(password)) throw unavailable();
+  return `Basic ${Buffer.from(`${user}:${password}`, 'utf8').toString('base64')}`;
+}
+
+// ---------------------------
 //----------------- WORKSPACE PATH VALIDATION UTILITIES ------------
 /**
  * Root directory that all workspace/project paths must stay under.

@@ -65,6 +65,34 @@ bash scripts/wsl/install-studio-service.sh
 
 开发工具（`/workspace`）里的 Claude / Codex 会话就是原来 CloudCLI 的功能，替换后不会丢失。
 
+## 6. SNR 实验室（可选）
+
+Studio 通过同源网关 `/api/studio/snr-site/*` 内嵌 SNR，目标固定为 `STUDIO_SNR_BASE_URL`（默认 `http://127.0.0.1:8768`，只接受回环地址）。网关另外只读放行 `GET /api/integration/v1/manifest` 和 `/api/integration/v1/sessions/<uuid>/context`，Studio 的 SNR 状态会显示 manifest 里截短、过滤后的名称、版本和能力列表。
+
+### 在 WSL 里从克隆运行 SNR
+
+```bash
+cd ~/projects/snr3-lab
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8768
+```
+
+- SNR 的 README 要求 Python 3.12。实测 WSL 自带的 Python 3.14.4 也能装好 `requirements.lock.txt`（`pip check` 无冲突），服务正常启动，非浏览器测试只有 1 个失败（一条数据库表数量断言，看起来与 Python 版本无关）。如果遇到问题，再换用 3.12 的 venv。
+- 只监听 `127.0.0.1`。Windows 上的 SNR 和 WSL 里的 SNR 不要同时占用 8768（镜像网络下两边共用端口）。两份 `data/lab.sqlite3` 互不相通。
+- 浏览器测试才需要 `playwright install`，日常运行不需要。语音听写还需要 SNR 的本地语音模型；在 Studio 里用麦克风需要 HTTPS（Tailscale 地址满足）。
+
+### SNR 开启认证时
+
+SNR 设置了 `SNR_LAB_USER` / `SNR_LAB_PASSWORD` 时，在 Studio 的 `.env` 中加入：
+
+```ini
+STUDIO_SNR_USER=<与 SNR_LAB_USER 相同>
+STUDIO_SNR_PASSWORD_FILE=/home/<用户名>/.config/agent-cloud-studio/snr-password
+```
+
+密码文件里只放密码一行，并执行 `chmod 600`。Studio 每次请求 SNR 时都重新读取这个文件，所以改密码后不用重启。凭据只放在服务器端发给 SNR 的网关和状态请求的 `Authorization: Basic` 头里，不写日志，也不发给浏览器。两个变量缺一个就按不认证处理；文件读不到时，状态会显示「SNR 认证配置不可用」。
+
 ## 安全说明
 
 - 只通过 Tailscale 暴露，不要把 3002 端口开放到公网。你的 tailnet 列表里有其他人共享的设备，建议在 Tailscale ACL 中只允许你自己的设备访问 443 / 8443。
