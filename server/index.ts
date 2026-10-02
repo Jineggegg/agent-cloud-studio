@@ -15,6 +15,7 @@ import {
     initializeSessionsWatcher,
     providerRuntimeService,
 } from '@/modules/providers/index.js';
+import { initializeTaskRecovery, taskRecoveryRouter } from '@/modules/task-recovery/index.js';
 import { chatRunRegistry, createWebSocketServer } from '@/modules/websocket/index.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
@@ -210,6 +211,7 @@ app.use('/api/browser-use', authenticateToken, browserUseRoutes);
 // Unified provider MCP routes (protected)
 app.use('/api/providers', authenticateToken, providerRoutes);
 app.use('/api/scheduled-messages', authenticateToken, scheduledMessagesRoutes);
+app.use('/api/task-recovery', authenticateToken, taskRecoveryRouter);
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
@@ -333,6 +335,8 @@ async function startServer() {
     try {
         // Initialize authentication database
         await initializeDatabase();
+        // Old approvals and uncertain tool operations are never replayed on boot.
+        initializeTaskRecovery();
 
         // Configure Web Push (VAPID keys)
         configureWebPush();

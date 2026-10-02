@@ -1,0 +1,17 @@
+/* Runtime identity reuses Settings list rows and theme tokens at every width. */
+.studio-runtime .ios-section-header { align-items: center; flex-wrap: wrap; }
+.studio-runtime-row .ios-row-body { min-width: 0; }
+.studio-runtime-row .ios-row-body small,
+.studio-runtime-value { display: block; overflow-wrap: anywhere; white-space: normal; }
+.studio-runtime-value { font-size: 14px; line-height: 1.5; color: var(--ios-label); }
+.studio .studio-runtime-action {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 44px; padding: 8px 4px; color: var(--ios-tint); font-size: 14px; font-weight: 600;
+}
+.studio-runtime-action:hover { text-decoration: underline; text-underline-offset: 3px; }
+.studio-runtime-action:active { opacity: .7; }
+.studio-runtime-action:disabled { opacity: .5; cursor: wait; }
+.studio-runtime-action:focus-visible { outline: 2px solid var(--ios-tint); outline-offset: 3px; border-radius: 6px; }
+.studio-runtime-notice { margin: 10px 16px 0; color: var(--ios-label-2); font-size: 14px; line-height: 1.5; }
+.studio-runtime-links { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+#studio-network-heading, #studio-remote-heading { scroll-margin-top: 88px; }

@@ -8,6 +8,7 @@ import type { StudioRemoteHost, StudioRemoteStatus, StudioStatus, T212Status, Th
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { StudioSettingsMail } from '@/modules/studio/StudioSettingsMail';
 import { StudioSettingsNetwork } from '@/modules/studio/StudioSettingsNetwork';
+import { StudioSettingsRuntime } from '@/modules/studio/StudioSettingsRuntime';
 import { StudioSettingsTrading } from '@/modules/studio/StudioSettingsTrading';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 
@@ -82,6 +83,8 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
         </div>
       </div>
     </section>
+
+    <StudioSettingsRuntime />
 
     <StudioSettingsNetwork />
 

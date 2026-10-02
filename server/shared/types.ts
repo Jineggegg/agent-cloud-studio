@@ -297,6 +297,8 @@ export type NormalizedMessage = {
    * the live events they missed across websocket reconnects.
    */
   seq?: number;
+  /** Stable execution id; live sequence numbers restart for each execution. */
+  runId?: string;
   role?: 'user' | 'assistant';
   content?: string;
   /**
@@ -1770,3 +1772,115 @@ export type StudioMailRawMessage = {
  */
 export type StudioOutlookTokens = { accessToken: string; refreshToken: string; expiresAt: number };
 
+
+//----------------- STUDIO RUNTIME IDENTITY ------------
+/** Build-time identity recorded by the build pipeline; null commit/dirty mean Git could not be verified. */
+export type StudioBuildInfo = {
+  schemaVersion: 1;
+  version: string;
+  commit: string | null;
+  builtAt: string;
+  dirty: boolean | null;
+};
+/**
+ * Authenticated, read-only runtime snapshot for Settings. The backend build is captured at module load;
+ * frontend is the currently served disk build; checkout is source state only, never a running version.
+ * GitHub identifies origin's default branch; unknown/failure states must not imply that Studio is current.
+ */
+export type StudioRuntimeInfo = {
+  checkedAt: string;
+  frontend: { state: 'recorded' | 'unknown'; build: StudioBuildInfo | null; reason: string | null };
+  backend: { state: 'recorded' | 'unknown'; build: StudioBuildInfo | null; reason: string | null };
+  checkout: {
+    state: 'available' | 'unavailable';
+    commit: string | null;
+    branch: string | null;
+    dirty: boolean | null;
+    reason: string | null;
+  };
+  github: {
+    state: 'available' | 'unavailable' | 'unconfigured';
+    repository: string | null;
+    defaultBranch: string | null;
+    commit: string | null;
+    checkedAt: string | null;
+    reason: string | null;
+  };
+  host: {
+    hostname: string;
+    platform: string;
+    bootedAt: string;
+    processStartedAt: string;
+    /** Elapsed process lifetime in seconds; not the host uptime. */
+    uptimeSeconds: number;
+  };
+};
+// ---------------------------
+
+//----------------- DURABLE TASK EXECUTION ------------
+/**
+ * A persisted execution receipt shared by WebSocket, Database, and Task Recovery.
+ * Accepted/running receipts become interrupted on startup; they never replay automatically.
+ * Failed and interrupted receipts remain available for explicit recovery until acknowledged or claimed.
+ * User ids are normalized to strings; null is reserved for internal system work. Options
+ * include composer preferences and attachment descriptors only, never runtime credentials.
+ */
+export type TaskRunRecord = {
+  runId: string;
+  requestId: string;
+  userId: string | null;
+  sessionId: string;
+  provider: string;
+  projectPath: string | null;
+  content: string;
+  options: Record<string, unknown>;
+  source: 'interactive' | 'queued' | 'scheduled';
+  recoveryOfRunId: string | null;
+  state: 'accepted' | 'running' | 'completed' | 'failed' | 'aborted' | 'interrupted';
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  interruptedAt: string | null;
+  resolvedAt: string | null;
+  claimedByRunId: string | null;
+  error: string | null;
+};
+
+/**
+ * Filters shared by the Task Recovery service and Database. An unassigned request
+ * selects records without a session; combining it with a session matches no records.
+ * Limits are clamped to 1–100 so a recovery response remains bounded.
+ */
+export type TaskRecoveryFilters = {
+  projectPath?: string;
+  sessionId?: string;
+  unassigned?: boolean;
+  limit?: number;
+};
+// ---------------------------
+
+//----------------- PERSISTED COMPOSER DRAFTS ------------
+/**
+ * One user's unsent composer state, shared by Database and User services.
+ * recoveryOfRunId links an explicitly prepared continuation to its original
+ * interrupted/failed task. Saving the draft does not claim or execute that task.
+ */
+export type SessionDraftRecord = {
+  scope: string;
+  text: string;
+  queuedMessage: unknown | null;
+  recoveryOfRunId: string | null;
+  updatedAt: string;
+};
+
+/**
+ * Draft update accepted by Database and User. Omitted recoveryOfRunId preserves
+ * the existing association; null explicitly clears it. Empty text with no queued
+ * message deletes the whole draft, including any recovery association.
+ */
+export type SessionDraftInput = {
+  text: string;
+  queuedMessage: unknown | null;
+  recoveryOfRunId?: string | null;
+};
+// ---------------------------

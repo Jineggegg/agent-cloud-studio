@@ -34,6 +34,8 @@ type UseChatRealtimeHandlersArgs = {
    * frame; read wherever a `chat.subscribe` is sent (session open, reconnect).
    */
   lastSeqRef: MutableRefObject<Map<string, number>>;
+  /** Run identity accompanying the sequence cursor in every replay subscription. */
+  lastRunIdRef?: MutableRefObject<Map<string, string>>;
   /** When each session's `chat.subscribe` was last sent; guards stale idle acks. */
   statusCheckSentAtRef: MutableRefObject<Map<string, number>>;
   onSessionProcessing?: MarkSessionProcessing;
@@ -71,6 +73,7 @@ export function useChatRealtimeHandlers({
   streamTimerRef,
   accumulatedStreamRef,
   lastSeqRef,
+  lastRunIdRef,
   statusCheckSentAtRef,
   onSessionProcessing,
   onSessionIdle,
@@ -88,6 +91,10 @@ export function useChatRealtimeHandlers({
   activeViewSessionIdRef.current = selectedSession?.id || currentSessionId || null;
   const isActiveRef = useRef(isActive);
   isActiveRef.current = isActive;
+  const localRunIdsRef = useRef(new Map<string, string>());
+  const runIdsRef = lastRunIdRef ?? localRunIdsRef;
+  const retiredRunsRef = useRef(new Map<string, Set<string>>());
+  const runSequencesRef = useRef(new Map<string, number>());
 
   // Keep the latest pending-permission snapshot available to the websocket
   // listener so back-to-back permission events can dedupe and re-arm the
@@ -115,15 +122,61 @@ export function useChatRealtimeHandlers({
       const activeViewSessionId = activeViewSessionIdRef.current;
       const sid = (typeof msg.sessionId === 'string' && msg.sessionId) || activeViewSessionId;
 
-      // Record replay progress for every sequenced live event.
+      const runId = typeof msg.runId === 'string' ? msg.runId : null;
+      if (sid && runId) {
+        const previousRunId = runIdsRef.current.get(sid);
+        if (previousRunId !== runId) {
+          const retired = retiredRunsRef.current.get(sid) ?? new Set<string>();
+          if (retired.has(runId)) {
+            // A previous Claude turn may still report background work. Keep
+            // its results without rewinding the new run or reviving prompts.
+            const cursorKey = `${sid}:${runId}`;
+            const known = runSequencesRef.current.get(cursorKey) ?? 0;
+            if (typeof msg.seq === 'number') {
+              if (msg.seq <= known) return;
+              runSequencesRef.current.set(cursorKey, msg.seq);
+            }
+            if (['text', 'thinking', 'tool_use', 'tool_result', 'task_notification', 'task_status', 'error'].includes(msg.kind)) {
+              sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);
+            }
+            if (msg.kind === 'task_status' && (msg.event === 'notification' || msg.event === 'updated') && getSessionActivity?.(sid)?.background) {
+              reportRemainingBackgroundWork(sid);
+            }
+            if ((msg.kind === 'task_notification' || (msg.kind === 'task_status' && msg.event === 'notification')) && sid === activeViewSessionId) {
+              void requestLatestMessages(sid, isActiveRef.current);
+            }
+            return;
+          }
+          if (previousRunId) retired.add(previousRunId);
+          if (sid === activeViewSessionId && previousRunId) {
+            if (streamTimerRef.current) clearTimeout(streamTimerRef.current);
+            streamTimerRef.current = null;
+            if (accumulatedStreamRef.current) {
+              sessionStore.updateStreaming(sid, accumulatedStreamRef.current, provider);
+              sessionStore.finalizeStreaming(sid);
+            }
+            accumulatedStreamRef.current = '';
+          }
+          retiredRunsRef.current.set(sid, retired);
+          runIdsRef.current.set(sid, runId);
+          lastSeqRef.current.set(sid, 0);
+        }
+      }
+      // Sequence numbers belong to a run, not to the conversation. Ignore
+      // replay duplicates only after updating the run identity above.
       if (sid && typeof msg.seq === 'number') {
         const known = lastSeqRef.current.get(sid) ?? 0;
+        if (runId && msg.seq <= known) return;
         if (msg.seq > known) {
           lastSeqRef.current.set(sid, msg.seq);
+          if (runId) runSequencesRef.current.set(`${sid}:${runId}`, msg.seq);
         }
       }
 
       switch (msg.kind) {
+        case 'run_accepted':
+          // Delivery belongs to the composer, not to the transcript.
+          return;
         case 'websocket_reconnected':
           onWebSocketReconnect?.();
           return;
@@ -209,6 +262,10 @@ export function useChatRealtimeHandlers({
       if (msg.kind === 'stream_delta') {
         const text = (msg.content as string) || '';
         if (!text) return;
+        if (sid && sid !== activeViewSessionId) {
+          sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);
+          return;
+        }
         accumulatedStreamRef.current += text;
         if (!streamTimerRef.current) {
           streamTimerRef.current = window.setTimeout(() => {
@@ -218,14 +275,14 @@ export function useChatRealtimeHandlers({
             }
           }, 100);
         }
-        // Also route to store for non-active sessions
-        if (sid && sid !== activeViewSessionId) {
-          sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);
-        }
         return;
       }
 
       if (msg.kind === 'stream_end') {
+        if (sid && sid !== activeViewSessionId) {
+          sessionStore.finalizeStreaming(sid);
+          return;
+        }
         if (streamTimerRef.current) {
           clearTimeout(streamTimerRef.current);
           streamTimerRef.current = null;
@@ -255,16 +312,19 @@ export function useChatRealtimeHandlers({
       // --- UI side effects for specific kinds ---
       switch (msg.kind) {
         case 'complete': {
-          // Flush any remaining streaming state
-          if (streamTimerRef.current) {
-            clearTimeout(streamTimerRef.current);
-            streamTimerRef.current = null;
+          // The buffer belongs to the viewed conversation; another session
+          // completing must not flush it into its own transcript.
+          if (sid === activeViewSessionId) {
+            if (streamTimerRef.current) {
+              clearTimeout(streamTimerRef.current);
+              streamTimerRef.current = null;
+            }
+            if (sid && accumulatedStreamRef.current) {
+              sessionStore.updateStreaming(sid, accumulatedStreamRef.current, provider);
+              sessionStore.finalizeStreaming(sid);
+            }
+            accumulatedStreamRef.current = '';
           }
-          if (sid && accumulatedStreamRef.current) {
-            sessionStore.updateStreaming(sid, accumulatedStreamRef.current, provider);
-            sessionStore.finalizeStreaming(sid);
-          }
-          accumulatedStreamRef.current = '';
 
           // `complete` is the unified terminal event — every provider run ends
           // with exactly one, regardless of success, failure, or abort. The
@@ -410,6 +470,7 @@ export function useChatRealtimeHandlers({
     streamTimerRef,
     accumulatedStreamRef,
     lastSeqRef,
+    runIdsRef,
     statusCheckSentAtRef,
     onSessionProcessing,
     onSessionIdle,

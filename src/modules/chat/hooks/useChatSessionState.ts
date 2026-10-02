@@ -104,6 +104,8 @@ type UseChatSessionStateArgs = {
   statusCheckSentAtRef: MutableRefObject<Map<string, number>>;
   /** Highest live seq observed per session; sent as `lastSeq` on subscribe. */
   lastSeqRef: MutableRefObject<Map<string, number>>;
+  /** The execution that owns each sequence cursor; a subsequent run restarts at zero. */
+  lastRunIdRef?: MutableRefObject<Map<string, string>>;
   sessionStore: SessionStore;
 };
 
@@ -202,6 +204,7 @@ export function useChatSessionState({
   resetStreamingState,
   statusCheckSentAtRef,
   lastSeqRef,
+  lastRunIdRef,
   sessionStore,
 }: UseChatSessionStateArgs) {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id || null);
@@ -682,9 +685,10 @@ export function useChatSessionState({
       sessions: [{
         sessionId: selectedSession.id,
         lastSeq: lastSeqRef.current.get(selectedSession.id) ?? 0,
+        runId: lastRunIdRef?.current.get(selectedSession.id),
       }],
     });
-  }, [lastSeqRef, selectedProject, selectedSession, sendMessage, statusCheckSentAtRef, ws]);
+  }, [lastSeqRef, lastRunIdRef, selectedProject, selectedSession, sendMessage, statusCheckSentAtRef, ws]);
 
   // Main session loading effect — store-based.
   //

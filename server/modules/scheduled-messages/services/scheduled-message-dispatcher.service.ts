@@ -1,7 +1,8 @@
-import { scheduledMessagesDb, sessionDraftsDb } from '@/modules/database/index.js';
+import { scheduledMessagesDb, sessionDraftsDb, taskRunsDb } from '@/modules/database/index.js';
 import type { QueuedSessionMessageRecord, ScheduledMessageRow } from '@/modules/database/index.js';
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
+import type { TaskRunRecord } from '@/shared/types.js';
 
 /**
  * How often due messages are looked for.
@@ -68,15 +69,16 @@ async function sendClaimedQueuedMessage(
       userId: candidate.userId,
       content: message.content,
       options: { ...message.options, attachments: message.attachments },
+      requestId: candidate.execution?.requestId,
+      acceptedRun: candidate.execution,
     },
     { runtime },
   );
 
-  // The registry check and run reservation are separate operations. If a run
-  // wins that tiny race, put the turn back so the next poll tries again.
-  if (!result.started && result.error === 'A run was already in progress for this session.') {
-    sessionDraftsDb.restoreQueuedMessage(candidate);
-    return;
+  // Once claimed, a crash or failed reservation must be visible for manual
+  // review. Re-inserting the input could replay tools after an uncertain run.
+  if (!result.started && candidate.execution && result.errorCode !== 'DUPLICATE_REQUEST') {
+    taskRunsDb.interrupt(candidate.execution.runId, result.error ?? 'The queued turn could not start.');
   }
   sessionDraftsDb.deleteEmptyDraft(candidate.userId, candidate.sessionId);
 }
@@ -101,7 +103,7 @@ export async function dispatchQueuedMessages(runtime: ProviderRuntimeGateway): P
 }
 
 async function sendClaimedMessage(
-  row: ScheduledMessageRow,
+  row: ScheduledMessageRow & { execution: TaskRunRecord },
   runtime: ProviderRuntimeGateway,
 ): Promise<void> {
   try {
@@ -111,6 +113,8 @@ async function sendClaimedMessage(
         userId: row.user_id,
         content: row.content,
         options: readOptions(row.options),
+        requestId: row.execution.requestId,
+        acceptedRun: row.execution,
         // The user picked this time on purpose; a run that happens to be going
         // is aborted so the scheduled message lands when it was due, instead
         // of being recorded as "not sent — session was busy".
@@ -125,10 +129,14 @@ async function sendClaimedMessage(
     // them it did not go.
     if (!result.started || result.error) {
       scheduledMessagesDb.markFailed(row.id, result.error ?? 'The session was unavailable when this was due.');
+      if (!result.started) taskRunsDb.interrupt(row.execution.runId, result.error ?? 'The scheduled turn could not start.');
+    } else {
+      scheduledMessagesDb.markSent(row.id);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     scheduledMessagesDb.markFailed(row.id, message);
+    taskRunsDb.interrupt(row.execution.runId, message);
   }
 }
 

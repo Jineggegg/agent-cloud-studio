@@ -303,6 +303,7 @@
       "1440": "Tomorrow"
     },
     "pending": "Scheduled for {{when}}",
+    "claimed": "Accepted · execution in progress",
     "failed": "Not sent — {{reason}}",
     "cancel": "Cancel scheduled message",
     "dismiss": "Dismiss failure notice"
@@ -364,5 +365,31 @@
     "tokensLabel_other": "tokens",
     "escClosesModal": "Esc closes the modal.",
     "close": "Close"
+  },
+  "delivery": {
+    "original": "Review original message",
+    "recoveryUnavailable": "This task was already continued on another device or marked reviewed. Check its records; remove the recovery link before writing a separate request.",
+    "sending": "Waiting for delivery confirmation. Your draft and attachments are kept until the server confirms it; you can edit your next message.",
+    "unknown": "Delivery is unconfirmed. Review the conversation before retrying the original message. Your new edits will be kept.",
+    "failed": "The message was not sent. Your draft and attachments have been kept. Send again once connected.",
+    "check": "Check delivery",
+    "retry": "Retry original after review"
+  },
+  "recovery": {
+    "title": "Interrupted execution",
+    "failedTitle": "Execution did not finish",
+    "description": "Some actions may already have completed. Review the records and results before continuing. Messages and previous approvals will not be replayed automatically.",
+    "noSession": "This first execution has no recoverable conversation yet. Check the original request below before preparing a new continuation.",
+    "original": "Original request",
+    "view": "View records",
+    "prepare": "Prepare continuation",
+    "resolve": "Mark reviewed",
+    "refresh": "Refresh records",
+    "loadFailed": "Recovery records could not be loaded. Check your connection and try again.",
+    "resolveFailed": "Could not update this record. Please try again.",
+    "prepared": "Continuation draft prepared. Review completed actions and edit it before sending.",
+    "cancelLink": "Remove recovery link",
+    "continuation": "The previous execution was interrupted. First review the conversation, changed files and any external actions already completed. Report what succeeded and what remains before continuing; do not repeat completed actions or reuse previous approvals.\n\nOriginal request:\n{{content}}"
   }
+
 }

@@ -14,9 +14,9 @@ export { pushSubscriptionsDb } from '@/modules/database/repositories/push-subscr
 export { scanStateDb } from '@/modules/database/repositories/scan-state.db.js';
 // sessionDraftsDb: used by User for drafts and Scheduled Messages for server-owned queued turns.
 export { sessionDraftsDb } from '@/modules/database/repositories/session-drafts.db.js';
+export type { SessionDraftRecord } from '@/shared/index.js';
 export type {
   QueuedSessionMessageRecord,
-  SessionDraftRecord,
 } from '@/modules/database/repositories/session-drafts.db.js';
 export { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
 export { userDb } from '@/modules/database/repositories/users.js';
@@ -25,3 +25,6 @@ export { userPreferencesDb } from '@/modules/database/repositories/user-preferen
 export { vapidKeysDb } from '@/modules/database/repositories/vapid-keys.js';
 export { scheduledMessagesDb } from './repositories/scheduled-messages.db.js';
 export type { ScheduledMessageRow, ScheduledMessageStatus } from './repositories/scheduled-messages.db.js';
+
+// Durable receipts and deduplication used by WebSocket, Scheduled Messages, and Task Recovery.
+export { taskRunsDb } from './repositories/task-runs.db.js';

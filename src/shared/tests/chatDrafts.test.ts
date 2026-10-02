@@ -11,7 +11,12 @@ import { afterEach, beforeEach, test, vi } from 'vitest';
  * mirror once at module scope.
  */
 
-type SavedDraft = { scope: string; text: string; queuedMessage?: unknown };
+type SavedDraft = {
+  scope: string;
+  text: string;
+  queuedMessage?: unknown;
+  recoveryOfRunId?: string | null;
+};
 
 const savedDrafts: SavedDraft[] = [];
 const deletedScopes: string[] = [];
@@ -30,7 +35,7 @@ vi.mock('@/shared/api', () => ({
           headers: { 'Content-Type': 'application/json' },
         });
       },
-      saveDraft: async (scope: string, draft: { text: string; queuedMessage?: unknown }) => {
+      saveDraft: async (scope: string, draft: Omit<SavedDraft, 'scope'>) => {
         savedDrafts.push({ scope, ...draft });
         return new Response('{}', { status: 200 });
       },
@@ -70,7 +75,7 @@ test('a draft is readable synchronously and reaches the server after the debounc
 
   await vi.advanceTimersByTimeAsync(1_500);
   assert.deepEqual(savedDrafts, [
-    { scope: 'session-a', text: 'half a thought', queuedMessage: null },
+    { scope: 'session-a', text: 'half a thought', queuedMessage: null, recoveryOfRunId: null },
   ]);
 });
 
@@ -116,6 +121,70 @@ test('a draft written in one page load is readable synchronously in the next', a
   assert.equal(second.readDraftText('session-a'), 'survives a reload');
 });
 
+test('a recovery draft keeps its run association after a page reload', async () => {
+  const first = await loadStore();
+  first.writeDraftText('session-a', 'continue the interrupted task');
+  first.writeDraftRecovery('session-a', 'run-interrupted');
+  await vi.advanceTimersByTimeAsync(1_500);
+
+  assert.equal(savedDrafts.at(-1)?.recoveryOfRunId, 'run-interrupted');
+
+  const second = await loadStore();
+  assert.equal(second.readDraftText('session-a'), 'continue the interrupted task');
+  assert.equal(second.readDraftRecovery('session-a'), 'run-interrupted');
+  assert.equal(second.readDraftRecovery('session-b'), null);
+});
+
+test('editing a recovery draft preserves the association in the server copy and mirror', async () => {
+  const store = await loadStore();
+  store.writeDraftText('session-a', 'continue');
+  store.writeDraftRecovery('session-a', 'run-interrupted');
+
+  store.writeDraftText('session-a', 'continue and check the completed files first');
+  await vi.advanceTimersByTimeAsync(1_500);
+
+  assert.equal(store.readDraftRecovery('session-a'), 'run-interrupted');
+  assert.equal(savedDrafts.at(-1)?.text, 'continue and check the completed files first');
+  assert.equal(savedDrafts.at(-1)?.recoveryOfRunId, 'run-interrupted');
+
+  const reloaded = await loadStore();
+  assert.equal(reloaded.readDraftRecovery('session-a'), 'run-interrupted');
+});
+
+test('clearing a recovery draft clears its association on the server and after reload', async () => {
+  const store = await loadStore();
+  store.writeDraftText('session-a', 'continue the interrupted task');
+  store.writeDraftRecovery('session-a', 'run-interrupted');
+  await vi.advanceTimersByTimeAsync(1_500);
+  savedDrafts.length = 0;
+
+  store.writeDraftText('session-a', '');
+  await vi.advanceTimersByTimeAsync(1_500);
+
+  assert.equal(store.readDraftRecovery('session-a'), null);
+  assert.deepEqual(savedDrafts, []);
+  assert.deepEqual(deletedScopes, ['session-a']);
+
+  const reloaded = await loadStore();
+  assert.equal(reloaded.readDraftText('session-a'), '');
+  assert.equal(reloaded.readDraftRecovery('session-a'), null);
+});
+
+test('clearing recovery text keeps the queued message but removes the recovery association', async () => {
+  const store = await loadStore();
+  store.writeDraftText('session-a', 'continue the interrupted task');
+  store.writeDraftRecovery('session-a', 'run-interrupted');
+  store.writeQueuedMessage('session-a', { content: 'a separate follow-up' });
+
+  store.writeDraftText('session-a', '');
+  await vi.advanceTimersByTimeAsync(1_500);
+
+  assert.equal(store.readDraftRecovery('session-a'), null);
+  assert.equal(store.readQueuedMessage('session-a')?.content, 'a separate follow-up');
+  assert.equal(savedDrafts.at(-1)?.recoveryOfRunId, null);
+  assert.deepEqual(deletedScopes, []);
+});
+
 test('hydrate brings in a draft typed on another device', async () => {
   serverDrafts = [{ scope: 'session-a', text: 'typed on the laptop', queuedMessage: null }];
 
@@ -123,6 +192,24 @@ test('hydrate brings in a draft typed on another device', async () => {
   await store.hydrateChatDrafts();
 
   assert.equal(store.readDraftText('session-a'), 'typed on the laptop');
+});
+
+test('hydrate restores a recovery association from another device and updates the mirror', async () => {
+  serverDrafts = [{
+    scope: 'session-a',
+    text: 'continue from the laptop',
+    queuedMessage: null,
+    recoveryOfRunId: 'run-interrupted',
+  }];
+
+  const store = await loadStore();
+  await store.hydrateChatDrafts();
+
+  assert.equal(store.readDraftText('session-a'), 'continue from the laptop');
+  assert.equal(store.readDraftRecovery('session-a'), 'run-interrupted');
+
+  const reloaded = await loadStore();
+  assert.equal(reloaded.readDraftRecovery('session-a'), 'run-interrupted');
 });
 
 test('hydrate removes a mirrored queue after the server claims it', async () => {
@@ -173,6 +260,7 @@ test('a queued message round-trips alongside the draft text', async () => {
     scope: 'session-a',
     text: 'still editing',
     queuedMessage: { content: 'send this next', attachments: [] },
+    recoveryOfRunId: null,
   }]);
 });
 
@@ -223,9 +311,11 @@ test('subscribers are notified on a write', async () => {
 test('reset clears the drafts so the next user does not see them', async () => {
   const store = await loadStore();
   store.writeDraftText('session-a', 'private');
+  store.writeDraftRecovery('session-a', 'private-run');
 
   store.resetChatDrafts();
 
   assert.equal(store.readDraftText('session-a'), '');
+  assert.equal(store.readDraftRecovery('session-a'), null);
   assert.equal(localStorage.getItem('chat-drafts'), null);
 });

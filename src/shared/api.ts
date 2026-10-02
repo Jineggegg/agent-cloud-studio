@@ -158,7 +158,15 @@ const pluginAssetPath = (pluginName: string, assetFile: string) =>
 // import a named method instead of assembling URLs of their own.
 
 export const api = {
+  // Task recovery is read-only until a user explicitly resolves a record or sends a reviewed continuation.
+  taskRecovery: {
+    list: (projectPath: string, sessionId: string | null) => get(`/api/task-recovery${query({ projectPath, sessionId, unassigned: !sessionId })}`),
+    requestStatus: (requestId: string) => get(`/api/task-recovery/requests/${encodeURIComponent(requestId)}`),
+    resolve: (runId: string) => post(`/api/task-recovery/${encodeURIComponent(runId)}/resolve`, {}),
+  },
   studio: {
+    // Read-only build, checkout, GitHub and host identity; never invokes the updater.
+    runtime: (signal?: AbortSignal) => get('/api/studio/runtime', { signal, cache: 'no-store' }),
     projects: {
       list: () => get('/api/studio/projects'),
       get: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}`),
@@ -577,7 +585,7 @@ export const api = {
     savePreferences: (updates: Record<string, unknown>) =>
       patch('/api/user/preferences', updates),
     drafts: () => get('/api/user/drafts'),
-    saveDraft: (scope: string, draft: { text: string; queuedMessage?: unknown }) =>
+    saveDraft: (scope: string, draft: { text: string; queuedMessage?: unknown; recoveryOfRunId?: string | null }) =>
       put('/api/user/drafts', { scope, ...draft }),
     deleteDraft: (scope: string) => del('/api/user/drafts', { scope }),
   },

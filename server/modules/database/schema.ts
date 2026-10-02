@@ -220,6 +220,7 @@ CREATE TABLE IF NOT EXISTS session_drafts (
     draft_scope TEXT NOT NULL,
     draft_text TEXT NOT NULL DEFAULT '',
     queued_message TEXT,
+    recovery_of_run_id TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id, draft_scope),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -248,6 +249,35 @@ CREATE TABLE IF NOT EXISTS superseded_provider_sessions (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (provider_session_id, provider)
 );
+`;
+
+/** Durable execution receipts used by Database and Task Recovery after process interruption. */
+const TASK_RUNS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS task_runs (
+    run_id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    user_id TEXT,
+    user_key TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    project_path TEXT,
+    content TEXT NOT NULL,
+    options TEXT NOT NULL DEFAULT '{}',
+    source TEXT NOT NULL DEFAULT 'interactive',
+    recovery_of_run_id TEXT,
+    state TEXT NOT NULL CHECK (state IN ('accepted', 'running', 'completed', 'failed', 'aborted', 'interrupted')),
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    interrupted_at TEXT,
+    resolved_at TEXT,
+    claimed_by_run_id TEXT,
+    error TEXT,
+    UNIQUE(user_key, request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_runs_recovery
+ON task_runs(user_key, state, resolved_at, created_at);
 `;
 
 export const INIT_SCHEMA_SQL = `
@@ -303,4 +333,6 @@ ${USER_PREFERENCES_TABLE_SCHEMA_SQL}
 ${SESSION_DRAFTS_TABLE_SCHEMA_SQL}
 
 ${SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL}
+
+${TASK_RUNS_TABLE_SCHEMA_SQL}
 `;

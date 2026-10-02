@@ -32,6 +32,8 @@ export type StoredQueuedMessage = {
 type DraftRecord = {
   text: string;
   queuedMessage: StoredQueuedMessage | null;
+  /** Continuation must retain its predecessor across reload and device changes. */
+  recoveryOfRunId: string | null;
 };
 
 /** Fired after any draft changes, from a local write or from a hydrate. */
@@ -46,7 +48,7 @@ const MIRROR_STORAGE_KEY = 'chat-drafts';
  */
 const SERVER_WRITE_DEBOUNCE_MS = 1_000;
 
-const EMPTY_DRAFT: DraftRecord = { text: '', queuedMessage: null };
+const EMPTY_DRAFT: DraftRecord = { text: '', queuedMessage: null, recoveryOfRunId: null };
 
 const listeners = new Set<() => void>();
 
@@ -81,6 +83,7 @@ function readMirror(): Map<string, DraftRecord> {
       }
       restored.set(scope, {
         text: typeof value.text === 'string' ? value.text : '',
+        recoveryOfRunId: typeof value.recoveryOfRunId === 'string' ? value.recoveryOfRunId : null,
         queuedMessage: isRecord(value.queuedMessage)
           ? (value.queuedMessage as StoredQueuedMessage)
           : null,
@@ -132,6 +135,7 @@ function flushServerWrites(): void {
       void api.user.saveDraft(scope, {
         text: draft.text,
         queuedMessage: draft.queuedMessage,
+        recoveryOfRunId: draft.recoveryOfRunId,
       }).catch((error: unknown) => {
         console.error('Failed to save chat draft:', error);
       });
@@ -162,7 +166,7 @@ function updateDraft(scope: string, update: Partial<DraftRecord>): void {
   const current = drafts.get(scope) ?? EMPTY_DRAFT;
   const next: DraftRecord = { ...current, ...update };
 
-  if (next.text === current.text && next.queuedMessage === current.queuedMessage) {
+  if (next.text === current.text && next.queuedMessage === current.queuedMessage && next.recoveryOfRunId === current.recoveryOfRunId) {
     return;
   }
 
@@ -185,7 +189,17 @@ export function readDraftText(scope: string): string {
 }
 
 export function writeDraftText(scope: string, text: string): void {
-  updateDraft(scope, { text });
+  updateDraft(scope, { text, ...(!text.trim() ? { recoveryOfRunId: null } : {}) });
+}
+
+/** Reads the recovery predecessor paired with a draft so another device claims the same interrupted run. */
+export function readDraftRecovery(scope: string): string | null {
+  return drafts.get(scope)?.recoveryOfRunId ?? null;
+}
+
+/** Explicitly associates or disassociates a reviewed recovery draft; this does not run or claim anything. */
+export function writeDraftRecovery(scope: string, recoveryOfRunId: string | null): void {
+  updateDraft(scope, { recoveryOfRunId });
 }
 
 export function readQueuedMessage(scope: string): StoredQueuedMessage | null {
@@ -234,7 +248,7 @@ export function subscribeToChatDrafts(listener: () => void): () => void {
  * staler server copy would delete what they are in the middle of writing.
  */
 export async function hydrateChatDrafts(): Promise<void> {
-  let serverDrafts: Array<{ scope?: unknown; text?: unknown; queuedMessage?: unknown }> = [];
+  let serverDrafts: Array<{ scope?: unknown; text?: unknown; queuedMessage?: unknown; recoveryOfRunId?: unknown }> = [];
 
   try {
     const response = await api.user.drafts();
@@ -262,6 +276,7 @@ export async function hydrateChatDrafts(): Promise<void> {
 
     merged.set(scope, {
       text: typeof draft.text === 'string' ? draft.text : '',
+      recoveryOfRunId: typeof draft.recoveryOfRunId === 'string' ? draft.recoveryOfRunId : null,
       queuedMessage: isRecord(draft.queuedMessage)
         ? (draft.queuedMessage as StoredQueuedMessage)
         : null,
@@ -293,6 +308,11 @@ export function resetChatDrafts(): void {
   }
   try {
     localStorage.removeItem(MIRROR_STORAGE_KEY);
+    // Pending receipts contain original draft text too; do not expose a prior
+    // user's unconfirmed send after signing in with a different account.
+    for (const key of Object.keys(sessionStorage)) {
+      if (key.startsWith('chat-pending-delivery:')) sessionStorage.removeItem(key);
+    }
   } catch {
     // The in-memory copy is already cleared, which is what readers use.
   }
