@@ -194,6 +194,8 @@ export const api = {
     // ── v4 track: network — endpoints below this line ──
     // Both front doors, the one serving this page and short guidance (docs/network.md).
     network: () => get('/api/studio/network'),
+    // The network guide (docs/network.md) as Markdown, served by Studio so it opens without GitHub.
+    networkGuide: () => get('/api/studio/network/guide'),
     // A one-time code that signs this user in on the other door; a Tailscale session needs the password for the public door.
     handoff: (target: StudioIngressId, password?: string) => post('/api/auth/handoff', password ? { target, password } : { target }),
     // Redeemed by the page on the target door, which has no token yet; the server checks this page's Origin.

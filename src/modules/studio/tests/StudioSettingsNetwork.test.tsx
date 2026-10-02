@@ -7,13 +7,14 @@ import type * as UtilsModule from '@/shared/utils';
 
 const mocks = vi.hoisted(() => ({
   network: vi.fn(),
+  networkGuide: vi.fn(),
   handoff: vi.fn(),
   buildHandoffUrl: vi.fn(),
   toast: Object.assign(vi.fn(), { error: vi.fn() }),
 }));
 vi.mock('@/shared/api', async (importOriginal) => {
   const actual = await importOriginal<typeof ApiModule>();
-  return { ...actual, api: { studio: { network: mocks.network, handoff: mocks.handoff } } };
+  return { ...actual, api: { studio: { network: mocks.network, networkGuide: mocks.networkGuide, handoff: mocks.handoff } } };
 });
 // jsdom cannot navigate to another origin, so the target URL becomes a same-document hash.
 vi.mock('@/shared/utils', async (importOriginal) => {
@@ -40,13 +41,23 @@ function networkInfo(overrides: Partial<StudioNetworkInfo> = {}): StudioNetworkI
   };
 }
 
-// Reachability probes are no-cors fetches to <origin>/health.
-function stubProbes(reachable: Record<string, boolean>) {
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-    const origin = Object.keys(reachable).find(candidate => url === `${candidate}/health`);
-    if (!origin || !reachable[origin]) throw new TypeError('Failed to fetch');
-    return new Response(null, { status: 200 });
-  }));
+// What a door's /health looks like to the page's CORS probe:
+// - true / 'ok': Studio answered (its /health carries Access-Control-Allow-Origin: *);
+// - 'access': Cloudflare Access redirected to its login, seen as an opaque redirect (redirect: 'manual');
+// - 'error-page': a readable non-2xx answer;
+// - false / 'down': a network or CORS failure, e.g. Cloudflare's 1033 page, which has no CORS headers.
+type ProbeAnswer = boolean | 'ok' | 'access' | 'error-page' | 'down';
+function stubProbes(answers: Record<string, ProbeAnswer>) {
+  const probe = vi.fn(async (url: string, _init?: RequestInit) => {
+    const origin = Object.keys(answers).find(candidate => url === `${candidate}/health`);
+    const answer = origin === undefined ? 'down' : answers[origin];
+    if (answer === true || answer === 'ok') return Response.json({ status: 'ok', version: '1.37.3' });
+    if (answer === 'access') return { type: 'opaqueredirect', ok: false, status: 0 } as Response;
+    if (answer === 'error-page') return new Response('<h1>Error 1033</h1>', { status: 530 });
+    throw new TypeError('Failed to fetch');
+  });
+  vi.stubGlobal('fetch', probe);
+  return probe;
 }
 
 const door = (name: RegExp) => screen.getByRole('radio', { name });
@@ -81,7 +92,82 @@ test('lists both doors with the default tag, the current badge and live reachabi
   await waitFor(() => expect(within(tailnetDoor).getByText('不可达')).toBeTruthy());
   // The first guidance line is the section's own explanation; the rest are listed.
   expect(screen.getByText('在中国大陆：选 AJ 的出口节点。')).toBeTruthy();
-  expect(screen.getByRole('link', { name: /设置说明/ }).getAttribute('href')).toContain('docs/network.md');
+  // The guide is served by Studio itself, not linked to GitHub.
+  expect(screen.queryByRole('link', { name: /设置说明/ })).toBeNull();
+  expect(screen.getByRole('button', { name: /设置说明/ })).toBeTruthy();
+});
+
+test('the probe is a CORS request that tells Studio apart from Access and Cloudflare error pages', async () => {
+  mocks.network.mockResolvedValue(Response.json(networkInfo({ current: 'tailnet' })));
+  const probe = stubProbes({ [PUBLIC_ORIGIN]: 'access', [TAILNET_ORIGIN]: 'ok' });
+  render(<StudioSettingsNetwork />);
+
+  await waitFor(() => expect(within(door(/公网域名/)).getByText('需 Access 验证')).toBeTruthy());
+  await waitFor(() => expect(within(door(/Tailscale/)).getByText(/^\d+ ms$/)).toBeTruthy());
+  for (const [, init] of probe.mock.calls) {
+    expect(init).toMatchObject({ mode: 'cors', redirect: 'manual', credentials: 'omit' });
+  }
+  expect(probe.mock.calls.map(([url]) => url).sort()).toEqual([`${TAILNET_ORIGIN}/health`, `${PUBLIC_ORIGIN}/health`]);
+});
+
+test('a readable error page or a non-Studio answer counts as unreachable', async () => {
+  mocks.network.mockResolvedValue(Response.json(networkInfo()));
+  stubProbes({ [PUBLIC_ORIGIN]: true, [TAILNET_ORIGIN]: 'error-page' });
+  render(<StudioSettingsNetwork />);
+  await waitFor(() => expect(within(door(/Tailscale/)).getByText('不可达')).toBeTruthy());
+
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ hello: 'not studio' })));
+  fireEvent.click(screen.getByRole('button', { name: /重新检测/ }));
+  await waitFor(() => expect(within(door(/公网域名/)).getByText('不可达')).toBeTruthy());
+});
+
+test('a door behind Cloudflare Access is switched to without the unreachable warning', async () => {
+  mocks.network.mockResolvedValue(Response.json(networkInfo({ current: 'tailnet' })));
+  mocks.handoff.mockResolvedValue(Response.json({ code: 'a'.repeat(43), target: 'public', origin: PUBLIC_ORIGIN, expiresAt: '2026-10-02T10:00:00Z' }));
+  stubProbes({ [PUBLIC_ORIGIN]: 'access', [TAILNET_ORIGIN]: true });
+  render(<StudioSettingsNetwork />);
+  await waitFor(() => expect(within(door(/公网域名/)).getByText('需 Access 验证')).toBeTruthy());
+
+  fireEvent.click(door(/公网域名/));
+  await waitFor(() => expect(mocks.handoff).toHaveBeenCalledWith('public', undefined));
+  expect(mocks.toast).not.toHaveBeenCalled();
+});
+
+test('the guide opens inside Studio from the server copy of docs/network.md', async () => {
+  mocks.network.mockResolvedValue(Response.json(networkInfo()));
+  mocks.networkGuide.mockResolvedValue(Response.json({
+    markdown: '# 连接方式：一个后端，两个入口\n\n见 [WSL 部署](deployment-wsl.md) 和 [Tailscale Serve](https://tailscale.com/kb/1312/serve)。\n\n| 变量 | 作用 |\n| --- | --- |\n| `STUDIO_PUBLIC_ORIGIN` | 公网入口 |\n',
+  }));
+  stubProbes({ [PUBLIC_ORIGIN]: true, [TAILNET_ORIGIN]: true });
+  render(<StudioSettingsNetwork />);
+
+  fireEvent.click(await screen.findByRole('button', { name: /设置说明/ }));
+  const dialog = await screen.findByRole('dialog', { name: '连接方式说明' });
+  expect(await within(dialog).findByRole('heading', { name: '连接方式：一个后端，两个入口' })).toBeTruthy();
+  expect(mocks.networkGuide).toHaveBeenCalledTimes(1);
+  // Relative repository links become text; absolute links open in a new tab.
+  expect(within(dialog).queryByRole('link', { name: 'WSL 部署' })).toBeNull();
+  expect(within(dialog).getByText('WSL 部署')).toBeTruthy();
+  const external = within(dialog).getByRole('link', { name: 'Tailscale Serve' });
+  expect(external.getAttribute('target')).toBe('_blank');
+  expect(external.getAttribute('rel')).toBe('noreferrer');
+  expect(within(dialog).getByRole('table')).toBeTruthy();
+
+  fireEvent.click(within(dialog).getByRole('button', { name: '完成' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+});
+
+test('a guide that cannot be read says why', async () => {
+  mocks.network.mockResolvedValue(Response.json(networkInfo()));
+  mocks.networkGuide.mockResolvedValue(Response.json(
+    { success: false, error: { code: 'NETWORK_GUIDE_MISSING', message: '这台服务器上没有找到连接方式说明（docs/network.md）' } },
+    { status: 404 },
+  ));
+  stubProbes({ [PUBLIC_ORIGIN]: true, [TAILNET_ORIGIN]: true });
+  render(<StudioSettingsNetwork />);
+
+  fireEvent.click(await screen.findByRole('button', { name: /设置说明/ }));
+  expect((await screen.findByRole('alert')).textContent).toContain('没有找到连接方式说明');
 });
 
 test('choosing the other door hands the session off and navigates there', async () => {

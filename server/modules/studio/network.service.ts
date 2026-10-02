@@ -1,5 +1,14 @@
-import type { StudioIngressId, StudioIngressOrigins } from '@/shared/types.js';
-import { readStudioIngressOrigins } from '@/shared/utils.js';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
+import type { StudioCloudflareAccessConfig, StudioIngressId, StudioIngressOrigins } from '@/shared/types.js';
+import {
+  AppError,
+  findApplicationRoot,
+  getModuleDirectory,
+  readCloudflareAccessConfig,
+  readStudioIngressOrigins,
+} from '@/shared/utils.js';
 
 /** One front door as the Settings screen lists it. */
 type StudioIngressView = {
@@ -28,7 +37,24 @@ type NetworkDependencies = {
    * which load-env fills from .env once at startup.
    */
   origins?: () => StudioIngressOrigins;
+  /** Optional Cloudflare Access check settings; defaults to readCloudflareAccessConfig(process.env). */
+  cloudflareAccess?: () => StudioCloudflareAccessConfig;
+  /**
+   * Text of the network guide, or null when it is not on this machine; defaults to reading
+   * docs/network.md from the application root (present in the git checkout Studio runs from).
+   */
+  readGuide?: () => string | null;
 };
+
+// The guide is served by Studio itself, so it opens even where GitHub does not (mainland China).
+function readGuideFromAppRoot(): string | null {
+  try {
+    const appRoot = findApplicationRoot(getModuleDirectory(import.meta.url));
+    return readFileSync(path.join(appRoot, 'docs', 'network.md'), 'utf8');
+  } catch {
+    return null;
+  }
+}
 
 const LABELS: Record<StudioIngressId, string> = { public: '公网域名', tailnet: 'Tailscale · AJ 通道' };
 const EXAMPLES: Record<StudioIngressId, { variable: string; example: string; setup: string }> = {
@@ -64,6 +90,8 @@ function hostMatchesOrigin(host: string, origin: string): boolean {
  */
 export function createStudioNetworkService(dependencies: NetworkDependencies = {}) {
   const readOrigins = dependencies.origins ?? (() => readStudioIngressOrigins(process.env));
+  const readAccess = dependencies.cloudflareAccess ?? (() => readCloudflareAccessConfig(process.env));
+  const readGuide = dependencies.readGuide ?? readGuideFromAppRoot;
   return {
     describe(input: { host: string | undefined; tailscaleSession: boolean }): StudioNetworkView {
       const origins = readOrigins();
@@ -87,11 +115,26 @@ export function createStudioNetworkService(dependencies: NetworkDependencies = {
           guidance.push(`${LABELS[id]}还没有配置：${setup}，再在 .env 里设置 ${variable}。`);
         }
       }
+      const access = readAccess();
+      if (access.status === 'invalid') {
+        guidance.push(`Cloudflare Access 校验配置有误：${access.problem}。在修好之前，经公网域名的请求会全部被拒绝。`);
+      } else if (access.status === 'off' && origins.public !== null) {
+        guidance.push('建议在 .env 里设置 STUDIO_CF_ACCESS_TEAM_DOMAIN 和 STUDIO_CF_ACCESS_AUD，让 Studio 自己核对 Cloudflare Access 的验证结果。');
+      }
       if (input.tailscaleSession) {
         guidance.push('当前是 Tailscale 免密码会话：切换到公网域名需要输入一次账户密码。');
       }
       guidance.push('在中国大陆：电脑和 iPad 都选 AJ 的出口节点，再走 Tailscale 通道。');
       return { ingresses, current, session: input.tailscaleSession ? 'tailscale' : 'password', guidance };
+    },
+
+    /** The network guide (docs/network.md) as Markdown, for the Settings screen to render. */
+    guide(): { markdown: string } {
+      const markdown = readGuide();
+      if (markdown === null) {
+        throw new AppError('这台服务器上没有找到连接方式说明（docs/network.md）', { statusCode: 404, code: 'NETWORK_GUIDE_MISSING' });
+      }
+      return { markdown };
     },
   };
 }

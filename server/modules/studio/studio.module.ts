@@ -6,7 +6,7 @@ import { getConnection, getDatabasePath, projectsDb, sessionsDb, userDb } from '
 import { createProject } from '@/modules/projects/index.js';
 import { readCodexAccountRateLimits } from '@/modules/providers/index.js';
 import { scheduledMessagesService } from '@/modules/scheduled-messages/index.js';
-import { AppError } from '@/shared/utils.js';
+import { AppError, readStudioIngressOrigins } from '@/shared/utils.js';
 
 import { createStudioService } from './studio.service.js';
 import { createStudioRouter } from './studio.routes.js';
@@ -117,7 +117,8 @@ export function createStudioModule() {
     project: hub.get,
     clientId: process.env.STUDIO_GMAIL_CLIENT_ID,
     clientSecret: process.env.STUDIO_GMAIL_CLIENT_SECRET,
-    publicOrigin: process.env.STUDIO_PUBLIC_ORIGIN,
+    // Both front doors, validated without throwing: a malformed origin disables Gmail, not the server.
+    doors: () => readStudioIngressOrigins(process.env),
   });
   const trading212 = createTrading212Service({
     database: getConnection(),

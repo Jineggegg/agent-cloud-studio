@@ -1,37 +1,53 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, m } from 'motion/react';
 import { toast } from 'sonner';
-import { Check, ExternalLink, Globe, KeyRound, Network, RefreshCw } from 'lucide-react';
+import { BookOpen, Check, Globe, KeyRound, Network, RefreshCw } from 'lucide-react';
 
 import { ApiRequestError, api, readApiJson } from '@/shared/api';
 import { buildHandoffUrl, readIngressPreference, writeIngressPreference } from '@/shared/utils';
 import type { StudioIngress, StudioIngressId, StudioNetworkInfo } from '@/shared/types';
+import { StudioNetworkGuide } from '@/modules/studio/StudioNetworkGuide';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 import '@/modules/studio/studio-network.css';
 
 /** POST /api/auth/handoff: a one-time code for the target door, valid for 60 s. */
 type HandoffTicket = { code: string; target: StudioIngressId; origin: string; expiresAt: string };
 
-/** Result of timing a request to a door's /health. */
-type ProbeResult = { reachable: true; latencyMs: number } | { reachable: false };
+/**
+ * Result of checking a door's /health:
+ * - `ok`: Studio itself answered through this door (latency is the full round trip);
+ * - `access`: Cloudflare Access answered with its login redirect, so the door's edge is reachable
+ *   but whether the tunnel behind it runs cannot be seen (docs/network.md: bypass /health);
+ * - `down`: nothing usable answered (network error, Cloudflare error page, timeout).
+ */
+type ProbeResult = { state: 'ok'; latencyMs: number } | { state: 'access' } | { state: 'down' };
 
-const DOCS_URL = 'https://github.com/Jineggegg/agent-cloud-studio/blob/main/docs/network.md';
 // A door that has not answered by then is reported as unreachable.
 const PROBE_TIMEOUT_MS = 5000;
 const DOOR_ICONS: Record<StudioIngressId, typeof Globe> = { public: Globe, tailnet: Network };
 const DOOR_TONES: Record<StudioIngressId, string> = { public: 'tone-slate', tailnet: 'tone-sage' };
 
-// Times a no-cors request to the door's public health check. The response is opaque, so this
-// only proves that the origin answered (through Cloudflare Access, if any) and how fast.
+// Checks the door's public health check with a CORS request. Studio answers /health with
+// Access-Control-Allow-Origin: *, so only Studio itself produces a readable response; a Cloudflare
+// error page (502, 530 / 1033 when the tunnel is down) has no CORS headers and fails like a network
+// error. Redirects are not followed, so Cloudflare Access's login redirect shows up as an opaque
+// redirect instead of being mistaken for an answer; credentials are omitted so no cookie decides.
 async function probeDoor(origin: string): Promise<ProbeResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
   const started = performance.now();
   try {
-    await fetch(`${origin}/health`, { mode: 'no-cors', cache: 'no-store', credentials: 'omit', signal: controller.signal });
-    return { reachable: true, latencyMs: Math.max(1, Math.round(performance.now() - started)) };
+    const response = await fetch(`${origin}/health`, {
+      mode: 'cors', redirect: 'manual', credentials: 'omit', cache: 'no-store', signal: controller.signal,
+    });
+    if (response.type === 'opaqueredirect') return { state: 'access' };
+    if (!response.ok) return { state: 'down' };
+    const body = await response.json() as { status?: unknown } | null;
+    return body?.status === 'ok'
+      ? { state: 'ok', latencyMs: Math.max(1, Math.round(performance.now() - started)) }
+      : { state: 'down' };
   } catch {
-    return { reachable: false };
+    return { state: 'down' };
   } finally {
     clearTimeout(timer);
   }
@@ -69,6 +85,8 @@ export function StudioSettingsNetwork() {
   const [password, setPassword] = useState('');
   // This device's remembered door on this origin, read once on open.
   const [preferred] = useState<StudioIngressId | null>(() => readIngressPreference());
+  // Whether the network guide sheet is open; the guide is served by Studio, not by GitHub.
+  const [guideOpen, setGuideOpen] = useState(false);
 
   const fetchInfo = useCallback(() => {
     void api.studio.network().then(readApiJson<unknown>)
@@ -127,7 +145,7 @@ export function StudioSettingsNetwork() {
       setPasswordFor(ingress.id);
       return;
     }
-    if (probes[ingress.id]?.reachable === false) {
+    if (probes[ingress.id]?.state === 'down') {
       toast(`${ingress.label}现在连不上`, {
         description: ingress.id === 'tailnet' ? '先确认这台设备已连上 Tailscale。' : '先确认电脑上的 Cloudflare Tunnel 正在运行。',
         action: { label: '仍然前往', onClick: () => void handoff(ingress) },
@@ -175,7 +193,9 @@ export function StudioSettingsNetwork() {
             : <span className="studio-network-status">
               {ingress.origin && <span className="studio-network-latency">
                 {probe === undefined ? <StudioSpinner size={13} label="正在检测" />
-                  : probe.reachable ? `${probe.latencyMs} ms` : <span className="studio-network-down">不可达</span>}
+                  : probe.state === 'ok' ? `${probe.latencyMs} ms`
+                    : probe.state === 'access' ? <span className="studio-network-access">需 Access 验证</span>
+                      : <span className="studio-network-down">不可达</span>}
               </span>}
               {isCurrent && <span className="status-badge good"><Check size={13} strokeWidth={2.4} aria-hidden="true" />当前</span>}
             </span>}
@@ -211,11 +231,14 @@ export function StudioSettingsNetwork() {
       <p>两个入口连到这台电脑上的同一个 Studio 和数据库，数据只有一份。默认走公网域名；在国内或公网不通时选 Tailscale，并在 Tailscale 里使用 AJ 的出口节点。切换会把当前登录一起带过去。</p>
       {info && info.guidance.length > 1 && <ul>{info.guidance.slice(1).map(line => <li key={line}>{line}</li>)}</ul>}
       <div className="studio-network-actions">
-        <a className="studio-network-link" href={DOCS_URL} target="_blank" rel="noreferrer">设置说明<ExternalLink size={13} aria-hidden="true" /></a>
+        <button type="button" className="studio-network-link" onClick={() => setGuideOpen(true)}>
+          <BookOpen size={13} aria-hidden="true" />设置说明
+        </button>
         {info && <button type="button" className="studio-network-link" disabled={switching !== null} onClick={reprobe}>
           <RefreshCw size={13} aria-hidden="true" />重新检测
         </button>}
       </div>
     </div>
+    {guideOpen && <StudioNetworkGuide onClose={() => setGuideOpen(false)} />}
   </section>;
 }
