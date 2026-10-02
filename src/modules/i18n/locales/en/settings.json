@@ -530,7 +530,7 @@
     },
     "managed": {
       "badge": "Managed",
-      "hint": "Managed by CloudCLI."
+      "hint": "Managed by Agent Cloud Studio."
     },
     "help": {
       "title": "About Codex MCP",

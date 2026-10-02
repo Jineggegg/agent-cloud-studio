@@ -2,10 +2,7 @@ import { FolderPlus, Plus, RefreshCw, Search, X, PanelLeftClose } from 'lucide-r
 import type { TFunction } from 'i18next';
 
 import { Button, Input } from '@/shared/ui';
-import { CLOUDCLI_WORDMARK_FONT_FAMILY } from '@/shared/constants';
-import { IS_PLATFORM } from '@/shared/utils';
 import type { SidebarSearchMode } from '@/shared/types';
-import GitHubStarBadge from '@/modules/sidebar/GitHubStarBadge';
 import SidebarModeTabs from '@/modules/sidebar/SidebarModeTabs';
 
 const MOD_KEY =
@@ -40,10 +37,7 @@ function LogoBlock({ t }: { t: TFunction }) {
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
         </svg>
       </div>
-      <h1
-        className="truncate text-sm font-bold tracking-tight text-foreground"
-        style={{ fontFamily: CLOUDCLI_WORDMARK_FONT_FAMILY }}
-      >
+      <h1 className="truncate text-sm font-bold tracking-tight text-foreground">
         {t('app.title')}
       </h1>
     </div>
@@ -87,17 +81,7 @@ export default function SidebarHeader({
         style={{}}
       >
         <div className="flex items-center justify-between gap-2">
-          {IS_PLATFORM ? (
-            <a
-              href="https://cloudcli.ai/dashboard"
-              className="flex min-w-0 items-center gap-2.5 transition-opacity hover:opacity-80"
-              title={t('tooltips.viewEnvironments')}
-            >
-              <LogoBlock t={t} />
-            </a>
-          ) : (
-            <LogoBlock t={t} />
-          )}
+          <LogoBlock t={t} />
 
           <div className="flex flex-shrink-0 items-center gap-0.5">
             <Button
@@ -135,7 +119,6 @@ export default function SidebarHeader({
           </div>
         </div>
 
-        <GitHubStarBadge />
 
         {/* Search bar */}
         {showSearchTools && (
@@ -188,17 +171,7 @@ export default function SidebarHeader({
         style={isPWA && isMobile ? { paddingTop: '16px' } : {}}
       >
         <div className="flex items-center justify-between">
-          {IS_PLATFORM ? (
-            <a
-              href="https://cloudcli.ai/dashboard"
-              className="flex min-w-0 items-center gap-2.5 transition-opacity active:opacity-70"
-              title={t('tooltips.viewEnvironments')}
-            >
-              <LogoBlock t={t} />
-            </a>
-          ) : (
-            <LogoBlock t={t} />
-          )}
+          <LogoBlock t={t} />
 
           <div className="flex flex-shrink-0 gap-1.5">
             <button

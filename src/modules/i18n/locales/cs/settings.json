@@ -496,7 +496,7 @@
     },
     "managed": {
       "badge": "Spravováno",
-      "hint": "Spravuje CloudCLI."
+      "hint": "Spravuje Agent Cloud Studio."
     },
     "help": {
       "title": "O MCP pro Codex",

@@ -500,7 +500,7 @@
     },
     "managed": {
       "badge": "Gestionado",
-      "hint": "Gestionado por CloudCLI."
+      "hint": "Gestionado por Agent Cloud Studio."
     },
     "help": {
       "title": "Acerca de MCP en Codex",
