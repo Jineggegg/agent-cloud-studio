@@ -5,6 +5,28 @@ import type { ChatDeliveryState, PendingChatDelivery, ServerEvent } from '@/shar
 
 const DELIVERY_TIMEOUT_MS = 20_000;
 const STORAGE_PREFIX = 'chat-pending-delivery:';
+const KNOWN_RUN_STATES = ['accepted', 'running', 'completed', 'failed', 'interrupted', 'aborted'];
+
+async function lookupDelivery(pending: PendingChatDelivery): Promise<ServerEvent | null> {
+  const response = await api.taskRecovery.requestStatus(pending.requestId);
+  // An older or rolled-back backend can execute chat.send while ignoring its
+  // request id. Only this authenticated endpoint's exact contract proves that
+  // the current server understands durable request deduplication.
+  if (response.status !== 200) throw new Error('Delivery lookup unavailable');
+  const body: unknown = await response.json();
+  if (!body || typeof body !== 'object' || Array.isArray(body) || !('run' in body)) {
+    throw new Error('Invalid delivery lookup');
+  }
+  if (body.run === null) return null;
+  if (!body.run || typeof body.run !== 'object' || Array.isArray(body.run)) throw new Error('Invalid delivery record');
+  const run = body.run as ServerEvent;
+  if (run.requestId !== pending.requestId || run.sessionId !== pending.sessionId
+    || typeof run.runId !== 'string' || !run.runId
+    || typeof run.state !== 'string' || !KNOWN_RUN_STATES.includes(run.state)) {
+    throw new Error('Invalid delivery record');
+  }
+  return { ...run, kind: 'run_accepted', deliveryLookup: true };
+}
 
 function readPending(scope: string | null): PendingChatDelivery | null {
   if (!scope) return null;
@@ -48,6 +70,7 @@ export function useChatDelivery({
   const acceptedRef = useRef(onAccepted);
   const restoreRef = useRef(onRestore);
   const connectionRef = useRef(isConnected);
+  const retryingRef = useRef<PendingChatDelivery | null>(null);
   // The listener remains stable while its callbacks follow the committed view.
   useLayoutEffect(() => {
     scopeRef.current = scope;
@@ -92,18 +115,20 @@ export function useChatDelivery({
     const pending = pendingRef.current;
     if (!pending) return;
     try {
-      const response = await api.taskRecovery.requestStatus(pending.requestId);
-      if (!response.ok) throw new Error('Delivery lookup unavailable');
-      const body = await response.json();
-      if (body.run && body.run.requestId === pending.requestId) {
-        handleReceipt({ ...body.run, kind: 'run_accepted', deliveryLookup: true });
-      } else if (pendingRef.current === pending) {
+      if (connectionRef.current === false) throw new Error('Offline');
+      const receipt = await lookupDelivery(pending);
+      if (pendingRef.current !== pending || scopeRef.current !== pending.scope) return;
+      if (receipt) {
+        handleReceipt(receipt);
+      } else {
         // An HTTP lookup may beat an in-flight WebSocket frame. Absence is not
         // proof that it is safe to create another request with a different id.
         setDelivery({ requestId: pending.requestId, state: 'unknown' });
       }
     } catch {
-      if (pendingRef.current === pending) setDelivery({ requestId: pending.requestId, state: 'unknown' });
+      if (pendingRef.current === pending && scopeRef.current === pending.scope) {
+        setDelivery({ requestId: pending.requestId, state: 'unknown', errorCode: 'DELIVERY_CHECK_UNAVAILABLE' });
+      }
     }
   }, [handleReceipt]);
 
@@ -114,7 +139,11 @@ export function useChatDelivery({
     setPendingContent(restored?.content ?? null);
     setDelivery(pendingRef.current ? { requestId: pendingRef.current.requestId, state: 'unknown' } : null);
     if (pendingRef.current && connectionRef.current !== false) void checkDelivery();
-    return clearTimer;
+    return () => {
+      clearTimer();
+      // Late lookups must not send from a conversation that was left or unmounted.
+      pendingRef.current = null;
+    };
     // Connection changes are handled below without replacing the live snapshot.
   }, [scope, checkDelivery, clearTimer]);
 
@@ -139,7 +168,7 @@ export function useChatDelivery({
     clearTimer();
     let sent = false;
     try {
-      sent = isConnected !== false && sendMessage(pending.payload) !== false;
+      sent = connectionRef.current !== false && sendMessage(pending.payload) !== false;
     } catch {
       sent = false;
     }
@@ -162,12 +191,31 @@ export function useChatDelivery({
       }, DELIVERY_TIMEOUT_MS);
     }
     return true;
-  }, [clearTimer, isConnected, sendMessage]);
+  }, [clearTimer, sendMessage]);
 
-  const retryDelivery = useCallback(() => {
+  const retryDelivery = useCallback(async () => {
     const pending = pendingRef.current;
-    if (pending && pending.scope === scopeRef.current) transmit(pending, true);
-  }, [transmit]);
+    if (!pending || pending.scope !== scopeRef.current || retryingRef.current === pending) return;
+    // Re-read after the await; the browser may have disconnected during lookup.
+    const isOffline = () => connectionRef.current === false;
+    retryingRef.current = pending;
+    try {
+      if (isOffline()) throw new Error('Offline');
+      const receipt = await lookupDelivery(pending);
+      if (pendingRef.current !== pending || scopeRef.current !== pending.scope) return;
+      if (receipt) handleReceipt(receipt);
+      else {
+        if (isOffline()) throw new Error('Offline');
+        transmit(pending, true);
+      }
+    } catch {
+      if (pendingRef.current === pending && scopeRef.current === pending.scope) {
+        setDelivery({ requestId: pending.requestId, state: 'unknown', errorCode: 'DELIVERY_CHECK_UNAVAILABLE' });
+      }
+    } finally {
+      if (retryingRef.current === pending) retryingRef.current = null;
+    }
+  }, [handleReceipt, transmit]);
   const hasPendingDelivery = useCallback(() => pendingRef.current !== null, []);
 
   return {

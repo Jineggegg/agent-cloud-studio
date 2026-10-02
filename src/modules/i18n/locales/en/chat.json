@@ -367,6 +367,7 @@
     "close": "Close"
   },
   "delivery": {
+    "checkUnavailable": "Delivery could not be verified, so the original message was not resent. Check your connection and server version, then try again.",
     "original": "Review original message",
     "recoveryUnavailable": "This task was already continued on another device or marked reviewed. Check its records; remove the recovery link before writing a separate request.",
     "sending": "Waiting for delivery confirmation. Your draft and attachments are kept until the server confirms it; you can edit your next message.",

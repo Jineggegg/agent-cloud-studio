@@ -318,7 +318,8 @@ test('an explicit retry reuses the original request id and payload after the dra
   await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
   await act(async () => { composer.view.result.current.setInput('Edited while waiting'); });
 
-  await act(async () => { composer.view.result.current.retryDelivery(); });
+  await act(async () => { await composer.view.result.current.retryDelivery(); });
+  assert.deepEqual(vi.mocked(api.taskRecovery.requestStatus).mock.calls, [[original.requestId]]);
   assert.equal(composer.sendMessage.mock.calls.length, 2);
   assert.deepEqual(composer.lastRequest(), original);
   assert.equal(composer.view.result.current.delivery?.state, 'sending');
@@ -329,6 +330,156 @@ test('an explicit retry reuses the original request id and payload after the dra
   assert.equal(composer.addMessage.mock.calls.length, 1);
   assert.equal(composer.addMessage.mock.calls[0]?.[0].content, 'Original request');
   assert.equal(composer.view.result.current.input, 'Edited while waiting');
+});
+
+const renderUnknownComposer = async () => {
+  vi.useFakeTimers();
+  const composer = renderComposer();
+  await act(async () => { composer.view.result.current.setInput('Do not execute this twice'); });
+  await composer.send();
+  await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+  assert.equal(composer.view.result.current.delivery?.state, 'unknown');
+  return composer;
+};
+
+test.each([
+  ['an older backend returning 404', () => new Response(JSON.stringify({ run: null }), { status: 404 })],
+  ['a server error', () => new Response(JSON.stringify({ run: null }), { status: 500 })],
+  ['an empty 204 response', () => new Response(null, { status: 204 })],
+  ['invalid JSON', () => new Response('not json')],
+  ['a null body', () => new Response('null')],
+  ['an array body', () => new Response('[]')],
+  ['a missing run field', () => new Response('{}')],
+  ['an array run field', () => new Response(JSON.stringify({ run: [] }))],
+  ['a network failure', () => { throw new TypeError('Failed to fetch'); }],
+] as const)('retry keeps the request unknown after %s', async (_name, response) => {
+  const composer = await renderUnknownComposer();
+  const original = composer.lastRequest();
+  vi.mocked(api.taskRecovery.requestStatus).mockImplementationOnce(async () => response());
+
+  await act(async () => { await composer.view.result.current.retryDelivery(); });
+
+  assert.deepEqual(vi.mocked(api.taskRecovery.requestStatus).mock.calls, [[original.requestId]]);
+  assert.deepEqual(composer.view.result.current.delivery, {
+    requestId: original.requestId, state: 'unknown', errorCode: 'DELIVERY_CHECK_UNAVAILABLE',
+  });
+  assert.equal(composer.sendMessage.mock.calls.length, 1, 'an unavailable deduplication check must never resend');
+  assert.equal(composer.view.result.current.input, 'Do not execute this twice');
+  assert.equal(readDraftText(SESSION.id), 'Do not execute this twice');
+  assert.equal(composer.addMessage.mock.calls.length, 0);
+  assert.equal(composer.onDeliveryReconciled.mock.calls.length, 0);
+});
+
+test.each([
+  ['a different request', { requestId: 'another-request' }],
+  ['a different session', { sessionId: 'another-session' }],
+  ['an empty run id', { runId: '' }],
+  ['a missing state', { state: undefined }],
+  ['an unknown state', { state: 'unrecognized-state' }],
+] as const)('retry does not consume or resend a lookup record with %s', async (_name, invalidFields) => {
+  const composer = await renderUnknownComposer();
+  const original = composer.lastRequest();
+  vi.mocked(api.taskRecovery.requestStatus).mockResolvedValueOnce(new Response(JSON.stringify({
+    run: { requestId: original.requestId, sessionId: SESSION.id, runId: 'existing-run', state: 'completed', ...invalidFields },
+  })));
+
+  await act(async () => { await composer.view.result.current.retryDelivery(); });
+
+  assert.deepEqual(composer.view.result.current.delivery, {
+    requestId: original.requestId, state: 'unknown', errorCode: 'DELIVERY_CHECK_UNAVAILABLE',
+  });
+  assert.equal(composer.sendMessage.mock.calls.length, 1);
+  assert.equal(composer.view.result.current.input, 'Do not execute this twice');
+  assert.equal(composer.onDeliveryReconciled.mock.calls.length, 0);
+});
+
+test.each(['accepted', 'running', 'completed', 'failed', 'interrupted', 'aborted'])('retry reconciles an existing %s run without resending', async (state) => {
+  const composer = await renderUnknownComposer();
+  const original = composer.lastRequest();
+  vi.mocked(api.taskRecovery.requestStatus).mockResolvedValueOnce(new Response(JSON.stringify({
+    run: { requestId: original.requestId, sessionId: SESSION.id, runId: 'existing-run', state },
+  })));
+
+  await act(async () => { await composer.view.result.current.retryDelivery(); });
+
+  assert.deepEqual(vi.mocked(api.taskRecovery.requestStatus).mock.calls, [[original.requestId]]);
+  assert.equal(composer.sendMessage.mock.calls.length, 1);
+  assert.equal(composer.view.result.current.delivery, null);
+  assert.equal(composer.view.result.current.input, '');
+  assert.equal(composer.addMessage.mock.calls.length, 0, 'history reconciliation must not append a duplicate message');
+  assert.deepEqual(composer.onDeliveryReconciled.mock.calls, [[SESSION.id]]);
+  assert.equal(composer.onSessionProcessing.mock.calls.length, state === 'accepted' || state === 'running' ? 1 : 0);
+  assert.equal(sessionStorage.getItem(`chat-pending-delivery:${SESSION.id}`), null);
+});
+
+test.each(['switch session', 'unmount', 'receive acceptance', 'disconnect'] as const)('a retry lookup must not resend after %s', async (change) => {
+  const composer = await renderUnknownComposer();
+  const original = composer.lastRequest();
+  let completeLookup!: (response: Response) => void;
+  vi.mocked(api.taskRecovery.requestStatus).mockImplementationOnce(() => new Promise<Response>((resolve) => {
+    completeLookup = resolve;
+  }));
+  let retry!: Promise<void>;
+  await act(async () => { retry = composer.view.result.current.retryDelivery(); });
+  assert.deepEqual(vi.mocked(api.taskRecovery.requestStatus).mock.calls, [[original.requestId]]);
+  assert.equal(composer.sendMessage.mock.calls.length, 1, 'retry must wait for the lookup result');
+
+  if (change === 'receive acceptance') await composer.accept(original.requestId);
+  else if (change === 'unmount') composer.view.unmount();
+  else {
+    await act(async () => {
+      composer.view.rerender({ connected: change !== 'disconnect', session: change === 'switch session' ? { id: 'session-b' } : SESSION });
+    });
+    if (change === 'switch session') {
+      await act(async () => { composer.view.result.current.setInput('New session draft'); });
+    }
+  }
+  await act(async () => {
+    completeLookup(new Response(JSON.stringify({ run: null })));
+    await retry;
+  });
+
+  assert.equal(composer.sendMessage.mock.calls.length, 1);
+  if (change === 'switch session') {
+    assert.equal(composer.view.result.current.input, 'New session draft');
+    assert.equal(composer.view.result.current.delivery, null);
+    assert.equal(readDraftText(SESSION.id), 'Do not execute this twice');
+  } else if (change === 'receive acceptance') {
+    assert.equal(composer.view.result.current.delivery, null);
+    assert.equal(composer.addMessage.mock.calls.length, 1);
+  } else if (change === 'disconnect') {
+    assert.deepEqual(composer.view.result.current.delivery, {
+      requestId: original.requestId, state: 'unknown', errorCode: 'DELIVERY_CHECK_UNAVAILABLE',
+    });
+  }
+});
+
+test('concurrent retries share one lookup and resend the original payload once', async () => {
+  const composer = await renderUnknownComposer();
+  const original = composer.lastRequest();
+  let completeLookup!: (response: Response) => void;
+  vi.mocked(api.taskRecovery.requestStatus).mockImplementationOnce(() => new Promise<Response>((resolve) => {
+    completeLookup = resolve;
+  }));
+  let retries!: Promise<void[]>;
+  await act(async () => {
+    retries = Promise.all([
+      composer.view.result.current.retryDelivery(),
+      composer.view.result.current.retryDelivery(),
+    ]);
+  });
+  assert.deepEqual(vi.mocked(api.taskRecovery.requestStatus).mock.calls, [[original.requestId]]);
+  assert.equal(composer.sendMessage.mock.calls.length, 1);
+
+  await act(async () => {
+    completeLookup(new Response(JSON.stringify({ run: null })));
+    await retries;
+  });
+
+  assert.equal(composer.sendMessage.mock.calls.length, 2);
+  assert.deepEqual(composer.lastRequest(), original);
+  assert.equal(composer.view.result.current.delivery?.state, 'sending');
+  assert.equal(composer.addMessage.mock.calls.length, 0);
 });
 
 test('a read-only lookup with no record never automatically retries an unknown request', async () => {

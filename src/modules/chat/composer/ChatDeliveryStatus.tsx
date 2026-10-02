@@ -18,7 +18,9 @@ export function ChatDeliveryStatus({ delivery, pendingContent, onCheck, onRetry,
       : delivery.state === 'unknown'
         ? 'Delivery is unconfirmed. Review the conversation before retrying the original message. Your new edits will be kept.'
         : 'The message was not sent. Your draft and attachments have been kept.' })}</p>
-    {delivery.errorCode === 'RECOVERY_NOT_AVAILABLE'
+    {delivery.errorCode === 'DELIVERY_CHECK_UNAVAILABLE'
+      ? <p className="mt-1 text-muted-foreground">{t('delivery.checkUnavailable', { defaultValue: 'Delivery could not be verified, so the original message was not resent. Check your connection and server version, then try again.' })}</p>
+      : delivery.errorCode === 'RECOVERY_NOT_AVAILABLE'
       ? <p className="mt-1 text-muted-foreground">{t('delivery.recoveryUnavailable', { defaultValue: 'This task was already continued on another device or marked reviewed. Check its records; remove the recovery link before writing a separate request.' })}</p>
       : delivery.error && <p className="mt-1 break-words text-muted-foreground">{delivery.error}</p>}
     {delivery.state === 'unknown' && pendingContent && <details className="mt-1">
