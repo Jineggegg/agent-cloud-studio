@@ -7,6 +7,7 @@ import { useTheme } from '@/shared/context/ThemeContext';
 import type { StudioRemoteHost, StudioRemoteStatus, StudioStatus, T212Status, ThemeMode } from '@/shared/types';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { StudioSettingsMail } from '@/modules/studio/StudioSettingsMail';
+import { StudioSettingsModels } from '@/modules/studio/StudioSettingsModels';
 import { StudioSettingsNetwork } from '@/modules/studio/StudioSettingsNetwork';
 import { StudioSettingsRuntime } from '@/modules/studio/StudioSettingsRuntime';
 import { StudioSettingsTrading } from '@/modules/studio/StudioSettingsTrading';
@@ -152,6 +153,8 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
       </div>
       <p className="ios-section-footer">开发工具直接调用这台电脑上已登录的 Claude Code 与 Codex CLI，不替换凭据，也不会转为 API 计费。</p>
     </section>
+
+    <StudioSettingsModels />
 
     <section className="ios-section" aria-labelledby="studio-t212-heading">
       <div className="ios-section-header"><h2 id="studio-t212-heading">Trading 212</h2><span className="caption">密钥文件</span></div>

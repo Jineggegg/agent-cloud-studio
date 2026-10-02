@@ -9,11 +9,14 @@ import { ChevronLeft, FolderX, Globe, LayoutGrid, RefreshCw, ShieldCheck, Square
 import { useAuth } from '@/modules/auth';
 import { api, readApiJson } from '@/shared/api';
 import type { HubProject, StudioChatSpace, StudioConversation, StudioHomeTile, T212Status } from '@/shared/types';
+import { applyModelDefaults } from '@/shared/modelDefaults';
+import { writeSelectedProvider } from '@/shared/selectedProvider';
 import { useStudio } from '@/modules/studio/hooks/useStudio';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { StudioHomeScreen } from '@/modules/studio/StudioHomeScreen';
 import { lazyStudioPanel } from '@/modules/studio/lazyStudioPanel';
 import { StudioLinksSheet } from '@/modules/studio/StudioLinksSheet';
+import type { WidgetType } from '@/modules/studio/StudioWidgets';
 import '@/modules/studio/studio.css';
 
 // Sub-apps stay out of the home screen's first load (and are warmed once it is idle); same props as the originals.
@@ -120,6 +123,25 @@ export function StudioPage() {
     setTransition('opening');
     navigate(tile.id.startsWith('project:') ? `/projects/${encodeURIComponent(tile.id.slice(8))}` : `/apps/${tile.id}`, { state: { fromHome: true } });
   };
+  // A widget opens the app it summarises. Claude and Codex start a new session in the workbench directory with the
+  // model and effort chosen in settings; the others zoom their app out of the card, like an icon.
+  const openWidget = async (type: WidgetType, card: DOMRect) => {
+    if (transition) return;
+    if (type === 'claude' || type === 'codex') {
+      try {
+        const { url } = await api.studio.projects.launchWorkbench(type).then(readApiJson<{ url: string }>);
+        applyModelDefaults(type);
+        writeSelectedProvider(type);
+        navigate(url);
+      } catch (failure) { toast.error(failure instanceof Error ? failure.message : '无法打开工作台'); }
+      return;
+    }
+    if (type === 'deepseek') { openTile({ id: 'deepseek', name: 'DeepSeek', tone: 'slate', glyph: 'sparkles' }, card); return; }
+    const module = type === 'trading212' ? 'trading212' : 'snr-lab';
+    const found = projects?.find(item => item.modules.includes(module));
+    if (!found) { toast.error(type === 'trading212' ? '没有启用股票分析的项目' : '没有启用 K 线实验室的项目'); return; }
+    openTile({ id: `project:${found.id}`, name: found.name, tone: found.tone, glyph: found.glyph }, card);
+  };
   // Home works even mid-zoom: the closing animation simply replaces the opening one.
   const goHome = () => { if (transition !== 'closing') setTransition('closing'); };
   const refresh = async () => {
@@ -154,7 +176,7 @@ export function StudioPage() {
   ];
   // The app is revealed from the exact icon rectangle (clip-path, so content never distorts), like iOS; without an icon it fades and scales from centre.
   const appStyle = (origin ? {
-    '--zoom-clip': `inset(${origin.y}px ${Math.max(0, window.innerWidth - origin.x - origin.w)}px ${Math.max(0, window.innerHeight - origin.y - origin.h)}px ${origin.x}px round ${origin.w * 0.23}px)`,
+    '--zoom-clip': `inset(${origin.y}px ${Math.max(0, window.innerWidth - origin.x - origin.w)}px ${Math.max(0, window.innerHeight - origin.y - origin.h)}px ${origin.x}px round ${Math.min(origin.w, origin.h) * 0.23}px)`,
     '--zoom-cx': `${origin.x + origin.w / 2}px`, '--zoom-cy': `${origin.y + origin.h / 2}px`,
   } : {}) as CSSProperties;
 
@@ -178,7 +200,7 @@ export function StudioPage() {
 
     {/* The home screen stays mounted under an open app so its entrance animation and edit state persist. */}
     <div className={`home-layer ${target && !transition ? 'is-covered' : ''}`} aria-hidden={target ? true : undefined}>
-      <StudioHomeScreen tiles={tiles} loading={projects === null} covered={Boolean(target && !transition)} snr={studio.snr} onOpen={openTile} onCreate={() => setCreating(true)}
+      <StudioHomeScreen tiles={tiles} loading={projects === null} covered={Boolean(target && !transition)} snr={studio.snr} onOpen={openTile} onOpenWidget={(type, card) => void openWidget(type, card)} onCreate={() => setCreating(true)}
         onRefresh={() => void refresh()} onSignOut={signOut} refreshing={refreshing} />
     </div>
 

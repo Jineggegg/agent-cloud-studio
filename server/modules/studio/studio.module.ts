@@ -1,6 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { existsSync, realpathSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 
 import { getConnection, getDatabasePath, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
@@ -76,6 +77,11 @@ export function createStudioModule() {
     remoteHosts: () => remote.names(),
     remoteSeeds: () => remote.seeds(),
     remoteCommand: (host, dir, agent) => remote.command(host, dir, agent),
+    async workbench() {
+      const directory = process.env.STUDIO_WORKBENCH_PATH || path.join(os.homedir(), 'studio-workbench');
+      await mkdir(directory, { recursive: true });
+      return directory;
+    },
     async resolveWorkspace(directory) {
       if (!existsSync(directory)) throw new AppError('工作目录不存在', { statusCode: 400 });
       const canonical = realpathSync(directory);

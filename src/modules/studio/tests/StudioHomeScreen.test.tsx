@@ -28,7 +28,7 @@ const TILES: StudioHomeTile[] = [
 ];
 
 function renderHome(overrides: Partial<Parameters<typeof StudioHomeScreen>[0]> = {}) {
-  const props = { tiles: TILES, loading: false, covered: false, snr: null, onOpen: vi.fn(), onCreate: vi.fn(), onRefresh: vi.fn(), onSignOut: vi.fn(), refreshing: false, ...overrides };
+  const props = { tiles: TILES, loading: false, covered: false, snr: null, onOpen: vi.fn(), onOpenWidget: vi.fn(), onCreate: vi.fn(), onRefresh: vi.fn(), onSignOut: vi.fn(), refreshing: false, ...overrides };
   render(<MemoryRouter><Routes>
     <Route path="/" element={<StudioHomeScreen {...props} />} />
     <Route path="/workspace" element={<div>IDE opened</div>} />

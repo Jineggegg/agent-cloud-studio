@@ -174,6 +174,7 @@ export const api = {
       update: (id: string, input: HubProjectInput) => put(`/api/studio/projects/${encodeURIComponent(id)}`, input),
       remove: (id: string) => del(`/api/studio/projects/${encodeURIComponent(id)}`),
       launch: (id: string, provider: HubAgentProvider) => post(`/api/studio/projects/${encodeURIComponent(id)}/launch`, { provider }),
+      launchWorkbench: (provider: HubAgentProvider) => post('/api/studio/projects/workbench/launch', { provider }),
       launchRemote: (id: string, agent: HubAgentProvider | 'shell') => post(`/api/studio/projects/${encodeURIComponent(id)}/remote-launch`, { agent }),
       linkStatus: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/links/status`),
       sessions: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/sessions`),
