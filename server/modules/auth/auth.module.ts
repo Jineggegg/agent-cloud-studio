@@ -1,10 +1,12 @@
 import { createRequire } from 'node:module';
 
 import { getConnection, userDb } from '@/modules/database/index.js';
+import { readStudioIngressOrigins } from '@/shared/utils.js';
 
 import { authenticateToken, generateToken } from './auth.middleware.js';
 import { createAuthRouter } from './auth.routes.js';
 import { createAuthService } from './auth.service.js';
+import { createHandoffCodeStore } from './handoff.service.js';
 import { parseTailscaleSignInConfig } from './tailscale-session.service.js';
 
 type BcryptAdapter = {
@@ -36,9 +38,13 @@ const authService = createAuthService({
   comparePassword: (password, passwordHash) => bcrypt.compare(password, passwordHash),
   generateToken,
   // STUDIO_TAILSCALE_LOGINS enables passwordless sign-in through Tailscale Serve;
-  // STUDIO_TAILSCALE_NODES, STUDIO_TAILSCALE_USER and STUDIO_PUBLIC_ORIGIN refine it.
+  // STUDIO_TAILSCALE_NODES and STUDIO_TAILSCALE_USER refine it, and STUDIO_TAILNET_ORIGIN (or,
+  // when that is unset, STUDIO_PUBLIC_ORIGIN) pins the only origin it accepts.
   // process.env is filled from .env once at startup, so .env edits apply after a restart.
   tailscaleSignIn: () => parseTailscaleSignInConfig(process.env),
+  // Switching between the two front doors (docs/network.md); codes live in this process only.
+  handoffCodes: createHandoffCodeStore(),
+  ingressOrigins: () => readStudioIngressOrigins(process.env),
   logInfo: (message) => console.info(message),
 });
 

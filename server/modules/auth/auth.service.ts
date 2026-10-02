@@ -1,7 +1,10 @@
+import type { StudioIngressId, StudioIngressOrigins } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
+import type { createHandoffCodeStore } from './handoff.service.js';
 import {
   evaluateTailscaleSessionRequest,
+  isTailscaleSessionRevoked,
   maskTailscaleLogin,
 } from './tailscale-session.service.js';
 
@@ -45,12 +48,64 @@ type AuthDependencies = {
    * from .env once at startup, so .env edits need a restart).
    */
   tailscaleSignIn(): TailscaleSignInConfig;
-  /** Info-level sink for Tailscale sign-in outcomes. */
+  /** Pending one-time codes for moving a session to the other front door (handoff.service). */
+  handoffCodes: ReturnType<typeof createHandoffCodeStore>;
+  /**
+   * Origins of both front doors (STUDIO_PUBLIC_ORIGIN / STUDIO_TAILNET_ORIGIN), read per request
+   * from process.env like tailscaleSignIn.
+   */
+  ingressOrigins(): StudioIngressOrigins;
+  /** Info-level sink for Tailscale sign-in and handoff outcomes. */
   logInfo(message: string): void;
+  /** Clock for the handoff password throttle; Date.now by default. */
+  now?: () => number;
 };
+
+// Wrong passwords while moving a Tailscale session to the public door; a holder of a tailnet-only
+// session must not get an unlimited password oracle. Counted per process in a fixed window.
+const HANDOFF_PASSWORD_FAILURES = 5;
+const HANDOFF_PASSWORD_WINDOW_MS = 10 * 60_000;
 
 function numericUserId(userId: number | bigint): number {
   return Number(userId);
+}
+
+function handoffError(code: string, message: string, statusCode: number): AppError {
+  return new AppError(message, { code, statusCode });
+}
+
+// Serialized origin of an Origin header, or null when it is missing, "null" or malformed.
+function requestOrigin(value: string | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  try {
+    const origin = new URL(value).origin;
+    return origin === 'null' ? null : origin;
+  } catch {
+    return null;
+  }
+}
+
+function isIngressId(value: unknown): value is StudioIngressId {
+  return value === 'public' || value === 'tailnet';
+}
+
+function requireSessionUser(user: unknown): AuthUser {
+  if (
+    typeof user !== 'object'
+    || user === null
+    || !('id' in user)
+    || !('username' in user)
+    || (typeof user.id !== 'number' && typeof user.id !== 'bigint')
+    || typeof user.username !== 'string'
+  ) {
+    throw new AppError('Authenticated user is required', {
+      code: 'AUTH_USER_REQUIRED',
+      statusCode: 401,
+    });
+  }
+  return { id: user.id, username: user.username };
 }
 
 // One response for every refusal, so callers cannot probe whether the feature is configured
@@ -85,6 +140,36 @@ export function createAuthService(dependencies: AuthDependencies) {
       return 'ambiguous-user';
     }
     return (activeUsers === 1 ? dependencies.users.getFirstUser() : undefined) ?? 'no-user';
+  }
+
+  const now = dependencies.now ?? Date.now;
+  // Fixed window of wrong handoff passwords, reset lazily once it ends.
+  const handoffPasswordFailures = { startedAt: 0, count: 0 };
+
+  // Verifies the account password before a Tailscale session may move to the public door.
+  async function verifyHandoffPassword(username: string, passwordInput: unknown) {
+    if (typeof passwordInput !== 'string' || !passwordInput) {
+      throw handoffError(
+        'AUTH_HANDOFF_PASSWORD_REQUIRED',
+        '从 Tailscale 免密码会话切换到公网域名，需要输入一次账户密码',
+        403,
+      );
+    }
+    const at = now();
+    if (at - handoffPasswordFailures.startedAt >= HANDOFF_PASSWORD_WINDOW_MS) {
+      handoffPasswordFailures.startedAt = at;
+      handoffPasswordFailures.count = 0;
+    }
+    if (handoffPasswordFailures.count >= HANDOFF_PASSWORD_FAILURES) {
+      throw handoffError('AUTH_HANDOFF_RATE_LIMITED', '密码错误次数过多，请 10 分钟后再试', 429);
+    }
+    const account = dependencies.users.getUserByUsername(username);
+    const valid = account ? await dependencies.comparePassword(passwordInput, account.password_hash) : false;
+    if (!valid) {
+      handoffPasswordFailures.count += 1;
+      dependencies.logInfo('[auth] Handoff to the public door refused (wrong password)');
+      throw handoffError('AUTH_INVALID_CREDENTIALS', '密码不正确', 401);
+    }
   }
 
   return {
@@ -236,6 +321,105 @@ export function createAuthService(dependencies: AuthDependencies) {
       }
 
       return { token: dependencies.generateToken(user as AuthUser, tailscaleSession) };
+    },
+
+    /**
+     * Issues a one-time code (60 s) that signs the same user in on the other front door; the page
+     * there redeems it with `redeemHandoff`. The rule (docs/network.md) is that the moved session
+     * is never broader than the one it came from:
+     * - A password session moves as a password session to either door.
+     * - A Tailscale-issued session keeps its claim when it moves to the tailnet door, so the
+     *   allowlist can still revoke it there.
+     * - A Tailscale-issued session may not move to the public door on its claim alone: passwordless
+     *   sign-in vouches for "a tailnet device of the owner", which says nothing about the public
+     *   internet. It moves only with the account password, and then becomes exactly the session a
+     *   password login on the public door would have issued.
+     */
+    async issueHandoff(
+      user: unknown,
+      tailscaleSession: TailscaleSessionClaim | undefined,
+      input: { target: unknown; password: unknown },
+    ) {
+      const sessionUser = requireSessionUser(user);
+      if (!isIngressId(input.target)) {
+        throw handoffError('AUTH_HANDOFF_TARGET_INVALID', '未知的入口', 400);
+      }
+      const target = input.target;
+      const targetOrigin = dependencies.ingressOrigins()[target];
+      if (!targetOrigin) {
+        throw handoffError('AUTH_HANDOFF_TARGET_UNCONFIGURED', '这个入口还没有配置', 409);
+      }
+
+      let carriedClaim = tailscaleSession;
+      if (tailscaleSession && target === 'public') {
+        await verifyHandoffPassword(sessionUser.username, input.password);
+        carriedClaim = undefined;
+      }
+
+      const issued = dependencies.handoffCodes.issue({
+        userId: numericUserId(sessionUser.id),
+        username: sessionUser.username,
+        target,
+        targetOrigin,
+        ...(carriedClaim ? { tailscaleSession: { login: carriedClaim.login, node: carriedClaim.node } } : {}),
+      });
+      dependencies.logInfo(
+        `[auth] Handoff to the ${target} door issued (${carriedClaim ? 'Tailscale' : 'password'} session)`,
+      );
+      return {
+        code: issued.code,
+        target,
+        origin: targetOrigin,
+        expiresAt: new Date(issued.expiresAt).toISOString(),
+      };
+    },
+
+    /**
+     * Redeems a handoff code for a session, like `login` does with a password. Public on purpose:
+     * the target page has no token yet. The code is consumed by this call whatever the outcome; it
+     * must be redeemed by a page on the exact target origin (the request's Origin header), for a
+     * user who still exists, and a carried Tailscale claim must still pass the allowlist. Every
+     * refusal is the same error; the reason only goes to the log.
+     */
+    redeemHandoff(input: { code: unknown; origin: string | undefined }) {
+      const result = dependencies.handoffCodes.redeem(input.code);
+      if (result.status === 'rate-limited') {
+        dependencies.logInfo('[auth] Handoff redemption refused (rate-limited)');
+        throw handoffError('AUTH_HANDOFF_RATE_LIMITED', '尝试次数过多，请稍后再试', 429);
+      }
+      const refuse = (reason: string, target?: StudioIngressId) => {
+        dependencies.logInfo(`[auth] Handoff${target ? ` to the ${target} door` : ''} refused (${reason})`);
+        return handoffError('AUTH_HANDOFF_INVALID', '切换链接无效或已过期', 400);
+      };
+      if (result.status === 'invalid') {
+        throw refuse('unknown-or-expired');
+      }
+
+      const { grant } = result;
+      if (requestOrigin(input.origin) !== grant.targetOrigin) {
+        throw refuse('origin-mismatch', grant.target);
+      }
+      // The door may have been reconfigured (and the server restarted) since the code was issued.
+      if (dependencies.ingressOrigins()[grant.target] !== grant.targetOrigin) {
+        throw refuse('target-changed', grant.target);
+      }
+      const account = dependencies.users.getUserByUsername(grant.username);
+      if (!account || numericUserId(account.id) !== grant.userId) {
+        throw refuse('user-missing', grant.target);
+      }
+      if (grant.tailscaleSession && isTailscaleSessionRevoked(grant.tailscaleSession, dependencies.tailscaleSignIn())) {
+        throw refuse('tailscale-revoked', grant.target);
+      }
+
+      const sessionUser = { id: account.id, username: account.username };
+      dependencies.users.updateLastLogin(numericUserId(account.id));
+      dependencies.logInfo(`[auth] Handoff to the ${grant.target} door granted for local user "${account.username}"`);
+      return {
+        success: true,
+        user: sessionUser,
+        token: dependencies.generateToken(sessionUser, grant.tailscaleSession),
+        target: grant.target,
+      };
     },
 
     logout() {

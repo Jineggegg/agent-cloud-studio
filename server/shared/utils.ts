@@ -30,6 +30,7 @@ import type {
   ProviderCurrentActiveModel,
   ProviderModelsDefinition,
   ProviderSkillSource,
+  StudioIngressOrigins,
   SubagentActivity,
   WorkspacePathValidationResult,
 } from '@/shared/types.js';
@@ -161,6 +162,51 @@ export function readSnrBasicAuthorization(env: NodeJS.ProcessEnv = process.env):
   // A Basic credential cannot carry ':' in the user name or control characters in either part (SNR's own rule).
   if (!password || user.includes(':') || /\p{Cc}/u.test(user) || /\p{Cc}/u.test(password)) throw unavailable();
   return `Basic ${Buffer.from(`${user}:${password}`, 'utf8').toString('base64')}`;
+}
+
+// ---------------------------
+//----------------- STUDIO INGRESS UTILITIES ------------
+// A bare origin is scheme + host + optional port and nothing else; one trailing slash is tolerated
+// because operators often paste it. Returns the serialized `URL.origin`, or null for anything else.
+function bareHttpOrigin(value: string): string | null {
+  try {
+    const url = new URL(value);
+    const isBare = ['http:', 'https:'].includes(url.protocol)
+      && !url.username
+      && !url.password
+      && url.pathname === '/'
+      && !url.search
+      && !url.hash;
+    return isBare ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reads the origins of Studio's two front doors from the environment:
+ * STUDIO_PUBLIC_ORIGIN (the owner's domain behind a Cloudflare Tunnel, the default door) and
+ * STUDIO_TAILNET_ORIGIN (Tailscale Serve on the laptop, reached over AJ's tailnet).
+ *
+ * Used by the auth module (handoff targets: a one-time code is bound to one of these origins),
+ * the Studio network endpoint (which door served a request), the Studio SNR gateway (write
+ * requests must come from one of these origins) and the Studio router (an https door makes the
+ * SNR cookie Secure). They pass process.env, which server/load-env.ts fills from .env once at
+ * startup, so .env edits apply after a restart.
+ *
+ * Each value must be a bare http(s) origin; http is accepted so the development runner
+ * (`npm run dev`, http://127.0.0.1:5174) keeps working. A set but malformed value is reported in
+ * `invalid` and its origin is null, so it can never match a request. Never throws.
+ */
+export function readStudioIngressOrigins(env: Record<string, string | undefined> = process.env): StudioIngressOrigins {
+  const origins: StudioIngressOrigins = { public: null, tailnet: null, invalid: [] };
+  for (const [id, variable] of [['public', 'STUDIO_PUBLIC_ORIGIN'], ['tailnet', 'STUDIO_TAILNET_ORIGIN']] as const) {
+    const raw = env[variable]?.trim();
+    if (!raw) continue;
+    origins[id] = bareHttpOrigin(raw);
+    if (origins[id] === null) origins.invalid.push(id);
+  }
+  return origins;
 }
 
 // ---------------------------

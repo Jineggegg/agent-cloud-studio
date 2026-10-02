@@ -1,6 +1,6 @@
 import express from 'express';
 
-import { AppError, asyncHandler } from '@/shared/utils.js';
+import { AppError, asyncHandler, readStudioIngressOrigins } from '@/shared/utils.js';
 
 import type { createSnrGateway } from './snr-gateway.service.js';
 
@@ -15,9 +15,14 @@ export function createSnrGatewayRouter(gateway: ReturnType<typeof createSnrGatew
       let sameOrigin = false;
       try {
         const source = origin ? new URL(origin) : null;
-        const publicOrigin = process.env.STUDIO_PUBLIC_ORIGIN;
+        // With either front door configured (docs/network.md), a write must come from one of them;
+        // otherwise (local use) it must come from the host the request was sent to.
+        const doors = readStudioIngressOrigins(process.env);
+        const configured = [doors.public, doors.tailnet].filter((door): door is string => door !== null);
         const scheme = req.get('x-forwarded-proto') === 'https' || req.secure ? 'https:' : 'http:';
-        sameOrigin = Boolean(source && (publicOrigin ? source.origin === publicOrigin : source.host === req.get('host') && source.protocol === scheme));
+        sameOrigin = Boolean(source && (configured.length > 0 || doors.invalid.length > 0
+          ? configured.includes(source.origin)
+          : source.host === req.get('host') && source.protocol === scheme));
       } catch { /* Malformed origins are rejected below. */ }
       if (req.get('sec-fetch-site') === 'cross-site' || !sameOrigin) {
         throw new AppError('拒绝跨站研究操作', { statusCode: 403 });

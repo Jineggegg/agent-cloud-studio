@@ -69,7 +69,39 @@ export function createAuthRouter(
         forwardedFor: readHeader(req, 'x-forwarded-for'),
         userLogin: readHeader(req, 'tailscale-user-login'),
         funnelRequest: readHeader(req, 'tailscale-funnel-request'),
+        // Set by Cloudflare's edge on the public tunnel door, which must never sign in this way.
+        cfRay: readHeader(req, 'cf-ray'),
+        cfConnectingIp: readHeader(req, 'cf-connecting-ip'),
+        cdnLoop: readHeader(req, 'cdn-loop'),
       }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Moves the signed-in session to the other front door: returns a one-time code for the page there.
+  router.post('/handoff', authenticateToken, async (req, res, next) => {
+    try {
+      // The response carries a code worth a session for 60 s.
+      res.setHeader('Cache-Control', 'no-store');
+      const authenticated = req as AuthenticatedRequest;
+      const body = (req.body ?? {}) as { target?: unknown; password?: unknown };
+      res.json(await service.issueHandoff(authenticated.user, authenticated.tailscaleSession, {
+        target: body.target,
+        password: body.password,
+      }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Public on purpose: the target page has no token yet. The service checks the Origin header
+  // against the code's target door and rate-limits attempts.
+  router.post('/handoff/redeem', (req, res, next) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      const body = (req.body ?? {}) as { code?: unknown };
+      res.json(service.redeemHandoff({ code: body.code, origin: readHeader(req, 'origin') }));
     } catch (error) {
       next(error);
     }

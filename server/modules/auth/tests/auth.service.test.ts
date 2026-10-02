@@ -4,6 +4,7 @@ import test from 'node:test';
 import { AppError } from '@/shared/utils.js';
 
 import { createAuthService } from '../auth.service.js';
+import { createHandoffCodeStore } from '../handoff.service.js';
 
 type AuthDependencies = Parameters<typeof createAuthService>[0];
 
@@ -25,7 +26,9 @@ function createDependencies(overrides: Partial<AuthDependencies> = {}): AuthDepe
     hashPassword: async () => 'hashed-password',
     comparePassword: async () => false,
     generateToken: () => 'signed-token',
-    tailscaleSignIn: () => ({ allowedLogins: [], allowedNodes: [], mappedUsername: null, publicOrigin: null }),
+    tailscaleSignIn: () => ({ allowedLogins: [], allowedNodes: [], mappedUsername: null, pinnedOrigin: null }),
+    handoffCodes: createHandoffCodeStore(),
+    ingressOrigins: () => ({ public: null, tailnet: null, invalid: [] }),
     logInfo: () => undefined,
     ...overrides,
   };

@@ -2,11 +2,12 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useTranslation } from 'react-i18next';
 import type { ReactNode } from 'react';
 
-import { IS_PLATFORM } from '@/shared/utils';
+import { IS_PLATFORM, takeHandoffCodeFromUrl, writeIngressPreference } from '@/shared/utils';
 import { api } from '@/shared/api';
 import { AUTH_SESSION_EXPIRED_EVENT, AUTH_TOKEN_REFRESHED_EVENT, getAuthTokenRefreshDelay, isValidRefreshedToken, storeAuthToken } from '@/shared/authToken';
 import { hydrateChatDrafts, resetChatDrafts } from '@/shared/chatDrafts';
 import { hydrateUserPreferences, resetUserPreferences } from '@/shared/userSettings';
+import type { StudioIngressId } from '@/shared/types';
 /** The signed-in account held by AuthContext - a required `username` plus an optional id and any additional fields the auth API returns - and should be read through `useAuth()` rather than re-derived from raw auth responses. */
 type AuthUser = {
   id?: number | string;
@@ -20,13 +21,21 @@ const AUTH_TOKEN_STORAGE_KEY = 'auth-token';
 // keep the loading screen up for longer than this before the login form appears.
 const TAILSCALE_SESSION_TIMEOUT_MS = 3000;
 
+// A handoff code lives 60 s on the server; a redemption slower than this falls back to the
+// ordinary boot (stored session, Tailscale sign-in or the login form).
+const HANDOFF_REDEEM_TIMEOUT_MS = 8000;
+
 const AUTH_ERROR_MESSAGES = {
   authStatusCheckFailed: 'errors.authStatusCheckFailed',
   loginFailed: 'errors.loginFailed',
   registrationFailed: 'errors.registrationFailed',
   networkError: 'errors.networkError',
   sessionExpired: 'errors.sessionExpired',
+  handoffExpired: 'errors.handoffExpired',
 } as const;
+
+// Outcome of the one handoff attempt of a page load: no code in the URL, a session, or a refusal.
+type HandoffOutcome = 'none' | 'redeemed' | 'failed';
 
 type AuthActionResult = { success: true } | { success: false; error: string };
 
@@ -95,6 +104,37 @@ async function requestTailscaleSession(): Promise<{ user: AuthUser; token: strin
     }
     const payload = await parseJsonSafely<AuthSessionPayload>(response);
     return payload?.token && payload.user ? { user: payload.user, token: payload.token } : null;
+  })().catch(() => null);
+
+  try {
+    return await Promise.race([attempt, timeout]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// Redeems a one-time code from the other front door (docs/network.md) for a session, like a
+// password login. Refusals (expired, already used, wrong origin), network errors and answers
+// slower than the timeout all resolve to null; the code is single-use either way.
+async function requestHandoffSession(
+  code: string,
+): Promise<{ user: AuthUser; token: string; target: StudioIngressId | null } | null> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timeoutId = setTimeout(() => resolve(null), HANDOFF_REDEEM_TIMEOUT_MS);
+  });
+  const attempt = (async () => {
+    const response = await api.studio.redeemHandoff(code);
+    if (!response.ok) {
+      return null;
+    }
+    const payload = await parseJsonSafely<AuthSessionPayload & { target?: unknown }>(response);
+    if (!payload?.token || !payload.user) {
+      return null;
+    }
+    const target: StudioIngressId | null = payload.target === 'public' ? 'public'
+      : payload.target === 'tailnet' ? 'tailnet' : null;
+    return { user: payload.user, token: payload.token, target };
   })().catch(() => null);
 
   try {
@@ -274,10 +314,51 @@ export function AuthProvider({ children }: AuthProviderProps) {
     return tailscaleSignInRef.current;
   }, [publishSession]);
 
+  // The single handoff redemption of this page load (a ?handoff= code from the other front door,
+  // docs/network.md). The code is taken out of the URL on the first call, so StrictMode's second
+  // bootstrap run awaits the same request instead of sending a second one for a spent code.
+  const handoffRedemptionRef = useRef<Promise<HandoffOutcome> | null>(null);
+
+  const redeemHandoffOnce = useCallback(() => {
+    handoffRedemptionRef.current ??= (async (): Promise<HandoffOutcome> => {
+      const code = takeHandoffCodeFromUrl();
+      if (!code) {
+        return 'none';
+      }
+      const session = await requestHandoffSession(code);
+      if (!session) {
+        return 'failed';
+      }
+      await publishSession(session.user, session.token);
+      // The switch was chosen on the other origin, whose localStorage this page cannot see.
+      if (session.target) {
+        writeIngressPreference(session.target);
+      }
+      setError(null);
+      return 'redeemed';
+    })().catch((caughtError: unknown) => {
+      console.warn('[Auth] Handoff could not be completed:', caughtError);
+      return 'failed';
+    });
+    return handoffRedemptionRef.current;
+  }, [publishSession]);
+
   const checkAuthStatus = useCallback(async () => {
     try {
       setIsLoading(true);
       setError(null);
+
+      // A code from the other front door replaces whatever session this origin had stored.
+      const handoff = await redeemHandoffOnce();
+      if (handoff === 'redeemed') {
+        return;
+      }
+      // An expired or spent code only matters when nothing else signs the user in.
+      const explainFailedHandoff = (signedIn: boolean) => {
+        if (!signedIn && handoff === 'failed') {
+          setError(tRef.current(AUTH_ERROR_MESSAGES.handoffExpired));
+        }
+      };
 
       const statusResponse = await api.auth.status();
       const statusPayload = await parseJsonSafely<AuthStatusPayload>(statusResponse);
@@ -296,20 +377,21 @@ export function AuthProvider({ children }: AuthProviderProps) {
       // Without a usable token, the owner's own Tailscale device may be signed
       // in without a password; on any refusal the login form appears silently.
       if (!readStoredToken()) {
-        await signInWithTailscaleOnce();
+        explainFailedHandoff(await signInWithTailscaleOnce());
         return;
       }
 
       const userResponse = await api.auth.user();
       if (!userResponse.ok) {
         clearSession();
-        await signInWithTailscaleOnce();
+        explainFailedHandoff(await signInWithTailscaleOnce());
         return;
       }
 
       const userPayload = await parseJsonSafely<AuthUserPayload>(userResponse);
       if (!userPayload?.user) {
         clearSession();
+        explainFailedHandoff(false);
         return;
       }
 
@@ -321,7 +403,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [checkOnboardingStatus, clearSession, signInWithTailscaleOnce]);
+  }, [checkOnboardingStatus, clearSession, redeemHandoffOnce, signInWithTailscaleOnce]);
 
   useEffect(() => {
     if (IS_PLATFORM) {

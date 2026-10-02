@@ -20,6 +20,8 @@ import { createTrading212Router } from './trading212.routes.js';
 import { createLinkChecker } from './link-check.service.js';
 import { createRemoteHostsService } from './remote-hosts.service.js';
 import { createRemoteHostsRouter } from './remote-hosts.routes.js';
+import { createStudioNetworkService } from './network.service.js';
+import { createStudioNetworkRouter } from './network.routes.js';
 import { createQuotaService } from './quota/quota.service.js';
 import { createQuotaRouter } from './quota/quota.routes.js';
 
@@ -132,6 +134,8 @@ export function createStudioModule() {
   routes.use('/remote', createRemoteHostsRouter(remote));
   routes.use('/quota', createQuotaRouter(quota));
   // ── v4 track: network — create its service and mount its router below this line ──
+  // Both front doors (STUDIO_PUBLIC_ORIGIN, STUDIO_TAILNET_ORIGIN) reach this one backend.
+  routes.use('/network', createStudioNetworkRouter(createStudioNetworkService()));
   // ── v4 track: orders — create its service and mount its router below this line ──
   // ── v4 track: mail — create its service and mount its router below this line ──
   return { routes, snrRoutes: createSnrGatewayRouter(gateway), mailCallbackRoutes: createProjectMailCallbackRouter(mail) };

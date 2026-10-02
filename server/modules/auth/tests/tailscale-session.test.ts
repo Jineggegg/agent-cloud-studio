@@ -5,10 +5,11 @@ import type { AddressInfo } from 'node:net';
 
 import express from 'express';
 
-import { AppError } from '@/shared/utils.js';
+import { AppError, readStudioIngressOrigins } from '@/shared/utils.js';
 
 import { createAuthRouter } from '../auth.routes.js';
 import { createAuthService } from '../auth.service.js';
+import { createHandoffCodeStore } from '../handoff.service.js';
 import {
   isTailscaleSessionRevoked,
   maskTailscaleLogin,
@@ -69,6 +70,8 @@ function createHarness(options: {
       return `token-for-${user.username}`;
     },
     tailscaleSignIn: () => parseTailscaleSignInConfig(env),
+    handoffCodes: createHandoffCodeStore(),
+    ingressOrigins: () => readStudioIngressOrigins(env),
     logInfo: (message) => logs.push(message),
   };
   return { service: createAuthService(dependencies), logs, lastLogins, issuedFor };
@@ -244,7 +247,8 @@ test('an http Origin is cross-origin to the https page Serve terminates', () => 
   }
 });
 
-test('STUDIO_PUBLIC_ORIGIN pins the only accepted origin', () => {
+test('STUDIO_PUBLIC_ORIGIN pins the only accepted origin while STUDIO_TAILNET_ORIGIN is unset', () => {
+  // The single-door setup this feature started with keeps working unchanged.
   const pinned = { STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN, STUDIO_PUBLIC_ORIGIN: `https://${SERVE_HOST}` };
   assert.equal(createHarness({ env: pinned }).service.signInWithTailscale(serveRequest()).success, true);
 
@@ -259,7 +263,36 @@ test('STUDIO_PUBLIC_ORIGIN pins the only accepted origin', () => {
   assert.equal(createHarness({ env: trailingSlash }).service.signInWithTailscale(serveRequest()).success, true);
 });
 
-test('a malformed STUDIO_PUBLIC_ORIGIN refuses sign-in instead of skipping the pin', () => {
+test('STUDIO_TAILNET_ORIGIN pins the origin when the public origin is the Cloudflare domain', () => {
+  const twoDoors = {
+    STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN,
+    STUDIO_PUBLIC_ORIGIN: 'https://studio.ajarche.com',
+    STUDIO_TAILNET_ORIGIN: `https://${SERVE_HOST}`,
+  };
+  assert.equal(createHarness({ env: twoDoors }).service.signInWithTailscale(serveRequest()).success, true);
+
+  const otherServeName = 'laptop.tail1234.ts.net';
+  assertRefused(
+    createHarness({ env: twoDoors }),
+    serveRequest({ host: otherServeName, origin: `https://${otherServeName}` }),
+    'cross-site',
+  );
+  // STUDIO_TAILNET_ORIGIN wins over STUDIO_PUBLIC_ORIGIN, even when the latter is a ts.net origin.
+  const tailnetWins = { ...twoDoors, STUDIO_PUBLIC_ORIGIN: `https://${otherServeName}` };
+  assertRefused(
+    createHarness({ env: tailnetWins }),
+    serveRequest({ host: otherServeName, origin: `https://${otherServeName}` }),
+    'cross-site',
+  );
+});
+
+test('a public-domain pin without STUDIO_TAILNET_ORIGIN refuses with a clear reason', () => {
+  // The likely migration mistake: STUDIO_PUBLIC_ORIGIN moved to the domain, the tailnet origin not set.
+  const env = { STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN, STUDIO_PUBLIC_ORIGIN: 'https://studio.ajarche.com' };
+  assertRefused(createHarness({ env }), serveRequest(), 'pinned-origin-not-tailnet');
+});
+
+test('a malformed pinned origin refuses sign-in instead of skipping the pin', () => {
   const otherServeName = 'other.tail1234.ts.net';
   const malformed = [
     SERVE_HOST, // missing https://, which URL parses as a "studio-pc.tail1234.ts.net:" scheme
@@ -269,21 +302,61 @@ test('a malformed STUDIO_PUBLIC_ORIGIN refuses sign-in instead of skipping the p
     `https://user@${SERVE_HOST}`,
     'not a url',
   ];
-  for (const publicOrigin of malformed) {
-    const env = { STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN, STUDIO_PUBLIC_ORIGIN: publicOrigin };
-    assertRefused(createHarness({ env }), serveRequest(), 'public-origin-invalid');
-    assertRefused(
-      createHarness({ env }),
-      serveRequest({ host: otherServeName, origin: `https://${otherServeName}` }),
-      'public-origin-invalid',
-    );
+  for (const value of malformed) {
+    for (const env of [
+      { STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN, STUDIO_PUBLIC_ORIGIN: value },
+      // A malformed tailnet origin fails closed rather than falling back to a valid public one.
+      { STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN, STUDIO_TAILNET_ORIGIN: value, STUDIO_PUBLIC_ORIGIN: `https://${SERVE_HOST}` },
+    ]) {
+      assertRefused(createHarness({ env }), serveRequest(), 'pinned-origin-invalid');
+      assertRefused(
+        createHarness({ env }),
+        serveRequest({ host: otherServeName, origin: `https://${otherServeName}` }),
+        'pinned-origin-invalid',
+      );
+    }
   }
+});
+
+test('a request through the Cloudflare tunnel with forged Tailscale headers is refused', () => {
+  // cloudflared dials Studio over loopback, like Serve, and Cloudflare forwards client headers it
+  // does not own, so an attacker on the public internet can send Tailscale-User-Login itself.
+  const twoDoors = {
+    STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN,
+    STUDIO_PUBLIC_ORIGIN: 'https://studio.ajarche.com',
+    STUDIO_TAILNET_ORIGIN: `https://${SERVE_HOST}`,
+  };
+  const forged = {
+    remoteAddress: '127.0.0.1',
+    host: 'studio.ajarche.com',
+    origin: 'https://studio.ajarche.com',
+    fetchSite: 'same-origin',
+    userLogin: OWNER_LOGIN,
+    cfRay: '8c1f2e3d4a5b6c7d-HKG',
+    cfConnectingIp: '203.0.113.9',
+    cdnLoop: 'cloudflare; loops=1',
+  };
+  // Cloudflare appends the real client address to a forged X-Forwarded-For.
+  assertRefused(createHarness({ env: twoDoors }), serveRequest({ ...forged, forwardedFor: `${IPAD_NODE}, 203.0.113.9` }), 'via-cloudflare');
+  assertRefused(createHarness({ env: twoDoors }), serveRequest({ ...forged, forwardedFor: IPAD_NODE }), 'via-cloudflare');
+
+  // Each Cloudflare header alone is enough, and the Host check would refuse it anyway.
+  for (const header of [{ cfRay: forged.cfRay }, { cfConnectingIp: forged.cfConnectingIp }, { cdnLoop: 'cloudflare' }, { cdnLoop: 'other-cdn, cloudflare; loops=2' }]) {
+    assertRefused(createHarness({ env: twoDoors }), serveRequest(header), 'via-cloudflare');
+  }
+  assertRefused(
+    createHarness({ env: twoDoors }),
+    serveRequest({ host: 'studio.ajarche.com', origin: 'https://studio.ajarche.com', forwardedFor: IPAD_NODE }),
+    'host-not-tailnet',
+  );
+  // A CDN-Loop that only mentions another CDN does not trip the check.
+  assert.equal(createHarness({ env: twoDoors }).service.signInWithTailscale(serveRequest({ cdnLoop: 'notcloudflare' })).success, true);
 });
 
 test('parseTailscaleSignInConfig normalises the allowlists and optional settings', () => {
   assert.deepEqual(
     parseTailscaleSignInConfig({}),
-    { allowedLogins: [], allowedNodes: [], mappedUsername: null, publicOrigin: null },
+    { allowedLogins: [], allowedNodes: [], mappedUsername: null, pinnedOrigin: null },
   );
   assert.deepEqual(
     parseTailscaleSignInConfig({
@@ -296,8 +369,17 @@ test('parseTailscaleSignInConfig normalises the allowlists and optional settings
       allowedLogins: ['owner@example.com', 'me@github'],
       allowedNodes: [IPAD_NODE, 'fd7a:115c:a1e0::53'],
       mappedUsername: 'andrew',
-      publicOrigin: null,
+      pinnedOrigin: null,
     },
+  );
+  // A blank STUDIO_TAILNET_ORIGIN counts as unset and falls back to STUDIO_PUBLIC_ORIGIN.
+  assert.equal(
+    parseTailscaleSignInConfig({ STUDIO_TAILNET_ORIGIN: ' ', STUDIO_PUBLIC_ORIGIN: ` https://${SERVE_HOST} ` }).pinnedOrigin,
+    `https://${SERVE_HOST}`,
+  );
+  assert.equal(
+    parseTailscaleSignInConfig({ STUDIO_TAILNET_ORIGIN: `https://${SERVE_HOST}`, STUDIO_PUBLIC_ORIGIN: 'https://studio.ajarche.com' }).pinnedOrigin,
+    `https://${SERVE_HOST}`,
   );
 });
 
@@ -428,6 +510,67 @@ test('the route reads the raw socket and Serve headers and answers every refusal
     assert.equal(refreshed.status, 200);
     assert.deepEqual(JSON.parse(refreshed.body), { token: 'token-for-andrew' });
     assert.deepEqual(refreshing.issuedFor, [{ user: { id: 1, username: 'andrew' }, session: OWNER_SESSION }]);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test('the route refuses what cloudflared delivers from the public domain, forged headers included', async () => {
+  // Both doors configured, as in docs/network.md. cloudflared connects to Studio over loopback,
+  // exactly like Serve, so only the headers can tell the doors apart.
+  const harness = createHarness({
+    env: {
+      STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN,
+      STUDIO_PUBLIC_ORIGIN: 'https://studio.ajarche.com',
+      STUDIO_TAILNET_ORIGIN: `https://${SERVE_HOST}`,
+    },
+  });
+  const app = express();
+  app.use(createAuthRouter(harness.service, (_req, _res, next) => next()));
+  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const appError = error instanceof AppError ? error : null;
+    res.status(appError?.statusCode ?? 500).json({ error: { code: appError?.code } });
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve) => server.once('listening', resolve));
+  const { port } = server.address() as AddressInfo;
+  const post = (headers: Record<string, string>) => new Promise<number>((resolve, reject) => {
+    const request = http.request(
+      { host: '127.0.0.1', port, method: 'POST', path: '/tailscale-session', headers },
+      (response) => {
+        response.resume();
+        response.on('end', () => resolve(response.statusCode ?? 0));
+      },
+    );
+    request.on('error', reject);
+    request.end();
+  });
+
+  // The attacker's own headers, as they reach Studio after Cloudflare's edge and cloudflared.
+  const forgedThroughTunnel = {
+    Host: 'studio.ajarche.com',
+    Origin: 'https://studio.ajarche.com',
+    'Sec-Fetch-Site': 'same-origin',
+    'Tailscale-User-Login': OWNER_LOGIN,
+    'X-Forwarded-For': `${IPAD_NODE}, 198.51.100.7`,
+    'CF-Ray': '8c1f2e3d4a5b6c7d-HKG',
+    'CF-Connecting-IP': '198.51.100.7',
+    'CDN-Loop': 'cloudflare; loops=1',
+  };
+  try {
+    const statuses = [
+      await post(forgedThroughTunnel),
+      // Even with every Cloudflare header stripped and a single forged tailnet address, the
+      // public Host is refused, and so is a forged ts.net Host carrying the public Origin.
+      await post({ Host: 'studio.ajarche.com', Origin: 'https://studio.ajarche.com', 'Tailscale-User-Login': OWNER_LOGIN, 'X-Forwarded-For': IPAD_NODE }),
+      await post({ Host: SERVE_HOST, Origin: 'https://studio.ajarche.com', 'Tailscale-User-Login': OWNER_LOGIN, 'X-Forwarded-For': IPAD_NODE }),
+    ];
+    assert.deepEqual(statuses, [403, 403, 403]);
+    assert.deepEqual(
+      harness.logs.map((line) => /refused \(([a-z-]+)\)/.exec(line)?.[1]),
+      ['via-cloudflare', 'host-not-tailnet', 'cross-site'],
+    );
+    assert.deepEqual(harness.issuedFor, []);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }

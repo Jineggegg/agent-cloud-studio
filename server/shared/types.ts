@@ -1645,6 +1645,29 @@ export type StudioProjectRecord = StudioProjectInput & { id: string; updatedAt: 
 export type StudioTaskInput = { title: string; prompt: string; provider: StudioAgentProvider };
 
 // ── v4 track: network — server types below this line ──
+//----------------- STUDIO INGRESS TYPES ------------
+/**
+ * One of the two front doors to the single Studio backend on the owner's laptop.
+ * `public` is the owner's domain (STUDIO_PUBLIC_ORIGIN, e.g. https://studio.ajarche.com) reached
+ * through a Cloudflare Tunnel; `tailnet` is Tailscale Serve on the laptop (STUDIO_TAILNET_ORIGIN)
+ * reached over AJ's tailnet, optionally through an exit node. Both proxy to the same process and
+ * database, so the id only says how a request arrived, never which data it sees.
+ */
+export type StudioIngressId = 'public' | 'tailnet';
+
+/**
+ * The configured origins of both front doors, as read by readStudioIngressOrigins.
+ * Each origin is normalised to `URL.origin` (no trailing slash, default port dropped) so it can be
+ * compared with a browser's Origin header by string equality; `null` means unset or invalid.
+ * `invalid` lists doors whose variable is set but is not a bare http(s) origin, so callers can
+ * fail closed and explain the misconfiguration instead of silently treating it as unset.
+ */
+export type StudioIngressOrigins = {
+  public: string | null;
+  tailnet: string | null;
+  invalid: StudioIngressId[];
+};
+// ---------------------------
 // ── v4 track: orders — server types below this line ──
 // ── v4 track: mail — server types below this line ──
 

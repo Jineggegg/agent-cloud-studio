@@ -25,6 +25,13 @@ import { BlockList, isIP } from 'node:net';
  * - Any process on this machine can reach the loopback port and forge every header checked here.
  * - Issued sessions carry a claim that auth.middleware re-checks on every request, so disabling the
  *   feature or removing a login or device from the allowlist revokes sessions already issued.
+ *
+ * The second front door (docs/network.md): the public domain reaches the same loopback port through
+ * a Cloudflare Tunnel, so cloudflared's requests are loopback too and Cloudflare does not strip
+ * client-supplied Tailscale-* headers. Such a request is refused three times over: its Host is the
+ * public domain, not a MagicDNS name (and STUDIO_TAILNET_ORIGIN pins the only accepted origin); it
+ * carries the CF-Ray / CF-Connecting-IP / CDN-Loop headers Cloudflare's edge always sets; and
+ * Cloudflare appends the real client address to any forged X-Forwarded-For, which makes it a list.
  */
 
 type TailscaleSignInConfig = {
@@ -37,8 +44,12 @@ type TailscaleSignInConfig = {
   allowedNodes: string[];
   /** Local Studio username the identity maps to; null means "the only active user". */
   mappedUsername: string | null;
-  /** Exact public origin (STUDIO_PUBLIC_ORIGIN) the request must come from, when configured. */
-  publicOrigin: string | null;
+  /**
+   * Exact origin the request must come from, when configured: STUDIO_TAILNET_ORIGIN, or
+   * STUDIO_PUBLIC_ORIGIN when STUDIO_TAILNET_ORIGIN is unset (the single-door setup this feature
+   * started with). It must be the https MagicDNS origin Serve answers on.
+   */
+  pinnedOrigin: string | null;
 };
 
 type TailscaleSessionRequest = {
@@ -56,6 +67,12 @@ type TailscaleSessionRequest = {
   userLogin: string | undefined;
   /** Tailscale-Funnel-Request header, which Serve sets on public Funnel traffic. */
   funnelRequest: string | undefined;
+  /** CF-Ray header, which Cloudflare's edge sets on every request it proxies (the tunnel door). */
+  cfRay?: string;
+  /** CF-Connecting-IP header, also set by Cloudflare's edge. */
+  cfConnectingIp?: string;
+  /** CDN-Loop header; Cloudflare adds "cloudflare" to it on proxied requests. */
+  cdnLoop?: string;
 };
 
 /** What a session token issued by Tailscale sign-in records, so later requests can re-check it. */
@@ -68,9 +85,11 @@ type TailscaleSessionClaim = {
 
 type TailscaleDenialReason =
   | 'disabled'
-  | 'public-origin-invalid'
+  | 'pinned-origin-invalid'
+  | 'pinned-origin-not-tailnet'
   | 'nodes-invalid'
   | 'funnel-request'
+  | 'via-cloudflare'
   | 'socket-not-loopback'
   | 'forwarded-for-not-tailnet'
   | 'node-not-allowed'
@@ -128,9 +147,9 @@ function canonicalAllowedNodes(config: TailscaleSignInConfig): string[] | null {
   return nodes.every((node): node is string => node !== null) ? nodes : null;
 }
 
-// STUDIO_PUBLIC_ORIGIN must be a bare https origin; anything else is a configuration error that
+// The pinned origin must be a bare https origin; anything else is a configuration error that
 // refuses sign-in instead of silently skipping the pin. Returns the serialized origin, else null.
-function pinnedPublicOrigin(value: string): string | null {
+function parsePinnedOrigin(value: string): string | null {
   try {
     const url = new URL(value);
     const isBareHttpsOrigin = url.protocol === 'https:'
@@ -155,6 +174,16 @@ function isTailnetHost(host: string | undefined): host is string {
     && labels.every(Boolean)
     && labels.at(-2) === 'ts'
     && labels.at(-1) === 'net';
+}
+
+// Cloudflare's edge sets these on every request it proxies and overwrites client-supplied values,
+// so their presence means the request came through the public tunnel door, never through Serve.
+// A browser never sends them on its own, so a Serve request carrying one is refused as well.
+function isViaCloudflare(request: TailscaleSessionRequest): boolean {
+  return Boolean(request.cfRay?.trim())
+    || Boolean(request.cfConnectingIp?.trim())
+    // CDN-Loop is a list of "<cdn-id>[; params]" entries (RFC 8586), e.g. "cloudflare; loops=1".
+    || /(^|,)\s*cloudflare\s*(;|,|$)/i.test(request.cdnLoop ?? '');
 }
 
 // A browser on https://<host> sends exactly that origin. Serve terminates TLS for *.ts.net, so
@@ -190,7 +219,8 @@ export function parseTailscaleSignInConfig(env: Record<string, string | undefine
     allowedLogins: list(env.STUDIO_TAILSCALE_LOGINS).map((login) => login.toLowerCase()),
     allowedNodes: list(env.STUDIO_TAILSCALE_NODES),
     mappedUsername: env.STUDIO_TAILSCALE_USER?.trim() || null,
-    publicOrigin: env.STUDIO_PUBLIC_ORIGIN?.trim() || null,
+    // Only an unset (or blank) STUDIO_TAILNET_ORIGIN falls back; a malformed one fails closed.
+    pinnedOrigin: env.STUDIO_TAILNET_ORIGIN?.trim() || env.STUDIO_PUBLIC_ORIGIN?.trim() || null,
   };
 }
 
@@ -216,9 +246,14 @@ export function evaluateTailscaleSessionRequest(
     return deny('disabled');
   }
   // Configuration errors fail closed, before any request data is considered.
-  const pinnedOrigin = config.publicOrigin === null ? null : pinnedPublicOrigin(config.publicOrigin);
-  if (config.publicOrigin !== null && pinnedOrigin === null) {
-    return deny('public-origin-invalid');
+  const pinnedOrigin = config.pinnedOrigin === null ? null : parsePinnedOrigin(config.pinnedOrigin);
+  if (config.pinnedOrigin !== null && pinnedOrigin === null) {
+    return deny('pinned-origin-invalid');
+  }
+  // E.g. STUDIO_PUBLIC_ORIGIN moved to the public domain while STUDIO_TAILNET_ORIGIN was left unset:
+  // no request could match, so say so in the log instead of reporting every request as cross-site.
+  if (pinnedOrigin !== null && !isTailnetHost(new URL(pinnedOrigin).host)) {
+    return deny('pinned-origin-not-tailnet');
   }
   const allowedNodes = canonicalAllowedNodes(config);
   if (allowedNodes === null) {
@@ -227,6 +262,9 @@ export function evaluateTailscaleSessionRequest(
   // Serve never attaches identity to public Funnel traffic; refuse it even if a login is present.
   if (request.funnelRequest !== undefined) {
     return deny('funnel-request');
+  }
+  if (isViaCloudflare(request)) {
+    return deny('via-cloudflare');
   }
   if (canonicalAddressIn(LOOPBACK_ADDRESSES, request.remoteAddress) === null) {
     return deny('socket-not-loopback');
