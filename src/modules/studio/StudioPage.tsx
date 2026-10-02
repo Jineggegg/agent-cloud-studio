@@ -152,7 +152,7 @@ export function StudioPage() {
     // ── v6 track: github — home tile below this line ──
     // ── v6 track: memory — home tile below this line ──
     { id: 'deepseek', name: 'DeepSeek', tone: 'slate', glyph: 'sparkles', status: studio.loading || configured ? undefined : '待配置' },
-    { id: 'workspace', name: '开发工具', tone: 'graphite', glyph: 'terminal', href: '/workspace' },
+    { id: 'workspace', name: '工作台', tone: 'graphite', glyph: 'terminal', href: '/work' },
     { id: 'connections', name: '设置', tone: 'stone', glyph: 'settings', status: studio.loading || configured ? undefined : '1 项待配置' },
   ];
   // The app is revealed from the exact icon rectangle (clip-path, so content never distorts), like iOS; without an icon it fades and scales from centre.
@@ -259,7 +259,7 @@ export function StudioPage() {
         void studio.remove(conversation.id);
       }} />}
 
-    {confirmProjectDelete && project && <StudioConfirmSheet title={`删除「${project.name}」？`} message="项目设置、自动化草稿和 DeepSeek 对话会被删除；电脑上的文件和开发工具会话不受影响。" confirmLabel="删除"
+    {confirmProjectDelete && project && <StudioConfirmSheet title={`删除「${project.name}」？`} message="项目设置、自动化草稿和 DeepSeek 对话会被删除；电脑上的文件和工作台会话不受影响。" confirmLabel="删除"
       onCancel={() => setConfirmProjectDelete(false)}
       onConfirm={() => {
         const removed = project;

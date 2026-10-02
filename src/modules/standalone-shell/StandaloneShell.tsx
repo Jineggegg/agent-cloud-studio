@@ -19,9 +19,11 @@ type StandaloneShellProps = {
   showHeader?: boolean;
   compact?: boolean;
   minimal?: boolean;
+  // Each http(s) address the server detects in the output, e.g. a dev server URL for a preview.
+  onUrlDetected?: ((url: string) => void) | null;
 };
 
-/** This module's only public export: used by the project-workspace module for its shell tab, by provider-auth to run an interactive login command, and by the studio module for remote (ssh + tmux) agent sessions and the owner's local shell in a project directory. */
+/** This module's only public export: used by the project-workspace module for its shell tab, by provider-auth to run an interactive login command, by the studio module for remote (ssh + tmux) agent sessions and the owner's local shell in a project directory, and by the workbench inspector's terminal panel (whose preview reads the detected URLs). */
 export default function StandaloneShell({
   project = null,
   session = null,
@@ -36,6 +38,7 @@ export default function StandaloneShell({
   showHeader = true,
   compact = false,
   minimal = false,
+  onUrlDetected = null,
 }: StandaloneShellProps) {
   const [isCompleted, setIsCompleted] = useState(false);
 
@@ -72,6 +75,7 @@ export default function StandaloneShell({
           onProcessComplete={handleProcessComplete}
           minimal={minimal}
           autoConnect={minimal ? true : autoConnect}
+          onUrlDetected={onUrlDetected}
         />
       </div>
     </div>

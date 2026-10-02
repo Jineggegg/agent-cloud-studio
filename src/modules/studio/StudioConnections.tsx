@@ -131,14 +131,14 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
     <section className="ios-section" aria-labelledby="studio-agents-heading">
       <div className="ios-section-header"><h2 id="studio-agents-heading">Claude · Codex</h2><span className="caption">本机订阅登录</span></div>
       <div className="ios-list">
-        <Link to="/workspace" className="ios-row">
+        <Link to="/work?new=claude" className="ios-row">
           <span className="home-icon small tone-clay" aria-hidden="true">C</span>
-          <span className="ios-row-body"><strong>Claude Code</strong><small>Claude 订阅 · 开发工具会话</small></span>
+          <span className="ios-row-body"><strong>Claude Code</strong><small>Claude 订阅 · 在工作台中对话</small></span>
           <ChevronRight size={18} className="chevron" aria-hidden="true" />
         </Link>
-        <Link to="/workspace" className="ios-row">
+        <Link to="/work?new=codex" className="ios-row">
           <span className="home-icon small tone-graphite" aria-hidden="true"><SquareTerminal size={20} /></span>
-          <span className="ios-row-body"><strong>Codex</strong><small>ChatGPT 订阅 · 开发工具会话</small></span>
+          <span className="ios-row-body"><strong>Codex</strong><small>ChatGPT 订阅 · 在工作台中对话</small></span>
           <ChevronRight size={18} className="chevron" aria-hidden="true" />
         </Link>
         {status?.agentWorkbenchUrl && <a className="ios-row" href={status.agentWorkbenchUrl} target="_blank" rel="noreferrer">
@@ -147,7 +147,7 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
           <ChevronRight size={18} className="chevron" aria-hidden="true" />
         </a>}
       </div>
-      <p className="ios-section-footer">开发工具直接调用这台电脑上已登录的 Claude Code 与 Codex CLI，不替换凭据，也不会转为 API 计费。</p>
+      <p className="ios-section-footer">工作台直接调用这台电脑上已登录的 Claude Code 与 Codex CLI，不替换凭据，也不会转为 API 计费。</p>
     </section>
 
     <section className="ios-section" aria-labelledby="studio-t212-heading">

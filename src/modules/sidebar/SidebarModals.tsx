@@ -5,8 +5,7 @@ import type { TFunction } from 'i18next';
 
 import { Button } from '@/shared/ui';
 import { Settings } from '@/modules/settings';
-import { VersionUpgradeModal } from '@/modules/version-upgrade';
-import type { InstallMode, PendingSidebarDeletion, Project, ReleaseInfo, SettingsProject } from '@/shared/types';
+import type { PendingSidebarDeletion, Project, SettingsProject } from '@/shared/types';
 import { normalizeProjectForSettings } from '@/modules/sidebar/utils/sidebarProjectFormatting';
 import { ProjectCreationWizard } from '@/modules/project-creation-wizard';
 
@@ -24,12 +23,6 @@ type SidebarModalsProps = {
   onConfirmDeleteSession: (hardDelete?: boolean) => void;
   /** Archives or permanently deletes every session of the pending bulk selection. */
   onConfirmDeleteSessions: (hardDelete?: boolean) => void;
-  showVersionModal: boolean;
-  onCloseVersionModal: () => void;
-  releaseInfo: ReleaseInfo | null;
-  currentVersion: string;
-  latestVersion: string | null;
-  installMode: InstallMode;
   t: TFunction;
 };
 
@@ -60,12 +53,6 @@ export default function SidebarModals({
   onConfirmDeleteProject,
   onConfirmDeleteSession,
   onConfirmDeleteSessions,
-  showVersionModal,
-  onCloseVersionModal,
-  releaseInfo,
-  currentVersion,
-  latestVersion,
-  installMode,
   t,
 }: SidebarModalsProps) {
   // Settings expects project identity/path fields to be present for dropdown labels and local-scope MCP config.
@@ -257,15 +244,6 @@ export default function SidebarModals({
           </div>,
           document.body,
         )}
-
-      <VersionUpgradeModal
-        isOpen={showVersionModal}
-        onClose={onCloseVersionModal}
-        releaseInfo={releaseInfo}
-        currentVersion={currentVersion}
-        latestVersion={latestVersion}
-        installMode={installMode}
-      />
     </>
   );
 }

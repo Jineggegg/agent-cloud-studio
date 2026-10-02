@@ -130,21 +130,6 @@ export type LoadingProgress = {
 
 // ---------------------------
 
-//----------------- RELEASES ------------
-
-/** The latest GitHub release for the app, rendered by the update prompt and the About tab. */
-export type ReleaseInfo = {
-  title: string;
-  body: string;
-  htmlUrl: string;
-  publishedAt: string;
-};
-
-/** How this CloudCLI install was obtained; decides whether the UI offers a self-update action. */
-export type InstallMode = 'git' | 'npm';
-
-// ---------------------------
-
 //----------------- SESSION PROCESSING STATE ------------
 
 /**
@@ -1830,7 +1815,7 @@ export type StudioStatus = {
   agentWorkbenchUrl: string | null;
   snrRemoteUrl: string | null;
 };
-/** Built-in home-screen apps that are not projects; `workspace` routes to the inherited IDE. */
+/** Built-in home-screen apps that are not projects; `workspace` is the 工作台 tile and routes to the workbench (/work). */
 export type StudioSystemApp = 'deepseek' | 'workspace' | 'connections' | 'github' | 'memory';
 /** Icon glyphs a home-screen tile can show; the server accepts exactly this list. */
 export type StudioGlyph = 'activity' | 'graduation' | 'candles' | 'mail' | 'folder' | 'terminal' | 'sparkles' | 'book' | 'chart' | 'globe';
@@ -1839,7 +1824,7 @@ export type StudioHomeTile = {
   id: string; name: string; tone: string; glyph: StudioGlyph | 'settings' | 'plug';
   // Short live state under the label, such as 在线 or 待配置.
   status?: string;
-  // Tiles with an href navigate away (the IDE) instead of zooming open inside Studio.
+  // Tiles with an href navigate away (the workbench) instead of zooming open inside Studio.
   href?: string;
   // App Store-style progress while an AI builds this project: the icon dims and a ring fills.
   progress?: StudioTileProgress;
@@ -2056,6 +2041,20 @@ export type WorkbenchChatProps = {
   onOpenFile: (path: string) => void;
 };
 // ── v6 track: shell — types below this line ──
+/** A provider a new workbench chat can start with; also the `?new=` value of a workbench URL. */
+export type WorkbenchNewProvider = WorkbenchChatProps['provider'];
+/** A panel of the workbench inspector (the right slide-out): files, terminal, Git or preview. */
+export type WorkbenchInspectorTab = 'files' | 'terminal' | 'git' | 'preview';
+/** The workbench layout one device remembers: sidebar, inspector visibility, its tab and its width in px. */
+export type WorkbenchLayout = { sidebarCollapsed: boolean; inspectorOpen: boolean; inspectorTab: WorkbenchInspectorTab; inspectorWidth: number };
+/** One day bucket of the workbench history (今天 / 昨天 / 本周 / 更早), rows newest first; empty buckets are omitted. */
+export type WorkbenchSessionGroup = { id: 'today' | 'yesterday' | 'week' | 'earlier'; label: string; items: WorkbenchSessionItem[] };
+/** An IDE project in the workbench switcher with the Studio hub project whose directory matches it, if any. */
+export type WorkbenchProjectEntry = { project: Project; hub: HubProject | null };
+/** Width class of the workbench viewport: phones get sheets, tablets an overlay inspector, desktops dock both columns. */
+export type WorkbenchViewport = 'phone' | 'tablet' | 'desktop';
+/** A local hub project and the IDE project registered for its directory (null until the first launch registers one). */
+export type WorkbenchHubLink = { hubId: string; projectId: string | null };
 // ── v6 track: chat — types below this line ──
 // ── v6 track: github — types below this line ──
 // ── v6 track: builder — types below this line ──

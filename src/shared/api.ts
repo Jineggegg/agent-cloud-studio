@@ -234,6 +234,11 @@ export const api = {
         get(`/api/studio/mail/messages/${encodeURIComponent(accountId)}/${encodeURIComponent(messageId)}`),
     },
     // ── v6 track: shell — endpoints below this line ──
+    // Which IDE project each local hub project lives in: the workbench's project icons and DeepSeek space, and
+    // the project app's links to existing sessions. Read-only; it never registers a directory.
+    workbench: {
+      hubLinks: () => get('/api/studio/workbench/hub-links'),
+    },
     // ── v6 track: chat — endpoints below this line ──
     // ── v6 track: github — endpoints below this line ──
     // ── v6 track: builder — endpoints below this line ──

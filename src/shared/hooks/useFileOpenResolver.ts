@@ -60,7 +60,8 @@ const findBestMatch = (files: FlatFile[], ref: string): string | null => {
 /**
  * Wraps an `onFileOpen` handler so a possibly bare/partial file reference is
  * resolved against the project's file tree (cached per project) before the file
- * is opened in the in-app editor.
+ * is opened in the in-app editor. Used by the workbench (files panel, chat file
+ * links) and by the legacy project workspace.
  */
 export function useFileOpenResolver(
   selectedProject: Project | null | undefined,

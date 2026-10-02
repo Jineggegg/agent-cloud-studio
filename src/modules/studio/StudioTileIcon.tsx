@@ -14,7 +14,7 @@ const ICONS: Record<Glyph, ComponentType<LucideProps>> = {
   settings: Settings, plug: Plug,
 };
 
-/** Used across the studio module (home screen, project app, editor, chat list) to draw one muted app icon. */
+/** Used across the studio module (home screen, project app, editor, chat list) and by the workbench project switcher to draw one muted app icon. */
 export function StudioTileIcon({ tone, glyph, size = 40, variant }: {
   tone: string; glyph: Glyph | string; size?: number; variant?: 'small' | 'large';
 }) {

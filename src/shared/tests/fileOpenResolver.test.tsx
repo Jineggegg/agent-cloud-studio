@@ -21,7 +21,7 @@ vi.mock('@/shared/api', () => ({
   api: { getFiles: (...args: unknown[]) => getFiles(...args) },
 }));
 
-const { useFileOpenResolver } = await import('@/modules/project-workspace/hooks/useFileOpenResolver');
+const { useFileOpenResolver } = await import('@/shared/hooks/useFileOpenResolver');
 
 const ROOT = '/home/odoo/workspace/personal';
 const project: Project = { projectId: 'p1', displayName: 'personal', fullPath: ROOT };

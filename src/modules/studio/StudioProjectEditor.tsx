@@ -151,6 +151,6 @@ export function StudioProjectEditor({ project, onSaved, onCancel, onDelete }: {
     </div>
     {onDelete && <section className="ios-section"><div className="ios-list">
       <button type="button" className="ios-row action destructive no-icon" disabled={busy} onClick={onDelete}>删除项目</button>
-    </div><p className="ios-section-footer">只删除 Studio 中的项目设置、草稿和 DeepSeek 对话，不会删除电脑上的文件或开发工具里的会话。</p></section>}
+    </div><p className="ios-section-footer">只删除 Studio 中的项目设置、草稿和 DeepSeek 对话，不会删除电脑上的文件或工作台里的会话。</p></section>}
   </form>;
 }
