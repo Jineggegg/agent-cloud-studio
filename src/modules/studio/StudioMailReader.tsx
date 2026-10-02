@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
+import type { KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { m } from 'motion/react';
 import { AlertTriangle, FileText, ShieldCheck } from 'lucide-react';
 
 import { api, readApiJson } from '@/shared/api';
 import type { StudioMailAccount, StudioMailMessage, StudioMailMessageDetail } from '@/shared/types';
+import { readableErrorMessage } from '@/shared/utils';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 import '@/modules/studio/studio-mail.css';
 
 const SHEET_SPRING = { type: 'spring', stiffness: 320, damping: 34 } as const;
+// Controls the focus trap cycles through; disabled buttons are skipped, as the browser would.
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 function fullDate(value: string) {
   const date = new Date(value);
@@ -39,12 +43,13 @@ export function StudioMailReader({ message, account, summarizing, onSummarize, o
   // The body could not be read (provider, network, or the message is gone).
   const [error, setError] = useState('');
   const doneButton = useRef<HTMLButtonElement>(null);
+  const sheet = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let active = true;
     void api.studio.mail.message(message.accountId, message.id).then(readApiJson<StudioMailMessageDetail>)
       .then(value => { if (active) setDetail(value); })
-      .catch(reason => { if (active) setError(reason instanceof Error && reason.message ? reason.message : '邮件读取失败'); });
+      .catch(reason => { if (active) setError(readableErrorMessage(reason, '邮件读取失败')); });
     return () => { active = false; };
   }, [message.accountId, message.id]);
 
@@ -55,12 +60,25 @@ export function StudioMailReader({ message, account, summarizing, onSummarize, o
     return () => previous?.focus?.();
   }, []);
 
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') { event.preventDefault(); onClose(); return; }
+    if (event.key !== 'Tab' || !sheet.current) return;
+    // aria-modal promises the page behind is out of reach: Tab and Shift+Tab cycle inside the sheet.
+    const items = Array.from(sheet.current.querySelectorAll<HTMLElement>(FOCUSABLE));
+    if (!items.length) { event.preventDefault(); return; }
+    const first = items[0];
+    const last = items[items.length - 1];
+    const inside = sheet.current.contains(document.activeElement);
+    if (event.shiftKey && (!inside || document.activeElement === first)) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && (!inside || document.activeElement === last)) { event.preventDefault(); first.focus(); }
+  };
+
   // The list row is the reliable header source (legacy OAuth details carry no headers of their own).
   const sender = message.from || message.fromAddress || '未知发件人';
   const date = fullDate(message.date);
-  return createPortal(<div className="studio-layer" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); onClose(); } }}>
+  return createPortal(<div className="studio-layer" onKeyDown={onKeyDown}>
     <m.div className="sheet-scrim" aria-hidden="true" onClick={onClose} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} />
-    <m.div className="mail-reader" role="dialog" aria-modal="true" aria-labelledby="mail-reader-title"
+    <m.div ref={sheet} className="mail-reader" role="dialog" aria-modal="true" aria-labelledby="mail-reader-title"
       initial={{ opacity: 0, y: 56, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, transition: { duration: 0.2 } }} transition={SHEET_SPRING}>
       <header>
         <span className="mail-reader-account">{account ? account.email : ''}</span>

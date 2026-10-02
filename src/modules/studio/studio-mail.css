@@ -66,6 +66,8 @@
 .mail-notice svg { margin-top: 1px; }
 .mail-notice div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .mail-notice a { color: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
+/* A notice, not a fault: e.g. a Gmail-only search that skipped an Outlook account. */
+.mail-notice.muted { color: var(--ios-label-2); background: var(--ios-fill); }
 
 .mail-skeleton { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 8px; padding: 14px 16px 14px 10px; }
 .mail-skeleton + .mail-skeleton { border-top: .5px solid var(--ios-separator); }
@@ -119,6 +121,8 @@
 /* ---------- Settings: 邮箱账户 ---------- */
 .mail-provider-mark { font-size: 15px; font-weight: 700; letter-spacing: -.02em; }
 .mail-account-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.mail-account-actions .mail-reverify { min-height: 36px; padding-inline: 12px; font-size: 14px; }
+.mail-projects-hint a { color: var(--ios-tint); font-weight: 600; }
 .mail-setup { padding: 4px 16px 16px; border-top: .5px solid var(--ios-separator); }
 .mail-steps { display: grid; gap: 8px; margin: 12px 0; padding: 0; list-style: none; counter-reset: mail-step; }
 .mail-steps li { position: relative; padding-left: 30px; font-size: 14px; line-height: 1.45; color: var(--ios-label-2); counter-increment: mail-step; }
@@ -134,6 +138,8 @@
   background: var(--ios-fill); color: var(--ios-label); font-size: 17px;
 }
 .mail-fields input:focus-visible { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ios-tint) 40%, transparent); }
+/* The App Password is a masked text field, not a password field, so Safari never fills in a generated password. */
+.mail-fields input.mail-secret { -webkit-text-security: disc; }
 .mail-form-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 14px; }
 .mail-form-actions .ios-button { min-height: 44px; }
 .mail-form-error { margin-top: 10px; font-size: 14px; line-height: 1.45; color: var(--ios-red); }

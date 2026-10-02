@@ -4,8 +4,8 @@ import path from 'node:path';
 
 import type Database from 'better-sqlite3';
 
-import { AppError } from '@/shared/utils.js';
-import type { StudioMailRawBody, StudioMailRawMessage } from '@/shared/types.js';
+import { AppError, toIsoDateOrEmpty } from '@/shared/utils.js';
+import type { StudioMailRawBody, StudioMailRawMessage, StudioOutlookTokens } from '@/shared/types.js';
 
 import { createGmailImapAdapter } from './gmail-imap.adapter.js';
 import { createOutlookGraphAdapter } from './outlook-graph.adapter.js';
@@ -21,7 +21,10 @@ type AccountRow = {
   encrypted_secret: string; status: AccountStatus; last_error: string | null; created_at: string;
 };
 type ImapSecret = { password: string };
-type OutlookSecret = { accessToken: string; refreshToken: string; expiresAt: number };
+// One failure of an account in the unified inbox; `skipped` marks a search the account's provider cannot run.
+type AccountFailure = { accountId: string; email: string; message: string; skipped?: true };
+// Consecutive provider failures of one account and when Studio may contact the provider again.
+type FailureStreak = { count: number; retryAt: number };
 type DeviceFlow = { userId: number; deviceCode: string; expiresAt: number; interval: number; nextPollAt: number };
 // The project-bound Gmail OAuth connections (project-mail.service), shown as read-only legacy accounts.
 type LegacyGmail = {
@@ -57,12 +60,23 @@ const BODY_CHARS = 50_000;
 // App Password attempts per user per window; each one is a real Google login.
 const VERIFY_ATTEMPTS = 6;
 const VERIFY_WINDOW_MS = 10 * 60_000;
+// After this many consecutive provider failures (timeouts, network, busy, provider errors) an account cools
+// down: no connection for COOLDOWN_MS, doubling with each further failure up to MAX_COOLDOWN_MS. A success,
+// replaced credentials or removing the account ends the streak. Rejected credentials pause the account instead.
+const FAILURES_BEFORE_COOLDOWN = 2;
+const COOLDOWN_MS = 60_000;
+const MAX_COOLDOWN_MS = 15 * 60_000;
 const MAX_PENDING_DEVICE_FLOWS = 50;
 const ACCOUNT_ID = /^[A-Za-z0-9-]{1,100}$/;
 const LEGACY_PREFIX = 'gmail-oauth-';
 const EMAIL = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
 // C0/C1 controls (except tab/newline), bidi overrides and invisible padding newsletters use in previews.
 const UNSAFE_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u00AD\u061C\u115F\u1160\u17B4\u17B5\u180E\u200B-\u200F\u202A-\u202E\u2060-\u206F\u3164\uFEFF\uFFA0]|\u034F/g;
+// Gmail search operators that Outlook's KQL does not know. A query using one skips Outlook accounts with a notice
+// instead of sending Graph a search it rejects or misreads; operators both understand (from:, to:, subject:…) do not.
+const GMAIL_ONLY_OPERATOR = /(?:^|[\s(])-?(?:is|in|label|has|after|before|older|newer|older_than|newer_than|filename|category|larger|smaller|list|deliveredto|rfc822msgid):/i;
+// Elements whose content is never readable text; removed whole, or to the end when a size cap cut them off.
+const HIDDEN_BLOCKS = /<(script|style|head|title|noscript|template|svg|object|iframe)\b[\s\S]*?(?:<\/\1\s*>|$)/gi;
 const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', ensp: ' ', emsp: ' ', thinsp: ' ', hellip: '…', mdash: '—', ndash: '–', lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”', middot: '·', bull: '•', copy: '©', reg: '®', trade: '™', zwnj: '', zwj: '' };
 
 function fail(message: string, statusCode = 400, code = 'MAIL_ERROR'): never {
@@ -82,29 +96,47 @@ function decodeEntities(value: string) {
 function htmlToPlain(html: string) {
   return decodeEntities(html
     .replace(/<!--[\s\S]*?(?:-->|$)/g, ' ')
-    .replace(/<(script|style|head|title|noscript|template|svg|object|iframe)\b[\s\S]*?(?:<\/\1\s*>|$)/gi, ' ')
+    .replace(HIDDEN_BLOCKS, ' ')
     .replace(/<br\b[^>]*>/gi, '\n')
     .replace(/<li\b[^>]*>/gi, '\n• ')
     .replace(/<\/(?:p|div|tr|li|ul|ol|h[1-6]|blockquote|table|section|article|header|footer|pre)\s*>/gi, '\n')
     .replace(/<[^>]*(?:>|$)/g, ' '));
 }
 
+// Bulk without readable text, removed from the whole HTML before the size cap so the cap is spent on text:
+// comments, hidden blocks and inline data: URIs in attributes or url() (often megabytes of base64 images).
+// Every pattern is linear, so this stays cheap on the multi-megabyte bodies the adapters allow.
+function stripBulkyMarkup(html: string) {
+  return html
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, ' ')
+    .replace(HIDDEN_BLOCKS, ' ')
+    .replace(/(=\s*["']?|url\(\s*["']?)data:[^"'\s>)]*/gi, '$1');
+}
+
 // Safe plain text: no markup, no control or direction-override characters, tidy whitespace, hard length cap.
+// `truncated` is true when either the text or the source it came from was cut.
 function plainText(body: StudioMailRawBody, limit: number) {
-  const source = body.kind === 'html' ? htmlToPlain(body.content.slice(0, limit * 8)) : body.content.slice(0, limit * 2);
-  const text = source.replace(/\r\n?/g, '\n').replace(UNSAFE_CHARACTERS, '')
+  const isHtml = body.kind === 'html';
+  const source = isHtml ? stripBulkyMarkup(body.content) : body.content;
+  const sourceCap = isHtml ? limit * 8 : limit * 2;
+  const capped = source.slice(0, sourceCap);
+  const text = (isHtml ? htmlToPlain(capped) : capped).replace(/\r\n?/g, '\n').replace(UNSAFE_CHARACTERS, '')
     .split('\n').map(line => line.replace(/[ \t\u00A0\u3000]+/g, ' ').trim()).join('\n')
     .replace(/\n{3,}/g, '\n\n').trim();
-  return { text: text.slice(0, limit), truncated: text.length > limit };
+  return { text: text.slice(0, limit), truncated: text.length > limit || source.length > sourceCap };
+}
+
+// A quoted phrase is literal text, so `"is:unread"` is not an operator.
+function usesGmailOnlySyntax(query: string) {
+  return GMAIL_ONLY_OPERATOR.test(query.replace(/"[^"]*"/g, ' '));
+}
+
+function isAuthFailure(error: unknown) {
+  return error instanceof AppError && error.code === 'MAIL_AUTH_FAILED';
 }
 
 function line(value: string, limit: number) {
   return value.replace(UNSAFE_CHARACTERS, '').replace(/\s+/g, ' ').trim().slice(0, limit);
-}
-
-function isoDate(value: string) {
-  const date = new Date(value);
-  return value && !Number.isNaN(date.getTime()) ? date.toISOString() : '';
 }
 
 // "Name <address>" header text from the legacy Gmail API listing.
@@ -120,7 +152,7 @@ function summary(accountId: string, raw: StudioMailRawMessage): MailMessage {
     subject: line(raw.subject, SUBJECT_CHARS),
     from: line(raw.from, NAME_CHARS),
     fromAddress: line(raw.fromAddress, NAME_CHARS),
-    date: isoDate(raw.date),
+    date: toIsoDateOrEmpty(raw.date),
     snippet: line(plainText(raw.body, SNIPPET_CHARS * 4).text, SNIPPET_CHARS),
     unread: raw.unread,
   };
@@ -135,7 +167,12 @@ export function createMailService(deps: Dependencies) {
   const deviceFlows = new Map<string, DeviceFlow>();
   const verifyAttempts = new Map<number, number[]>();
   // One refresh per Outlook account at a time, so concurrent reads never race a rotating refresh token.
-  const refreshing = new Map<string, Promise<OutlookSecret>>();
+  const refreshing = new Map<string, Promise<StudioOutlookTokens>>();
+  // Per-account failure streaks driving the cooldown (in memory: a restart simply allows one fresh attempt).
+  const failureStreaks = new Map<string, FailureStreak>();
+  // Identical listings already running (a double tap, a filter switched away and back) share one provider
+  // session instead of opening another login.
+  const listings = new Map<string, Promise<MailMessage[]>>();
   db.exec(`
     CREATE TABLE IF NOT EXISTS studio_mail_accounts (
       id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, provider TEXT NOT NULL, email TEXT NOT NULL,
@@ -154,7 +191,7 @@ export function createMailService(deps: Dependencies) {
     if (key.length !== 32) fail('邮箱密钥库不可用', 500, 'MAIL_VAULT');
     return key;
   }
-  function encrypt(secret: ImapSecret | OutlookSecret) {
+  function encrypt(secret: ImapSecret | StudioOutlookTokens) {
     const iv = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', vaultKey(), iv);
     const body = Buffer.concat([cipher.update(JSON.stringify(secret), 'utf8'), cipher.final()]);
@@ -197,8 +234,9 @@ export function createMailService(deps: Dependencies) {
     if (!row) fail('邮箱账户不存在', 404, 'MAIL_ACCOUNT_NOT_FOUND');
     return { row, account: publicAccount(row) };
   }
-  // Same address re-added = credentials replaced (re-verification), never a duplicate account.
-  function upsert(userId: number, provider: 'gmail-imap' | 'outlook', email: string, displayName: string, secret: ImapSecret | OutlookSecret) {
+  // Same address re-added = credentials replaced (re-verification), never a duplicate account. Replacing them
+  // lifts a reauth pause and ends any failure cooldown, so the account is read again right away.
+  function upsert(userId: number, provider: 'gmail-imap' | 'outlook', email: string, displayName: string, secret: ImapSecret | StudioOutlookTokens) {
     const timestamp = new Date(now()).toISOString();
     const normalized = email.trim().toLowerCase();
     const existing = db.prepare('SELECT id FROM studio_mail_accounts WHERE user_id = ? AND provider = ? AND email = ?').get(userId, provider, normalized) as { id: string } | undefined;
@@ -209,16 +247,39 @@ export function createMailService(deps: Dependencies) {
       ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, encrypted_secret = excluded.encrypted_secret,
         status = 'ok', last_error = NULL, updated_at = excluded.updated_at`)
       .run(id, userId, provider, normalized, line(displayName, NAME_CHARS), encrypt(secret), timestamp, timestamp);
+    failureStreaks.delete(id);
     return findAccount(userId, id).account;
   }
-  function recordOutcome(row: AccountRow | null, error: unknown) {
-    if (!row) return;
-    const status: AccountStatus = !error ? 'ok' : error instanceof AppError && error.code === 'MAIL_AUTH_FAILED' ? 'reauth' : 'error';
+  // Health bookkeeping after every provider call: the stored status (a rejected credential becomes `reauth`, which
+  // pauses the account) and the in-memory streak of other failures that drives the cooldown.
+  function recordOutcome(row: AccountRow, error: unknown) {
+    const status: AccountStatus = !error ? 'ok' : isAuthFailure(error) ? 'reauth' : 'error';
+    if (status === 'error') {
+      const count = (failureStreaks.get(row.id)?.count ?? 0) + 1;
+      const cooldown = count < FAILURES_BEFORE_COOLDOWN ? 0 : Math.min(COOLDOWN_MS * 2 ** (count - FAILURES_BEFORE_COOLDOWN), MAX_COOLDOWN_MS);
+      failureStreaks.set(row.id, { count, retryAt: now() + cooldown });
+    } else failureStreaks.delete(row.id);
     const message = error ? (error instanceof AppError ? error.message : '读取失败') : null;
     if (row.status === status && row.last_error === message) return;
     db.prepare('UPDATE studio_mail_accounts SET status = ?, last_error = ?, updated_at = ? WHERE id = ?').run(status, message, new Date(now()).toISOString(), row.id);
   }
-  async function refreshOutlook(row: AccountRow, current: OutlookSecret) {
+  // Runs before any login: an account whose credential the provider rejected stays untouched until the user
+  // replaces it (each retry with a revoked App Password is another failed Google login and risks an IMAP lock),
+  // and an account in a failure cooldown waits for it to pass.
+  function assertContactable(row: AccountRow) {
+    if (row.status === 'reauth') {
+      fail(row.provider === 'outlook'
+        ? 'Outlook 授权已失效，Studio 已暂停读取这个账户：请在设置里重新连接 Outlook'
+        : '应用专用密码已失效，Studio 已暂停读取这个账户：请在设置里用新的应用专用密码重新验证', 409, 'MAIL_REAUTH_REQUIRED');
+    }
+    const streak = failureStreaks.get(row.id);
+    if (streak && streak.retryAt > now()) {
+      const minutes = Math.max(1, Math.ceil((streak.retryAt - now()) / 60_000));
+      const reason = (row.last_error ?? '读取失败').replace(/[，。,.]?请稍后(?:重试|再试)[。.]?$/, '');
+      fail(`${reason}。连续失败，已暂停读取，约 ${minutes} 分钟后自动重试`, 503, 'MAIL_COOLING_DOWN');
+    }
+  }
+  async function refreshOutlook(row: AccountRow, current: StudioOutlookTokens) {
     const inFlight = refreshing.get(row.id);
     if (inFlight) return inFlight;
     const next = (async () => {
@@ -231,12 +292,12 @@ export function createMailService(deps: Dependencies) {
   }
   // Access tokens are refreshed on demand: shortly before expiry, and once more if Graph rejects one early.
   async function withOutlookToken<T>(row: AccountRow, work: (accessToken: string) => Promise<T>) {
-    let secret = decrypt<OutlookSecret>(row);
+    let secret = decrypt<StudioOutlookTokens>(row);
     if (secret.expiresAt <= now() + 60_000) secret = await refreshOutlook(row, secret);
     try {
       return await work(secret.accessToken);
     } catch (error) {
-      if (!(error instanceof AppError && error.code === 'MAIL_AUTH_FAILED')) throw error;
+      if (!isAuthFailure(error)) throw error;
       secret = await refreshOutlook(row, secret);
       return work(secret.accessToken);
     }
@@ -251,16 +312,28 @@ export function createMailService(deps: Dependencies) {
         return summary(account.id, { id: item.id, subject: item.subject, from: sender.name, fromAddress: sender.address, to: '', date: item.date, unread: false, body: { kind: 'text', content: item.snippet }, truncated: false });
       });
     }
-    try {
-      const raw = row.provider === 'gmail-imap'
-        ? await imap.list({ email: row.email, password: decrypt<ImapSecret>(row).password }, query, limit)
-        : await withOutlookToken(row, token => outlook.list(token, query, limit));
-      recordOutcome(row, null);
-      return raw.map(item => summary(account.id, item));
-    } catch (error) {
-      recordOutcome(row, error);
-      throw error;
+    // Checked before anything else so a Gmail-only search never counts against the Outlook account's health.
+    if (row.provider === 'outlook' && query && usesGmailOnlySyntax(query)) {
+      fail('这个搜索用了 Gmail 专用语法（如 is:、label:、after:），Outlook 不支持，已跳过这个账户', 400, 'MAIL_QUERY_UNSUPPORTED');
     }
+    assertContactable(row);
+    const key = `${row.id}\n${limit}\n${query}`;
+    const running = listings.get(key);
+    if (running) return running;
+    const listing = (async () => {
+      try {
+        const raw = row.provider === 'gmail-imap'
+          ? await imap.list({ email: row.email, password: decrypt<ImapSecret>(row).password }, query, limit)
+          : await withOutlookToken(row, token => outlook.list(token, query, limit));
+        recordOutcome(row, null);
+        return raw.map(item => summary(account.id, item));
+      } catch (error) {
+        recordOutcome(row, error);
+        throw error;
+      }
+    })();
+    listings.set(key, listing);
+    try { return await listing; } finally { listings.delete(key); }
   }
   function cleanQuery(query: string) {
     const value = query.replace(UNSAFE_CHARACTERS, ' ').trim();
@@ -326,12 +399,15 @@ export function createMailService(deps: Dependencies) {
 
     removeAccount(userId: number, accountId: string) {
       const { row, account } = findAccount(userId, accountId);
-      if (row) db.prepare('DELETE FROM studio_mail_accounts WHERE user_id = ? AND id = ?').run(userId, row.id);
-      else deps.legacyGmail!.forget(userId, account.id.slice(LEGACY_PREFIX.length));
+      if (row) {
+        db.prepare('DELETE FROM studio_mail_accounts WHERE user_id = ? AND id = ?').run(userId, row.id);
+        failureStreaks.delete(row.id);
+      } else deps.legacyGmail!.forget(userId, account.id.slice(LEGACY_PREFIX.length));
       return { removed: true };
     },
 
-    // A unified inbox: every account in parallel (or one), newest first. One failing account never hides the others.
+    // One account (the Studio inbox asks per account, so a slow server never holds back the others), or every
+    // account in parallel, newest first. A failing, paused or skipped account never hides the others.
     async messages(userId: number, input: { accountId?: string; query?: string; limit?: number }) {
       const query = cleanQuery(input.query ?? '');
       const limit = Math.min(Math.max(Math.trunc(input.limit ?? DEFAULT_LIMIT), 1), MAX_LIMIT);
@@ -340,7 +416,9 @@ export function createMailService(deps: Dependencies) {
       const results = await Promise.all(targets.map(async target => {
         try { return { messages: await listAccount(userId, target, query, limit), error: null }; }
         catch (error) {
-          return { messages: [], error: { accountId: target.account.id, email: target.account.email, message: error instanceof AppError ? error.message : '读取失败，请稍后重试' } };
+          const failure: AccountFailure = { accountId: target.account.id, email: target.account.email, message: error instanceof AppError ? error.message : '读取失败，请稍后重试' };
+          if (error instanceof AppError && error.code === 'MAIL_QUERY_UNSUPPORTED') failure.skipped = true;
+          return { messages: [], error: failure };
         }
       }));
       const messages = results.flatMap(result => result.messages)
@@ -358,6 +436,7 @@ export function createMailService(deps: Dependencies) {
         const result = await deps.legacyGmail!.message(userId, account.id.slice(LEGACY_PREFIX.length), messageId);
         raw = { id: result.id, subject: '', from: '', fromAddress: '', to: '', date: '', unread: false, body: { kind: 'text', content: result.text }, truncated: false };
       } else {
+        assertContactable(row);
         try {
           raw = row.provider === 'gmail-imap'
             ? await imap.read({ email: row.email, password: decrypt<ImapSecret>(row).password }, messageId)

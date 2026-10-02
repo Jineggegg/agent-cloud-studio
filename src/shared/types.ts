@@ -1976,8 +1976,14 @@ export type StudioMailMessage = {
 };
 /** An opened message: the row plus recipients and the capped plain-text body. */
 export type StudioMailMessageDetail = StudioMailMessage & { to: string; text: string; truncated: boolean };
+/**
+ * One account that could not be listed: a provider failure, an account paused until its credentials are replaced
+ * or cooling down after repeated failures, or (`skipped`) a search its provider cannot run, which is a notice
+ * rather than a fault of the account. `message` is short user-facing Chinese text.
+ */
+export type StudioMailAccountFailure = { accountId: string; email: string; message: string; skipped?: true };
 /** GET /api/studio/mail/messages: merged messages, plus per-account failures that did not stop the others. */
-export type StudioMailInbox = { messages: StudioMailMessage[]; errors: { accountId: string; email: string; message: string }[] };
+export type StudioMailInbox = { messages: StudioMailMessage[]; errors: StudioMailAccountFailure[] };
 /** An Outlook device-code sign-in in progress: the code the user types at Microsoft, never the device secret. */
 export type StudioMailDeviceStart = { pollId: string; userCode: string; verificationUri: string; expiresAt: string; interval: number };
 /** One poll of an Outlook device-code sign-in. */

@@ -10,9 +10,10 @@ function exitDelay() {
 }
 
 /**
- * Used by StudioPage and StudioConnections in place of window.confirm, which
- * cannot be styled and blocks the iOS standalone web app. Rendered through a
- * portal so animated ancestors never become the containing block.
+ * Used by StudioPage, StudioConnections and StudioSettingsMail (removing a mail
+ * account) in place of window.confirm, which cannot be styled and blocks the iOS
+ * standalone web app. Rendered through a portal so animated ancestors never
+ * become the containing block.
  */
 export function StudioConfirmSheet({ title, message, confirmLabel, onConfirm, onCancel }: {
   title: string; message?: string; confirmLabel: string;

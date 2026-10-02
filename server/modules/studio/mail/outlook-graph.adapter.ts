@@ -1,5 +1,5 @@
 import { AppError } from '@/shared/utils.js';
-import type { StudioMailRawMessage } from '@/shared/types.js';
+import type { StudioMailRawMessage, StudioOutlookTokens } from '@/shared/types.js';
 
 type Json = Record<string, unknown>;
 type GraphAddress = { emailAddress?: { name?: string; address?: string } };
@@ -7,8 +7,7 @@ type GraphMessage = {
   id?: string; subject?: string; from?: GraphAddress; toRecipients?: GraphAddress[];
   receivedDateTime?: string; bodyPreview?: string; isRead?: boolean; body?: { contentType?: string; content?: string };
 };
-type GraphTokens = { accessToken: string; refreshToken: string; expiresAt: number };
-type DevicePoll = { kind: 'pending' } | { kind: 'slow_down' } | { kind: 'expired' } | { kind: 'declined' } | { kind: 'tokens'; tokens: GraphTokens };
+type DevicePoll = { kind: 'pending' } | { kind: 'slow_down' } | { kind: 'expired' } | { kind: 'declined' } | { kind: 'tokens'; tokens: StudioOutlookTokens };
 
 // Personal Microsoft accounts only (outlook.com, hotmail.com, live.com); the app is a public client.
 const AUTHORITY = 'https://login.microsoftonline.com/consumers/oauth2/v2.0';
@@ -84,6 +83,12 @@ function toRawMessage(message: GraphMessage, body: StudioMailRawMessage['body'])
   };
 }
 
+// The whole query as one quoted KQL $search value. Inner double quotes are escaped with a backslash (Graph's
+// rule), so a phrase such as subject:"季度 报告" survives; backslashes mean nothing in a mail search and become spaces.
+function kqlSearchValue(query: string) {
+  return `"${query.replace(/\\/g, ' ').replace(/"/g, '\\"').trim()}"`;
+}
+
 // $-prefixed OData options stay literal; values are percent-encoded.
 function graphUrl(path: string, params: Record<string, string>) {
   return `${GRAPH}${path}?${Object.entries(params).map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join('&')}`;
@@ -120,7 +125,7 @@ export function createOutlookGraphAdapter(deps: { clientId?: string; request?: t
     if (error === 'invalid_grant' || error === 'interaction_required') fail('Outlook 登录已过期，请在设置里重新连接', 400, 'MAIL_AUTH_FAILED');
     fail('Microsoft 登录服务暂时不可用，请稍后重试');
   }
-  function tokens(data: Json, previousRefreshToken = ''): GraphTokens {
+  function tokens(data: Json, previousRefreshToken = ''): StudioOutlookTokens {
     const accessToken = text(data.access_token);
     // Microsoft normally rotates the refresh token; keep the previous one if a response omits it.
     const refreshToken = text(data.refresh_token) || previousRefreshToken;
@@ -184,7 +189,7 @@ export function createOutlookGraphAdapter(deps: { clientId?: string; request?: t
     // Newest Inbox messages, or $search (KQL) matches across the mailbox; Graph GETs never mark mail read.
     async list(accessToken: string, query: string, limit: number): Promise<StudioMailRawMessage[]> {
       const url = query
-        ? graphUrl('/me/messages', { $search: `"${query.replace(/["\\]/g, ' ').trim()}"`, $top: String(limit), $select: LIST_FIELDS })
+        ? graphUrl('/me/messages', { $search: kqlSearchValue(query), $top: String(limit), $select: LIST_FIELDS })
         : graphUrl('/me/mailFolders/inbox/messages', { $top: String(limit), $orderby: 'receivedDateTime desc', $select: LIST_FIELDS });
       const data = await graph(url, accessToken);
       const items = Array.isArray(data.value) ? data.value as GraphMessage[] : [];

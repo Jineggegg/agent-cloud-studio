@@ -1661,3 +1661,20 @@ export function recordClaudeRateLimitEvent(
   claudeRateSnapshotQueue = claudeRateSnapshotQueue.then(write).catch(() => {});
   return claudeRateSnapshotQueue;
 }
+
+// ---------------------------
+//----------------- STUDIO MAIL UTILITIES ------------
+/**
+ * Normalizes a mail date (a Date, or a header / API date string) to ISO-8601, or returns '' when the
+ * value is missing or unparseable.
+ *
+ * Used by the Studio mail Gmail IMAP adapter (envelope and internal dates) and by the Studio mail
+ * service (dates from every adapter, including legacy Gmail OAuth listings). Unlike
+ * normalizeProviderTimestamp it never substitutes the current time: an unknown mail date stays empty,
+ * so it sorts last and the UI shows no date instead of a wrong one.
+ */
+export function toIsoDateOrEmpty(value: Date | string | null | undefined): string {
+  if (!value) return '';
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+}

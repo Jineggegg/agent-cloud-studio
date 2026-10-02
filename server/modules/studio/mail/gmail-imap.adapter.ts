@@ -2,7 +2,7 @@ import { ImapFlow } from 'imapflow';
 import type { ImapFlowOptions } from 'imapflow';
 import { simpleParser } from 'mailparser';
 
-import { AppError } from '@/shared/utils.js';
+import { AppError, toIsoDateOrEmpty } from '@/shared/utils.js';
 import type { StudioMailRawMessage } from '@/shared/types.js';
 
 type ImapAddress = { name?: string; address?: string };
@@ -87,12 +87,6 @@ export function connectImapFlow(options: ImapConnectOptions, Client: new (option
   };
 }
 
-function isoDate(value: Date | string | undefined) {
-  if (!value) return '';
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
-}
-
 function addressList(addresses: ImapAddress[] | undefined) {
   return (addresses ?? []).map(item => item.name && item.address ? `${item.name} <${item.address}>` : item.address ?? item.name ?? '')
     .filter(Boolean).join(', ');
@@ -111,7 +105,7 @@ async function toRawMessage(mailbox: 'i' | 'a', message: ImapFetchedMessage, sou
     from: sender?.name || sender?.address || '',
     fromAddress: sender?.address ?? '',
     to: addressList(message.envelope?.to),
-    date: isoDate(message.internalDate ?? message.envelope?.date),
+    date: toIsoDateOrEmpty(message.internalDate ?? message.envelope?.date),
     unread: !message.flags?.has('\\Seen'),
     body: text ? { kind: 'text', content: text } : { kind: 'html', content: html },
     truncated: (message.source?.length ?? 0) >= sourceCap,

@@ -11,7 +11,7 @@ const MODULES: { id: HubModule; name: string; caption: string }[] = [
   { id: 'agents', name: 'AI 助手', caption: '在项目目录中启动 Claude / Codex 等' },
   { id: 'snr-lab', name: 'K 线实验室', caption: 'SNR 本地研究实验室' },
   { id: 'trading212', name: '股票分析', caption: 'Trading 212 只读账户看板' },
-  { id: 'mail', name: '邮箱', caption: 'Gmail 只读搜索' },
+  { id: 'mail', name: '邮箱', caption: 'Gmail / Outlook 统一收件箱（只读）' },
   { id: 'automations', name: '自动化', caption: '草稿与一次性定时执行' },
 ];
 const PROVIDERS: { id: HubProvider; name: string }[] = [

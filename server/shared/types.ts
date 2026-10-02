@@ -1675,3 +1675,13 @@ export type StudioMailRawMessage = {
   truncated: boolean;
 };
 
+/**
+ * The Microsoft identity platform tokens for one Outlook mail account.
+ *
+ * Produced by the Outlook Graph adapter (device-code sign-in and refresh) and stored by the mail service
+ * only inside its AES-256-GCM encrypted account secret; never logged or sent to the browser.
+ * `expiresAt` is the access token's expiry in epoch milliseconds. Microsoft rotates `refreshToken`, so the
+ * newest one must always replace the stored one.
+ */
+export type StudioOutlookTokens = { accessToken: string; refreshToken: string; expiresAt: number };
+
