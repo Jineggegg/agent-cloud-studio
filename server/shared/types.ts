@@ -1667,6 +1667,39 @@ export type StudioIngressOrigins = {
   tailnet: string | null;
   invalid: StudioIngressId[];
 };
+
+/**
+ * Who sent a request, as the auth module's throttles count it (failed passwords, handoff
+ * redemptions). Built by auth.routes from the request; consumed by the auth service and the
+ * handoff code store through the auth module's client throttle.
+ * - `door: 'cloudflare'` means Cloudflare's edge headers are present (the public tunnel door).
+ *   Cloudflare overwrites CF-Connecting-IP, so `address` is the real client address there.
+ * - `door: 'direct'` is everything else (Tailscale Serve, loopback, LAN); `address` is the raw
+ *   socket peer. Serve and cloudflared both dial loopback, so every tailnet request shares one
+ *   address, which is why throttles also keep a separate total per door: public traffic can then
+ *   never use up the budget of the tailnet door.
+ * `address` is 'unknown' when the value is missing; it is only a bucket key, never trusted for
+ * authentication.
+ */
+export type StudioRequestClient = {
+  door: 'cloudflare' | 'direct';
+  address: string;
+};
+
+/**
+ * Optional server-side check of Cloudflare Access (docs/network.md), as read by
+ * readCloudflareAccessConfig from STUDIO_CF_ACCESS_TEAM_DOMAIN and STUDIO_CF_ACCESS_AUD.
+ * - `off`: both unset; requests through Cloudflare are not checked by Studio.
+ * - `invalid`: only one is set or a value is malformed; `problem` explains it in Chinese for the
+ *   Settings screen. Callers fail closed: every request through Cloudflare is refused.
+ * - `on`: every request through Cloudflare must carry a Cf-Access-Jwt-Assertion signed (RS256) by a
+ *   key from `certsUrl`, issued by `issuer`, for one of the `audience` tags, and not expired.
+ * Used by the auth module (the Access gate) and the Studio network endpoint (guidance).
+ */
+export type StudioCloudflareAccessConfig =
+  | { status: 'off' }
+  | { status: 'invalid'; problem: string }
+  | { status: 'on'; teamDomain: string; issuer: string; certsUrl: string; audience: string[] };
 // ---------------------------
 // ── v4 track: orders — server types below this line ──
 // ── v4 track: mail — server types below this line ──

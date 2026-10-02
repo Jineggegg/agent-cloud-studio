@@ -21,9 +21,11 @@ import { getConnectableHost } from '../shared/networkHosts.js';
 
 import { createGitModule } from './modules/git/index.js';
 import {
+    admitCloudflareAccessUpgrade,
     authenticateToken,
     authenticateWebSocket,
     authRoutes,
+    requireCloudflareAccess,
     validateApiKey,
 } from './modules/auth/index.js';
 import { taskmasterRoutes } from './modules/taskmaster/index.js';
@@ -108,6 +110,8 @@ createWebSocketServer(server, {
     verifyClient: {
         isPlatform: IS_PLATFORM,
         authenticateWebSocket,
+        // Optional Cloudflare Access check for upgrades through the public door (docs/network.md).
+        admitEdgeRequest: admitCloudflareAccessUpgrade,
     },
     chat: {
         runtime: providerRuntimeService,
@@ -126,6 +130,9 @@ createWebSocketServer(server, {
 });
 
 app.use(cors({ exposedHeaders: ['X-Refreshed-Token', 'X-Auth-Error'] }));
+// With STUDIO_CF_ACCESS_TEAM_DOMAIN and STUDIO_CF_ACCESS_AUD set, every request through the public
+// tunnel door needs a valid Cloudflare Access assertion (docs/network.md); others pass untouched.
+app.use(requireCloudflareAccess);
 app.use(express.json({
     limit: '50mb',
     type: (req) => {

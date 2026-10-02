@@ -20,6 +20,9 @@ const OWNER_LOGIN = 'owner@example.com';
 const OWNER_SESSION = { login: OWNER_LOGIN, node: '100.101.102.103' };
 const OWNER = { id: 1, username: 'andrew' };
 const PASSWORD = 'correct horse battery staple';
+// What auth.routes reports for a request through Tailscale Serve (loopback) and through Cloudflare.
+const TAILNET_CLIENT = { door: 'direct', address: '127.0.0.1' } as const;
+const publicClient = (address: string) => ({ door: 'cloudflare', address }) as const;
 
 function createHarness(options: { env?: Record<string, string | undefined> } = {}) {
   const env: Record<string, string | undefined> = options.env ?? {
@@ -51,7 +54,8 @@ function createHarness(options: { env?: Record<string, string | undefined> } = {
       return `token-${issuedFor.length}`;
     },
     tailscaleSignIn: () => parseTailscaleSignInConfig(env),
-    handoffCodes: createHandoffCodeStore({ now: () => clock.now }),
+    // Generous redemption limits: several tests redeem many codes from one client in a row.
+    handoffCodes: createHandoffCodeStore({ now: () => clock.now, redeemAttemptsPerClient: 100, redeemAttemptsPerDoor: 100 }),
     ingressOrigins: () => readStudioIngressOrigins(env),
     logInfo: (message) => logs.push(message),
     now: () => clock.now,
@@ -71,12 +75,12 @@ test('the store issues 43-character base64url codes, each redeemable exactly onc
   assert.match(first.code, /^[A-Za-z0-9_-]{43}$/);
   assert.notEqual(first.code, second.code);
 
-  assert.deepEqual(store.redeem(first.code), { status: 'ok', grant });
-  assert.deepEqual(store.redeem(first.code), { status: 'invalid' });
+  assert.deepEqual(store.redeem(first.code, TAILNET_CLIENT), { status: 'ok', grant });
+  assert.deepEqual(store.redeem(first.code, TAILNET_CLIENT), { status: 'invalid' });
   for (const code of [undefined, 42, '', 'short', `${second.code}=`, 'A'.repeat(43)]) {
-    assert.deepEqual(store.redeem(code), { status: 'invalid' });
+    assert.deepEqual(store.redeem(code, TAILNET_CLIENT), { status: 'invalid' });
   }
-  assert.equal(store.redeem(second.code).status, 'ok');
+  assert.equal(store.redeem(second.code, TAILNET_CLIENT).status, 'ok');
 });
 
 test('codes expire after 60 seconds and the oldest is dropped beyond the pending limit', () => {
@@ -86,27 +90,48 @@ test('codes expire after 60 seconds and the oldest is dropped beyond the pending
   const expiring = store.issue(grant);
   assert.equal(expiring.expiresAt, 60_000);
   clock.now = 60_000;
-  assert.deepEqual(store.redeem(expiring.code), { status: 'invalid' });
+  assert.deepEqual(store.redeem(expiring.code, TAILNET_CLIENT), { status: 'invalid' });
 
   const oldest = store.issue(grant);
   const middle = store.issue(grant);
   const newest = store.issue(grant);
-  assert.deepEqual(store.redeem(oldest.code), { status: 'invalid' });
-  assert.equal(store.redeem(middle.code).status, 'ok');
-  assert.equal(store.redeem(newest.code).status, 'ok');
+  assert.deepEqual(store.redeem(oldest.code, TAILNET_CLIENT), { status: 'invalid' });
+  assert.equal(store.redeem(middle.code, TAILNET_CLIENT).status, 'ok');
+  assert.equal(store.redeem(newest.code, TAILNET_CLIENT).status, 'ok');
 });
 
-test('redemption attempts are rate limited for the whole process', () => {
+test('redemption attempts are rate limited per client and per door', () => {
   const clock = { now: 0 };
-  const store = createHandoffCodeStore({ now: () => clock.now, redeemAttempts: 3, redeemWindowMs: 10_000 });
+  const store = createHandoffCodeStore({
+    now: () => clock.now,
+    redeemAttemptsPerClient: 3,
+    redeemAttemptsPerDoor: 5,
+    redeemWindowMs: 10_000,
+  });
   const { code } = store.issue({ userId: 1, username: 'andrew', target: 'public', targetOrigin: PUBLIC_ORIGIN });
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    assert.equal(store.redeem('x'.repeat(43)).status, 'invalid');
+    assert.equal(store.redeem('x'.repeat(43), TAILNET_CLIENT).status, 'invalid');
   }
   // Even the right code is refused while the window is exhausted, and it stays redeemable after.
-  assert.equal(store.redeem(code).status, 'rate-limited');
+  assert.equal(store.redeem(code, TAILNET_CLIENT).status, 'rate-limited');
   clock.now = 10_000;
-  assert.equal(store.redeem(code).status, 'ok');
+  assert.equal(store.redeem(code, TAILNET_CLIENT).status, 'ok');
+});
+
+test('a flood through the public domain blocks neither tailnet switches nor, per client, others', () => {
+  const store = createHandoffCodeStore({ redeemAttemptsPerClient: 3, redeemAttemptsPerDoor: 5 });
+  const grant = { userId: 1, username: 'andrew', target: 'tailnet' as const, targetOrigin: TAILNET_ORIGIN };
+  // One public client is cut off after its own budget, while another public client still gets in.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    assert.equal(store.redeem('x'.repeat(43), publicClient('198.51.100.7')).status, 'invalid');
+  }
+  assert.equal(store.redeem('x'.repeat(43), publicClient('198.51.100.7')).status, 'rate-limited');
+  assert.equal(store.redeem(store.issue(grant).code, publicClient('203.0.113.9')).status, 'ok');
+  // Many public addresses exhaust the public door's total...
+  assert.equal(store.redeem('x'.repeat(43), publicClient('203.0.113.10')).status, 'invalid');
+  assert.equal(store.redeem('x'.repeat(43), publicClient('203.0.113.11')).status, 'rate-limited');
+  // ...but the tailnet door has its own budget, so the owner's switch still works.
+  assert.equal(store.redeem(store.issue(grant).code, TAILNET_CLIENT).status, 'ok');
 });
 
 test('a password session moves to either door as a password session', async () => {

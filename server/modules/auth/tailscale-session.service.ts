@@ -1,5 +1,7 @@
 import { BlockList, isIP } from 'node:net';
 
+import { isViaCloudflareEdge } from '@/shared/utils.js';
+
 /**
  * Passwordless sign-in policy for requests that arrive through Tailscale Serve.
  *
@@ -32,6 +34,11 @@ import { BlockList, isIP } from 'node:net';
  * public domain, not a MagicDNS name (and STUDIO_TAILNET_ORIGIN pins the only accepted origin); it
  * carries the CF-Ray / CF-Connecting-IP / CDN-Loop headers Cloudflare's edge always sets; and
  * Cloudflare appends the real client address to any forged X-Forwarded-For, which makes it a list.
+ *
+ * The same door check applies to the sessions this feature issues: a token carrying the
+ * `tailscale` claim is accepted only on requests that came through the tailnet door
+ * (isTailnetDoorRequest), so a leaked passwordless token is useless on the public domain, and the
+ * "a Tailscale session needs the password to reach the public door" handoff rule actually holds.
  */
 
 type TailscaleSignInConfig = {
@@ -176,14 +183,23 @@ function isTailnetHost(host: string | undefined): host is string {
     && labels.at(-1) === 'net';
 }
 
-// Cloudflare's edge sets these on every request it proxies and overwrites client-supplied values,
-// so their presence means the request came through the public tunnel door, never through Serve.
-// A browser never sends them on its own, so a Serve request carrying one is refused as well.
+// Cloudflare's edge headers mean the request came through the public tunnel door, never through
+// Serve. A browser never sends them on its own, so a Serve request carrying one is refused as well.
 function isViaCloudflare(request: TailscaleSessionRequest): boolean {
-  return Boolean(request.cfRay?.trim())
-    || Boolean(request.cfConnectingIp?.trim())
-    // CDN-Loop is a list of "<cdn-id>[; params]" entries (RFC 8586), e.g. "cloudflare; loops=1".
-    || /(^|,)\s*cloudflare\s*(;|,|$)/i.test(request.cdnLoop ?? '');
+  return isViaCloudflareEdge({
+    'cf-ray': request.cfRay,
+    'cf-connecting-ip': request.cfConnectingIp,
+    'cdn-loop': request.cdnLoop,
+  });
+}
+
+// Host and port compared the way a browser compares origins, so ":443" equals no port.
+function hostMatchesOrigin(host: string, origin: string): boolean {
+  try {
+    return new URL(`https://${host}`).host === new URL(origin).host;
+  } catch {
+    return false;
+  }
 }
 
 // A browser on https://<host> sends exactly that origin. Serve terminates TLS for *.ts.net, so
@@ -296,6 +312,43 @@ export function evaluateTailscaleSessionRequest(
     return deny('login-not-allowed');
   }
   return { allowed: true, login, session: { login: normalizedLogin, node } };
+}
+
+/**
+ * Tells whether a request came in through the tailnet door: Tailscale Serve on this machine, which
+ * dials Studio over loopback, keeps the browser's MagicDNS Host, and never adds Cloudflare's edge
+ * headers. Concretely: no CF-Ray / CF-Connecting-IP / CDN-Loop: cloudflare, not a Funnel request, a
+ * loopback socket, a *.ts.net Host, and, when an origin is pinned (STUDIO_TAILNET_ORIGIN, or
+ * STUDIO_PUBLIC_ORIGIN while that is unset), exactly the pinned host. An invalid or non-tailnet pin
+ * fails closed, like sign-in does.
+ *
+ * Used by auth.middleware for every HTTP request (including POST /api/auth/refresh) and WebSocket
+ * upgrade that presents a token with the `tailscale` claim; password sessions are not checked.
+ * Like sign-in, this cannot tell Serve from another process on this machine that forges headers.
+ */
+export function isTailnetDoorRequest(
+  request: {
+    headers: Record<string, string | string[] | undefined>;
+    socket?: { remoteAddress?: string };
+  },
+  config: TailscaleSignInConfig,
+): boolean {
+  if (isViaCloudflareEdge(request.headers) || request.headers['tailscale-funnel-request'] !== undefined) {
+    return false;
+  }
+  if (canonicalAddressIn(LOOPBACK_ADDRESSES, request.socket?.remoteAddress) === null) {
+    return false;
+  }
+  const hostHeader = request.headers.host;
+  const host = typeof hostHeader === 'string' ? hostHeader.trim() : undefined;
+  if (!isTailnetHost(host)) {
+    return false;
+  }
+  if (config.pinnedOrigin === null) {
+    return true;
+  }
+  const pinnedOrigin = parsePinnedOrigin(config.pinnedOrigin);
+  return pinnedOrigin !== null && hostMatchesOrigin(host, pinnedOrigin);
 }
 
 /**

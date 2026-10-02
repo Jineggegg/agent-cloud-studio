@@ -1,6 +1,7 @@
-import type { StudioIngressId, StudioIngressOrigins } from '@/shared/types.js';
+import type { StudioIngressId, StudioIngressOrigins, StudioRequestClient } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
+import { createClientThrottle } from './client-throttle.service.js';
 import type { createHandoffCodeStore } from './handoff.service.js';
 import {
   evaluateTailscaleSessionRequest,
@@ -57,14 +58,22 @@ type AuthDependencies = {
   ingressOrigins(): StudioIngressOrigins;
   /** Info-level sink for Tailscale sign-in and handoff outcomes. */
   logInfo(message: string): void;
-  /** Clock for the handoff password throttle; Date.now by default. */
+  /**
+   * Wrong-password budget shared by `login` and the handoff password, so neither is an unlimited
+   * password oracle on the public domain. Defaults to PASSWORD_FAILURE_LIMITS on `now`.
+   */
+  passwordFailures?: ReturnType<typeof createClientThrottle>;
+  /** Clock for the default password throttle; Date.now by default. */
   now?: () => number;
 };
 
-// Wrong passwords while moving a Tailscale session to the public door; a holder of a tailnet-only
-// session must not get an unlimited password oracle. Counted per process in a fixed window.
-const HANDOFF_PASSWORD_FAILURES = 5;
-const HANDOFF_PASSWORD_WINDOW_MS = 10 * 60_000;
+// Wrong passwords allowed per 10 minutes: 5 per client (CF-Connecting-IP through Cloudflare, the
+// socket address otherwise) and 20 for all clients of one door together. The door total bounds a
+// distributed guesser on the public domain; it can block password logins there for a while, but
+// never on the tailnet door, and signed-in sessions are unaffected.
+const PASSWORD_FAILURE_LIMITS = { windowMs: 10 * 60_000, perClient: 5, perDoor: 20 };
+// Stands in when a caller (tests, older code paths) does not say who is asking.
+const UNKNOWN_CLIENT: StudioRequestClient = { door: 'direct', address: 'unknown' };
 
 function numericUserId(userId: number | bigint): number {
   return Number(userId);
@@ -142,12 +151,11 @@ export function createAuthService(dependencies: AuthDependencies) {
     return (activeUsers === 1 ? dependencies.users.getFirstUser() : undefined) ?? 'no-user';
   }
 
-  const now = dependencies.now ?? Date.now;
-  // Fixed window of wrong handoff passwords, reset lazily once it ends.
-  const handoffPasswordFailures = { startedAt: 0, count: 0 };
+  const passwordFailures = dependencies.passwordFailures
+    ?? createClientThrottle({ ...PASSWORD_FAILURE_LIMITS, now: dependencies.now });
 
   // Verifies the account password before a Tailscale session may move to the public door.
-  async function verifyHandoffPassword(username: string, passwordInput: unknown) {
+  async function verifyHandoffPassword(username: string, passwordInput: unknown, client: StudioRequestClient) {
     if (typeof passwordInput !== 'string' || !passwordInput) {
       throw handoffError(
         'AUTH_HANDOFF_PASSWORD_REQUIRED',
@@ -155,21 +163,18 @@ export function createAuthService(dependencies: AuthDependencies) {
         403,
       );
     }
-    const at = now();
-    if (at - handoffPasswordFailures.startedAt >= HANDOFF_PASSWORD_WINDOW_MS) {
-      handoffPasswordFailures.startedAt = at;
-      handoffPasswordFailures.count = 0;
-    }
-    if (handoffPasswordFailures.count >= HANDOFF_PASSWORD_FAILURES) {
+    if (passwordFailures.isBlocked(client)) {
       throw handoffError('AUTH_HANDOFF_RATE_LIMITED', '密码错误次数过多，请 10 分钟后再试', 429);
     }
+    // Counted before the slow comparison, so parallel guesses cannot all pass the check above.
+    passwordFailures.record(client);
     const account = dependencies.users.getUserByUsername(username);
     const valid = account ? await dependencies.comparePassword(passwordInput, account.password_hash) : false;
     if (!valid) {
-      handoffPasswordFailures.count += 1;
       dependencies.logInfo('[auth] Handoff to the public door refused (wrong password)');
       throw handoffError('AUTH_INVALID_CREDENTIALS', '密码不正确', 401);
     }
+    passwordFailures.forgive(client);
   }
 
   return {
@@ -229,7 +234,12 @@ export function createAuthService(dependencies: AuthDependencies) {
       }
     },
 
-    async login(usernameInput: unknown, passwordInput: unknown) {
+    /**
+     * Password login. Wrong passwords are throttled per client and per door (shared with the
+     * handoff password); a blocked client gets 429 before the password is even compared, and a
+     * successful login clears that client's own count.
+     */
+    async login(usernameInput: unknown, passwordInput: unknown, client: StudioRequestClient = UNKNOWN_CLIENT) {
       const username = typeof usernameInput === 'string' ? usernameInput : '';
       const password = typeof passwordInput === 'string' ? passwordInput : '';
       if (!username || !password) {
@@ -238,7 +248,17 @@ export function createAuthService(dependencies: AuthDependencies) {
           statusCode: 400,
         });
       }
+      if (passwordFailures.isBlocked(client)) {
+        dependencies.logInfo(`[auth] Login refused (rate-limited, ${client.door} door)`);
+        throw new AppError('登录失败次数过多，请 10 分钟后再试', {
+          code: 'AUTH_RATE_LIMITED',
+          statusCode: 429,
+        });
+      }
 
+      // Counted before the slow comparison, so parallel guesses cannot all pass the check above;
+      // a success takes it back.
+      passwordFailures.record(client);
       const user = dependencies.users.getUserByUsername(username);
       const validPassword = user
         ? await dependencies.comparePassword(password, user.password_hash)
@@ -250,6 +270,7 @@ export function createAuthService(dependencies: AuthDependencies) {
         });
       }
 
+      passwordFailures.forgive(client);
       dependencies.users.updateLastLogin(numericUserId(user.id));
       return {
         success: true,
@@ -338,7 +359,7 @@ export function createAuthService(dependencies: AuthDependencies) {
     async issueHandoff(
       user: unknown,
       tailscaleSession: TailscaleSessionClaim | undefined,
-      input: { target: unknown; password: unknown },
+      input: { target: unknown; password: unknown; client?: StudioRequestClient },
     ) {
       const sessionUser = requireSessionUser(user);
       if (!isIngressId(input.target)) {
@@ -352,7 +373,7 @@ export function createAuthService(dependencies: AuthDependencies) {
 
       let carriedClaim = tailscaleSession;
       if (tailscaleSession && target === 'public') {
-        await verifyHandoffPassword(sessionUser.username, input.password);
+        await verifyHandoffPassword(sessionUser.username, input.password, input.client ?? UNKNOWN_CLIENT);
         carriedClaim = undefined;
       }
 
@@ -381,10 +402,11 @@ export function createAuthService(dependencies: AuthDependencies) {
      * user who still exists, and a carried Tailscale claim must still pass the allowlist. Every
      * refusal is the same error; the reason only goes to the log.
      */
-    redeemHandoff(input: { code: unknown; origin: string | undefined }) {
-      const result = dependencies.handoffCodes.redeem(input.code);
+    redeemHandoff(input: { code: unknown; origin: string | undefined; client?: StudioRequestClient }) {
+      const client = input.client ?? UNKNOWN_CLIENT;
+      const result = dependencies.handoffCodes.redeem(input.code, client);
       if (result.status === 'rate-limited') {
-        dependencies.logInfo('[auth] Handoff redemption refused (rate-limited)');
+        dependencies.logInfo(`[auth] Handoff redemption refused (rate-limited, ${client.door} door)`);
         throw handoffError('AUTH_HANDOFF_RATE_LIMITED', '尝试次数过多，请稍后再试', 429);
       }
       const refuse = (reason: string, target?: StudioIngressId) => {

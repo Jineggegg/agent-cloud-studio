@@ -39,10 +39,14 @@ type HandoffOutcome = 'none' | 'redeemed' | 'failed';
 
 type AuthActionResult = { success: true } | { success: false; error: string };
 
+// Auth routes answer errors as AppError bodies ({ error: { code, message } }); older routes used
+// a plain string. Both shapes are read by resolveApiErrorMessage.
+type ApiErrorField = string | { code?: unknown; message?: unknown };
+
 type AuthSessionPayload = {
   token?: string;
   user?: AuthUser;
-  error?: string;
+  error?: ApiErrorField;
   message?: string;
 };
 
@@ -59,7 +63,7 @@ type OnboardingStatusPayload = {
 };
 
 type ApiErrorPayload = {
-  error?: string;
+  error?: ApiErrorField;
   message?: string;
 };
 
@@ -149,7 +153,15 @@ function resolveApiErrorMessage(payload: ApiErrorPayload | null, fallback: strin
     return fallback;
   }
 
-  return payload.error ?? payload.message ?? fallback;
+  // The server's own message, e.g. the login throttle's "登录失败次数过多，请 10 分钟后再试".
+  const { error } = payload;
+  if (typeof error === 'string' && error) {
+    return error;
+  }
+  if (typeof error === 'object' && error !== null && typeof error.message === 'string' && error.message) {
+    return error.message;
+  }
+  return typeof payload.message === 'string' && payload.message ? payload.message : fallback;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);

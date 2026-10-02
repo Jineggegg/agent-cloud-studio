@@ -1,11 +1,13 @@
+import type { IncomingMessage } from 'node:http';
 import { createRequire } from 'node:module';
 
 import { getConnection, userDb } from '@/modules/database/index.js';
-import { readStudioIngressOrigins } from '@/shared/utils.js';
+import { readCloudflareAccessConfig, readStudioIngressOrigins } from '@/shared/utils.js';
 
 import { authenticateToken, generateToken } from './auth.middleware.js';
 import { createAuthRouter } from './auth.routes.js';
 import { createAuthService } from './auth.service.js';
+import { createCloudflareAccessGate, createCloudflareAccessMiddleware } from './cloudflare-access.service.js';
 import { createHandoffCodeStore } from './handoff.service.js';
 import { parseTailscaleSignInConfig } from './tailscale-session.service.js';
 
@@ -50,3 +52,25 @@ const authService = createAuthService({
 
 /** Auth router assembled for the server entrypoint. */
 export const authRoutes = createAuthRouter(authService, authenticateToken);
+
+// STUDIO_CF_ACCESS_TEAM_DOMAIN + STUDIO_CF_ACCESS_AUD turn on Studio's own check of Cloudflare
+// Access for requests through the public tunnel door (docs/network.md); read per request like the
+// other settings, so it applies after a restart once .env changes.
+const cloudflareAccess = createCloudflareAccessGate({
+  config: () => readCloudflareAccessConfig(process.env),
+});
+
+/**
+ * Used by the server entrypoint before every route (static files included): a request through
+ * Cloudflare without a valid Cloudflare Access assertion gets 403 while the check is configured.
+ */
+export const requireCloudflareAccess = createCloudflareAccessMiddleware(cloudflareAccess);
+
+/**
+ * Used by the server entrypoint for WebSocket upgrades, which bypass Express: resolves false for
+ * an upgrade through Cloudflare without a valid Cloudflare Access assertion.
+ */
+export async function admitCloudflareAccessUpgrade(request: IncomingMessage): Promise<boolean> {
+  const decision = await cloudflareAccess.check({ headers: request.headers, method: request.method ?? 'GET', path: request.url ?? '/' });
+  return decision.allowed;
+}

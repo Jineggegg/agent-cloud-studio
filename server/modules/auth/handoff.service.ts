@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 
-import type { StudioIngressId } from '@/shared/types.js';
+import type { StudioIngressId, StudioRequestClient } from '@/shared/types.js';
+
+import { createClientThrottle } from './client-throttle.service.js';
 
 /**
  * One-time codes that move a signed-in browser from one Studio front door to the other
@@ -15,9 +17,11 @@ import type { StudioIngressId } from '@/shared/types.js';
  *   it was issued.
  * - Each code is bound to one user and to the exact origin of its target door; the auth service
  *   compares that origin with the redeeming request's Origin header.
- * - Redemption is unauthenticated, so attempts are rate limited for the whole process. Both doors
- *   reach Studio from loopback (cloudflared, Tailscale Serve), so there is no trustworthy client
- *   address to limit by; with 256-bit codes the limit only bounds wasted work, not guessing odds.
+ * - Redemption is unauthenticated, so attempts are rate limited per client and per door
+ *   (client-throttle.service). Requests through Cloudflare are counted by CF-Connecting-IP and
+ *   share their own total, so a flood on the public domain can neither block other public clients
+ *   beyond that total nor block switches that arrive through the tailnet door. With 256-bit codes
+ *   the limit only bounds wasted work, not guessing odds.
  * - Codes live in memory: a restart drops them, which at a 60 s lifetime only means switching again.
  */
 
@@ -42,8 +46,10 @@ type HandoffStoreOptions = {
   ttlMs?: number;
   /** Most codes kept at once; issuing beyond it drops the oldest. */
   maxPending?: number;
-  /** Redemption attempts allowed per window for the whole process. */
-  redeemAttempts?: number;
+  /** Redemption attempts one client may make per window. */
+  redeemAttemptsPerClient?: number;
+  /** Redemption attempts all clients of one door may make together per window. */
+  redeemAttemptsPerDoor?: number;
   redeemWindowMs?: number;
 };
 
@@ -68,12 +74,14 @@ export function createHandoffCodeStore(options: HandoffStoreOptions = {}) {
   const randomCode = options.randomCode ?? (() => randomBytes(32).toString('base64url'));
   const ttlMs = options.ttlMs ?? 60_000;
   const maxPending = options.maxPending ?? 16;
-  const redeemAttempts = options.redeemAttempts ?? 30;
-  const redeemWindowMs = options.redeemWindowMs ?? 60_000;
+  const redemptions = createClientThrottle({
+    now,
+    windowMs: options.redeemWindowMs ?? 60_000,
+    perClient: options.redeemAttemptsPerClient ?? 10,
+    perDoor: options.redeemAttemptsPerDoor ?? 30,
+  });
   // Keyed by SHA-256 of the code; Map iteration order is insertion order, oldest first.
   const pending = new Map<string, { grant: HandoffGrant; expiresAt: number }>();
-  // Fixed window, reset lazily on the first attempt after it ends.
-  const window = { startedAt: 0, attempts: 0 };
 
   function prune(at: number) {
     for (const [hash, entry] of pending) {
@@ -98,19 +106,16 @@ export function createHandoffCodeStore(options: HandoffStoreOptions = {}) {
     },
 
     /**
-     * Consumes a code. Any attempt counts towards the rate limit, and a known code is deleted even
-     * when the caller later refuses it (wrong origin), so a leaked code is burned by its first use.
+     * Consumes a code. Every attempt that is not already refused counts towards the client's and its
+     * door's limit, and a known code is deleted even when the caller later refuses it (wrong origin),
+     * so a leaked code is burned by its first use.
      */
-    redeem(code: unknown): HandoffRedemption {
-      const at = now();
-      if (at - window.startedAt >= redeemWindowMs) {
-        window.startedAt = at;
-        window.attempts = 0;
-      }
-      window.attempts += 1;
-      if (window.attempts > redeemAttempts) {
+    redeem(code: unknown, client: StudioRequestClient): HandoffRedemption {
+      if (redemptions.isBlocked(client)) {
         return { status: 'rate-limited' };
       }
+      redemptions.record(client);
+      const at = now();
       prune(at);
       if (typeof code !== 'string' || !CODE_PATTERN.test(code)) {
         return { status: 'invalid' };
