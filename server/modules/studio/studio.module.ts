@@ -4,6 +4,7 @@ import { existsSync, realpathSync } from 'node:fs';
 
 import { getConnection, getDatabasePath, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { createProject } from '@/modules/projects/index.js';
+import { readCodexAccountRateLimits } from '@/modules/providers/index.js';
 import { scheduledMessagesService } from '@/modules/scheduled-messages/index.js';
 import { AppError } from '@/shared/utils.js';
 
@@ -17,6 +18,10 @@ import { createProjectHubRouter, createProjectMailCallbackRouter } from './proje
 import { createTrading212Service } from './trading212.service.js';
 import { createTrading212Router } from './trading212.routes.js';
 import { createLinkChecker } from './link-check.service.js';
+import { createRemoteHostsService } from './remote-hosts.service.js';
+import { createRemoteHostsRouter } from './remote-hosts.routes.js';
+import { createQuotaService } from './quota/quota.service.js';
+import { createQuotaRouter } from './quota/quota.routes.js';
 
 const linkChecker = createLinkChecker();
 
@@ -43,6 +48,8 @@ export function createStudioModule() {
     baseUrl: process.env.STUDIO_SNR_BASE_URL ?? 'http://127.0.0.1:8768',
     validUser: id => Boolean(userDb.getUserById(id)),
   });
+  // SSH hosts the owner configured (STUDIO_SSH_HOSTS); projects can only point at these, and commands are built here.
+  const remote = createRemoteHostsService({ hostsConfig: process.env.STUDIO_SSH_HOSTS });
   const hub = createProjectHubService({
     database: getConnection(),
     professorPath: defaultWorkspace('STUDIO_SUPER_PROFESSOR_PATH', 'super-professor'),
@@ -50,6 +57,9 @@ export function createStudioModule() {
     trading212Path: defaultWorkspace('STUDIO_TRADING212_PATH', 'trading212'),
     professorLinks: linksFromEnv('STUDIO_SUPER_PROFESSOR_LINKS'),
     checkLinks: links => linkChecker.check(links),
+    remoteHosts: () => remote.names(),
+    remoteSeeds: () => remote.seeds(),
+    remoteCommand: (host, dir, agent) => remote.command(host, dir, agent),
     async resolveWorkspace(directory) {
       if (!existsSync(directory)) throw new AppError('工作目录不存在', { statusCode: 400 });
       const canonical = realpathSync(directory);
@@ -104,8 +114,14 @@ export function createStudioModule() {
     envFiles: { live: process.env.STUDIO_T212_ENV_FILE || undefined, demo: process.env.STUDIO_T212_DEMO_ENV_FILE || undefined },
   });
   trading212.startSnapshots(Number(process.env.STUDIO_T212_SNAPSHOT_MINUTES ?? 30));
+  const quota = createQuotaService({
+    deepseekKey: userId => service.deepseekApiKey(userId),
+    codexRateLimits: () => readCodexAccountRateLimits(),
+  });
   const routes = createStudioRouter(service, gateway);
   routes.use('/projects', createProjectHubRouter(hub, mail));
   routes.use('/trading212', createTrading212Router(trading212));
+  routes.use('/remote', createRemoteHostsRouter(remote));
+  routes.use('/quota', createQuotaRouter(quota));
   return { routes, snrRoutes: createSnrGatewayRouter(gateway), mailCallbackRoutes: createProjectMailCallbackRouter(mail) };
 }
