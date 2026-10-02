@@ -44,6 +44,10 @@ function writeDraft(draft: Draft | null) {
 
 // What the owner runs on the server to give builds Claude Code's OS sandbox (docs/ai-builds.md).
 const SANDBOX_INSTALL = 'sudo apt-get install -y bubblewrap socat';
+// The server setting that turns the sandbox on; it stays off until the owner has checked it (docs/ai-builds.md).
+const SANDBOX_SETTING = 'STUDIO_BUILD_SANDBOX=on';
+// What restricted mode leaves the agent, said the same way in every case.
+const RESTRICTED_LIMITS = '这次 AI 只能写代码、写 README 并提交到本地，不能安装依赖、运行代码或测试。';
 // How long the copy button shows its check mark.
 const COPIED_MS = 1600;
 
@@ -53,7 +57,10 @@ const NOTE_INTRO = 'Claude Code 会在电脑的 projects 文件夹里新建一�
 const NOTE_SANDBOX = `${NOTE_INTRO} 和测试，最后提交到本地。命令在沙箱里运行，只能写这个文件夹、只连软件包仓库，不会推送或发布；开发中随时点开图标，就能看它在做什么。`;
 const NOTE_PENDING = `${NOTE_INTRO}，最后提交到本地。它只在这个文件夹里工作，不会推送或发布；开发中随时点开图标，就能看它在做什么。`;
 
-/** Restricted mode, said before the owner starts: what the build cannot do here and the one command that fixes it. */
+/**
+ * Restricted mode, said before the owner starts: what the build cannot do here and what is left to lift it — the
+ * install command when the sandbox's packages are missing, then the one-time checks and the opt-in setting.
+ */
 function RestrictedNotice({ environment }: { environment: StudioBuildEnvironment }) {
   // The copy button's check mark after a successful copy.
   const [copied, setCopied] = useState(false);
@@ -70,15 +77,16 @@ function RestrictedNotice({ environment }: { environment: StudioBuildEnvironment
     }
   };
   const installable = environment.missing.length > 0;
+  // Whether the sandbox can be turned on at all: installed now, or once the packages above are.
+  const enableable = installable || environment.available === true;
+  const situation = installable ? '服务器还没装沙箱组件，' : enableable ? '沙箱默认关闭，要先确认它在这台服务器上真的有效。' : '这台服务器不支持沙箱，';
   return <div className="build-env-notice" role="note" aria-labelledby="build-env-title">
     <ShieldAlert size={18} aria-hidden="true" />
     <div>
       <strong id="build-env-title" className="build-env-title">受限模式</strong>
-      <p>{installable
-        ? '服务器还没装沙箱组件，这次 AI 只能写代码、写 README 并提交到本地，不能安装依赖、运行代码或测试。'
-        : '这台服务器的沙箱已关闭或不可用，这次 AI 只能写代码、写 README 并提交到本地，不能安装依赖、运行代码或测试。'}</p>
+      <p>{`${situation}${RESTRICTED_LIMITS}`}</p>
       {installable && <>
-        <p>在服务器上运行这条命令，之后的开发就能在沙箱里完整进行：</p>
+        <p>要在沙箱里完整开发，先在服务器上安装沙箱组件：</p>
         <div className="build-env-command">
           <code>{SANDBOX_INSTALL}</code>
           <button type="button" className="icon-button plain" aria-label={copied ? '已复制' : '复制命令'} title="复制命令" onClick={() => void copy()}>
@@ -86,6 +94,11 @@ function RestrictedNotice({ environment }: { environment: StudioBuildEnvironment
           </button>
         </div>
       </>}
+      {enableable && <p>
+        {`${installable ? '装好后' : ''}按 docs/ai-builds.md 做一遍沙箱检查（读不到 ~/.ssh、写不了项目以外和 .git/hooks、连不上软件包仓库以外的网站），都通过后在服务器上设置 `}
+        <code className="build-env-setting">{SANDBOX_SETTING}</code>
+        {' 并重启 Studio。'}
+      </p>}
     </div>
   </div>;
 }

@@ -134,6 +134,11 @@
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; line-height: 1.5; color: var(--ios-label);
 }
 .build-env-command .icon-button { flex-shrink: 0; }
+/* The opt-in setting named inside a sentence: the command chip's type, without the chip. */
+.build-env-setting {
+  overflow-wrap: anywhere; user-select: all;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px;
+}
 @media (max-width: 699px) {
   .build-composer-note { padding: 0 6px; }
   .build-prompt { min-height: 132px; }

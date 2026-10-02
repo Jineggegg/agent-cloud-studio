@@ -2075,9 +2075,10 @@ export type StudioBuild = {
 export type StudioBuildCreated = { build: StudioBuild; project: HubProject };
 /**
  * How the server runs AI builds right now (GET /api/studio/builds/environment): `sandbox` lets the agent install, run
- * and test inside Claude Code's OS sandbox; `restricted` only writes code and commits. `missing` names the packages
- * to install for the sandbox (empty when it was switched off on purpose). Shown by the build composer.
+ * and test inside Claude Code's OS sandbox (opt-in with STUDIO_BUILD_SANDBOX=on); `restricted`, the default, only
+ * writes code and commits. `available` says whether the sandbox could run on the server at all, and `missing` names
+ * the packages to install for it. Shown by the build composer.
  */
-export type StudioBuildEnvironment = { mode: 'sandbox' | 'restricted'; missing: string[] };
+export type StudioBuildEnvironment = { mode: 'sandbox' | 'restricted'; missing: string[]; available: boolean };
 // ── v6 track: memory — types below this line ──
 // ---------------------------

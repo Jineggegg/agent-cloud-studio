@@ -135,15 +135,15 @@ test('restricted builds refuse every way to run code, reach the network or recon
   for (const [command, reason] of refused) assertRefused(restricted(command), reason, command);
 });
 
-test('restricted paths resolve through symlinks and never touch control files (review medium: control files)', () => {
+test('restricted paths refuse symlinks and never touch control files (review medium: control files)', () => {
   const refused: [string, RegExp][] = [
     ['cat /etc/passwd', /不在项目目录里/],
     ['ls ..', /不在项目目录里/],
-    ['cat escape/secret.txt', /不在项目目录里/],
-    ['cat secret-link.txt', /不在项目目录里/],
-    ['cp secret-link.txt copy.txt', /不在项目目录里/],
-    ['cp README.md escape/README.md', /不在项目目录里/],
-    ['touch dangling.txt', /不在项目目录里/],
+    ['cat escape/secret.txt', /符号链接/],
+    ['cat secret-link.txt', /符号链接/],
+    ['cp secret-link.txt copy.txt', /符号链接/],
+    ['cp README.md escape/README.md', /符号链接/],
+    ['touch dangling.txt', /符号链接/],
     ['rm -rf .', /项目目录本身/],
     [`rm -rf ${WORKSPACE}`, /项目目录本身/],
     ['touch .git/hooks/pre-commit', /配置文件/],
@@ -178,9 +178,9 @@ test('file tools must resolve inside the folder, may not write control files, an
   const refusedFile: [string, AnyRecord, RegExp][] = [
     ['Edit', { file_path: path.join(HOME, '.bashrc'), old_string: 'a', new_string: 'b' }, /不在项目目录里/],
     ['Read', { file_path: path.join(SCRATCH, 'outside/secret.txt') }, /不在项目目录里/],
-    ['Read', { file_path: path.join(WORKSPACE, 'escape/secret.txt') }, /不在项目目录里/],
-    ['Read', { file_path: path.join(WORKSPACE, 'secret-link.txt') }, /不在项目目录里/],
-    ['Write', { file_path: path.join(WORKSPACE, 'dangling.txt'), content: 'x' }, /不在项目目录里/],
+    ['Read', { file_path: path.join(WORKSPACE, 'escape/secret.txt') }, /符号链接/],
+    ['Read', { file_path: path.join(WORKSPACE, 'secret-link.txt') }, /符号链接/],
+    ['Write', { file_path: path.join(WORKSPACE, 'dangling.txt'), content: 'x' }, /符号链接/],
     ['Read', { file_path: '~/.ssh/id_rsa' }, /不在项目目录里/],
     ['Write', { file_path: path.join(WORKSPACE, '.claude/settings.local.json'), content: '{}' }, /配置文件/],
     ['Write', { file_path: path.join(WORKSPACE, '.claude/settings.json'), content: '{}' }, /配置文件/],
@@ -228,16 +228,84 @@ test('sandboxed builds leave Bash to the OS sandbox but never let a command opt 
 test('the sandbox counts as available only with bubblewrap and socat on Linux, or on macOS', () => {
   const bin = path.join(SCRATCH, 'bin');
   mkdirSync(bin);
-  assert.deepEqual(detectBuildEnvironment('linux', bin), { mode: 'restricted', missing: ['bubblewrap', 'socat'] });
+  assert.deepEqual(detectBuildEnvironment(true, 'linux', bin), { mode: 'restricted', missing: ['bubblewrap', 'socat'], available: false });
   for (const program of ['bwrap', 'socat']) {
     writeFileSync(path.join(bin, program), '#!/bin/sh\n');
     chmodSync(path.join(bin, program), 0o755);
   }
-  assert.deepEqual(detectBuildEnvironment('linux', `relative/bin${path.delimiter}${bin}`), { mode: 'sandbox', missing: [] });
+  assert.deepEqual(detectBuildEnvironment(true, 'linux', `relative/bin${path.delimiter}${bin}`), { mode: 'sandbox', missing: [], available: true });
   chmodSync(path.join(bin, 'socat'), 0o644);
-  assert.deepEqual(detectBuildEnvironment('linux', bin), { mode: 'restricted', missing: ['socat'] });
-  assert.deepEqual(detectBuildEnvironment('darwin', ''), { mode: 'sandbox', missing: [] });
-  assert.deepEqual(detectBuildEnvironment('win32', bin), { mode: 'restricted', missing: [] });
+  assert.deepEqual(detectBuildEnvironment(true, 'linux', bin), { mode: 'restricted', missing: ['socat'], available: false });
+  assert.deepEqual(detectBuildEnvironment(true, 'darwin', ''), { mode: 'sandbox', missing: [], available: true });
+  assert.deepEqual(detectBuildEnvironment(true, 'win32', bin), { mode: 'restricted', missing: [], available: false });
+});
+
+test('the sandbox is strictly opt-in: bubblewrap and socat on PATH are not enough (review: unverified sandbox)', () => {
+  const bin = path.join(SCRATCH, 'bin-opt-in');
+  mkdirSync(bin);
+  for (const program of ['bwrap', 'socat']) {
+    writeFileSync(path.join(bin, program), '#!/bin/sh\n');
+    chmodSync(path.join(bin, program), 0o755);
+  }
+  assert.deepEqual(detectBuildEnvironment(false, 'linux', bin), { mode: 'restricted', missing: [], available: true });
+  assert.deepEqual(detectBuildEnvironment(false, 'darwin', ''), { mode: 'restricted', missing: [], available: true });
+  assert.equal(detectBuildEnvironment(true, 'linux', bin).mode, 'sandbox');
+  // A runner given no environment at all runs every turn restricted.
+  const runner = createClaudeBuildRunner({
+    runtime: {} as ProviderRuntimeGateway, runTurn: async () => ({ started: false, error: null }), getRun: () => undefined,
+    completeRun: () => {}, readHistory: async () => [],
+  });
+  assert.equal(runner.environment().mode, 'restricted');
+});
+
+test('file tools and restricted commands refuse any symlink component, even one pointing inside the folder (review: TOCTOU)', () => {
+  // A link inside the folder that points inside it is still refused: a link can be re-pointed after the check.
+  mkdirSync(path.join(WORKSPACE, 'lib', 'nested'), { recursive: true });
+  writeFileSync(path.join(WORKSPACE, 'lib', 'nested', 'index.ts'), 'export {};\n');
+  symlinkSync(path.join(WORKSPACE, 'lib'), path.join(WORKSPACE, 'lib-link'));
+  symlinkSync(path.join(WORKSPACE, 'README.md'), path.join(WORKSPACE, 'readme-link.md'));
+  symlinkSync('nested', path.join(WORKSPACE, 'lib', 'nested-link'));
+  for (const mode of ['restricted', 'sandbox'] as const) {
+    const refused: [string, AnyRecord][] = [
+      ['Read', { file_path: path.join(WORKSPACE, 'lib-link/nested/index.ts') }],
+      ['Read', { file_path: 'readme-link.md' }],
+      ['Write', { file_path: path.join(WORKSPACE, 'lib/nested-link/new.ts'), content: 'x' }],
+      ['Edit', { file_path: 'lib/nested-link/index.ts', old_string: 'a', new_string: 'b' }],
+      ['MultiEdit', { file_path: 'readme-link.md', edits: [] }],
+      ['NotebookEdit', { notebook_path: 'lib-link/x.ipynb', new_source: '' }],
+      ['Glob', { pattern: '*.ts', path: 'lib-link' }],
+      ['Grep', { pattern: 'x', path: path.join(WORKSPACE, 'lib', 'nested-link') }],
+      ['Glob', { pattern: `${WORKSPACE}/lib-link/**/*.ts` }],
+    ];
+    for (const [name, input] of refused) assert.equal(tool(name, input, mode).allow, false, `${mode} ${name} ${JSON.stringify(input)}`);
+    // The same files, named without the links, are fine.
+    assert.deepEqual(tool('Read', { file_path: path.join(WORKSPACE, 'lib/nested/index.ts') }, mode), { allow: true });
+    assert.deepEqual(tool('Write', { file_path: 'lib/nested/new/deep.ts', content: 'x' }, mode), { allow: true });
+  }
+  assertRefused(tool('Read', { file_path: 'lib-link/nested/index.ts' }), /符号链接/, 'reason');
+  assertRefused(restricted('cat lib-link/nested/index.ts'), /符号链接/, 'cat through a link');
+  assertRefused(restricted('cp README.md lib/nested-link/copy.md'), /符号链接/, 'cp into a link');
+  // Lexical parent steps cannot climb out either.
+  assertRefused(tool('Read', { file_path: 'lib/nested/../../../outside/secret.txt' }), /不在项目目录里/, 'parent steps');
+});
+
+test('a build folder reached through a symlinked parent is still recognised by either spelling', () => {
+  const alias = path.join(SCRATCH, 'projects-alias');
+  symlinkSync(SCRATCH, alias);
+  const aliased = path.join(alias, 'habit-tracker');
+  assert.deepEqual(evaluateBuildPermission('Read', { file_path: path.join(aliased, 'README.md') }, aliased, 'restricted'), { allow: true });
+  assert.deepEqual(evaluateBuildPermission('Read', { file_path: path.join(WORKSPACE, 'README.md') }, aliased, 'restricted'), { allow: true });
+  assert.deepEqual(evaluateRestrictedCommand(`cat ${path.join(aliased, 'README.md')}`, aliased), { allow: true });
+  assert.equal(evaluateBuildPermission('Read', { file_path: path.join(aliased, 'secret-link.txt') }, aliased, 'restricted').allow, false);
+});
+
+test('restricted commands are checked as written: only ASCII spaces are stripped, never tabs or newlines (review: trim)', () => {
+  assert.deepEqual(restricted('  ls  '), { allow: true });
+  for (const command of ['\nls', 'ls\n', '\tls', 'ls\t', 'git status\r', '\u00a0ls', 'ls\u2028', '\vls', '\fls']) {
+    assertRefused(restricted(command), /受限模式只接受最简单的命令/, JSON.stringify(command));
+    assert.equal(tool('Bash', { command }).allow, false, JSON.stringify(command));
+  }
+  assertRefused(restricted('   '), /为空/, 'spaces only');
 });
 
 const todoWrite = (toolId: string, todos: AnyRecord[]): NormalizedMessage => ({
@@ -247,7 +315,8 @@ type PolicyHook = { reviewToolUse: (toolName: string, input: unknown) => { allow
 /** A scripted Claude runtime behind a fake runDetachedChatTurn, recording what the runner asks of it. */
 function harness(
   script: (writer: ProviderRuntimeWriter, runtime: { prompt: (requestId: string, toolName: string, input: unknown) => Promise<ProviderPermissionDecision> }) => Promise<void>,
-  environment: StudioBuildEnvironment = { mode: 'restricted', missing: ['socat'] },
+  environment: StudioBuildEnvironment = { mode: 'restricted', missing: ['socat'], available: false },
+  gitIdentity: { name: string; email: string } | null = null,
 ) {
   const pending = new Map<string, (decision: ProviderPermissionDecision) => void>();
   const notifiedUsers: unknown[] = [];
@@ -288,6 +357,7 @@ function harness(
     completeRun: () => {},
     readHistory: async () => [],
     environment: () => environment,
+    gitIdentity,
     home: '/home/owner',
     extraDomains: ['registry.npmmirror.com'],
   });
@@ -338,11 +408,11 @@ test('a restricted build turn is isolated, decides every tool through the policy
   assert.equal(checklists[0][0].activeForm, '正在搭建项目');
   // The registry's own writer still saw every event, so watchers and replay are unaffected.
   assert.equal(h.realWriterEvents.filter(event => event.kind === 'permission_request').length, 2);
-  assert.deepEqual(h.runner.environment(), { mode: 'restricted', missing: ['socat'] });
+  assert.deepEqual(h.runner.environment(), { mode: 'restricted', missing: ['socat'], available: false });
 });
 
 test('a sandboxed build turn runs Bash in the OS sandbox: folder-only writes, registries-only network, no home (review high)', async () => {
-  const h = harness(async writer => { complete(writer); }, { mode: 'sandbox', missing: [] });
+  const h = harness(async writer => { complete(writer); }, { mode: 'sandbox', missing: [], available: true }, { name: 'Owner Name', email: 'owner@example.test' });
   await h.runner.start({ sessionId: 'app-session', userId: 7, content: '做一个习惯打卡应用', workspacePath: WORKSPACE, onChecklist: () => {} });
   const { options, content } = h.turns[0];
   const isolation = options.buildIsolation as PolicyHook;
@@ -358,7 +428,16 @@ test('a sandboxed build turn runs Bash in the OS sandbox: folder-only writes, re
   assert.deepEqual(sandbox.filesystem.denyRead, ['/home/owner']);
   assert.equal(sandbox.filesystem.allowRead[0], WORKSPACE);
   assert.ok(sandbox.filesystem.allowRead.includes('/home/owner/.local/bin'));
-  assert.ok(!sandbox.filesystem.allowRead.some(entry => /\.ssh|\.aws|\.config|\.claude$|\.npmrc|\.cloudcli/.test(entry)));
+  assert.ok(!sandbox.filesystem.allowRead.some(entry => /\.ssh|\.aws|\.config|\.claude|\.npmrc|\.cloudcli|\.gitconfig/.test(entry)),
+    'no configuration under the home directory is readable: not ~/.gitconfig, not the shell snapshots');
+  assert.deepEqual(sandbox.filesystem.allowRead.slice(1), [
+    '.local/bin', '.local/lib', '.local/share/uv/python', '.local/share/pnpm', '.local/share/fnm', '.nvm', '.volta', '.bun', '.deno', '.pyenv',
+  ].map(entry => path.join('/home/owner', entry)));
+  // git commits with the owner's identity instead of reading ~/.gitconfig.
+  assert.equal(isolation.env?.GIT_AUTHOR_NAME, 'Owner Name');
+  assert.equal(isolation.env?.GIT_AUTHOR_EMAIL, 'owner@example.test');
+  assert.equal(isolation.env?.GIT_COMMITTER_NAME, 'Owner Name');
+  assert.equal(isolation.env?.GIT_COMMITTER_EMAIL, 'owner@example.test');
   for (const control of ['.claude', '.mcp.json', '.git/hooks', '.git/config', '.vscode']) {
     assert.ok(sandbox.filesystem.denyWrite.includes(path.join(WORKSPACE, control)), control);
   }
@@ -394,7 +473,7 @@ test('turns that never start, are stopped, or fail report why; inspect and readC
   const base = {
     runtime: silent, completeRun: (sessionId: string, options: unknown) => { completed.push([sessionId, options]); },
     readHistory: async () => [todoWrite('h', [{ content: '完成', status: 'completed' }, { content: '收尾', status: 'pending' }])],
-    environment: (): StudioBuildEnvironment => ({ mode: 'restricted', missing: [] }),
+    environment: (): StudioBuildEnvironment => ({ mode: 'restricted', missing: [], available: false }),
   };
   const busy = createClaudeBuildRunner({ ...base, getRun: () => undefined, runTurn: async () => ({ started: false, error: 'A run was already in progress for this session.' }) });
   assert.deepEqual(await busy.start({ sessionId: 's', userId: 1, content: 'x', workspacePath: WORKSPACE, onChecklist: () => {} }),
@@ -431,7 +510,7 @@ test('a prompt the owner already answered elsewhere is left alone', async () => 
   };
   const runner = createClaudeBuildRunner({
     runtime, getRun: () => undefined, completeRun: () => {}, readHistory: async () => [],
-    environment: () => ({ mode: 'restricted', missing: [] }),
+    environment: () => ({ mode: 'restricted', missing: [], available: false }),
     async runTurn(input, dependencies) {
       await dependencies.runtime.run('claude', input.content, {}, { send: () => {} });
       return { started: true, error: null };

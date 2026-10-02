@@ -46,7 +46,7 @@ beforeEach(() => {
   localStorage.clear();
   mocks.projects = [];
   mocks.builds.list.mockImplementation(() => json([]));
-  mocks.builds.environment.mockImplementation(() => json({ mode: 'sandbox', missing: [] }));
+  mocks.builds.environment.mockImplementation(() => json({ mode: 'sandbox', missing: [], available: true }));
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
@@ -241,7 +241,7 @@ test('a slow poll that answers after 开始开发 keeps the new icon and its rin
 });
 
 test('the composer says plainly when builds are restricted and how to enable the sandbox', async () => {
-  mocks.builds.environment.mockImplementation(() => json({ mode: 'restricted', missing: ['bubblewrap', 'socat'] }));
+  mocks.builds.environment.mockImplementation(() => json({ mode: 'restricted', missing: ['bubblewrap', 'socat'], available: false }));
   const writeText = vi.fn(() => Promise.resolve());
   Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
   renderStudio();
@@ -253,8 +253,34 @@ test('the composer says plainly when builds are restricted and how to enable the
   fireEvent.click(within(notice).getByRole('button', { name: '复制命令' }));
   await waitFor(() => expect(writeText).toHaveBeenCalledWith('sudo apt-get install -y bubblewrap socat'));
   expect(await within(notice).findByRole('button', { name: '已复制' })).toBeTruthy();
+  // Installing is not enough: the sandbox is turned on only after the checks.
+  expect(notice.textContent).toContain('装好后按 docs/ai-builds.md 做一遍沙箱检查');
+  expect(within(notice).getByText('STUDIO_BUILD_SANDBOX=on')).toBeTruthy();
   // Building is still possible, just limited.
   expect(within(sheet).getByRole('button', { name: '开始开发' })).toBeTruthy();
+});
+
+test('an installed but unverified sandbox stays off: the notice asks for the checks and the opt-in (review: opt-in sandbox)', async () => {
+  mocks.builds.environment.mockImplementation(() => json({ mode: 'restricted', missing: [], available: true }));
+  renderStudio();
+  fireEvent.click(await screen.findByRole('button', { name: '新建项目' }));
+  let sheet = await screen.findByRole('dialog', { name: '新建项目' });
+  let notice = await within(sheet).findByRole('note', { name: '受限模式' });
+  expect(notice.textContent).toContain('沙箱默认关闭，要先确认它在这台服务器上真的有效');
+  expect(notice.textContent).toContain('不能安装依赖、运行代码或测试');
+  expect(notice.textContent).toContain('读不到 ~/.ssh、写不了项目以外和 .git/hooks、连不上软件包仓库以外的网站');
+  expect(within(notice).getByText('STUDIO_BUILD_SANDBOX=on')).toBeTruthy();
+  expect(within(notice).queryByText('sudo apt-get install -y bubblewrap socat')).toBeNull();
+  fireEvent.click(within(sheet).getByRole('button', { name: '取消' }));
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建项目' })).toBeNull());
+
+  // A platform without a sandbox offers nothing to turn on.
+  mocks.builds.environment.mockImplementation(() => json({ mode: 'restricted', missing: [], available: false }));
+  fireEvent.click(screen.getByRole('button', { name: '新建项目' }));
+  sheet = await screen.findByRole('dialog', { name: '新建项目' });
+  notice = await within(sheet).findByRole('note', { name: '受限模式' });
+  expect(notice.textContent).toContain('这台服务器不支持沙箱');
+  expect(within(notice).queryByText('STUDIO_BUILD_SANDBOX=on')).toBeNull();
 });
 
 test('a sandboxed server promises installs and tests, and a server that cannot say makes no promise', async () => {

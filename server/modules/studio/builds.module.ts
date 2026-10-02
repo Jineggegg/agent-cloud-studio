@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { realpathSync } from 'node:fs';
@@ -14,6 +15,25 @@ import type { createProjectHubService } from './project-hub.service.js';
 
 // A registry host name such as registry.npmmirror.com (no scheme, port or path).
 const HOST_NAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i;
+// A git user.name or user.email value usable as an environment variable: one line, no control characters.
+const IDENTITY_VALUE = /^[^\p{Cc}]{1,200}$/u;
+
+/**
+ * The owner's git identity (user.name and user.email from their global configuration), read once here, outside
+ * the sandbox, because sandboxed commands cannot read ~/.gitconfig. Null when either is unset or unusable.
+ */
+function readGitIdentity(): { name: string; email: string } | null {
+  const read = (key: string) => {
+    try {
+      return execFileSync('git', ['config', '--global', '--get', key], { encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return '';
+    }
+  };
+  const name = read('user.name');
+  const email = read('user.email');
+  return IDENTITY_VALUE.test(name) && IDENTITY_VALUE.test(email) ? { name, email } : null;
+}
 
 /**
  * Used by studio.module to mount `/api/studio/builds`: App Store-style AI builds made with Claude Code.
@@ -24,8 +44,9 @@ const HOST_NAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-
  * - STUDIO_BUILDS_MAX_PARALLEL: builds that run at once (default 2); later ones wait as 排队中.
  * - STUDIO_BUILD_MODEL / STUDIO_BUILD_EFFORT: optional Claude model and effort for build turns (default: the
  *   Claude runtime's default model).
- * - STUDIO_BUILD_SANDBOX=off: run builds in restricted mode even when the OS sandbox is available (an escape hatch
- *   for a machine where bubblewrap is installed but cannot start).
+ * - STUDIO_BUILD_SANDBOX=on: run builds in Claude Code's OS sandbox when it is available. Strictly opt-in (exactly
+ *   `on`): any other value, and none, means restricted mode, until the owner has run the sandbox checks in
+ *   docs/ai-builds.md on this machine.
  * - STUDIO_BUILD_EXTRA_DOMAINS: comma-separated registry hosts sandboxed builds may reach besides npm and PyPI
  *   (for example a registry mirror).
  * The permission policy for these unattended turns is documented in build-runner.service.ts and docs/ai-builds.md.
@@ -44,7 +65,8 @@ export function createStudioBuildsRoutes(hub: ReturnType<typeof createProjectHub
     readHistory: async sessionId => (await sessionsService.fetchHistory(sessionId)).messages,
     model: process.env.STUDIO_BUILD_MODEL?.trim() || undefined,
     effort: process.env.STUDIO_BUILD_EFFORT?.trim() || undefined,
-    environment: () => (process.env.STUDIO_BUILD_SANDBOX?.trim() === 'off' ? { mode: 'restricted', missing: [] } : detectBuildEnvironment()),
+    environment: () => detectBuildEnvironment(process.env.STUDIO_BUILD_SANDBOX === 'on'),
+    gitIdentity: readGitIdentity(),
     home,
     extraDomains: extraDomains.filter(entry => HOST_NAME.test(entry)),
   });
@@ -71,8 +93,10 @@ export function createStudioBuildsRoutes(hub: ReturnType<typeof createProjectHub
   }
   const environment = runner.environment();
   if (environment.mode === 'restricted') {
-    console.warn(`[studio-builds] AI builds run in restricted mode (no installs, no tests)${environment.missing.length
-      ? `; install ${environment.missing.join(' and ')} for sandboxed builds: sudo apt-get install -y bubblewrap socat` : ''}`);
+    const next = environment.missing.length
+      ? `; for sandboxed builds install ${environment.missing.join(' and ')} (sudo apt-get install -y bubblewrap socat), run the sandbox checks in docs/ai-builds.md, then set STUDIO_BUILD_SANDBOX=on`
+      : environment.available ? '; the OS sandbox is available but off: run the sandbox checks in docs/ai-builds.md, then set STUDIO_BUILD_SANDBOX=on' : '';
+    console.warn(`[studio-builds] AI builds run in restricted mode (no installs, no tests)${next}`);
   }
   return createStudioBuildsRouter(builds);
 }

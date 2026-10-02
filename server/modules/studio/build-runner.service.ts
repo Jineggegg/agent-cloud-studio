@@ -25,21 +25,26 @@ import type {
  *   loads no settings files and no MCP servers, so allow rules, hooks or MCP servers in the owner's or the project's
  *   Claude configuration cannot widen it. Plan mode and `bypassPermissions` are never used.
  * - File tools (Read, Glob, Grep, Write, Edit, MultiEdit, NotebookEdit) pass only when every path-like field
- *   resolves, through symlinks, inside the build folder. Writes are also refused for agent, git and editor control
+ *   names a place inside the build folder and no existing component of it, walked down from the folder with
+ *   lstat, is a symbolic link: a link is refused outright rather than resolved, so a link that is swapped after
+ *   the check still has to exist at check time to matter. Writes are also refused for agent, git and editor control
  *   files anywhere in it (.claude/, .codex/, .mcp.json, .git/, .vscode/, .idea/, .husky/), so the agent cannot grant
  *   itself permissions, hooks or MCP servers for a later turn (the owner continuing in the workbench included).
  * - WebFetch and WebSearch are removed from build turns; MCP tools, skills, worktrees, Monitor and every other tool
  *   not named here are refused. AskUserQuestion and plan mode are refused with "decide by yourself" guidance.
+ * - The turn's environment variables are an allowlist (PATH, HOME, locale, TERM, Claude Code's own authentication
+ *   and proxy settings), applied by the Claude runtime, not the server's whole process.env.
  * - Bash depends on the environment (`detectBuildEnvironment`):
- *   · `sandbox` (bubblewrap and socat installed on Linux, or macOS): commands run inside Claude Code's OS sandbox
- *     with `failIfUnavailable` and no escape hatch: writes only inside the build folder (minus the control files),
- *     nothing of the home directory readable except toolchains and the folder itself, network only to package
- *     registries. Any command is then allowed, because the sandbox, not this file, is the boundary.
- *   · `restricted` (anything else): no shell syntax is trusted. A command must be a plain argument vector — letters,
+ *   · `sandbox` (opt-in: STUDIO_BUILD_SANDBOX=on, and bubblewrap and socat installed on Linux, or macOS): commands
+ *     run inside Claude Code's OS sandbox with `failIfUnavailable` and no escape hatch: writes only inside the build
+ *     folder (minus the control files), nothing of the home directory readable except toolchains and the folder
+ *     itself, network only to package registries. Any command is then allowed, because the sandbox, not this file,
+ *     is the boundary — which is why the owner turns it on only after checking it on the machine.
+ *   · `restricted` (the default): no shell syntax is trusted. A command must be a plain argument vector — letters,
  *     digits, spaces and `. _ - / : = + , @ %` only, so no quoting, expansion, globbing, redirection or chaining can
  *     survive — naming one of a few programs that cannot run code (ls, cat, mkdir, rm, mv, cp, git init/status/
  *     diff/log/add/commit …), with every path argument inside the folder. No installs, no tests, no network; the
- *     composer and docs tell the owner that full builds need `sudo apt-get install -y bubblewrap socat`.
+ *     composer and docs tell the owner how to install, check and enable the sandbox.
  * - Should a prompt still reach the runtime (a hook that did not apply), this runner answers it at once with the
  *   same policy instead of letting it wait 55 seconds, and without notifying the owner.
  */
@@ -68,26 +73,31 @@ function onSearchPath(program: string, searchPath: string) {
 }
 
 /**
- * Whether Claude Code's OS sandbox can run build commands on this machine: Linux needs bubblewrap and socat on
- * PATH, macOS ships Seatbelt, other platforms have no sandbox. A sandbox that is detected but fails to start makes
- * the turn fail (`failIfUnavailable`), never run unsandboxed.
+ * How build commands run on this machine. The sandbox is strictly opt-in: `enabled` (STUDIO_BUILD_SANDBOX=on)
+ * must be set by the owner after checking that the sandbox really confines commands here (docs/ai-builds.md), and
+ * Claude Code's OS sandbox must be available — Linux needs bubblewrap and socat on PATH, macOS ships Seatbelt,
+ * other platforms have none. Anything else is restricted mode. `available` and `missing` describe the machine
+ * either way, so the composer can say what is left to do. A sandbox that is enabled but fails to start makes the
+ * turn fail (`failIfUnavailable`), never run unsandboxed.
  *
  * Used by builds.module (through the runner's `environment` dependency) and by this runner's tests.
  */
-export function detectBuildEnvironment(platform: NodeJS.Platform = process.platform, searchPath = process.env.PATH ?? ''): StudioBuildEnvironment {
-  if (platform === 'darwin') return { mode: 'sandbox', missing: [] };
-  if (platform !== 'linux') return { mode: 'restricted', missing: [] };
-  const missing = LINUX_SANDBOX_PROGRAMS.filter(entry => !onSearchPath(entry.program, searchPath)).map(entry => entry.pkg);
-  return missing.length ? { mode: 'restricted', missing } : { mode: 'sandbox', missing: [] };
+export function detectBuildEnvironment(enabled: boolean, platform: NodeJS.Platform = process.platform, searchPath = process.env.PATH ?? ''): StudioBuildEnvironment {
+  const missing = platform === 'linux' ? LINUX_SANDBOX_PROGRAMS.filter(entry => !onSearchPath(entry.program, searchPath)).map(entry => entry.pkg) : [];
+  const available = platform === 'darwin' || (platform === 'linux' && missing.length === 0);
+  return { mode: enabled && available ? 'sandbox' : 'restricted', missing, available };
 }
 
 // Hosts sandboxed commands may reach: the npm and Python package registries (more via STUDIO_BUILD_EXTRA_DOMAINS).
 const REGISTRY_DOMAINS = ['registry.npmjs.org', 'registry.yarnpkg.com', 'repo.yarnpkg.com', 'pypi.org', 'files.pythonhosted.org'];
 // Toolchains installed under the home directory: the only parts of it a sandboxed command may read, besides the
-// build folder. Claude Code's Bash tool also sources its shell snapshot from ~/.claude/shell-snapshots.
+// build folder. Programs and libraries only — no configuration: ~/.gitconfig (credential helpers, includes, URL
+// rewrites carrying tokens) stays unreadable, git gets its identity from GIT_AUTHOR_* / GIT_COMMITTER_* instead,
+// and ~/.claude/shell-snapshots stays unreadable too (Claude Code sources it with `|| true`, so commands run without
+// the owner's aliases and functions).
 const HOME_TOOLCHAINS = [
   '.local/bin', '.local/lib', '.local/share/uv/python', '.local/share/pnpm', '.local/share/fnm', '.nvm', '.volta',
-  '.bun', '.deno', '.pyenv', '.gitconfig', '.claude/shell-snapshots',
+  '.bun', '.deno', '.pyenv',
 ];
 // Folder (inside the build folder, excluded from git) that sandboxed package managers cache into.
 const BUILD_CACHE_DIR = '.studio-cache';
@@ -118,12 +128,19 @@ function sandboxSettings(workspace: string, home: string, extraDomains: string[]
   };
 }
 
-// Package-manager caches inside the build folder: the sandbox lets commands write nowhere else.
-function cacheEnvironment(workspace: string) {
+/** The owner's git identity, read once from their git configuration outside the sandbox (builds.module). */
+type GitIdentity = { name: string; email: string };
+
+// Package-manager caches inside the build folder (the sandbox lets commands write nowhere else), and the commit
+// identity git would otherwise read from the unreadable ~/.gitconfig.
+function sandboxEnvironment(workspace: string, identity: GitIdentity | null) {
   const cache = path.join(workspace, BUILD_CACHE_DIR);
   return {
     npm_config_cache: path.join(cache, 'npm'), npm_config_store_dir: path.join(cache, 'pnpm'), YARN_CACHE_FOLDER: path.join(cache, 'yarn'),
     PIP_CACHE_DIR: path.join(cache, 'pip'), UV_CACHE_DIR: path.join(cache, 'uv'),
+    ...(identity ? {
+      GIT_AUTHOR_NAME: identity.name, GIT_AUTHOR_EMAIL: identity.email, GIT_COMMITTER_NAME: identity.name, GIT_COMMITTER_EMAIL: identity.email,
+    } : {}),
   };
 }
 
@@ -155,7 +172,7 @@ function environmentBrief(mode: StudioBuildEnvironment['mode']) {
   }
   return [
     '运行环境（由服务器强制执行）：',
-    '- 这台服务器没有可用的沙箱，所以这次是受限模式：用 Read、Write、Edit、Glob、Grep 读写当前目录里的文件；命令行只允许 pwd、ls、cat、head、tail、wc、mkdir、touch、rm、mv、cp，以及 git init / status / diff / log / add / commit。',
+    '- 这次构建没有启用沙箱，所以是受限模式：用 Read、Write、Edit、Glob、Grep 读写当前目录里的文件；命令行只允许 pwd、ls、cat、head、tail、wc、mkdir、touch、rm、mv、cp，以及 git init / status / diff / log / add / commit。',
     '- 命令只能是最简单的形式：参数之间用空格分隔，不能有引号、$、通配符（* ?）、管道、重定向、&& 或分号。提交信息写成一个不含空格的词，例如 git commit -m first-version。',
     '- 不能安装依赖、不能运行代码或测试，也不能联网：把代码写完整，在 README 里写清楚怎样安装、运行和测试，提交到本地仓库，并在总结里说明哪些还没有运行验证过。',
     shared,
@@ -165,50 +182,69 @@ function environmentBrief(mode: StudioBuildEnvironment['mode']) {
 //----------------- PATHS ------------
 
 /**
- * The real path `candidate` names (relative to `base`), following every symlink of its existing part; the rest
- * does not exist yet (a file about to be written). Null for `~` paths, NUL bytes, and names that exist but cannot
- * be resolved (a dangling or looping link could point anywhere).
+ * The build folder as the policy sees it: its real path, which every check walks down from, and every spelling an
+ * absolute path may use for it (the real path, and the path it was given as when a parent such as ~/projects is a
+ * symlink the owner made).
  */
-function canonicalPath(candidate: string, base: string): string | null {
-  if (!candidate || candidate.includes('\0') || candidate.startsWith('~')) return null;
-  let current = path.resolve(base, candidate);
-  const missing: string[] = [];
-  for (;;) {
-    try {
-      return path.join(realpathSync.native(current), ...missing);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return null;
-      try {
-        lstatSync(current);
-        return null;
-      } catch {
-        // Really absent: resolve its parent instead.
-      }
-      const parent = path.dirname(current);
-      if (parent === current) return null;
-      missing.unshift(path.basename(current));
-      current = parent;
-    }
+type BuildRoot = { real: string; spellings: string[] };
+
+function buildRoot(workspace: string): BuildRoot {
+  const given = path.resolve(workspace);
+  let real = given;
+  try {
+    real = realpathSync.native(workspace);
+  } catch {
+    // A folder that cannot be resolved is checked as given; the lstat walk below still refuses links inside it.
   }
+  return { real, spellings: real === given ? [real] : [real, given] };
 }
 
-function realWorkspace(workspace: string) {
-  try {
-    return realpathSync.native(workspace);
-  } catch {
-    return path.resolve(workspace);
+/**
+ * The components of `candidate` below the build folder, by lexical resolution only (`..` included), or null when
+ * it names a place outside it, starts with `~` or holds a NUL byte. Nothing is resolved through symlinks here:
+ * `linkedComponent` refuses them instead.
+ */
+function componentsInside(candidate: string, root: BuildRoot): string[] | null {
+  if (!candidate || candidate.includes('\0') || candidate.startsWith('~')) return null;
+  const absolute = path.resolve(root.real, candidate);
+  for (const base of root.spellings) {
+    if (absolute === base) return [];
+    if (absolute.startsWith(`${base}${path.sep}`)) return absolute.slice(base.length + 1).split(path.sep);
   }
+  return null;
+}
+
+/**
+ * Why the path made of `components` below `root` cannot be trusted, or null: walking down from the folder, every
+ * component that exists is lstat'ed and a symbolic link anywhere is refused — never followed — so a link planted
+ * inside the folder cannot point a file tool outside it, dangling or not. The walk stops at the first component
+ * that does not exist yet (a file about to be written); any other lstat failure refuses.
+ */
+function linkedComponent(components: string[], root: string, candidate: string): string | null {
+  let current = root;
+  for (const component of components) {
+    current = path.join(current, component);
+    try {
+      if (lstatSync(current).isSymbolicLink()) return `路径 ${candidate} 经过符号链接，无人值守开发不跟随符号链接`;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      return `无法检查路径 ${candidate}`;
+    }
+  }
+  return null;
 }
 
 type PathAccess = 'read' | 'write' | 'remove';
 
-// Why `candidate` may not be used for `access` in the build folder `root` (a real path), or null when it may.
-function pathRefusal(candidate: string, root: string, access: PathAccess): string | null {
-  const real = canonicalPath(candidate, root);
-  if (!real || (real !== root && !real.startsWith(`${root}${path.sep}`))) return `路径 ${candidate} 不在项目目录里`;
+// Why `candidate` may not be used for `access` in the build folder `root`, or null when it may.
+function pathRefusal(candidate: string, root: BuildRoot, access: PathAccess): string | null {
+  const components = componentsInside(candidate, root);
+  if (!components) return `路径 ${candidate} 不在项目目录里`;
+  const linked = linkedComponent(components, root.real, candidate);
+  if (linked) return linked;
   if (access === 'read') return null;
-  if (real === root) return access === 'remove' ? '不能删除项目目录本身' : '不能改写项目目录本身';
-  const segments = path.relative(root, real).split(path.sep).map(segment => segment.toLowerCase());
+  if (!components.length) return access === 'remove' ? '不能删除项目目录本身' : '不能改写项目目录本身';
+  const segments = components.map(segment => segment.toLowerCase());
   if (segments.some(segment => CONTROL_SEGMENTS.has(segment)) || CONTROL_FILES.has(segments[segments.length - 1])) {
     return `不能修改 agent、git 或编辑器的配置文件（${candidate}）`;
   }
@@ -220,7 +256,7 @@ function pathRefusal(candidate: string, root: string, access: PathAccess): strin
  * no brace alternative that starts over at the filesystem root. An absolute pattern is fine when its fixed leading
  * directories are inside the build folder.
  */
-function globRefusal(pattern: string, root: string): string | null {
+function globRefusal(pattern: string, root: BuildRoot): string | null {
   const refusal = `匹配模式 ${pattern} 会超出项目目录`;
   if (pattern.includes('..') || pattern.includes('~') || pattern.includes('\\') || pattern.includes('\0') || /[{,]\s*\//.test(pattern)) return refusal;
   if (!pattern.startsWith('/')) return null;
@@ -254,7 +290,7 @@ const FILE_TOOLS: Record<string, { paths: string[]; globs: string[]; access: Pat
 // Any other string field whose name says it holds a path is checked like one (a newer tool version's extra field).
 const PATH_LIKE_FIELD = /path|file|dir/i;
 
-function fileToolRefusal(toolName: string, record: AnyRecord, root: string): string | null {
+function fileToolRefusal(toolName: string, record: AnyRecord, root: BuildRoot): string | null {
   const spec = FILE_TOOLS[toolName];
   for (const [field, value] of Object.entries(record)) {
     const isPath = spec.paths.includes(field) || (!spec.globs.includes(field) && PATH_LIKE_FIELD.test(field));
@@ -273,7 +309,9 @@ function fileToolRefusal(toolName: string, record: AnyRecord, root: string): str
 // The whole command must use only these characters: bash then splits it on spaces into exactly these words, with
 // nothing quoted, expanded, globbed, redirected, chained or substituted.
 const PLAIN_COMMAND = /^[\p{L}\p{N} ._\-/:=+,@%]+$/u;
-const PLAIN_COMMAND_HINT = '受限模式只接受最简单的命令：参数用空格分隔，不能有引号、$、通配符、管道、重定向、&& 或分号';
+// Leading and trailing ASCII spaces, the only characters removed before a command is checked.
+const stripSpaces = (command: string) => command.replace(/^ +| +$/g, '');
+const PLAIN_COMMAND_HINT ='受限模式只接受最简单的命令：参数用空格分隔，不能有引号、$、通配符、管道、重定向、&& 或分号';
 const RESTRICTED_PROGRAM_LIST = 'pwd、ls、cat、head、tail、wc、mkdir、touch、rm、mv、cp、git init/status/diff/log/add/commit';
 
 type CommandRule = (args: string[], check: (candidate: string, access: PathAccess) => string | null) => string | null;
@@ -391,14 +429,16 @@ const RESTRICTED_PROGRAMS: Record<string, CommandRule> = {
  * Exported for the build runner's tests; the runner calls it through `evaluateBuildPermission`.
  */
 export function evaluateRestrictedCommand(command: string, workspace: string): PermissionVerdict {
-  const text = command.trim();
+  // The text bash will run, minus leading and trailing ASCII spaces only: a tab, newline or other whitespace that
+  // String.trim() would drop must reach the character check and be refused.
+  const text = stripSpaces(command);
   if (!text) return deny('命令为空');
   if (text.length > 2000) return deny('命令过长');
   if (!PLAIN_COMMAND.test(text)) return deny(PLAIN_COMMAND_HINT);
   const [program, ...args] = text.split(/ +/);
   const rule = RESTRICTED_PROGRAMS[program];
   if (!rule) return deny(`受限模式只能运行 ${RESTRICTED_PROGRAM_LIST}；不能运行代码、安装依赖或跑测试`);
-  const root = realWorkspace(workspace);
+  const root = buildRoot(workspace);
   const refusal = rule(args, (candidate, access) => pathRefusal(candidate, root, access));
   return refusal ? deny(refusal) : allow();
 }
@@ -419,12 +459,12 @@ export function evaluateBuildPermission(toolName: string, input: unknown, worksp
     const command = typeof record.command === 'string' ? record.command : '';
     if (mode === 'sandbox') {
       if (record.dangerouslyDisableSandbox === true) return deny('命令必须在沙箱里运行');
-      return command.trim() ? allow() : deny('命令为空');
+      return stripSpaces(command) ? allow() : deny('命令为空');
     }
     return evaluateRestrictedCommand(command, workspace);
   }
   if (FILE_TOOLS[toolName]) {
-    const refusal = fileToolRefusal(toolName, record, realWorkspace(workspace));
+    const refusal = fileToolRefusal(toolName, record, buildRoot(workspace));
     return refusal ? deny(refusal) : allow();
   }
   if (toolName === 'WebFetch' || toolName === 'WebSearch') return deny('无人值守开发不能访问网页');
@@ -512,8 +552,11 @@ type RunnerDependencies = {
   // Optional overrides from STUDIO_BUILD_MODEL / STUDIO_BUILD_EFFORT.
   model?: string;
   effort?: string;
-  // Sandbox or restricted, read at every turn (detectBuildEnvironment unless STUDIO_BUILD_SANDBOX=off).
+  // Sandbox or restricted, read at every turn (detectBuildEnvironment with STUDIO_BUILD_SANDBOX=on as the opt-in);
+  // without it every turn is restricted.
   environment?: () => StudioBuildEnvironment;
+  // The commit identity for sandboxed git, which cannot read ~/.gitconfig; null leaves git to its own defaults.
+  gitIdentity?: GitIdentity | null;
   // The home directory whose contents sandboxed commands may not read (os.homedir()).
   home?: string;
   // Registries sandboxed commands may reach besides npm and PyPI (STUDIO_BUILD_EXTRA_DOMAINS).
@@ -575,7 +618,7 @@ function watchWriter(writer: ProviderRuntimeWriter, onSend: (data: unknown) => v
 
 /** Used by builds.module to run AI builds as unattended Claude Code turns; tests pass a scripted runtime instead. */
 export function createClaudeBuildRunner(deps: RunnerDependencies): StudioBuildRunner {
-  const environment = deps.environment ?? (() => detectBuildEnvironment());
+  const environment = deps.environment ?? (() => detectBuildEnvironment(false));
   const home = deps.home ?? os.homedir();
 
   function answerPrompt(requestId: string, sessionId: string, verdict: PermissionVerdict, attempt = 0) {
@@ -656,14 +699,15 @@ export function createClaudeBuildRunner(deps: RunnerDependencies): StudioBuildRu
           // Not acceptEdits: should the hook ever be missing, edits still reach the prompt this runner answers.
           permissionMode: 'default',
           toolsSettings: { allowedTools: [...BUILD_ALLOWED_TOOLS], disallowedTools: [...BUILD_DENIED_TOOLS], skipPermissions: false },
-          // Read by the Claude runtime (applyBuildIsolation): no settings files or MCP servers, the policy hook, and
-          // in sandbox mode the OS sandbox with package caches inside the build folder.
+          // Read by the Claude runtime (applyBuildIsolation): no settings files or MCP servers, an allowlisted
+          // environment, the policy hook, and in sandbox mode the OS sandbox with package caches inside the build
+          // folder and the owner's commit identity.
           buildIsolation: {
             reviewToolUse: (toolName: string, toolInput: unknown) => {
               const verdict = review(toolName, toolInput);
               return verdict.allow ? verdict : { allow: false, reason: refusalMessage(verdict.reason) };
             },
-            ...(mode === 'sandbox' ? { sandbox: sandboxSettings(workspace, home, deps.extraDomains ?? []), env: cacheEnvironment(workspace) } : {}),
+            ...(mode === 'sandbox' ? { sandbox: sandboxSettings(workspace, home, deps.extraDomains ?? []), env: sandboxEnvironment(workspace, deps.gitIdentity ?? null) } : {}),
           },
           ...(deps.model ? { model: deps.model } : {}),
           ...(deps.effort ? { effort: deps.effort } : {}),

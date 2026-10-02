@@ -98,3 +98,60 @@ test('ordinary chat turns keep their settings sources and get no build hook or s
   assert.equal(sdkOptions.sandbox, undefined);
   assert.equal(sdkOptions.strictMcpConfig, undefined);
 });
+
+/** Runs `body` with extra process.env entries, restoring the previous values afterwards. */
+async function withEnv<T>(entries: Record<string, string | undefined>, body: () => Promise<T>): Promise<T> {
+  const previous = Object.fromEntries(Object.keys(entries).map(name => [name, process.env[name]]));
+  const assign = (values: Record<string, string | undefined>) => {
+    for (const [name, value] of Object.entries(values)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  };
+  assign(entries);
+  try {
+    return await body();
+  } finally {
+    assign(previous);
+  }
+}
+
+test('a build turn inherits only allowlisted environment variables, not the whole server process.env (review: env)', async () => {
+  const serverEnv = {
+    STUDIO_TEST_SERVER_SECRET: 'server-only', DATABASE_URL: 'postgres://studio', GITHUB_TOKEN: 'not-for-builds', LD_PRELOAD: '/tmp/x.so',
+    ANTHROPIC_BASE_URL: 'https://api.example.test', CLAUDE_CONFIG_DIR: '/home/owner/.claude', LC_ALL: 'C.UTF-8', LANG: 'C.UTF-8', TERM: 'xterm',
+    HTTPS_PROXY: 'http://127.0.0.1:7890', AWS_REGION: 'us-east-1', CLAUDE_CODE_USE_BEDROCK: undefined,
+  };
+  const build = await withEnv(serverEnv, () => captureOptions({ buildIsolation: { reviewToolUse: () => ({ allow: true }) } }));
+  for (const name of ['STUDIO_TEST_SERVER_SECRET', 'DATABASE_URL', 'GITHUB_TOKEN', 'LD_PRELOAD', 'AWS_REGION']) {
+    assert.equal(build.env[name], undefined, `${name} stays out of the build turn`);
+  }
+  for (const name of ['ANTHROPIC_BASE_URL', 'CLAUDE_CONFIG_DIR', 'LC_ALL', 'LANG', 'TERM', 'HTTPS_PROXY']) {
+    assert.equal(build.env[name], serverEnv[name as keyof typeof serverEnv], `${name} reaches Claude Code`);
+  }
+  assert.equal(build.env.PATH, process.env.PATH);
+  assert.equal(build.env.HOME, process.env.HOME);
+  assert.ok(build.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS, 'the runtime keeps its own variable');
+  assert.ok(Object.keys(build.env).every(name => /^(PATH|HOME|USER|SHELL|TMPDIR|LANG|TERM|NODE_EXTRA_CA_CERTS|ANTHROPIC_\w+|LC_\w+|CLAUDE_\w+|https?_proxy|no_proxy)$/i.test(name)), Object.keys(build.env).join(' '));
+
+  // Cloud credentials only when Claude Code authenticates through that cloud.
+  const bedrock = await withEnv({ ...serverEnv, CLAUDE_CODE_USE_BEDROCK: '1' }, () => captureOptions({ buildIsolation: { reviewToolUse: () => ({ allow: true }) } }));
+  assert.equal(bedrock.env.AWS_REGION, 'us-east-1');
+  assert.equal(bedrock.env.GITHUB_TOKEN, undefined);
+
+  // The commit identity and cache locations from the build runner are added on top; nothing else is.
+  const sandboxed = await captureOptions({
+    buildIsolation: {
+      reviewToolUse: () => ({ allow: true }),
+      env: { GIT_AUTHOR_NAME: 'Owner', GIT_COMMITTER_EMAIL: 'owner@example.test', UV_CACHE_DIR: '/w/.studio-cache/uv', NODE_OPTIONS: '--require /tmp/x.js' },
+    },
+  });
+  assert.equal(sandboxed.env.GIT_AUTHOR_NAME, 'Owner');
+  assert.equal(sandboxed.env.GIT_COMMITTER_EMAIL, 'owner@example.test');
+  assert.equal(sandboxed.env.UV_CACHE_DIR, '/w/.studio-cache/uv');
+  assert.equal(sandboxed.env.NODE_OPTIONS, undefined);
+
+  // Ordinary chat turns still forward the whole environment.
+  const chat = await withEnv(serverEnv, () => captureOptions({}));
+  assert.equal(chat.env.STUDIO_TEST_SERVER_SECRET, 'server-only');
+});

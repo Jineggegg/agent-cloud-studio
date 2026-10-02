@@ -311,8 +311,48 @@ function mapCliOptionsToSDK(options = {}) {
 }
 
 // ── v6 track: builder — unattended build isolation below this line ──
-// Environment variables a build may set for its commands: package-manager cache locations only.
-const BUILD_ISOLATION_ENV_KEYS = new Set(['npm_config_cache', 'npm_config_store_dir', 'YARN_CACHE_FOLDER', 'PIP_CACHE_DIR', 'UV_CACHE_DIR']);
+// Environment variables a build may set for its commands: package-manager cache locations and the commit identity
+// git cannot read from the sandboxed-away ~/.gitconfig.
+const BUILD_ISOLATION_ENV_KEYS = new Set([
+  'npm_config_cache', 'npm_config_store_dir', 'YARN_CACHE_FOLDER', 'PIP_CACHE_DIR', 'UV_CACHE_DIR',
+  'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL',
+]);
+// The server environment a build turn inherits; everything else in process.env (Studio's own secrets and
+// configuration, other tools' tokens) stays out of the Claude Code process and so out of every build command.
+const BUILD_ENV_NAMES = new Set([
+  // Finding programs, the home directory, the user, the shell Claude Code's Bash tool starts, and temp files.
+  'PATH', 'HOME', 'USER', 'SHELL', 'TMPDIR',
+  // Locale and terminal.
+  'LANG', 'TERM',
+  // Claude Code's own authentication and where it keeps its credentials.
+  'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX',
+  // Reaching the API from a machine that needs a proxy or a private certificate authority for it.
+  'HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'NO_PROXY', 'no_proxy', 'NODE_EXTRA_CA_CERTS',
+  // Set by this runtime for every turn (mapCliOptionsToSDK).
+  'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS',
+]);
+// API key, auth token, base URL, custom headers and model overrides (ANTHROPIC_*), and locale categories (LC_*).
+const BUILD_ENV_PREFIXES = ['ANTHROPIC_', 'LC_'];
+// Cloud credentials, only when Claude Code is told to authenticate through that cloud.
+const BUILD_CLOUD_ENV = [
+  { flag: 'CLAUDE_CODE_USE_BEDROCK', prefixes: ['AWS_'], names: [] },
+  { flag: 'CLAUDE_CODE_USE_VERTEX', prefixes: ['VERTEX_REGION_'], names: ['CLOUD_ML_REGION', 'GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_CLOUD_PROJECT'] },
+];
+const ENABLED_FLAG = /^(1|true|yes|on)$/i;
+
+/**
+ * The allowlisted part of `source` (the turn's environment, process.env plus this runtime's own variables) that an
+ * unattended build turn runs with: see BUILD_ENV_NAMES, BUILD_ENV_PREFIXES and BUILD_CLOUD_ENV.
+ * @param {Record<string, string|undefined>} source
+ * @returns {Record<string, string>}
+ */
+function buildTurnEnvironment(source) {
+  const cloud = BUILD_CLOUD_ENV.filter(entry => ENABLED_FLAG.test(String(source[entry.flag] ?? '')));
+  const allowed = (name) => BUILD_ENV_NAMES.has(name)
+    || BUILD_ENV_PREFIXES.some(prefix => name.startsWith(prefix))
+    || cloud.some(entry => entry.names.includes(name) || entry.prefixes.some(prefix => name.startsWith(prefix)));
+  return Object.fromEntries(Object.entries(source).filter(([name, value]) => typeof value === 'string' && allowed(name)));
+}
 
 /**
  * Applies `options.buildIsolation`, which only the Studio build runner sets
@@ -321,12 +361,15 @@ const BUILD_ISOLATION_ENV_KEYS = new Set(['npm_config_cache', 'npm_config_store_
  * - no settings files (`settingSources: []`, the SDK's isolation mode) and no
  *   MCP servers, so allow rules, hooks or MCP servers in the owner's or the
  *   project's configuration cannot pre-approve anything past the build policy;
+ * - an allowlisted environment (`buildTurnEnvironment`) instead of the whole
+ *   server process.env, so commands never see Studio's own secrets;
  * - a PreToolUse hook that asks `reviewToolUse(toolName, input)` about every
  *   tool call (sub-agents included, ahead of Claude Code's own rules and
  *   auto-approvals) and allows or denies it outright. It fails closed: no
  *   reviewer, a throwing reviewer or anything but `{ allow: true }` denies;
  * - Claude Code's OS sandbox for Bash when `sandbox` is given, with package
- *   caches pointed into the build folder for the sandboxed commands.
+ *   caches pointed into the build folder for the sandboxed commands and the
+ *   owner's git identity.
  * Returns whether isolation applies, so the caller never retries without it.
  * @param {Object} sdkOptions - SDK options being built (after hooks and MCP servers are set)
  * @param {Object|undefined} isolation - `{ reviewToolUse, sandbox?, env? }`
@@ -338,6 +381,7 @@ function applyBuildIsolation(sdkOptions, isolation) {
   sdkOptions.settingSources = [];
   sdkOptions.strictMcpConfig = true;
   delete sdkOptions.mcpServers;
+  sdkOptions.env = buildTurnEnvironment(sdkOptions.env || {});
   if (isolation.sandbox && typeof isolation.sandbox === 'object') {
     sdkOptions.sandbox = isolation.sandbox;
   }

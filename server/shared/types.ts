@@ -1844,11 +1844,13 @@ export type StudioBuildRunSnapshot = { running: boolean; startedAt: number; succ
  *
  * `sandbox`: Bash runs inside Claude Code's OS sandbox (bubblewrap + socat on Linux, Seatbelt on macOS), which
  * lets the agent write only its build folder and reach only package registries, so it may install, run and test.
- * `restricted`: the sandbox is unavailable (or switched off with STUDIO_BUILD_SANDBOX=off), so the agent gets the
- * file tools inside its folder and a fixed set of plain commands, and can neither install nor run code.
- * `missing` names the packages to install for `sandbox` (empty when the sandbox was switched off on purpose).
+ * Opt-in: only STUDIO_BUILD_SANDBOX=on turns it on, after the owner has checked it on the machine.
+ * `restricted` (the default): the agent gets the file tools inside its folder and a fixed set of plain commands,
+ * and can neither install nor run code.
+ * `available` says whether the OS sandbox could run here (whatever the mode), and `missing` names the packages to
+ * install for it (empty on macOS, on platforms without a sandbox, and once installed).
  */
-export type StudioBuildEnvironment = { mode: 'sandbox' | 'restricted'; missing: string[] };
+export type StudioBuildEnvironment = { mode: 'sandbox' | 'restricted'; missing: string[]; available: boolean };
 
 /**
  * The seam between the builds service and the agent runtime.

@@ -26,7 +26,7 @@ function fakeRunner() {
     async abort(sessionId) { aborted.push(sessionId); return true; },
     inspect: () => snapshot,
     readChecklist: async () => history,
-    environment: () => ({ mode: 'restricted', missing: ['socat'] }),
+    environment: () => ({ mode: 'restricted', missing: ['socat'], available: false }),
   };
   return {
     runner, starts, aborted,
@@ -156,7 +156,7 @@ test('a builds root outside the home directory is a clear configuration error th
   const inside = fixture({ home: root => path.dirname(root) });
   try {
     assert.equal((await inside.service.create(1, input('Habit Tracker'))).build.state, 'building');
-    assert.deepEqual(inside.service.environment(), { mode: 'restricted', missing: ['socat'] });
+    assert.deepEqual(inside.service.environment(), { mode: 'restricted', missing: ['socat'], available: false });
   } finally { inside.cleanup(); }
 });
 
