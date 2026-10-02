@@ -1,10 +1,35 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CandlestickChart, ChevronRight, ExternalLink, Info, KeyRound, LoaderCircle, MessagesSquare, ShieldCheck, SquareTerminal } from 'lucide-react';
+import { CandlestickChart, ChevronRight, ExternalLink, Info, KeyRound, LoaderCircle, MessagesSquare, RefreshCw, Server, ShieldCheck, SquareTerminal } from 'lucide-react';
 
 import { api, readApiJson } from '@/shared/api';
-import type { StudioStatus, T212Status } from '@/shared/types';
+import { useTheme } from '@/shared/context/ThemeContext';
+import type { StudioRemoteHost, StudioRemoteStatus, StudioStatus, T212Status, ThemeMode } from '@/shared/types';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
+import { StudioSpinner } from '@/modules/studio/StudioSpinner';
+
+const THEMES: [ThemeMode, string][] = [['light', '浅色'], ['dark', '深色'], ['system', '跟随系统']];
+
+function RemoteHostRow({ host }: { host: StudioRemoteHost }) {
+  // Result of the last SSH check; null while a check is running (it can take a few seconds).
+  const [status, setStatus] = useState<StudioRemoteStatus | null>(null);
+  const check = () => {
+    setStatus(null);
+    void api.studio.remote.status(host.name).then(readApiJson<StudioRemoteStatus>)
+      .then(setStatus)
+      .catch((reason: unknown) => setStatus({ name: host.name, online: false, latencyMs: null, checkedAt: new Date().toISOString(), tools: { claude: false, codex: false, tmux: false }, error: reason instanceof Error ? reason.message : '检查失败' }));
+  };
+  // Checked once on open; the button re-checks on demand.
+  useEffect(check, [host.name]); // eslint-disable-line react-hooks/exhaustive-deps
+  const tools = status?.online ? (['claude', 'codex', 'tmux'] as const).map(tool => `${tool} ${status.tools[tool] ? '✓' : '✗'}`).join(' · ') : status?.error;
+  return <div className="ios-row">
+    <span className="home-icon small tone-graphite" aria-hidden="true"><Server size={18} strokeWidth={1.6} /></span>
+    <span className="ios-row-body"><strong>{host.label}</strong><small className="mono">{host.target}{tools ? ` — ${tools}` : ''}</small></span>
+    {status === null ? <StudioSpinner size={16} label="正在检查" />
+      : <span className={`status-badge ${status.online ? 'good' : 'warn'}`}>{status.online ? `在线 ${status.latencyMs ?? '–'} ms` : '离线'}</span>}
+    <button type="button" className="icon-button" aria-label={`重新检查 ${host.label}`} disabled={status === null} onClick={check}><RefreshCw size={17} aria-hidden="true" /></button>
+  </div>;
+}
 
 /** Used by StudioPage for local secret provisioning without ever reading a saved key back to the browser. */
 export function StudioConnections({ status, onChange }: { status: StudioStatus | null; onChange: () => Promise<void> }) {
@@ -26,6 +51,14 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
     return () => { active = false; };
   }, []);
   const configured = Boolean(status?.deepseek.configured);
+  const { themeMode, isDarkMode, setThemeMode } = useTheme();
+  // SSH hosts configured on the server (names, labels and targets only).
+  const [hosts, setHosts] = useState<StudioRemoteHost[] | null>(null);
+  useEffect(() => {
+    let active = true;
+    void api.studio.remote.hosts().then(readApiJson<StudioRemoteHost[]>).then(value => { if (active) setHosts(value); }).catch(() => { if (active) setHosts([]); });
+    return () => { active = false; };
+  }, []);
 
   const act = async (kind: 'save' | 'test' | 'remove', operation: () => Promise<void>) => {
     setBusy(kind); setError(''); setResult('');
@@ -35,6 +68,28 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
   };
 
   return <>
+    <section className="ios-section first" aria-labelledby="studio-appearance-heading">
+      <div className="ios-section-header"><h2 id="studio-appearance-heading">外观</h2></div>
+      <div className="ios-list">
+        <div className="ios-row no-icon appearance-row">
+          <span className="ios-row-body"><strong>主题</strong><small>{themeMode === 'system' ? `跟随系统 · 当前${isDarkMode ? '深色' : '浅色'}` : '固定外观，不随系统变化'}</small></span>
+          <div className="segmented" role="radiogroup" aria-label="主题">
+            {THEMES.map(([mode, label]) => <button type="button" role="radio" key={mode} aria-checked={themeMode === mode} onClick={() => setThemeMode(mode)}>{label}</button>)}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section className="ios-section" aria-labelledby="studio-remote-heading">
+      <div className="ios-section-header"><h2 id="studio-remote-heading">远程主机</h2><span className="caption">Tailscale + SSH</span></div>
+      <div className="ios-list">
+        {hosts === null && <div className="ios-row no-icon"><StudioSpinner size={16} /><span className="ios-row-body"><small>读取中</small></span></div>}
+        {hosts?.map(host => <RemoteHostRow key={host.name} host={host} />)}
+        {hosts?.length === 0 && <div className="ios-row no-icon"><span className="ios-row-body"><small>服务器还没有配置远程主机（.env 里的 STUDIO_SSH_HOSTS）</small></span></div>}
+      </div>
+      <p className="ios-section-footer">在「新建」或项目「设置 → 运行位置」里选择主机后，项目里的 Claude Code / Codex / 终端会在那台主机上运行。</p>
+    </section>
+
     <section className="ios-section" aria-labelledby="studio-deepseek-heading">
       <div className="ios-section-header"><h2 id="studio-deepseek-heading">DeepSeek API</h2><span className="caption">本地密钥库</span></div>
       <div className="ios-list">

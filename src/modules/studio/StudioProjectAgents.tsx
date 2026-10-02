@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ChevronRight, LoaderCircle, MessagesSquare, RefreshCw } from 'lucide-react';
+import { ChevronRight, LoaderCircle, MessagesSquare, RefreshCw, Server, SquareTerminal } from 'lucide-react';
 
 import { api, readApiJson } from '@/shared/api';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
-import type { HubAgentProvider, HubProject, HubSession } from '@/shared/types';
+import type { HubAgentProvider, HubProject, HubSession, StudioRemoteHost, StudioRemoteLaunch, StudioRemoteStatus } from '@/shared/types';
+import { StudioSpinner } from '@/modules/studio/StudioSpinner';
+
+// The terminal (xterm) loads only when a remote session is opened.
+const StudioRemoteTerminal = lazy(() => import('@/modules/studio/StudioRemoteTerminal'));
 
 // IDE agents in display order, with their muted brand-adjacent tones.
 const AGENTS: { id: HubAgentProvider; name: string; caption: string; tone: string; mark: string }[] = [
@@ -14,8 +18,88 @@ const AGENTS: { id: HubAgentProvider; name: string; caption: string; tone: strin
   { id: 'opencode', name: 'OpenCode', caption: 'OpenCode', tone: 'stone', mark: 'Oc' },
 ];
 
-/** Used by StudioPage's project app to start an IDE agent inside the project directory or open its DeepSeek chat. */
+// Agents that can run on a remote host; the server builds the actual ssh/tmux command.
+const REMOTE_AGENTS: { id: 'claude' | 'codex' | 'shell'; name: string; tone: string; mark: string; tool: 'claude' | 'codex' | null }[] = [
+  { id: 'claude', name: 'Claude Code', tone: 'clay', mark: 'C', tool: 'claude' },
+  { id: 'codex', name: 'Codex', tone: 'graphite', mark: 'O', tool: 'codex' },
+  { id: 'shell', name: '终端', tone: 'stone', mark: '', tool: null },
+];
+
+function RemoteAgents({ project }: { project: HubProject }) {
+  // Label and SSH target of the project's host, from the server's configured host list.
+  const [host, setHost] = useState<StudioRemoteHost | null>(null);
+  // Live reachability and installed tools; null while checking (an SSH round trip can take seconds).
+  const [status, setStatus] = useState<StudioRemoteStatus | null>(null);
+  // The agent whose launch command is being requested; blocks duplicate launches.
+  const [launching, setLaunching] = useState<string | null>(null);
+  // The session shown in the full-screen terminal.
+  const [session, setSession] = useState<StudioRemoteLaunch | null>(null);
+  // Launch failures stay visible until the next attempt.
+  const [error, setError] = useState('');
+
+  const check = useCallback(async () => {
+    setStatus(null);
+    const next = await api.studio.remote.status(project.remoteHost).then(readApiJson<StudioRemoteStatus>)
+      .catch((reason: unknown) => ({ name: project.remoteHost, online: false, latencyMs: null, checkedAt: new Date().toISOString(), tools: { claude: false, codex: false, tmux: false }, error: reason instanceof Error ? reason.message : '无法检查主机' }));
+    setStatus(next);
+  }, [project.remoteHost]);
+  useEffect(() => {
+    void api.studio.remote.hosts().then(readApiJson<StudioRemoteHost[]>).then(hosts => setHost(hosts.find(item => item.name === project.remoteHost) ?? null)).catch(() => setHost(null));
+    void check();
+  }, [project.remoteHost, check]);
+
+  async function launch(agent: 'claude' | 'codex' | 'shell') {
+    setLaunching(agent); setError('');
+    try { setSession(await readApiJson<StudioRemoteLaunch>(await api.studio.projects.launchRemote(project.id, agent))); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : '无法打开远程会话'); }
+    finally { setLaunching(null); }
+  }
+  const label = host?.label ?? project.remoteHost;
+  const missing = status?.online ? REMOTE_AGENTS.filter(agent => agent.tool && !status.tools[agent.tool]).map(agent => agent.name) : [];
+
+  return <div className="studio-stagger">
+    <section className="ios-section first">
+      <div className="ios-section-header"><h2>在 {label} 上开始</h2><span className="caption mono">{project.remoteDir || '~'}</span></div>
+      <div className="ios-list">
+        <div className="ios-row remote-host-row">
+          <span className="home-icon small tone-graphite" aria-hidden="true"><Server size={17} strokeWidth={1.6} /></span>
+          <span className="ios-row-body"><strong>{label}</strong><small className="mono">{host?.target ?? '未在服务器上配置这台主机'}</small></span>
+          <span className="remote-host-status" aria-live="polite">
+            {status === null ? <StudioSpinner size={16} label="正在检查" />
+              : <><span className={`status-dot ${status.online ? 'good' : ''}`} aria-hidden="true" />{status.online ? `在线 · ${status.latencyMs ?? '–'} ms` : '离线'}</>}
+          </span>
+          <button type="button" className="icon-button" aria-label="重新检查" title="重新检查" disabled={status === null} onClick={() => void check()}><RefreshCw size={18} aria-hidden="true" /></button>
+        </div>
+      </div>
+      {status && !status.online && status.error && <p className="studio-feedback error">{status.error}</p>}
+      <div className="agent-grid remote-agent-grid">
+        {REMOTE_AGENTS.map(agent => {
+          const unavailable = !status?.online || (agent.tool !== null && !status.tools[agent.tool]);
+          return <button type="button" key={agent.id} className="agent-card ios-press" disabled={launching !== null || unavailable} onClick={() => void launch(agent.id)}>
+            <span className={`home-icon tone-${agent.tone} agent-mark`} aria-hidden="true">{launching === agent.id ? <StudioSpinner size={22} /> : agent.mark || <SquareTerminal size={22} strokeWidth={1.6} />}</span>
+            <span className="agent-card-text"><strong>{agent.name}</strong><small>{agent.tool && status?.online && !status.tools[agent.tool] ? '未安装' : `运行在 ${label}`}</small></span>
+          </button>;
+        })}
+      </div>
+      {error && <p className="studio-feedback error" role="alert">{error}</p>}
+      <p className="ios-section-footer">
+        通过 Tailscale 与 SSH 连接；每个会话运行在远程主机的 tmux 里，关掉页面不会中断，再次打开会接回同一个会话。
+        {missing.length > 0 && ` 这台主机还没有安装 ${missing.join('、')}${status?.tools.tmux ? '' : '，也没有 tmux（会话无法在断开后保留）'}。`}
+      </p>
+    </section>
+    {session && <Suspense fallback={<div className="studio-layer terminal-loading"><StudioSpinner size={28} label="正在打开终端" /></div>}>
+      <StudioRemoteTerminal launch={session} hostLabel={label} onClose={() => setSession(null)} />
+    </Suspense>}
+  </div>;
+}
+
+/** Used by StudioPage's project app to start an IDE agent inside the project directory (or on its remote host) or open its DeepSeek chat. */
 export function StudioProjectAgents({ project, onOpenChat }: { project: HubProject; onOpenChat: () => void }) {
+  if (project.remoteHost) return <RemoteAgents project={project} />;
+  return <LocalAgents project={project} onOpenChat={onOpenChat} />;
+}
+
+function LocalAgents({ project, onOpenChat }: { project: HubProject; onOpenChat: () => void }) {
   const navigate = useNavigate();
   // Only existing sessions returned for this project's directory are displayed.
   const [sessions, setSessions] = useState<HubSession[]>([]);

@@ -1,3 +1,4 @@
+import { Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import { I18nextProvider } from 'react-i18next';
 
@@ -7,9 +8,11 @@ import { AuthProvider, ProtectedRoute } from '@/modules/auth';
 import { TaskMasterProvider,TasksSettingsProvider } from '@/modules/task-master';
 import { WebSocketProvider } from '@/shared/context/WebSocketContext';
 import { PluginsProvider } from '@/modules/plugins';
-import { ProjectWorkspaceRoute } from '@/modules/project-workspace';
 import { i18n } from '@/modules/i18n';
 import { StudioPage } from '@/modules/studio';
+
+// The IDE (editor, terminal, chat) is large; the Studio home screen loads without it.
+const ProjectWorkspaceRoute = lazy(() => import('@/modules/project-workspace').then(module => ({ default: module.ProjectWorkspaceRoute })));
 
 const DEPLOYMENT_ASSET_DIRECTORIES = new Set(['assets', 'static', 'icons', 'images']);
 
@@ -106,6 +109,12 @@ function detectRouterBasename() {
   return detectedBasename;
 }
 
+function WorkspaceLoading() {
+  return <div className="flex h-dvh items-center justify-center bg-background" role="status" aria-label="正在打开开发工具">
+    <span className="h-6 w-6 animate-spin rounded-full border-2 border-muted-foreground/25 border-t-muted-foreground" />
+  </div>;
+}
+
 /** Rendered by main.tsx; mounts the shared providers, the auth gate and the project workspace routes. */
 export default function App() {
   const routerBasename = detectRouterBasename();
@@ -125,8 +134,8 @@ export default function App() {
                       <Route path="/" element={<StudioPage />} />
                       <Route path="/projects/:id" element={<StudioPage />} />
                       <Route path="/apps/:app" element={<StudioPage />} />
-                      <Route path="/workspace" element={<ProjectWorkspaceRoute />} />
-                      <Route path="/session/:sessionId" element={<ProjectWorkspaceRoute />} />
+                      <Route path="/workspace" element={<Suspense fallback={<WorkspaceLoading />}><ProjectWorkspaceRoute /></Suspense>} />
+                      <Route path="/session/:sessionId" element={<Suspense fallback={<WorkspaceLoading />}><ProjectWorkspaceRoute /></Suspense>} />
                     </Routes>
                   </Router>
                 </ProtectedRoute>
