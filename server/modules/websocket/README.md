@@ -149,9 +149,11 @@ flowchart TD
 
 The shell handler manages persistent PTY sessions keyed by:
 
-`<projectPath>_<sessionIdOrDefault>[_cmd_<hash>]`
+`<projectPath>_<sessionIdOrDefault>[_cmd_<hash> | _login-shell]`
 
-This enables reconnect behavior and isolates command-specific plain-shell sessions.
+This enables reconnect behavior and isolates command-specific plain-shell sessions. A plain shell
+with no command (the studio's local terminal) is keyed `_login-shell`, so it never reattaches to a
+sessionless agent PTY in the same directory.
 
 ### Shell Lifecycle
 
@@ -188,7 +190,9 @@ For login-like commands, existing keyed PTY session is killed and recreated.
 3. Validation:
 Path must exist and be a directory; `sessionId` must match safe pattern.
 4. Command build:
-Provider-specific command construction with resume semantics.
+Provider-specific command construction with resume semantics. A command runs through `bash -c`
+(PowerShell `-Command` on Windows); a plain shell with no command starts an interactive login shell
+(`bash -l`, or `powershell.exe -NoLogo`) in the project directory.
 5. PTY output buffering:
 Stores up to 5000 chunks for replay on reconnect.
 6. URL detection:

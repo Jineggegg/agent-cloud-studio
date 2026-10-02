@@ -1,25 +1,31 @@
-import { useEffect, useRef, useState } from 'react';
-import type { MouseEvent, PointerEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { MouseEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { createPortal } from 'react-dom';
-import { Check, LogOut, Minus, Moon, Plus, RefreshCw, SlidersHorizontal, Sun } from 'lucide-react';
+import { Check, LayoutGrid, LogOut, Minus, Moon, Plus, RefreshCw, SlidersHorizontal, Sun } from 'lucide-react';
+import { DndContext } from '@dnd-kit/core';
+import { SortableContext } from '@dnd-kit/sortable';
 
 import { useTheme } from '@/shared/context/ThemeContext';
 import type { StudioHomeTile, StudioSnr } from '@/shared/types';
 import { StudioFluidBackground } from '@/modules/studio/StudioFluidBackground';
 import { StudioTileIcon } from '@/modules/studio/StudioTileIcon';
 import { StudioWidgets } from '@/modules/studio/StudioWidgets';
+import { useHomeSortableItem, useHomeSortableList } from '@/modules/studio/hooks/useHomeSortable';
+import '@/modules/studio/studio-home.css';
 
-// Long-pressing a tile for this long enters edit mode, like the iPadOS home screen.
-const LONG_PRESS_MS = 520;
-// Per-device layout preferences (hidden tiles, labels, icon size).
+// Per-device layout preferences (hidden tiles, labels, icon size, icon order).
 const LAYOUT_STORAGE_KEY = 'studio-home-layout-v1';
 // Integrations that are planned but not built; listed honestly as not connected.
 const PLANNED = [
   { name: 'Outlook 邮件', caption: '需要注册 Microsoft OAuth 应用', tone: 'rose', glyph: 'mail' },
 ];
+// Taps on these keep edit mode; a tap anywhere else (the wallpaper, gaps between icons) ends it, as on iPadOS.
+// `.studio-layer` covers the sheets, whose clicks bubble here through their React portals.
+const KEEPS_EDITING = '.home-tile-slot, .widget-slot, button, a, input, label, .home-edit-bar, .studio-layer';
 
-type Layout = { hidden: string[]; labels: boolean; large: boolean };
+// `order` is absent until the icons are first rearranged on this device; layouts saved before it existed still load.
+type Layout = { hidden: string[]; labels: boolean; large: boolean; order?: string[] };
 const DEFAULT_LAYOUT: Layout = { hidden: [], labels: true, large: false };
 
 // Switch theme with a circular reveal from the button, like Super Professor; instant where View Transitions are missing.
@@ -51,11 +57,55 @@ function readLayout(): Layout {
       hidden: Array.isArray(saved.hidden) ? saved.hidden.filter(id => typeof id === 'string') : [],
       labels: saved.labels !== false,
       large: saved.large === true,
+      ...(Array.isArray(saved.order) ? { order: saved.order.filter(id => typeof id === 'string') } : {}),
     };
   } catch { return DEFAULT_LAYOUT; }
 }
 
-/** Used by StudioPage as the launcher: one large icon per project or app, plus + to create a project. */
+// Tiles this device has placed come first, in its order; new ones (a project created since) follow in their natural order.
+function orderTiles(tiles: StudioHomeTile[], order: string[] | undefined) {
+  if (!order?.length) return tiles;
+  const rank = new Map(order.map((id, index) => [id, index]));
+  return tiles.map((tile, index) => ({ tile, rank: rank.get(tile.id) ?? order.length + index }))
+    .sort((a, b) => a.rank - b.rank)
+    .map(entry => entry.tile);
+}
+
+const preventContextMenu = (event: MouseEvent) => event.preventDefault();
+
+/** One sortable app icon; the slot moves (with its hide badge), the tile itself is what is pressed and dragged. */
+function SortableTile({ tile, index, editing, labels, iconSize, onActivate, onHide }: {
+  tile: StudioHomeTile; index: number; editing: boolean; labels: boolean; iconSize: number;
+  onActivate: (tile: StudioHomeTile, event: MouseEvent<HTMLElement>) => void;
+  onHide: () => void;
+}) {
+  const { attributes, isDragging, itemAttributes, listeners, setActivatorNodeRef, setNodeRef, style } = useHomeSortableItem(tile.id);
+  const label = `${tile.name}${tile.status ? `，${tile.status}` : ''}`;
+  const body = <>
+    <StudioTileIcon tone={tile.tone} glyph={tile.glyph} size={iconSize} />
+    <span className="home-label">{tile.name}</span>
+    {tile.status && <span className="home-status">{tile.status}</span>}
+  </>;
+  // Links and buttons are focusable already; edit mode only adds the sortable description for screen readers.
+  const shared = {
+    ref: setActivatorNodeRef,
+    className: 'home-tile', style: { animationDelay: `${index * 45}ms` }, title: labels ? undefined : tile.name, 'aria-label': label,
+    ...(editing ? { 'aria-roledescription': attributes['aria-roledescription'], 'aria-describedby': attributes['aria-describedby'] } : {}),
+    ...listeners,
+    onContextMenu: preventContextMenu,
+  };
+  return <div ref={setNodeRef} {...itemAttributes} style={style} className={`home-tile-slot ${isDragging ? 'is-lifted' : ''}`}>
+    {tile.href
+      ? <Link to={tile.href} {...shared} onClick={event => onActivate(tile, event)}>{body}</Link>
+      : <button type="button" {...shared} onClick={event => onActivate(tile, event)}>{body}</button>}
+    {editing && <button type="button" className="home-remove" aria-label={`从主屏幕隐藏 ${tile.name}`} onClick={onHide}><Minus size={14} strokeWidth={3} aria-hidden="true" /></button>}
+  </div>;
+}
+
+/**
+ * Used by StudioPage as the launcher: one large icon per project or app, plus + to create a project. A long press
+ * on any icon or widget enters edit mode (jiggling, drag to rearrange, hide), like the iPadOS home screen.
+ */
 export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreate, onRefresh, onSignOut, refreshing }: {
   tiles: StudioHomeTile[]; loading: boolean;
   // True while an app fully covers the home screen; the wallpaper animation pauses to save battery.
@@ -67,40 +117,46 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreat
   const { isDarkMode, setThemeMode } = useTheme();
   // Layout choices are per device so an iPad and a MacBook can arrange tiles differently.
   const [layout, setLayout] = useState<Layout>(readLayout);
-  // Edit mode wiggles tiles and exposes hide controls, as on the iPadOS home screen.
+  // Edit mode jiggles tiles and widgets, lets them be dragged and exposes hide controls, as on the iPadOS home screen.
   const [editing, setEditing] = useState(false);
   // The app library sheet lists hidden apps and planned integrations.
   const [libraryOpen, setLibraryOpen] = useState(false);
-  const pressTimer = useRef<number | null>(null);
-  const longPressed = useRef(false);
+  // The widget gallery, opened from the edit-mode toolbar (a toolbar button never shifts the grid mid-drag).
+  const [widgetGalleryOpen, setWidgetGalleryOpen] = useState(false);
 
   useEffect(() => {
     try { localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout)); } catch { /* Private mode keeps the layout for this visit only. */ }
   }, [layout]);
-  useEffect(() => () => { if (pressTimer.current) window.clearTimeout(pressTimer.current); }, []);
 
-  const visible = tiles.filter(tile => !layout.hidden.includes(tile.id));
+  const ordered = useMemo(() => orderTiles(tiles, layout.order), [tiles, layout.order]);
+  const visible = useMemo(() => ordered.filter(tile => !layout.hidden.includes(tile.id)), [ordered, layout.hidden]);
   const hidden = tiles.filter(tile => layout.hidden.includes(tile.id));
   const update = (patch: Partial<Layout>) => setLayout(previous => ({ ...previous, ...patch }));
 
-  const startPress = (event: PointerEvent) => {
-    // Only the primary pointer starts a long press; secondary buttons keep their own behaviour.
-    if (editing || event.button > 0) return;
-    longPressed.current = false;
-    pressTimer.current = window.setTimeout(() => { longPressed.current = true; setEditing(true); }, LONG_PRESS_MS);
-  };
-  const cancelPress = () => { if (pressTimer.current) window.clearTimeout(pressTimer.current); pressTimer.current = null; };
+  const visibleIds = useMemo(() => visible.map(tile => tile.id), [visible]);
+  const enterEdit = useCallback(() => setEditing(true), []);
+  const labelOf = useCallback((id: string) => tiles.find(tile => tile.id === id)?.name ?? id, [tiles]);
+  const reorder = useCallback((ids: string[]) => setLayout(previous => {
+    // Hidden tiles keep their place after the visible ones, so the saved order always covers every tile.
+    const placed = new Set(ids);
+    return { ...previous, order: [...ids, ...orderTiles(tiles, previous.order).map(tile => tile.id).filter(id => !placed.has(id))] };
+  }), [tiles]);
+  const { containerRef, glide, dndProps, sortableProps } = useHomeSortableList({ ids: visibleIds, editing, onEnterEdit: enterEdit, onReorder: reorder, labelOf });
+
   const activate = (tile: StudioHomeTile, event: MouseEvent<HTMLElement>) => {
-    // The click that ends a long press only enters edit mode; it must not also open the app.
-    if (longPressed.current || editing) { event.preventDefault(); longPressed.current = false; return; }
+    // In edit mode a tap never opens an app (the click that ends a long press is swallowed before it gets here).
+    if (editing) { event.preventDefault(); return; }
     if (tile.href) return;
     const icon = event.currentTarget.querySelector('.home-icon');
     onOpen(tile, icon ? icon.getBoundingClientRect() : null);
   };
+  const leaveEditOnEmptyTap = (event: MouseEvent<HTMLDivElement>) => {
+    if (editing && !(event.target as Element).closest(KEEPS_EDITING)) setEditing(false);
+  };
   const today = new Date();
   const iconSize = layout.large ? 52 : 40;
 
-  return <div className={`home-screen ${layout.large ? 'large-icons' : ''} ${layout.labels ? '' : 'no-labels'} ${editing ? 'editing' : ''}`}>
+  return <div className={`home-screen ${layout.large ? 'large-icons' : ''} ${layout.labels ? '' : 'no-labels'} ${editing ? 'editing' : ''}`} onClick={leaveEditOnEmptyTap}>
     <StudioFluidBackground paused={covered} />
     <header className="home-top">
       <div className="home-date">
@@ -109,7 +165,8 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreat
       </div>
       <div className="home-actions">
         {editing ? <>
-          <button type="button" className="glass-button" onClick={() => setLibraryOpen(true)}><Plus size={17} aria-hidden="true" />资源库</button>
+          <button type="button" className="glass-button home-action-compact" aria-label="添加小组件" title="添加小组件" onClick={() => setWidgetGalleryOpen(true)}><Plus size={17} aria-hidden="true" /><span className="studio-wide-only">小组件</span></button>
+          <button type="button" className="glass-button home-action-compact" aria-label="资源库" title="App 资源库" onClick={() => setLibraryOpen(true)}><LayoutGrid size={17} aria-hidden="true" /><span className="studio-wide-only">资源库</span></button>
           <button type="button" className="glass-button strong" onClick={() => setEditing(false)}><Check size={17} aria-hidden="true" />完成</button>
         </> : <>
           <button type="button" className="glass-icon theme-toggle" aria-label={isDarkMode ? '切换到浅色模式' : '切换到深色模式'} title={isDarkMode ? '浅色模式' : '深色模式'}
@@ -131,36 +188,24 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreat
       </label>
     </div>}
 
-    <StudioWidgets editing={editing} snr={snr} paused={covered} />
+    <StudioWidgets editing={editing} snr={snr} paused={covered} onEnterEdit={enterEdit}
+      galleryOpen={widgetGalleryOpen} onGalleryClose={() => setWidgetGalleryOpen(false)} />
 
-    <nav className="home-grid" aria-label="应用" aria-busy={loading}>
-      {visible.map((tile, index) => {
-        const label = `${tile.name}${tile.status ? `，${tile.status}` : ''}`;
-        const body = <>
-          <StudioTileIcon tone={tile.tone} glyph={tile.glyph} size={iconSize} />
-          <span className="home-label">{tile.name}</span>
-          {tile.status && <span className="home-status">{tile.status}</span>}
-        </>;
-        const shared = {
-          className: 'home-tile', style: { animationDelay: `${index * 45}ms` }, title: layout.labels ? undefined : tile.name, 'aria-label': label,
-          onPointerDown: startPress, onPointerUp: cancelPress, onPointerLeave: cancelPress, onPointerCancel: cancelPress,
-          onContextMenu: (event: MouseEvent) => event.preventDefault(),
-        };
-        return <div className="home-tile-slot" key={tile.id}>
-          {tile.href
-            ? <Link to={tile.href} {...shared} onClick={event => activate(tile, event)}>{body}</Link>
-            : <button type="button" {...shared} onClick={event => activate(tile, event)}>{body}</button>}
-          {editing && <button type="button" className="home-remove" aria-label={`从主屏幕隐藏 ${tile.name}`} onClick={() => update({ hidden: [...layout.hidden, tile.id] })}><Minus size={14} strokeWidth={3} aria-hidden="true" /></button>}
-        </div>;
-      })}
-      {loading && !visible.length && [0, 1, 2].map(index => <div className="home-tile-slot" key={`placeholder-${index}`} aria-hidden="true"><span className="home-tile placeholder"><span className="home-icon tone-ghost" /></span></div>)}
-      <div className="home-tile-slot">
-        <button type="button" className="home-tile add" style={{ animationDelay: `${visible.length * 45}ms` }} aria-label="新建项目" title={layout.labels ? undefined : '新建项目'} onClick={onCreate}>
-          <span className="home-icon tone-ghost" aria-hidden="true"><Plus size={layout.large ? 44 : 34} strokeWidth={1.4} /></span>
-          <span className="home-label">新建</span>
-        </button>
-      </div>
-    </nav>
+    <DndContext {...dndProps}>
+      <nav ref={containerRef} className="home-grid" aria-label="应用" aria-busy={loading}>
+        <SortableContext {...sortableProps}>
+          {visible.map((tile, index) => <SortableTile key={tile.id} tile={tile} index={index} editing={editing} labels={layout.labels} iconSize={iconSize}
+            onActivate={activate} onHide={() => glide(() => update({ hidden: [...layout.hidden, tile.id] }))} />)}
+        </SortableContext>
+        {loading && !visible.length && [0, 1, 2].map(index => <div className="home-tile-slot" key={`placeholder-${index}`} aria-hidden="true"><span className="home-tile placeholder"><span className="home-icon tone-ghost" /></span></div>)}
+        <div className="home-tile-slot">
+          <button type="button" className="home-tile add" style={{ animationDelay: `${visible.length * 45}ms` }} aria-label="新建项目" title={layout.labels ? undefined : '新建项目'} onClick={onCreate}>
+            <span className="home-icon tone-ghost" aria-hidden="true"><Plus size={layout.large ? 44 : 34} strokeWidth={1.4} /></span>
+            <span className="home-label">新建</span>
+          </button>
+        </div>
+      </nav>
+    </DndContext>
 
     {libraryOpen && createPortal(<div className="studio-layer" onKeyDown={event => { if (event.key === 'Escape') setLibraryOpen(false); }}>
       <div className="sheet-scrim" aria-hidden="true" onClick={() => setLibraryOpen(false)} />

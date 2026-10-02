@@ -21,7 +21,7 @@ type StandaloneShellProps = {
   minimal?: boolean;
 };
 
-/** This module's only public export: used by the project-workspace module for its shell tab, by provider-auth to run an interactive login command, and by the studio module for remote (ssh + tmux) agent sessions. */
+/** This module's only public export: used by the project-workspace module for its shell tab, by provider-auth to run an interactive login command, and by the studio module for remote (ssh + tmux) agent sessions and the owner's local shell in a project directory. */
 export default function StandaloneShell({
   project = null,
   session = null,

@@ -1,12 +1,17 @@
-import { useCallback, useEffect, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
+import type { MouseEvent, ReactNode, SyntheticEvent } from 'react';
 import NumberFlow from '@number-flow/react';
 import { AnimatePresence, m } from 'motion/react';
-import { ArrowDownRight, ArrowUpRight, ChevronLeft, ChevronRight, Maximize2, Minimize2, Minus, Plus } from 'lucide-react';
+import { ArrowDownRight, ArrowUpRight, Maximize2, Minimize2, Minus } from 'lucide-react';
 import { createPortal } from 'react-dom';
+import { DndContext } from '@dnd-kit/core';
+import { SortableContext } from '@dnd-kit/sortable';
 
 import { api, readApiJson } from '@/shared/api';
 import type { StudioQuotaSnapshot, StudioQuotaWindow, StudioSnr, T212Overview, T212Point } from '@/shared/types';
 import { StudioTileIcon } from '@/modules/studio/StudioTileIcon';
+import { useHomeSortableItem, useHomeSortableList } from '@/modules/studio/hooks/useHomeSortable';
+import '@/modules/studio/studio-home.css';
 
 type WidgetType = 'claude' | 'codex' | 'deepseek' | 'trading212' | 'snr';
 type WidgetSize = 'small' | 'medium';
@@ -29,6 +34,8 @@ const CATALOG: { type: WidgetType; name: string; caption: string; tone: string; 
 ];
 const QUOTA_REFRESH_MS = 60_000;
 const T212_REFRESH_MS = 5 * 60_000;
+// Enter and exit of a whole widget (added from the gallery or removed in edit mode).
+const PRESENCE_SPRING = { type: 'spring', stiffness: 260, damping: 26 } as const;
 
 function newWidgetId(type: WidgetType) {
   return `w-${type}-${typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
@@ -180,14 +187,58 @@ function SnrWidget({ snr }: { snr: StudioSnr | null }) {
   </>;
 }
 
-/** Used by StudioHomeScreen for the customizable widget row above the app icons. */
-export function StudioWidgets({ editing, snr, paused = false }: { editing: boolean; snr: StudioSnr | null; paused?: boolean }) {
+function nameOf(type: WidgetType) {
+  return CATALOG.find(entry => entry.type === type)?.name ?? type;
+}
+
+// Edit controls sit inside the sortable widget; pressing them must not start a drag of the widget.
+const stopDragStart = { onPointerDown: (event: SyntheticEvent) => event.stopPropagation(), onTouchStart: (event: SyntheticEvent) => event.stopPropagation() };
+const preventContextMenu = (event: MouseEvent) => event.preventDefault();
+
+/**
+ * One widget on the grid. The outer cell carries the enter/exit animation (and is what AnimatePresence pops
+ * out of the layout on removal, hence the forwarded ref); the inner card is the sortable item, so dnd-kit's
+ * transform, the jiggle and motion's scale each live on their own element and never overwrite one another.
+ */
+const SortableWidget = forwardRef<HTMLDivElement, {
+  widget: WidgetConfig; name: string; editing: boolean; children: ReactNode;
+  onRemove: () => void; onResize: () => void;
+}>(function SortableWidget({ widget, name, editing, children, onRemove, onResize }, ref) {
+  const { attributes, isDragging, itemAttributes, listeners, setActivatorNodeRef, setNodeRef, style } = useHomeSortableItem(widget.id);
+  const setCardRef = useCallback((node: HTMLElement | null) => { setNodeRef(node); setActivatorNodeRef(node); }, [setNodeRef, setActivatorNodeRef]);
+  // Focusable and described as sortable only in edit mode, where the keyboard can move it.
+  const editAttributes = editing ? { tabIndex: 0, 'aria-roledescription': attributes['aria-roledescription'], 'aria-describedby': attributes['aria-describedby'] } : {};
+  return <m.div ref={ref} className={`widget-slot widget-slot-${widget.size}`}
+    initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.85 }} transition={PRESENCE_SPRING}>
+    <article ref={setCardRef} {...itemAttributes} {...editAttributes} {...listeners} style={style} onContextMenu={preventContextMenu}
+      className={`widget widget-${widget.size} ${isDragging ? 'is-lifted' : ''}`} aria-label={name}>
+      {children}
+      {editing && <div className="widget-edit" role="group" aria-label={`调整 ${name}`} {...stopDragStart}>
+        <button type="button" className="home-remove widget-remove" aria-label={`移除 ${name}`} onClick={onRemove}><Minus size={14} strokeWidth={3} aria-hidden="true" /></button>
+        <div className="widget-edit-bar">
+          <button type="button" aria-label={widget.size === 'small' ? `放大 ${name}` : `缩小 ${name}`} onClick={onResize}>
+            {widget.size === 'small' ? <Maximize2 size={14} aria-hidden="true" /> : <Minimize2 size={14} aria-hidden="true" />}</button>
+        </div>
+      </div>}
+    </article>
+  </m.div>;
+});
+
+/**
+ * Used by StudioHomeScreen for the customizable widget row above the app icons. Long-pressing a widget lifts it
+ * and asks the home screen to enter edit mode; in edit mode widgets jiggle and drag to a new place.
+ */
+export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, galleryOpen, onGalleryClose }: {
+  editing: boolean; snr: StudioSnr | null; paused?: boolean;
+  // Called when a long press lifts a widget outside edit mode.
+  onEnterEdit: () => void;
+  // The widget gallery is opened from the home screen's edit-mode toolbar, as on iPadOS.
+  galleryOpen: boolean; onGalleryClose: () => void;
+}) {
   // The widgets this device shows, in order, with their sizes.
   const [widgets, setWidgets] = useState<WidgetConfig[]>(readWidgets);
   // Quota snapshots for Claude / Codex / DeepSeek; null until the first response.
   const [quota, setQuota] = useState<StudioQuotaSnapshot[] | null>(null);
-  // The widget gallery sheet opened from edit mode.
-  const [gallery, setGallery] = useState(false);
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(widgets)); } catch { /* Private mode keeps the layout for this visit only. */ }
@@ -208,64 +259,63 @@ export function StudioWidgets({ editing, snr, paused = false }: { editing: boole
     return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', tick); };
   }, [needsQuota, paused, loadQuota]);
 
+  const ids = useMemo(() => widgets.map(widget => widget.id), [widgets]);
+  const labelOf = useCallback((id: string) => {
+    const widget = widgets.find(item => item.id === id);
+    return widget ? nameOf(widget.type) : id;
+  }, [widgets]);
+  const reorder = useCallback((order: string[]) => setWidgets(previous => {
+    const byId = new Map(previous.map(widget => [widget.id, widget]));
+    const next = order.flatMap(id => byId.get(id) ?? []);
+    // A stale order (a widget was removed mid-drag) keeps the current layout rather than losing widgets.
+    return next.length === previous.length ? next : previous;
+  }), []);
+  const { containerRef, glide, dndProps, sortableProps } = useHomeSortableList({ ids, editing, onEnterEdit, onReorder: reorder, labelOf });
+
   const find = (provider: StudioQuotaSnapshot['provider']) => quota === null ? undefined
     : quota.find(item => item.provider === provider) ?? { provider, available: false, windows: [], balances: [], source: 'unavailable', observedAt: null, stale: false, note: '额度服务暂不可用' };
-  const move = (index: number, step: number) => setWidgets(previous => {
-    const next = [...previous];
-    const target = index + step;
-    if (target < 0 || target >= next.length) return previous;
-    [next[index], next[target]] = [next[target], next[index]];
-    return next;
-  });
   const add = (type: WidgetType, size: WidgetSize) => {
     setWidgets(previous => [...previous, { id: newWidgetId(type), type, size }]);
-    setGallery(false);
+    onGalleryClose();
   };
+  // Removing or resizing reflows the grid; the neighbours glide into their new places.
+  const remove = (id: string) => glide(() => setWidgets(previous => previous.filter(item => item.id !== id)));
+  const resize = (id: string) => glide(() => setWidgets(previous => previous.map(item => item.id === id ? { ...item, size: item.size === 'small' ? 'medium' : 'small' } : item)));
 
-  if (!widgets.length && !editing) return null;
-  return <section className={`widget-grid ${editing ? 'editing' : ''}`} aria-label="小组件">
-    <AnimatePresence initial={false}>
-      {widgets.map((widget, index) => {
-        const entry = CATALOG.find(item => item.type === widget.type)!;
-        return <m.article key={widget.id} layout className={`widget widget-${widget.size}`} aria-label={entry.name}
-          initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.85 }}
-          transition={{ type: 'spring', stiffness: 260, damping: 26 }}>
-          {widget.type === 'claude' && <QuotaWidget snapshot={find('claude')} size={widget.size} title="Claude Code" tone="clay" glyph="sparkles" />}
-          {widget.type === 'codex' && <QuotaWidget snapshot={find('codex')} size={widget.size} title="Codex" tone="graphite" glyph="terminal" />}
-          {widget.type === 'deepseek' && <DeepSeekWidget snapshot={find('deepseek')} />}
-          {widget.type === 'trading212' && <TradingWidget size={widget.size} />}
-          {widget.type === 'snr' && <SnrWidget snr={snr} />}
-          {editing && <div className="widget-edit" role="group" aria-label={`调整 ${entry.name}`}>
-            <button type="button" className="home-remove widget-remove" aria-label={`移除 ${entry.name}`} onClick={() => setWidgets(previous => previous.filter(item => item.id !== widget.id))}><Minus size={14} strokeWidth={3} aria-hidden="true" /></button>
-            <div className="widget-edit-bar">
-              <button type="button" aria-label="前移" disabled={index === 0} onClick={() => move(index, -1)}><ChevronLeft size={16} aria-hidden="true" /></button>
-              <button type="button" aria-label={widget.size === 'small' ? '放大' : '缩小'} onClick={() => setWidgets(previous => previous.map(item => item.id === widget.id ? { ...item, size: item.size === 'small' ? 'medium' : 'small' } : item))}>
-                {widget.size === 'small' ? <Maximize2 size={14} aria-hidden="true" /> : <Minimize2 size={14} aria-hidden="true" />}</button>
-              <button type="button" aria-label="后移" disabled={index === widgets.length - 1} onClick={() => move(index, 1)}><ChevronRight size={16} aria-hidden="true" /></button>
-            </div>
-          </div>}
-        </m.article>;
-      })}
-    </AnimatePresence>
-    {editing && <m.button layout type="button" className="widget widget-small widget-add" onClick={() => setGallery(true)} aria-label="添加小组件">
-      <Plus size={26} strokeWidth={1.5} aria-hidden="true" /><span>添加小组件</span>
-    </m.button>}
-
-    {gallery && createPortal(<div className="studio-layer" onKeyDown={event => { if (event.key === 'Escape') setGallery(false); }}>
-      <div className="sheet-scrim" aria-hidden="true" onClick={() => setGallery(false)} />
-      <div className="library-sheet" role="dialog" aria-modal="true" aria-labelledby="studio-widget-gallery">
-        <div className="library-grabber" aria-hidden="true" />
-        <header><h2 id="studio-widget-gallery">小组件</h2><button type="button" className="ios-button tinted" autoFocus onClick={() => setGallery(false)}>完成</button></header>
-        <div className="ios-list">
-          {CATALOG.map(entry => <div className="ios-row" key={entry.type}>
-            <StudioTileIcon tone={entry.tone} glyph={entry.glyph} size={17} variant="small" />
-            <span className="ios-row-body"><strong>{entry.name}</strong><small>{entry.caption}</small></span>
-            <button type="button" className="ios-button tinted" onClick={() => add(entry.type, 'small')}>小</button>
-            <button type="button" className="ios-button tinted" onClick={() => add(entry.type, 'medium')}>中</button>
-          </div>)}
-        </div>
-        <p className="ios-section-footer">额度来自各模型的官方接口或快照；标注「可能过期」时表示最近没有新数据。</p>
+  const gallery = galleryOpen && createPortal(<div className="studio-layer" onKeyDown={event => { if (event.key === 'Escape') onGalleryClose(); }}>
+    <div className="sheet-scrim" aria-hidden="true" onClick={onGalleryClose} />
+    <div className="library-sheet" role="dialog" aria-modal="true" aria-labelledby="studio-widget-gallery">
+      <div className="library-grabber" aria-hidden="true" />
+      <header><h2 id="studio-widget-gallery">小组件</h2><button type="button" className="ios-button tinted" autoFocus onClick={onGalleryClose}>完成</button></header>
+      <div className="ios-list">
+        {CATALOG.map(entry => <div className="ios-row" key={entry.type}>
+          <StudioTileIcon tone={entry.tone} glyph={entry.glyph} size={17} variant="small" />
+          <span className="ios-row-body"><strong>{entry.name}</strong><small>{entry.caption}</small></span>
+          <button type="button" className="ios-button tinted" onClick={() => add(entry.type, 'small')}>小</button>
+          <button type="button" className="ios-button tinted" onClick={() => add(entry.type, 'medium')}>中</button>
+        </div>)}
       </div>
-    </div>, document.body)}
-  </section>;
+      <p className="ios-section-footer">额度来自各模型的官方接口或快照；标注「可能过期」时表示最近没有新数据。</p>
+    </div>
+  </div>, document.body);
+
+  if (!widgets.length) return gallery || null;
+  return <DndContext {...dndProps}>
+    <section ref={containerRef} className={`widget-grid ${editing ? 'editing' : ''}`} aria-label="小组件">
+      <SortableContext {...sortableProps}>
+        {/* popLayout takes a removed widget out of the flow at once, so its neighbours can glide into the gap. */}
+        <AnimatePresence initial={false} mode="popLayout">
+          {widgets.map(widget => <SortableWidget key={widget.id} widget={widget} name={nameOf(widget.type)} editing={editing}
+            onRemove={() => remove(widget.id)} onResize={() => resize(widget.id)}>
+            {widget.type === 'claude' && <QuotaWidget snapshot={find('claude')} size={widget.size} title="Claude Code" tone="clay" glyph="sparkles" />}
+            {widget.type === 'codex' && <QuotaWidget snapshot={find('codex')} size={widget.size} title="Codex" tone="graphite" glyph="terminal" />}
+            {widget.type === 'deepseek' && <DeepSeekWidget snapshot={find('deepseek')} />}
+            {widget.type === 'trading212' && <TradingWidget size={widget.size} />}
+            {widget.type === 'snr' && <SnrWidget snr={snr} />}
+          </SortableWidget>)}
+        </AnimatePresence>
+      </SortableContext>
+    </section>
+    {gallery}
+  </DndContext>;
 }

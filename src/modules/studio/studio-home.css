@@ -1,0 +1,88 @@
+/*
+ * Home screen editing, the iPadOS way: a long press lifts an icon or widget, edit mode jiggles, items drag to
+ * a new place while their neighbours glide aside, and a drop settles with a spring.
+ *
+ * Every effect here uses the individual `rotate`, `translate` and `scale` properties, never `transform`:
+ * dnd-kit moves sortable items with an inline `transform` and the drop glide animates `transform`, and the
+ * individual properties compose with it instead of overwriting it.
+ */
+
+/* Edit mode leaves room for the floating appearance bar at the bottom. */
+.home-screen.editing { padding-bottom: calc(112px + env(safe-area-inset-bottom)); }
+
+/* Sortable items: no text selection, callout or link preview during the long press; taps stay instant. */
+.home-tile-slot[data-sort-id], .widget-slot > .widget {
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; touch-action: manipulation;
+}
+
+/* Widget cells: the cell spans the grid columns and fades in and out, the card inside is what moves. */
+.widget-grid { position: relative; }
+.widget-slot { position: relative; display: flex; min-width: 0; }
+.widget-slot-medium { grid-column: span 2; }
+.widget-slot > .widget { flex: 1; }
+
+/* ---------- Jiggle ---------- */
+.home-tile-slot[data-sort-id] { --jiggle-angle: 1.5deg; }
+.widget-slot > .widget { --jiggle-angle: .9deg; }
+/* A wide widget swings further at its corners for the same angle, so it turns less. */
+.widget-slot-medium > .widget { --jiggle-angle: .55deg; }
+@keyframes home-jiggle {
+  from { rotate: calc(var(--jiggle-angle) * -1); translate: 0 -.4px; }
+  to { rotate: var(--jiggle-angle); translate: 0 .4px; }
+}
+/* Each item gets its own phase and speed (inline custom properties), so the grid never swings in lockstep. */
+.home-screen.editing .home-tile-slot[data-sort-id]:not(.is-lifted),
+.widget-grid.editing .widget-slot > .widget:not(.is-lifted) {
+  animation: home-jiggle var(--jiggle-duration, 260ms) ease-in-out var(--jiggle-delay, 0ms) infinite alternate;
+}
+
+/* ---------- Lift ---------- */
+/* The lifted item rides above its neighbours, grows a little and casts a deeper shadow; it stops jiggling. */
+.home-tile-slot[data-sort-id].is-lifted { z-index: 10; scale: 1.12; }
+.home-tile-slot[data-sort-id] .home-icon {
+  transition: transform var(--dur-slow) var(--ease-spring), filter var(--dur-fast) ease, box-shadow var(--dur-base) var(--ease-out);
+}
+.home-screen .home-tile-slot[data-sort-id].is-lifted .home-icon {
+  transform: none; filter: none;
+  box-shadow: 0 2px 4px rgba(30, 25, 15, .1), 0 22px 40px -10px rgba(30, 25, 15, .45), inset 0 1px 0 rgba(255, 255, 255, .32);
+}
+.dark .home-screen .home-tile-slot[data-sort-id].is-lifted .home-icon {
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .4), 0 24px 44px -10px rgba(0, 0, 0, .7), inset 0 1px 0 rgba(255, 255, 255, .2);
+}
+/* In edit mode a press dims nothing and never shrinks the icon: it is the start of a drag. */
+.home-screen.editing .home-tile-slot[data-sort-id] .home-tile:active .home-icon { transform: none; filter: none; }
+/* Labels, badges and edit controls step aside while their item is carried, as on iPadOS. */
+.home-tile-slot[data-sort-id] :is(.home-label, .home-status) { transition: opacity var(--dur-fast) ease; }
+.home-tile-slot[data-sort-id].is-lifted :is(.home-label, .home-status) { opacity: 0; }
+.is-lifted .home-remove, .is-lifted .widget-edit-bar { opacity: 0; scale: .6; transition: opacity var(--dur-fast) ease, scale var(--dur-fast) ease; }
+.home-remove, .widget-edit-bar { transition: opacity var(--dur-fast) ease, scale var(--dur-base) var(--ease-spring); }
+
+.widget-slot > .widget.is-lifted { z-index: 10; scale: 1.035; box-shadow: var(--ios-shadow-float); }
+
+@media (hover: hover) {
+  .home-screen .home-tile-slot[data-sort-id].is-lifted .home-tile:hover .home-icon { transform: none; }
+}
+
+/* ---------- Edit-mode toolbar ---------- */
+.home-actions .glass-button { white-space: nowrap; }
+@media (max-width: 699px) {
+  /* On phones the labels hide (studio-wide-only) and these become circles like the regular toolbar icons. */
+  .home-actions .glass-button.home-action-compact { min-width: 40px; width: 40px; height: 40px; padding: 0; border-radius: 20px; }
+}
+
+/* ---------- Floating appearance bar (edit mode) ---------- */
+/* Fixed, so entering edit mode never pushes the grid down under a finger that is already dragging. */
+.home-screen .home-edit-bar {
+  /* Inset on both sides with auto margins, so fit-content measures the whole width and the pill stays on one line. */
+  position: fixed; z-index: 30; left: 16px; right: 16px; bottom: calc(20px + env(safe-area-inset-bottom)); margin: 0 auto;
+  padding: 6px 22px; box-shadow: var(--ios-shadow-float);
+  -webkit-backdrop-filter: saturate(170%) blur(24px); backdrop-filter: saturate(170%) blur(24px);
+  background: var(--ios-glass-strong);
+  animation: home-edit-bar-in var(--dur-slow) var(--ease-spring) backwards;
+}
+@keyframes home-edit-bar-in { from { opacity: 0; transform: translateY(24px) scale(.96); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .home-screen.editing .home-tile-slot[data-sort-id], .widget-grid.editing .widget-slot > .widget { animation: none !important; }
+  .home-tile-slot[data-sort-id].is-lifted, .widget-slot > .widget.is-lifted { scale: 1.02; }
+}

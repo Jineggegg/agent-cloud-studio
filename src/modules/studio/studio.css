@@ -249,10 +249,7 @@
 .home-tile:not(.add):active .home-icon { transform: scale(.9); filter: brightness(.86); transition-duration: var(--dur-press); }
 @media (hover: hover) { .home-tile:hover .home-icon { transform: translateY(-3px); } }
 
-/* Edit mode: icons wiggle and expose a hide badge. */
-.editing .home-tile:not(.add) .home-icon { animation: icon-wiggle .32s ease-in-out infinite alternate; }
-.editing .home-tile-slot:nth-child(even) .home-icon { animation-delay: -.16s; animation-duration: .36s; }
-@keyframes icon-wiggle { from { transform: rotate(-1.8deg); } to { transform: rotate(1.8deg); } }
+/* Edit mode: icons expose a hide badge (the jiggle, lift and drop live in studio-home.css). */
 .home-remove {
   position: absolute; top: -4px; left: calc(50% - var(--icon) / 2 - 8px); z-index: 2;
   display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%;
@@ -841,7 +838,6 @@ html.theme-revealing::view-transition-new(root) { z-index: 2; }
   -webkit-backdrop-filter: saturate(170%) blur(28px); backdrop-filter: saturate(170%) blur(28px);
   border: .5px solid var(--ios-glass-edge); box-shadow: var(--ios-shadow);
 }
-.widget-medium { grid-column: span 2; }
 .widget-head { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 13px; font-weight: 600; color: var(--ios-label-2); }
 .widget-head > span:not(.home-icon, .widget-source) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .widget-head .home-icon.small { --icon: 22px; border-radius: 6px; }
@@ -889,10 +885,7 @@ html.theme-revealing::view-transition-new(root) { z-index: 2; }
   animation: studio-shimmer 1.5s ease-in-out infinite;
 }
 
-/* Edit mode: widgets wiggle (rotate, so motion's layout transforms still apply) and expose controls. */
-.widget-grid.editing .widget:not(.widget-add) { animation: widget-wiggle .34s ease-in-out infinite alternate; }
-.widget-grid.editing .widget:nth-child(even):not(.widget-add) { animation-delay: -.17s; animation-duration: .38s; }
-@keyframes widget-wiggle { from { rotate: -.7deg; } to { rotate: .7deg; } }
+/* Edit mode: widgets expose a remove badge and a resize control (the jiggle lives in studio-home.css). */
 .widget .widget-remove { top: -8px; left: -8px; }
 .widget-edit-bar {
   position: absolute; right: 8px; bottom: 8px; display: flex; gap: 2px; padding: 2px; border-radius: 999px;
@@ -901,14 +894,6 @@ html.theme-revealing::view-transition-new(root) { z-index: 2; }
 }
 .widget-edit-bar button { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; color: var(--ios-label); transition: transform var(--dur-slow) var(--ease-spring), background-color var(--dur-fast) ease; }
 .widget-edit-bar button:not(:disabled):active { transform: scale(.88); background: var(--ios-fill-pressed); transition-duration: var(--dur-press); }
-.widget-add {
-  align-items: center; justify-content: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ios-label-2);
-  background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; box-shadow: none;
-  border: 1.5px dashed color-mix(in srgb, var(--ios-label-2) 45%, transparent);
-  transition: background-color var(--dur-fast) ease, transform var(--dur-slow) var(--ease-spring);
-}
-.widget-add:active { transform: scale(.95); transition-duration: var(--dur-press); }
-@media (hover: hover) { .widget-add:hover { background: var(--ios-fill); } }
 .library-sheet .ios-row .ios-button + .ios-button { margin-left: -6px; }
 
 /* ---------- Website quick-browse ---------- */
@@ -954,7 +939,7 @@ html.dark [data-sonner-toaster] .studio-toast[data-type="success"] [data-icon] {
 }
 @media (prefers-reduced-motion: reduce) {
   .home-wallpaper-canvas { transition: none; }
-  .status-dot.good, .widget-grid.editing .widget { animation: none !important; }
+  .status-dot.good { animation: none !important; }
   .studio-spinner { animation-duration: 1.6s !important; animation-iteration-count: infinite !important; }
 }
 
