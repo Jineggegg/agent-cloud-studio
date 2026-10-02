@@ -1,16 +1,9 @@
-import { AppError } from '@/shared/utils.js';
+import { AppError } from '@/shared/index.js';
+import type { SessionDraftInput, SessionDraftRecord } from '@/shared/index.js';
 
 type GitConfig = {
   git_name: string | null;
   git_email: string | null;
-};
-
-/** One chat scope's unsent composer text and queued message. */
-type DraftRecord = {
-  scope: string;
-  text: string;
-  queuedMessage: unknown | null;
-  updatedAt: string;
 };
 
 type UserDependencies = {
@@ -25,8 +18,8 @@ type UserDependencies = {
     savePreferences(userId: number, updates: Record<string, unknown>): void;
   };
   drafts: {
-    getDrafts(userId: number): DraftRecord[];
-    saveDraft(userId: number, scope: string, draft: { text: string; queuedMessage: unknown | null }): void;
+    getDrafts(userId: number): SessionDraftRecord[];
+    saveDraft(userId: number, scope: string, draft: SessionDraftInput): void;
     deleteDraft(userId: number, scope: string): void;
   };
   readSystemGitConfig(): Promise<GitConfig>;
@@ -165,7 +158,7 @@ export function createUserService(dependencies: UserDependencies) {
 
     saveDraft(userId: number, scopeInput: unknown, body: unknown) {
       const scope = readDraftScope(scopeInput);
-      const payload = (body ?? {}) as { text?: unknown; queuedMessage?: unknown };
+      const payload = (body ?? {}) as { text?: unknown; queuedMessage?: unknown; recoveryOfRunId?: unknown };
       const text = typeof payload.text === 'string' ? payload.text : '';
 
       if (text.length > MAX_DRAFT_TEXT_LENGTH) {
@@ -175,10 +168,18 @@ export function createUserService(dependencies: UserDependencies) {
         });
       }
 
-      dependencies.drafts.saveDraft(userId, scope, {
-        text,
-        queuedMessage: payload.queuedMessage ?? null,
-      });
+      const draft: SessionDraftInput = { text, queuedMessage: payload.queuedMessage ?? null };
+      if (payload.recoveryOfRunId !== undefined) {
+        if (payload.recoveryOfRunId !== null && (typeof payload.recoveryOfRunId !== 'string'
+          || !payload.recoveryOfRunId.trim() || payload.recoveryOfRunId.length > MAX_KEY_LENGTH)) {
+          throw new AppError('A valid recovery task id or null is required', {
+            code: 'INVALID_DRAFT_RECOVERY', statusCode: 400,
+          });
+        }
+        draft.recoveryOfRunId = typeof payload.recoveryOfRunId === 'string'
+          ? payload.recoveryOfRunId.trim() : null;
+      }
+      dependencies.drafts.saveDraft(userId, scope, draft);
       return { success: true };
     },
 

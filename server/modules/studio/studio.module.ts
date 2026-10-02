@@ -30,6 +30,8 @@ import { createStudioNetworkService } from './network.service.js';
 import { createStudioNetworkRouter } from './network.routes.js';
 import { createQuotaService } from './quota/quota.service.js';
 import { createQuotaRouter } from './quota/quota.routes.js';
+import { createStudioRuntimeService } from './runtime.service.js';
+import { createStudioRuntimeRouter } from './runtime.routes.js';
 
 const linkChecker = createLinkChecker();
 
@@ -141,6 +143,7 @@ export function createStudioModule() {
     codexRateLimits: () => readCodexAccountRateLimits(),
   });
   const routes = createStudioRouter(service, gateway);
+  routes.use('/runtime', createStudioRuntimeRouter(createStudioRuntimeService()));
   routes.use('/projects', createProjectHubRouter(hub, mail));
   routes.use('/trading212', createTrading212Router(trading212));
   routes.use('/remote', createRemoteHostsRouter(remote));

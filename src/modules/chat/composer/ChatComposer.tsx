@@ -14,7 +14,7 @@ import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIc
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
-import type { QueuedDraft, ScheduledMessage, SlashCommand,SessionActivity,PendingPermissionRequest,PermissionMode,ProviderModelOption } from '@/shared/types';
+import type { ChatDeliveryState, QueuedDraft, ScheduledMessage, SlashCommand,SessionActivity,PendingPermissionRequest,PermissionMode,ProviderModelOption } from '@/shared/types';
 import {
   PromptInput,
   PromptInputHeader,
@@ -36,6 +36,7 @@ import { ScheduleMessagePopover } from '@/modules/chat/composer/ScheduleMessageP
 import { ScheduledMessageList } from '@/modules/chat/composer/ScheduledMessageList';
 import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
+import { ChatDeliveryStatus } from '@/modules/chat/composer/ChatDeliveryStatus';
 
 type MentionableFile = {
   name: string;
@@ -43,6 +44,14 @@ type MentionableFile = {
 };
 
 type ChatComposerProps = {
+  delivery?: ChatDeliveryState | null;
+  pendingContent?: string | null;
+  isConnected?: boolean;
+  onCheckDelivery?: () => void;
+  onRetryDelivery?: () => void;
+  recoveryBanner?: ReactNode;
+  isPreparingRecovery?: boolean;
+  onCancelPreparedRecovery?: () => void;
   pendingPermissionRequests: PendingPermissionRequest[];
   handlePermissionDecision: (
     requestIds: string | string[],
@@ -121,6 +130,14 @@ type ChatComposerProps = {
  * model/permission popovers that drive the next turn.
  */
 export default function ChatComposer({
+  delivery,
+  pendingContent,
+  isConnected,
+  onCheckDelivery,
+  onRetryDelivery,
+  recoveryBanner,
+  isPreparingRecovery,
+  onCancelPreparedRecovery,
   pendingPermissionRequests,
   handlePermissionDecision,
   handleGrantToolPermission,
@@ -275,6 +292,13 @@ export default function ChatComposer({
           <ActivityIndicator activity={activity} onAbort={onAbortSession} isInputFocused={isInputFocused} />
         </div>
       )}
+
+      {recoveryBanner}
+      {delivery && <ChatDeliveryStatus delivery={delivery} pendingContent={pendingContent} isConnected={isConnected} onCheck={() => onCheckDelivery?.()} onRetry={() => onRetryDelivery?.()} />}
+      {isPreparingRecovery && <div role="status" className="mx-auto mb-2 flex max-w-[54.25rem] flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-muted/40 px-3 py-2 text-sm">
+        <span>{t('recovery.prepared', { defaultValue: 'Continuation draft prepared. Review completed actions and edit it before sending.' })}</span>
+        <button type="button" onClick={onCancelPreparedRecovery} className="min-h-11 rounded-lg px-3 text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{t('recovery.cancelLink', { defaultValue: 'Remove recovery link' })}</button>
+      </div>}
 
       {pendingPermissionRequests.length > 0 && (
         <div className="mx-auto mb-3 max-w-[54.25rem]">
@@ -474,7 +498,7 @@ export default function ChatComposer({
 
           <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2">
             <ScheduleMessagePopover
-              disabled={!input.trim()}
+              disabled={!input.trim() || delivery?.state === 'sending' || delivery?.state === 'unknown' || Boolean(isPreparingRecovery)}
               onSchedule={onScheduleMessage}
             />
 
@@ -512,7 +536,9 @@ export default function ChatComposer({
                       : undefined
               }
               disabled={
-                isLoading
+                delivery?.state === 'sending' || delivery?.state === 'unknown' || (isPreparingRecovery && isLoading)
+                  ? true
+                  : isLoading
                   ? false
                   : isRecording
                     ? false

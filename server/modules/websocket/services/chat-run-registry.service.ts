@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { sessionsDb } from '@/modules/database/index.js';
 import { ChatSessionWriter } from '@/modules/websocket/services/chat-session-writer.service.js';
 import { broadcastSessionUpserted } from '@/modules/websocket/services/session-upsert-broadcast.service.js';
@@ -24,6 +26,9 @@ type ChatRunStatus = 'running' | 'completed';
  *   can replay exactly the events it missed via `chat.subscribe`.
  */
 type ChatRun = {
+  runId: string;
+  terminalState: 'completed' | 'failed' | 'aborted' | null;
+  failure: string | null;
   appSessionId: string;
   provider: LLMProvider;
   providerSessionId: string | null;
@@ -115,9 +120,20 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     ...message,
     sessionId: run.appSessionId,
     seq: run.lastSeq,
+    runId: run.runId,
   };
 
+  if (message.kind === 'error') {
+    run.failure = typeof message.error === 'string' ? message.error
+      : typeof message.content === 'string' ? message.content : 'Provider reported an error.';
+  }
+
   if (message.kind === 'complete') {
+    // Providers may emit nonterminal stderr as error frames. An explicit
+    // successful complete supersedes earlier warnings; an error arriving
+    // after this turn ended still records a held background process failure.
+    if (!message.exitCode && !message.aborted) run.failure = null;
+    run.terminalState = message.aborted ? 'aborted' : message.exitCode ? 'failed' : 'completed';
     // The provider may report its own id here; the frontend only ever knows
     // the app id, so the "actual" id is by definition the app id as well.
     outbound.actualSessionId = run.appSessionId;
@@ -189,6 +205,7 @@ export const chatRunRegistry = {
    * progress for the session (callers must reject the duplicate send).
    */
   startRun(input: {
+    runId?: string;
     appSessionId: string;
     provider: LLMProvider;
     providerSessionId: string | null;
@@ -207,6 +224,9 @@ export const chatRunRegistry = {
     }
 
     const run: ChatRun = {
+      runId: input.runId ?? randomUUID(),
+      terminalState: null,
+      failure: null,
       appSessionId: input.appSessionId,
       provider: input.provider,
       providerSessionId: input.providerSessionId,
@@ -231,6 +251,11 @@ export const chatRunRegistry = {
 
     runs.set(input.appSessionId, run);
     return run;
+  },
+
+  /** Rolls back a memory reservation if durable acceptance could not commit. */
+  discardRun(run: ChatRun): void {
+    if (runs.get(run.appSessionId) === run) runs.delete(run.appSessionId);
   },
 
   getRun(appSessionId: string): ChatRun | undefined {
@@ -286,13 +311,14 @@ export const chatRunRegistry = {
    * An empty array with `run.lastSeq > afterSeq` not covered by the buffer
    * means the buffer was truncated; the client should refresh over REST.
    */
-  replayEvents(appSessionId: string, afterSeq: number): NormalizedMessage[] {
+  replayEvents(appSessionId: string, afterSeq: number, runId?: string): NormalizedMessage[] {
     const run = runs.get(appSessionId);
     if (!run) {
       return [];
     }
 
-    return run.events.filter((event) => typeof event.seq === 'number' && event.seq > afterSeq);
+    const cursor = runId && runId !== run.runId ? 0 : afterSeq;
+    return run.events.filter((event) => typeof event.seq === 'number' && event.seq > cursor);
   },
 
   /**

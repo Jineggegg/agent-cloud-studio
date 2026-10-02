@@ -19,7 +19,7 @@ type ScheduledMessageListProps = {
 export function ScheduledMessageList({ scheduledMessages, onCancel }: ScheduledMessageListProps) {
   const { t } = useTranslation('chat');
   const visible = scheduledMessages.filter(
-    (message) => message.status === 'pending' || message.status === 'failed',
+    (message) => message.status === 'pending' || message.status === 'claimed' || message.status === 'failed',
   );
 
   if (visible.length === 0) {
@@ -30,6 +30,7 @@ export function ScheduledMessageList({ scheduledMessages, onCancel }: ScheduledM
     <div className="mx-auto mb-2 flex max-w-[54.25rem] flex-col gap-1.5">
       {visible.map((message) => {
         const isFailed = message.status === 'failed';
+        const isRunning = message.status === 'claimed';
 
         return (
           <div
@@ -49,19 +50,21 @@ export function ScheduledMessageList({ scheduledMessages, onCancel }: ScheduledM
               <p className="text-[11px] text-muted-foreground">
                 {isFailed
                   ? t('schedule.failed', { reason: message.failureReason ?? '' })
-                  : t('schedule.pending', { when: new Date(message.scheduledFor).toLocaleString() })}
+                  : isRunning
+                    ? t('schedule.claimed', { defaultValue: 'Accepted · execution in progress' })
+                    : t('schedule.pending', { when: new Date(message.scheduledFor).toLocaleString() })}
               </p>
               <p className="mt-0.5 truncate text-foreground">{message.content}</p>
             </div>
-            <button
+            {!isRunning && <button
               type="button"
               onClick={() => onCancel(message.id)}
               title={isFailed ? t('schedule.dismiss') : t('schedule.cancel')}
               aria-label={isFailed ? t('schedule.dismiss') : t('schedule.cancel')}
-              className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <X className="h-3.5 w-3.5" />
-            </button>
+            </button>}
           </div>
         );
       })}

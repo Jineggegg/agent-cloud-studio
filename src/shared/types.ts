@@ -61,7 +61,7 @@ export type ScheduledMessage = {
   options: Record<string, unknown>;
   /** ISO instant, so the schedule does not move when the user changes time zone. */
   scheduledFor: string;
-  status: 'pending' | 'sent' | 'failed' | 'cancelled';
+  status: 'pending' | 'claimed' | 'sent' | 'failed' | 'cancelled';
   /** Why it did not go, when `status` is `failed`. */
   failureReason: string | null;
   createdAt: string;
@@ -252,6 +252,49 @@ export type ServerEvent = {
   sessionId?: string;
   seq?: number;
   [key: string]: unknown;
+};
+
+//----------------- TASK RECOVERY AND DELIVERY ------------
+
+/** Durable interrupted execution shown only within its project and conversation. */
+export type TaskRecoveryRun = {
+  runId: string;
+  requestId: string;
+  sessionId: string | null;
+  projectPath: string;
+  provider: LLMProvider;
+  state: string;
+  content: string;
+  startedAt: string;
+  interruptedAt?: string | null;
+};
+
+/** Delivery feedback stays separate from execution progress until the server acknowledges the request. */
+export type ChatDeliveryState = {
+  requestId: string;
+  state: 'sending' | 'unknown' | 'failed';
+  error?: string;
+  errorCode?: string;
+};
+
+/** Exact send snapshot retained across reconnect and page reload; retries reuse its request id and payload. */
+export type PendingChatDelivery = {
+  requestId: string;
+  scope: string;
+  sessionId: string;
+  payload: Record<string, unknown>;
+  content: string;
+  attachments: ChatAttachment[];
+  inputRevision: number;
+  attachmentRevision: number;
+  editingAnchorId: string | null;
+  recoveryOfRunId?: string;
+  createdSession: boolean;
+  project: Project;
+  provider: LLMProvider;
+  summary: string | null;
+  /** Original send instant keeps delayed receipts from manufacturing a second transcript turn. */
+  submittedAt?: string;
 };
 
 
@@ -2028,4 +2071,48 @@ export type StudioMailInbox = { messages: StudioMailMessage[]; errors: StudioMai
 export type StudioMailDeviceStart = { pollId: string; userCode: string; verificationUri: string; expiresAt: string; interval: number };
 /** One poll of an Outlook device-code sign-in. */
 export type StudioMailDevicePoll = { status: 'pending' | 'connected' | 'expired' | 'error'; account?: StudioMailAccount; message?: string };
+// ---------------------------
+
+//----------------- STUDIO RUNTIME IDENTITY ------------
+/** Build-time identity recorded by the build pipeline; null commit/dirty mean Git could not be verified. */
+export type StudioBuildInfo = {
+  schemaVersion: 1;
+  version: string;
+  commit: string | null;
+  builtAt: string;
+  dirty: boolean | null;
+};
+/**
+ * Authenticated, read-only runtime snapshot for Settings. The backend build is captured at module load;
+ * frontend is the currently served disk build; checkout is source state only, never a running version.
+ * GitHub identifies origin's default branch; unknown/failure states must not imply that Studio is current.
+ */
+export type StudioRuntimeInfo = {
+  checkedAt: string;
+  frontend: { state: 'recorded' | 'unknown'; build: StudioBuildInfo | null; reason: string | null };
+  backend: { state: 'recorded' | 'unknown'; build: StudioBuildInfo | null; reason: string | null };
+  checkout: {
+    state: 'available' | 'unavailable';
+    commit: string | null;
+    branch: string | null;
+    dirty: boolean | null;
+    reason: string | null;
+  };
+  github: {
+    state: 'available' | 'unavailable' | 'unconfigured';
+    repository: string | null;
+    defaultBranch: string | null;
+    commit: string | null;
+    checkedAt: string | null;
+    reason: string | null;
+  };
+  host: {
+    hostname: string;
+    platform: string;
+    bootedAt: string;
+    processStartedAt: string;
+    /** Elapsed process lifetime in seconds; not the host uptime. */
+    uptimeSeconds: number;
+  };
+};
 // ---------------------------

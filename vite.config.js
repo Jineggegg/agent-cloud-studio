@@ -3,6 +3,7 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { getConnectableHost, normalizeLoopbackHost } from './shared/networkHosts.js'
+import { createBuildInfo } from './scripts/build-info.mjs'
 
 // The client shows the installed package version so it can be compared against the
 // version the server process is actually running. Reading package.json here and
@@ -44,9 +45,10 @@ function nonBlockingEntryStylesheet() {
   }
 }
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
   // Load env file based on `mode` in the current working directory.
   const env = loadEnv(mode, process.cwd(), '')
+  const buildInfo = command === 'build' ? createBuildInfo(fileURLToPath(new URL('.', import.meta.url))) : null
 
   const configuredHost = env.HOST || '0.0.0.0'
   // if the host is not a loopback address, it should be used directly. 
@@ -60,9 +62,16 @@ export default defineConfig(({ mode }) => {
   const serverPort = env.SERVER_PORT || env.PORT || 3001
 
   return {
-    plugins: [react(), nonBlockingEntryStylesheet()],
+    plugins: [react(), nonBlockingEntryStylesheet(), {
+      name: 'acs-build-identity',
+      apply: 'build',
+      generateBundle() {
+        this.emitFile({ type: 'asset', fileName: 'build-info.json', source: JSON.stringify(buildInfo, null, 2) + '\n' })
+      }
+    }],
     define: {
-      __APP_VERSION__: JSON.stringify(pkg.version)
+      __APP_VERSION__: JSON.stringify(pkg.version),
+      __STUDIO_BUILD_INFO__: JSON.stringify(buildInfo)
     },
     resolve: {
       alias: {

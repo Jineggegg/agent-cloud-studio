@@ -149,3 +149,23 @@ test('saveDraft rejects text past the storage limit', () => {
     /too long/i,
   );
 });
+
+
+test('saveDraft preserves omitted recovery fields and forwards explicit links or clearing', () => {
+  const saved: unknown[][] = [];
+  const service = createUserService(createDependencies({
+    drafts: {
+      getDrafts: () => [], saveDraft: (...args) => saved.push(args), deleteDraft: () => undefined,
+    },
+  }));
+  service.saveDraft(5, 'session-1', { text: 'continue', recoveryOfRunId: 'run-1' });
+  service.saveDraft(5, 'session-1', { text: 'normal task', recoveryOfRunId: null });
+  assert.deepEqual(saved, [
+    [5, 'session-1', { text: 'continue', queuedMessage: null, recoveryOfRunId: 'run-1' }],
+    [5, 'session-1', { text: 'normal task', queuedMessage: null, recoveryOfRunId: null }],
+  ]);
+  for (const recoveryOfRunId of ['', ' ', 12, {}, 'x'.repeat(201)]) {
+    assert.throws(() => service.saveDraft(5, 'session-1', { text: 'continue', recoveryOfRunId }),
+      (error: unknown) => Boolean(error && typeof error === 'object' && 'statusCode' in error && error.statusCode === 400));
+  }
+});
