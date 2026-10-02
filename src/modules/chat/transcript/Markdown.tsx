@@ -354,7 +354,7 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
  */
 export const MarkdownBody = memo(MarkdownBodyRenderer);
 
-/** Markdown in its own prose container. The form every non-streaming caller uses. */
+/** Markdown in its own prose container. The form every non-streaming caller uses, the workbench chat column included. */
 export const Markdown = memo(function Markdown({ children, className, breaks }: MarkdownProps) {
   return (
     <div className={className}>

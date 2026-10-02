@@ -73,7 +73,8 @@ function deriveToolStatus(toolResult: any, reportedStatus?: string): ToolStatus 
  * Routes to OneLineDisplay or CollapsibleDisplay based on tool config
  *
  * Rendered by chat's MessageComponent for every tool call and tool result in
- * the transcript; it is the single entry point for tool presentation.
+ * the transcript; it is the single entry point for tool presentation. The workbench chat column (via the
+ * chat barrel) falls back to it for tools it has no card of its own for.
  */
 export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
   toolName,

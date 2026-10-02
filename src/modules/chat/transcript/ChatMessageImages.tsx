@@ -171,7 +171,8 @@ function ChatMessageImage({ image, projectId }: { image: ChatImage; projectId?: 
  * rounded square cards shown above the message bubble. Each thumbnail
  * expands to a fullscreen lightbox on click.
  *
- * Rendered by chat's MessageComponent for the images attached to a user turn.
+ * Rendered by chat's MessageComponent and the workbench chat column (via the chat barrel) for the images
+ * attached to a user turn.
  */
 export default function ChatMessageImages({ images, projectId }: ChatMessageImagesProps) {
   if (!images || images.length === 0) {
