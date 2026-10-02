@@ -11,8 +11,9 @@ type PasskeyRow = {
 type ChallengeRow = { id: string; kind: ChallengeKind; challenge: string; rp_id: string; origin: string; payload: string; expires_at: number };
 // 'pending' is reserved synchronously the moment an order passes its limit checks, before any await, so a
 // burst of concurrent confirmations cannot slip past the hourly, daily or cooldown limits; it is then
-// updated to the real outcome. All limit queries count 'pending' alongside 'placed' and 'unknown'.
-type AuditStatus = 'pending' | 'placed' | 'rejected' | 'unknown' | 'refused';
+// updated to the real outcome. All limit queries count 'pending' alongside 'placed' and 'unknown'. 'error' is an
+// internal failure before anything was sent to Trading 212; like 'refused' and 'rejected' it counts against nothing.
+type AuditStatus = 'pending' | 'placed' | 'rejected' | 'unknown' | 'refused' | 'error';
 type AuditEntry = {
   previewId: string; env: StudioT212Environment; ticker: string; side: string; type: string; quantity: number;
   limitPrice: number | null; estimatedValue: number; currency: string; method: string; rpId: string;
@@ -155,9 +156,19 @@ export function createBrokerRepository(db: Database.Database) {
     submittedSince(since: number) {
       return (db.prepare("SELECT COUNT(*) AS count FROM order_audit WHERE status IN ('placed', 'unknown', 'pending') AND created_at > ?").get(since) as { count: number }).count;
     },
-    // Cumulative estimated value of those same orders since a time, for the rolling daily value cap.
-    submittedValueSince(since: number) {
-      return (db.prepare("SELECT COALESCE(SUM(estimated_value), 0) AS total FROM order_audit WHERE status IN ('placed', 'unknown', 'pending') AND created_at > ?").get(since) as { total: number }).total;
+    // Cumulative estimated value of one account's orders since a time, per currency, for that account's rolling daily
+    // value cap. Rows in another currency (an account whose currency changed) are kept apart, never added up 1:1.
+    // The currency of the most recent order comes first.
+    submittedValueByCurrency(env: StudioT212Environment, since: number) {
+      return db.prepare(`SELECT currency, SUM(estimated_value) AS total FROM order_audit
+        WHERE env = ? AND status IN ('placed', 'unknown', 'pending') AND created_at > ? GROUP BY currency ORDER BY MAX(row_id) DESC`)
+        .all(env, since) as { currency: string; total: number }[];
+    },
+    // Startup recovery: a 'pending' row left by a broker that stopped mid-order (killed, crashed, power cut) may have
+    // reached Trading 212. It becomes 'unknown' and keeps its time, so it still counts against the limits and holds
+    // identical orders back, as any unknown outcome does. Returns the number of rows changed.
+    resolveInterruptedOrders(message: string) {
+      return db.prepare("UPDATE order_audit SET status = 'unknown', error = ? WHERE status = 'pending'").run(message.slice(0, 300)).changes;
     },
     // Most recent time an order for one account reached Trading 212 or was reserved, for the live cooldown; null if none.
     lastSubmittedAt(env: StudioT212Environment, since: number) {

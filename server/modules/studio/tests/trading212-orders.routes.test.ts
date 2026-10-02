@@ -88,12 +88,15 @@ test('routes need a signed-in user and an exact Origin header before anything re
 
 test('only order fields and the origin are relayed; the broker validates the values', async () => {
   await withApp(async (call, seen) => {
-    const body = { env: 'demo', ticker: 'AAPL_US_EQ', side: 'buy', type: 'limit', quantity: 1, limitPrice: 10, timeValidity: 'DAY', userId: 7, acknowledgeUnknown: 'yes' };
-    assert.equal((await call('/trading212/orders/preview', { method: 'POST', body })).status, 200);
-    assert.deepEqual(seen[0], {
-      url: '/v1/orders/preview',
-      body: { origin: ORIGIN, order: { env: 'demo', ticker: 'AAPL_US_EQ', side: 'buy', type: 'limit', quantity: 1, limitPrice: 10, timeValidity: 'DAY' }, acknowledgeUnknown: false },
-    });
+    // An acknowledgeUnknown flag (any value) is not relayed: the broker's hold after an unknown outcome cannot be lifted from Studio.
+    for (const acknowledgeUnknown of ['yes', true]) {
+      const body = { env: 'demo', ticker: 'AAPL_US_EQ', side: 'buy', type: 'limit', quantity: 1, limitPrice: 10, timeValidity: 'DAY', userId: 7, acknowledgeUnknown };
+      assert.equal((await call('/trading212/orders/preview', { method: 'POST', body })).status, 200);
+      assert.deepEqual(seen.at(-1), {
+        url: '/v1/orders/preview',
+        body: { origin: ORIGIN, order: { env: 'demo', ticker: 'AAPL_US_EQ', side: 'buy', type: 'limit', quantity: 1, limitPrice: 10, timeValidity: 'DAY' } },
+      });
+    }
   });
 });
 

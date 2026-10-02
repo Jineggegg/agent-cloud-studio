@@ -103,9 +103,9 @@ export function createBrokerSocketServer(service: Service, options: Options = {}
 
   const routes: Record<string, Route> = {
     'GET /v1/status': () => service.status(),
-    'POST /v1/orders/preview': body => service.preview({
-      origin: origin(body), order: orderInput(body.order), acknowledgeUnknown: body.acknowledgeUnknown === true,
-    }),
+    // Only origin and order are read: nothing else a caller sends (an old acknowledgeUnknown flag included) changes
+    // what the broker allows.
+    'POST /v1/orders/preview': body => service.preview({ origin: origin(body), order: orderInput(body.order) }),
     'POST /v1/orders/confirm': body => {
       const proof = body.assertion !== undefined
         ? { assertion: credential(body.assertion) as unknown as AuthenticationResponseJSON }

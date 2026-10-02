@@ -118,7 +118,6 @@
 .t212-order-unknown div { display: grid; gap: 4px; }
 .t212-order-unknown strong { font-size: 16px; color: var(--ios-red); }
 .t212-order-unknown span { color: var(--ios-label-2); }
-.studio-layer .ios-button.t212-order-acknowledge { width: 100%; min-height: 44px; border-radius: 12px; font-size: 15px; white-space: normal; }
 /* The enrolment form sits directly in a step, whose gap already spaces it. */
 .t212-order-step .t212-enroll { margin-top: 0; }
 

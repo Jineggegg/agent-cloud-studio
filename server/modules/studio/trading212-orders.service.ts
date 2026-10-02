@@ -42,7 +42,7 @@ export function createTrading212OrdersService(deps: Dependencies) {
   }
   const closed = {
     allowedEnvs: [] as StudioT212Environment[], maxOrderValue: 0, maxOrdersPerHour: 0, maxDailyOrderValue: 0, liveOrderCooldownSeconds: 0,
-    passkeys: [], trustedOrigins: [] as string[], demoConfirm: false, isolation: null,
+    dailyOrderValue: {}, passkeys: [], trustedOrigins: [] as string[], demoConfirm: false, isolation: null,
   };
 
   return {
@@ -56,6 +56,8 @@ export function createTrading212OrdersService(deps: Dependencies) {
           broker: { status: 'ok' as const, keys: status.keys },
           allowedEnvs: status.allowedEnvs, maxOrderValue: status.maxOrderValue, maxOrdersPerHour: status.maxOrdersPerHour,
           maxDailyOrderValue: status.maxDailyOrderValue, liveOrderCooldownSeconds: status.liveOrderCooldownSeconds,
+          // Per account: the broker's daily cap applies to live and demo separately, each in its own currency.
+          dailyOrderValue: status.dailyOrderValue ?? {},
           ...(currency ? { currency } : {}),
           passkeys: status.passkeys, trustedOrigins: status.origins, demoConfirm: status.demoConfirm, isolation: status.isolation,
         };
@@ -63,8 +65,8 @@ export function createTrading212OrdersService(deps: Dependencies) {
         return { broker: { status: 'unreachable' as const, message: error instanceof Error ? error.message : '交易代理不可用' }, ...closed };
       }
     },
-    async preview(origin: string, order: Json, acknowledgeUnknown: boolean) {
-      return broker().preview({ origin, order, acknowledgeUnknown });
+    async preview(origin: string, order: Json) {
+      return broker().preview({ origin, order });
     },
     async confirm(origin: string, id: string, proof: OrderProof) {
       try {

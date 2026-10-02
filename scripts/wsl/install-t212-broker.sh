@@ -64,8 +64,9 @@ Usage (as root, through sudo, from a root-owned export of the reviewed commit; s
   --node-tarball FILE         official node-v<version>-linux-x64.tar.xz from nodejs.org (Node 20 or newer)
   --node-sha256 HEX           its SHA-256 from nodejs.org/dist/v<version>/SHASUMS256.txt
   --registry URL              npm registry for the build (default: npm's own)
-New config.json only (an existing one is never changed; edit it and restart the broker instead):
-  --origins LIST              comma-separated Studio origins, e.g. https://studio.example.com
+New config.json only (an existing one is never changed; edit it and restart the broker instead). Either way the
+new broker's own parser checks the config before anything is installed:
+  --origins LIST              comma-separated Studio origins (at most 8), e.g. https://studio.example.com
   --allowed-envs LIST         accounts that may trade: demo, live (default: demo)
   --max-order-value N         per-order cap in the account currency (default: 500)
   --max-daily-order-value N   rolling 24 h cumulative cap, 0 = off (default: 2000)
@@ -99,27 +100,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# "a, b" -> ["a","b"] after checking each item against an extended regular expression.
-json_list() {
-  local list="$1" pattern="$2" out="" item items=()
-  IFS=',' read -r -a items <<< "$list"
-  for item in "${items[@]}"; do
-    item="$(printf '%s' "$item" | tr -d '[:space:]')"
-    [ -n "$item" ] || continue
-    printf '%s' "$item" | grep -Eqx "$pattern" || die "invalid value: $item"
-    out="${out:+$out,}\"$item\""
-  done
-  printf '[%s]' "$out"
-}
-# Dies unless VALUE is a plain JSON number (an integer when the fifth argument is "integer") from MIN to MAX.
-number_in() {
-  local value="$1" min="$2" max="$3" name="$4" pattern='^(0|[1-9][0-9]*)(\.[0-9]+)?$'
-  [ "${5:-}" != integer ] || pattern='^(0|[1-9][0-9]*)$'
-  if ! [[ "$value" =~ $pattern ]] || ! awk -v v="$value" -v lo="$min" -v hi="$max" 'BEGIN { exit !(v >= lo && v <= hi) }'; then
-    die "$name must be a number from $min to $max (got: $value)"
-  fi
-}
-
 [ "$(id -u)" -eq 0 ] || die "run as root, through sudo (docs/t212-broker.md, step 2)"
 # Catches running the copy in the Studio user's checkout by mistake. It cannot catch a modified copy, which is why
 # docs/t212-broker.md runs this from a root-owned export of the reviewed commit.
@@ -143,12 +123,10 @@ fi
 
 [ -n "$REPO" ] || die "--repo is required: the git repository to build from (e.g. /home/$STUDIO_USER/projects/agent-cloud-studio)"
 [ -n "$NODE_TARBALL" ] && [ -n "$NODE_SHA256" ] || die "--node-tarball and --node-sha256 are required (docs/t212-broker.md, step 1)"
-number_in "$MAX_ORDER_VALUE" 0.01 100000 --max-order-value
-number_in "$MAX_DAILY_ORDER_VALUE" 0 1000000 --max-daily-order-value
-number_in "$LIVE_COOLDOWN_SECONDS" 0 86400 --live-cooldown-seconds integer
-number_in "$MAX_ORDERS_PER_HOUR" 1 100 --max-orders-per-hour integer
-ENVS_JSON="$(json_list "$ALLOWED_ENVS" '(live|demo)')"
-ORIGINS_JSON="$(json_list "$ORIGINS" 'https://[A-Za-z0-9.-]+(:[0-9]{1,5})?|http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?')"
+# The config.json for a new state directory, checked here for what the shell can check; the new broker's own
+# parser checks it again (validate-config) before anything is installed.
+CONFIG_JSON="$(broker_config_json "$ALLOWED_ENVS" "$ORIGINS" "$MAX_ORDER_VALUE" "$MAX_DAILY_ORDER_VALUE" \
+  "$LIVE_COOLDOWN_SECONDS" "$MAX_ORDERS_PER_HOUR")"
 for tool in git tar sha256sum runuser useradd userdel pkill make c++ python3; do
   command -v "$tool" >/dev/null || die "$tool is missing (the build needs: sudo apt-get install git build-essential python3)"
 done
@@ -249,6 +227,26 @@ chmod 0755 "$NEW"
 require_plain_tree "$NEW"
 require_trusted_tree "$NEW"
 
+say "Configuration, checked by the new broker's own parser"
+CONFIG="$STATE_DIR/config.json"
+# Runs the new broker's validate-config as nobody, with the config on standard input: it is the parser the broker
+# starts with (at most 8 origins, each exactly scheme://host[:port], HTTPS except loopback, every limit in range).
+validate_config() {
+  runuser -u nobody -- env -i PATH=/usr/bin:/bin LANG=C.UTF-8 "$NEW/bin/node" "$NEW/app/main.js" validate-config
+}
+if [ -e "$CONFIG" ] || [ -L "$CONFIG" ]; then
+  { [ -f "$CONFIG" ] && [ ! -L "$CONFIG" ]; } || die "$CONFIG is not a regular file"
+  validate_config < "$CONFIG" \
+    || die "the existing $CONFIG is not valid for this version (see above). Fix it (sudo nano $CONFIG) and run this" \
+      "again; nothing was installed"
+  WRITE_CONFIG=0
+else
+  printf '%s\n' "$CONFIG_JSON" | validate_config \
+    || die "the new config.json would not be valid (see above): check --origins (at most 8, each exactly like" \
+      "https://studio.example.com, no trailing /), --allowed-envs and the limits; nothing was installed"
+  WRITE_CONFIG=1
+fi
+
 say "Users, group and state directory"
 getent group "$BROKER_GROUP" >/dev/null || groupadd --system "$BROKER_GROUP"
 if ! id "$TRADER_USER" >/dev/null 2>&1; then
@@ -261,14 +259,12 @@ install -d -m 0700 -o "$TRADER_USER" -g "$TRADER_USER" "$STATE_DIR"
 chown "$TRADER_USER:$TRADER_USER" "$STATE_DIR"
 chmod 0700 "$STATE_DIR"
 echo "$STATE_DIR is $(stat -c '%U:%G %a' "$STATE_DIR"); $STUDIO_USER is in: $(id -nG "$STUDIO_USER")"
-CONFIG="$STATE_DIR/config.json"
-if [ -e "$CONFIG" ] || [ -L "$CONFIG" ]; then
+if [ "$WRITE_CONFIG" -eq 0 ]; then
   echo "kept the existing $CONFIG"
 else
-  [ "$ORIGINS_JSON" != "[]" ] || warn "no --origins: no Studio address may trade until you add origins to $CONFIG"
+  [ -n "$ORIGINS" ] || warn "no --origins: no Studio address may trade until you add origins to $CONFIG"
   tmp="$(mktemp "$STATE_DIR/.config.json.XXXXXX")"
-  printf '{\n  "allowedEnvs": %s,\n  "maxOrderValue": %s,\n  "maxDailyOrderValue": %s,\n  "liveOrderCooldownSeconds": %s,\n  "maxOrdersPerHour": %s,\n  "origins": %s,\n  "demoConfirmWithoutPasskey": false\n}\n' \
-    "$ENVS_JSON" "$MAX_ORDER_VALUE" "$MAX_DAILY_ORDER_VALUE" "$LIVE_COOLDOWN_SECONDS" "$MAX_ORDERS_PER_HOUR" "$ORIGINS_JSON" > "$tmp"
+  printf '%s\n' "$CONFIG_JSON" > "$tmp"
   chown "$TRADER_USER:$TRADER_USER" "$tmp"
   chmod 0600 "$tmp"
   mv -T -- "$tmp" "$CONFIG"

@@ -13,7 +13,7 @@ type Settlement = { kind: 'resolved'; value: unknown } | { kind: 'rejected'; err
 
 const ORIGIN = 'https://studio.ajarche.com';
 const CONFIRM = { origin: ORIGIN, id: '00000000-0000-0000-0000-000000000000', confirmed: true as const };
-const PREVIEW = { origin: ORIGIN, order: { env: 'demo' }, acknowledgeUnknown: false };
+const PREVIEW = { origin: ORIGIN, order: { env: 'demo' } };
 const DEADLINE_MS = 300;
 
 /**

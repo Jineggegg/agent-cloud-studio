@@ -54,7 +54,7 @@ test('without STUDIO_T212_BROKER_SOCKET ordering is off and nothing can place an
   assert.equal(config.broker.status, 'off');
   assert.deepEqual(config.allowedEnvs, []);
   assert.match('message' in config.broker ? config.broker.message : '', /STUDIO_T212_BROKER_SOCKET/);
-  await assert.rejects(service.preview(ORIGIN, { env: 'demo' }, false), (error: Error & { code?: string; statusCode?: number }) =>
+  await assert.rejects(service.preview(ORIGIN, { env: 'demo' }), (error: Error & { code?: string; statusCode?: number }) =>
     error.code === 'T212_BROKER_OFF' && error.statusCode === 503);
   await assert.rejects(service.confirm(ORIGIN, '00000000-0000-0000-0000-000000000000', { confirmed: true }), /docs\/t212-broker\.md/);
   await assert.rejects(service.passkeyOptions(ORIGIN, 'CODE'), (error: Error & { code?: string }) => error.code === 'T212_BROKER_OFF');
@@ -70,8 +70,18 @@ test('settings show the broker’s own configuration, falling back to Studio’s
     assert.deepEqual([config.allowedEnvs, config.maxOrderValue, config.trustedOrigins, config.demoConfirm], [['demo'], 250, [ORIGIN], false]);
     assert.equal('currency' in config ? config.currency : undefined, 'GBP');
     assert.deepEqual(config.passkeys.map(item => item.rpId), ['studio.ajarche.com']);
+    // A broker from before per-account daily budgets sends none: Settings simply shows no figures.
+    assert.deepEqual(config.dailyOrderValue, {});
     assert.deepEqual(broker.seen.map(item => `${item.method} ${item.url}`), ['GET /v1/status']);
   } finally { await broker.close(); }
+
+  const budget = { demo: { currency: 'GBP', used: 160, remaining: 1840 } };
+  const withBudget = await fakeBroker((_seen, res) => json(res, 200, { ...STATUS, maxDailyOrderValue: 2000, dailyOrderValue: budget }));
+  try {
+    const { trading212 } = reads();
+    const service = createTrading212OrdersService({ broker: createTrading212BrokerClient({ socketPath: withBudget.socketPath }), trading212 });
+    assert.deepEqual((await service.config()).dailyOrderValue, budget);
+  } finally { await withBudget.close(); }
 });
 
 test('an unreachable broker leaves settings readable and refuses orders as unreachable', async () => {
@@ -99,9 +109,9 @@ test('requests are relayed with the browser origin, and broker refusals keep the
   try {
     const { trading212 } = reads();
     const service = createTrading212OrdersService({ broker: createTrading212BrokerClient({ socketPath: broker.socketPath }), trading212 });
-    await assert.rejects(service.preview(ORIGIN, { env: 'live', ticker: 'AAPL_US_EQ' }, true), (error: Error & { code?: string; statusCode?: number }) =>
+    await assert.rejects(service.preview(ORIGIN, { env: 'live', ticker: 'AAPL_US_EQ' }), (error: Error & { code?: string; statusCode?: number }) =>
       error.code === 'T212_PASSKEY_REQUIRED' && error.statusCode === 403 && /启用通行密钥/.test(error.message));
-    assert.deepEqual(broker.seen[0].body, { origin: ORIGIN, order: { env: 'live', ticker: 'AAPL_US_EQ' }, acknowledgeUnknown: true });
+    assert.deepEqual(broker.seen[0].body, { origin: ORIGIN, order: { env: 'live', ticker: 'AAPL_US_EQ' } });
 
     assert.deepEqual(await service.passkeyOptions(ORIGIN, 'ABCDE-FGHJK-MNPQR-STVWX'), { challenge: 'reg-1' });
     assert.deepEqual(broker.seen[1].body, { origin: ORIGIN, enrollmentCode: 'ABCDE-FGHJK-MNPQR-STVWX' });
@@ -136,7 +146,7 @@ test('a placed order refreshes Studio’s cached reads; a broken connection afte
       error.code === 'T212_ORDER_UNKNOWN' && /订单状态未知/.test(error.message));
     assert.deepEqual(invalidated, ['demo', 'live', 'demo']);
     // The same break on a preview is just "unavailable": nothing could have been placed.
-    await assert.rejects(service.preview(ORIGIN, {}, false), (error: Error & { code?: string }) => error.code === 'T212_BROKER_UNREACHABLE');
+    await assert.rejects(service.preview(ORIGIN, {}), (error: Error & { code?: string }) => error.code === 'T212_BROKER_UNREACHABLE');
     assert.equal(broker.seen.filter(item => item.url === '/v1/orders/confirm').length, 2, 'never retried');
   } finally { await broker.close(); }
 });

@@ -212,7 +212,7 @@ export const api = {
       config: () => get('/api/studio/trading212/trading'),
       preview: (input: {
         env: T212Env; ticker: string; side: 'buy' | 'sell'; type: 'market' | 'limit'; quantity: number;
-        limitPrice?: number; timeValidity?: 'DAY' | 'GOOD_TILL_CANCEL'; acknowledgeUnknown?: boolean;
+        limitPrice?: number; timeValidity?: 'DAY' | 'GOOD_TILL_CANCEL';
       }) => post('/api/studio/trading212/orders/preview', input),
       confirm: (id: string, proof: { assertion: unknown } | { confirmed: true }) =>
         post(`/api/studio/trading212/orders/${encodeURIComponent(id)}/confirm`, proof),

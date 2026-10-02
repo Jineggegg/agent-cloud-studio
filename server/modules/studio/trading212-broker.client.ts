@@ -110,7 +110,7 @@ export function createTrading212BrokerClient(deps: Dependencies) {
 
   return {
     status: () => call<StudioT212BrokerStatus>('GET', '/v1/status', undefined, { timeoutMs: 5_000 }),
-    preview: (body: { origin: string; order: Json; acknowledgeUnknown: boolean }) =>
+    preview: (body: { origin: string; order: Json }) =>
       call<StudioT212BrokerPreview>('POST', '/v1/orders/preview', body, { timeoutMs }),
     confirm: (body: { origin: string; id: string } & ({ assertion: Json } | { confirmed: true })) =>
       call<StudioT212BrokerOrderResult>('POST', '/v1/orders/confirm', body, { timeoutMs: confirmTimeoutMs, placesOrder: true }),

@@ -82,6 +82,26 @@ test('shows broker status, its accounts, cap and passkeys by domain, then enrols
   expect(screen.getByText('可下单')).toBeTruthy();
 });
 
+test('the daily cap is shown per account, with what each has used and has left', async () => {
+  trading.config.mockImplementation(json({
+    ...CONFIG, allowedEnvs: ['live', 'demo'], maxDailyOrderValue: 2000,
+    dailyOrderValue: { live: { currency: 'GBP', used: 160, remaining: 1840 }, demo: { currency: 'EUR', used: 0, remaining: 2000 } },
+  }));
+  render(<StudioSettingsTrading />);
+  expect(await screen.findByText(/每个账户每日累计上限/)).toBeTruthy();
+  const budget = screen.getByText(/实盘剩余/).textContent ?? '';
+  expect(budget).toContain('实盘剩余 £1,840.00（已用 £160.00）');
+  expect(budget).toContain('模拟盘剩余 €2,000.00（已用 €0.00）');
+  expect(budget).toContain('分别计算');
+  cleanup();
+
+  // Without a daily cap, or without figures from the broker, no budget row is shown.
+  trading.config.mockImplementation(json({ ...CONFIG, maxDailyOrderValue: 0, dailyOrderValue: { demo: { currency: 'GBP', used: 10, remaining: null } } }));
+  render(<StudioSettingsTrading />);
+  expect(await screen.findByText('已连接')).toBeTruthy();
+  expect(screen.queryByText(/剩余/)).toBeNull();
+});
+
 test('a wrong enrollment code is shown and nothing is registered', async () => {
   trading.config.mockImplementation(json({ ...CONFIG, passkeys: [] }));
   trading.passkeyOptions.mockImplementation(json('注册码无效、已用过或已过期：请在服务器上用 studio-trader enroll-code 重新生成', 403, 'T212_ENROLL_CODE_INVALID'));

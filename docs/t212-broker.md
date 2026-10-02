@@ -26,7 +26,9 @@
 1. Studio 通过 unix socket `/run/studio-trader/broker.sock`（组 `studio-broker`，0660）和交易代理说话，协议是 socket 上的 HTTP。`laosong` 在这个组里，所以终端也能连上，交易代理因此**不信任任何调用者**。
 2. 预览：交易代理检查来源网址是否在它自己的白名单、账户是否允许、代码和数量格式，用**自己的下单密钥**读持仓和标的币种，自己按汇率估值并检查单笔上限、每小时笔数、每日累计上限和实盘冷却，然后生成一个只能用一次、60 秒过期、绑定这笔订单 + 网址 + RP ID 的挑战，返回 WebAuthn 验证参数。
 3. 浏览器用面容 ID / 触控 ID 签名（必须验证用户）。Studio 把签名转给交易代理。
-4. 交易代理用**自己数据库里的通行密钥**验证签名（计数器必须前进），挑战作废，然后用下单密钥**只下一次单**，结果记为 placed / rejected / unknown。实盘订单没有「二次确认」这条路；模拟盘只有在 `config.json` 里明确打开 `demoConfirmWithoutPasskey` 时才允许不用通行密钥。连接在确认途中断开时，Studio 显示「订单状态未知」，不会自动重试。
+4. 交易代理用**自己数据库里的通行密钥**验证签名（计数器必须前进），挑战作废，然后用下单密钥**只下一次单**，结果记为 placed / rejected / unknown（还有 refused、error：没有发出的单）。实盘订单没有「二次确认」这条路；模拟盘只有在 `config.json` 里明确打开 `demoConfirmWithoutPasskey` 时才允许不用通行密钥。连接在确认途中断开时，Studio 显示「订单状态未知」，不会自动重试。
+   - 一笔订单状态未知（unknown）之后 **5 分钟内，交易代理拒绝完全相同的订单**（同一账户、代码、方向、数量），提示先在 Trading 212 核对它是否已经成交、还要等几分钟。这个限制 Studio **解除不了**（以前的「我已核对，仍要下单」已经去掉）：调用方不可信，它说「没有成交」不算数。确认没有成交的话，等这几分钟过去再下单。
+   - 交易代理在下单途中出现意外错误时，这笔记录不会停在「进行中」：可能已经发出就记为 unknown（并按状态未知处理），还没发出就记为 error。交易代理在下单途中被杀掉或断电时，下次启动会把遗留的「进行中」记录改成 unknown；它们照样计入各项上限，也照样触发上面的 5 分钟限制。
 5. 登记通行密钥需要一次性**注册码**：只能以 `studio-trader` 身份生成（`sudo -u studio-trader … enroll-code`，要输入你的 sudo 密码），10 分钟有效，只能登记一把，数据库里只存哈希。`laosong` 生成不了。移除通行密钥需要同一网址任意一把通行密钥的签名，或者一个新的注册码。
 
 终端里的攻击者能做的：读状态（允许的账户、上限、通行密钥列表、隔离状态）、生成会过期的预览。不能做的：读下单密钥、登记自己的通行密钥（没有注册码）、伪造签名下单。
@@ -136,10 +138,10 @@ wsl.exe -d Ubuntu --cd / -e sudo /bin/bash -c $boot boot $repo $sha `
 3. 镜像仓库，导出 `$sha`，打印提交标题和作者（`--commit` 不是完整 SHA 时会让你确认）；
 4. 校验 Node 压缩包的 SHA-256，解压到 root 专用目录；
 5. 以临时用户 `studio-trader-build` 构建（需要联网访问 npm）；结束后杀掉它的所有进程并删除这个用户；
-6. 把结果复制成 root 所有的新目录，拒绝其中任何符号链接、FIFO、socket、设备文件和 setuid/setgid 位，检查每个文件都只有 root 能改，再替换 `/opt/studio-trader`（`/opt/studio-trader/COMMIT` 记着提交）；
-7. 创建 `studio-trader` 用户和 `studio-broker` 组，把 `laosong` 加进组；建 `/var/lib/studio-trader`（0700）；**只在没有 `config.json` 时**按参数写一个（见第 4 步）；
-8. 安装并启用 `studio-trader-isolation.service`、`studio-trader-broker.socket` 和 `studio-trader-broker.service`（NoNewPrivileges、ProtectSystem=strict、ProtectHome、只允许写 `/var/lib/studio-trader`、PrivateTmp 等加固），启动它们；
-9. 以 `studio-trader` 运行 `studio-trader check` 自检，打印下一步。
+6. 把结果复制成 root 所有的新目录，拒绝其中任何符号链接、FIFO、socket、设备文件和 setuid/setgid 位，检查每个文件都只有 root 能改（替换 `/opt/studio-trader` 在第 8 步；`/opt/studio-trader/COMMIT` 记着提交）；
+7. 用新版交易代理自己的解析器检查将要写入的（或已有的）`config.json`（见第 4 步），不合格就停下；创建 `studio-trader` 用户和 `studio-broker` 组，把 `laosong` 加进组；建 `/var/lib/studio-trader`（0700）；**只在没有 `config.json` 时**按参数写一个；
+8. 替换 `/opt/studio-trader`；安装并启用 `studio-trader-isolation.service`、`studio-trader-broker.socket` 和 `studio-trader-broker.service`（NoNewPrivileges、ProtectSystem=strict、ProtectHome、只允许写 `/var/lib/studio-trader`、PrivateTmp 等加固），启动它们；
+9. 以 `studio-trader` 运行 `studio-trader check` 自检，打印下一步。写入下单密钥之后还要按第 3 步再检查一次。
 
 脚本从不修改 `/etc/wsl.conf`，从不打印密钥。重复运行就是升级（见「升级」），状态目录、密钥和 `config.json` 保持不变。
 
@@ -154,6 +156,8 @@ wsl.exe -d Ubuntu --cd / -e sudo -u studio-trader /opt/studio-trader/bin/studio-
 ```
 
 `check` 末尾应当是「隔离：有效」，并且退出码为 0；隔离无效、缺密钥或没有 origins 时它会说明原因并返回 1。
+
+**安装后必须做的检查：** `sudo -u studio-trader /opt/studio-trader/bin/studio-trader check` 必须报告「隔离：有效」（PowerShell 里就是上面第三条命令）。安装脚本自己的检查以 root 运行；这一条以交易代理的用户运行，确认它自己也能读到 `/proc/sys/fs/binfmt_misc` 和 `/run/WSL` 的真实状态。systemd 服务里的交易代理（`GET /v1/status`、设置页）运行在沙箱中，读不到 binfmt_misc 时会按「隔离无效」报告，不会误报有效——所以 Studio「设置 → 交易安全」里也不应出现「隔离无效」。
 
 ### 4. 配置交易代理
 
@@ -173,12 +177,13 @@ wsl.exe -d Ubuntu --cd / -e sudo -u studio-trader /opt/studio-trader/bin/studio-
 
 - `allowedEnvs`（`--allowed-envs`，默认 `demo`）：允许下单的账户，`[]` 表示关闭。确认一切正常之后再加 `"live"`。
 - `maxOrderValue`（`--max-order-value`，默认 500）：单笔上限（账户货币），交易代理按自己读到的持仓和汇率估值；没法换算汇率的订单直接拒绝。
-- `maxDailyOrderValue`（`--max-daily-order-value`，默认 2000）：滚动 24 小时内已提交订单的累计金额上限，`0` 表示不启用。
+- `maxDailyOrderValue`（`--max-daily-order-value`，默认 2000）：滚动 24 小时内已提交订单的累计金额上限，`0` 表示不启用。**实盘和模拟盘各算各的**，按各自的账户货币（不同货币的金额从不相加）；已成交、状态未知和正在提交的订单都计入。每个账户今天已用和剩余的额度显示在 Studio「设置 → 交易安全」里。
 - `liveOrderCooldownSeconds`（`--live-cooldown-seconds`，默认 60）：两笔实盘订单之间的最小间隔秒数，`0` 表示不启用；模拟盘不受影响。
 - `maxOrdersPerHour`（`--max-orders-per-hour`，默认 10）：每滚动小时最多提交的订单数。
 - `origins`（`--origins`）：允许下单和登记通行密钥的网址，必须和浏览器地址栏的来源完全一致（HTTPS，结尾没有 `/`；只有 localhost 可以用 HTTP）。
 - `demoConfirmWithoutPasskey`：只对模拟盘有效，默认 `false`。
 - 后四个上限一起限制「被诱导确认」能造成的损失（见「仍然存在的风险」）。不认识的字段或不合法的值会让交易代理拒绝启动，而不是退回到更宽松的设置。
+- 安装脚本写入或保留 `config.json` 之前，会用**新版交易代理自己的解析器**检查它（`studio-trader validate-config`，以 `nobody` 运行）：最多 8 个 origins、每个都必须正好是 `scheme://主机[:端口]`、除 localhost 外必须 HTTPS、各上限在范围内。不合格就在安装任何东西之前停下并说明原因；升级时现有的 `config.json` 不被新版接受，也会停下，旧版继续运行。
 
 修改：
 
@@ -296,7 +301,7 @@ grep -rl TRADING212_API_SECRET ~ 2>/dev/null
 ## 仍然存在的风险
 
 - **被篡改的 Studio 可以在任何一次面容 ID 弹窗背后换成攻击者的订单——不只是你下单的时候。** RP ID 就是 Studio 的网址，它的前端和服务端都由 `laosong` 控制。攻击者可以自己向交易代理发起 `/v1/orders/preview`（任何能连上 socket 的人都能），拿到挑战后在 Studio 页面上**随时**弹出 `navigator.credentials.get`：伪装成「会话过期，请重新验证」「移除通行密钥」，或者就在你自己下单的时候。面容 ID 弹窗不显示订单内容，你每按一次，就可能成交一笔攻击者的订单。
-  限制损失的是交易代理自己执行、Studio 改不了的：单笔上限（默认 500）、每日累计上限（默认 2000）、每小时笔数（默认 10）、实盘冷却（默认 60 秒）、只允许 `allowedEnvs` 里的账户，以及记录真实下单的审计。下单后留意 Trading 212 App 的通知，定期看 `audit`。这些只是限幅，**不能阻止**调包；根治需要一个 `laosong` 控制不了的确认通道（交易代理自己在独立主机名上提供确认页、TLS 由 root 所有的代理终止，或带订单详情的带外确认），**尚未实现**。
+  限制损失的是交易代理自己执行、Studio 改不了的：单笔上限（默认 500）、每个账户的每日累计上限（默认 2000）、每小时笔数（默认 10）、实盘冷却（默认 60 秒）、只允许 `allowedEnvs` 里的账户、状态未知之后 5 分钟内拒绝相同订单，以及记录真实下单的审计。下单后留意 Trading 212 App 的通知，定期看 `audit`。这些只是限幅，**不能阻止**调包；根治需要一个 `laosong` 控制不了的确认通道（交易代理自己在独立主机名上提供确认页、TLS 由 root 所有的代理终止，或带订单详情的带外确认），**尚未实现**。
 - **在 Studio 里输入的注册码可能被劫持，而且从名称和数量上看不出来。** 被入侵的 Studio 可以抢先用它登记攻击者自己的软件认证器，并伪造成功界面。每次登记后按第 6 步核对 AAGUID、凭据 ID 前缀、单设备/可同步（BE/BS）标志和精确到秒的登记时间；对不上就 `revoke-passkey` 并换下单密钥。
 - **sudo 密码是在属于 `laosong` 的终端里输入的。** `wsl.exe -e sudo …` 不经过 `laosong` 的 shell 配置，但这个终端设备归 `laosong` 所有，已经被入侵的 `laosong` 进程理论上可以抢读终端输入，从而拿到 sudo 密码，也就是 root。只在你认为 `laosong` 当前没有被入侵时输入 sudo 密码；怀疑被入侵时先不要输入，先在 Trading 212 删除下单密钥。
 - **互操作的锁靠开机服务维持。** 如果 WSL 更新后在开机服务之后又注册了处理器、重新创建或放开了 `/run/WSL`，在下次开机或重新运行 `sudo systemctl restart studio-trader-isolation` 之前，互操作可能重新打开；交易代理会把它报告为「隔离无效」（设置页、`check`），看到就立即处理。直接用 `AF_VSOCK` 连接 Windows 主机这条路没有专门封锁，目前依赖 WSL 服务不接受它没有发起的连接。

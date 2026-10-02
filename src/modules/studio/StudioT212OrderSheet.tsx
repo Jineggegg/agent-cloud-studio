@@ -134,8 +134,6 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
   const [passkeyRefused, setPasskeyRefused] = useState(false);
   // The broker may or may not have executed the confirmed order (timeout, 408, 5xx): no new preview is offered.
   const [unknownOutcome, setUnknownOutcome] = useState(false);
-  // The order the server held back because an identical one had an unknown outcome; it can be acknowledged.
-  const [unknownPendingOrder, setUnknownPendingOrder] = useState<string | null>(null);
   const sheet = useRef<HTMLDivElement>(null);
   // Whether the sheet is still mounted, so an outcome that arrives after it was closed is reported with a toast.
   const mounted = useRef(true);
@@ -165,7 +163,6 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
   const overCap = converted && estimate > cap;
   const overHolding = Boolean(orderSide === 'sell' && position && quantity !== null && quantity > position.quantity + 1e-9);
   const ready = enabled && TICKER.test(code) && quantity !== null && (orderType === 'market' || limitPrice !== null) && !overCap && !overHolding;
-  const orderKey = `${env}|${code}|${orderSide}|${quantity ?? ''}`;
   const secondsLeft = preview ? Math.max(0, Math.ceil((preview.deadline - clock) / 1000)) : 0;
   const expired = Boolean(preview && (spent || secondsLeft <= 0));
 
@@ -190,24 +187,24 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
   const close = () => { if (busy !== 'confirm') dismiss(); };
   const back = () => { setPreview(null); setSpent(false); setError(''); setUnknownOutcome(false); };
 
-  const requestPreview = async (acknowledgeUnknown = false) => {
+  const requestPreview = async () => {
     if (!ready || quantity === null) return;
     setBusy('preview'); setError('');
     try {
       const next = await readApiJson<OrderPreview>(await api.studio.t212Trading.preview({
         env, ticker: code, side: orderSide, type: orderType, quantity,
         ...(orderType === 'limit' && limitPrice !== null ? { limitPrice, timeValidity } : {}),
-        ...(acknowledgeUnknown ? { acknowledgeUnknown: true } : {}),
       }));
       const receivedAt = currentTime();
       setClock(receivedAt);
       setPreview({ ...next, deadline: receivedAt + PREVIEW_WINDOW_MS });
-      setSpent(false); setUnknownOutcome(false); setUnknownPendingOrder(null);
+      setSpent(false); setUnknownOutcome(false);
     } catch (reason) {
       const kind = errorCode(reason);
-      // Both refusals are handled on their own step: enabling Face ID here, or acknowledging the unknown order.
+      // Enabling Face ID is offered on its own step. An identical order held back after an unknown outcome cannot be
+      // overridden from Studio: the broker's message tells the owner to check Trading 212 and how long to wait.
       if (kind === 'T212_PASSKEY_REQUIRED') { setPasskeyRefused(true); setPreview(null); }
-      if (kind === 'T212_ORDER_UNKNOWN_PENDING') { setUnknownPendingOrder(orderKey); setPreview(null); }
+      if (kind === 'T212_ORDER_UNKNOWN_PENDING') setPreview(null);
       setError(reasonText(reason, '无法生成订单预览'));
     } finally { setBusy(null); }
   };
@@ -341,9 +338,6 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
     {(quantityProblem || limitProblem) && <p className="studio-feedback error" role="alert">{quantityProblem || limitProblem}</p>}
     {overHolding && position && <p className="studio-feedback error" role="alert">卖出数量超过持仓（持有 {decimalText(position.quantity)} 股）</p>}
     {error && <p className="studio-feedback error" role="alert">{error}</p>}
-    {unknownPendingOrder === orderKey && <button type="button" className="ios-button tinted t212-order-acknowledge" disabled={busy !== null} onClick={() => void requestPreview(true)}>
-      我已在 Trading 212 核对过，之前那笔没有成交，仍要下单
-    </button>}
     <div className="t212-order-actions">
       <button type="submit" className="ios-button filled t212-order-primary" disabled={!ready || busy !== null}>
         {busy === 'preview' && <StudioSpinner size={16} />}下一步

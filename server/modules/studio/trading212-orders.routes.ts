@@ -65,8 +65,9 @@ export function createTrading212OrdersRouter(service: ReturnType<typeof createTr
   }));
   router.post('/orders/preview', asyncHandler(async (req, res) => {
     requireUser(req);
-    // Only a literal true acknowledges that an identical order with an unknown outcome did not go through.
-    res.json(await service.preview(origin(req), order(req.body), record(req.body).acknowledgeUnknown === true));
+    // Only the order fields are relayed. The broker's hold on an order identical to one whose outcome is unknown
+    // cannot be lifted from Studio: the owner checks Trading 212 and waits it out.
+    res.json(await service.preview(origin(req), order(req.body)));
   }));
   router.post('/orders/:id/confirm', asyncHandler(async (req, res) => {
     requireUser(req);

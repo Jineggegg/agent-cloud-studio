@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 
 import { BrokerError } from './broker-error.js';
 import { inspectIsolation } from './broker-isolation.js';
-import { brokerKeyFile, loadBrokerConfig } from './broker.config.js';
+import { brokerKeyFile, loadBrokerConfig, parseBrokerConfig } from './broker.config.js';
 import { createBrokerRepository } from './broker.repository.js';
 import { createBrokerSocketServer } from './broker.server.js';
 import { createBrokerService } from './broker.service.js';
@@ -31,9 +31,11 @@ const USAGE = `用法：studio-trader <命令>
   revoke-passkey <id>       直接移除一把通行密钥
   audit [--limit N]         查看最近的下单审计记录
   set-key <live|demo>       从标准输入写入下单密钥（TRADING212_API_KEY / TRADING212_API_SECRET）
-  check                     检查配置、密钥文件和数据库（不联网）
+  check                     检查配置、密钥文件、数据库和隔离（不联网）
+  validate-config           按交易代理自己的规则检查标准输入里的 config.json（安装脚本用）
 状态目录：STUDIO_TRADER_STATE_DIR（默认 ${DEFAULT_STATE_DIR}）`;
 const KEY_VALUE = /^[^\s=]{8,512}$/;
+const MAX_CONFIG_BYTES = 64 * 1024;
 
 function option(args: string[], name: string) {
   const index = args.indexOf(name);
@@ -64,8 +66,22 @@ async function readKeyPair(io: Io) {
     return { key: await ask('TRADING212_API_KEY: '), secret: await ask('TRADING212_API_SECRET: ') };
   } finally { lines.close(); }
 }
+// Reads all of standard input as text, refusing more than `limit` bytes.
+async function readInput(io: Io, limit: number) {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of io.stdin) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    size += buffer.length;
+    if (size > limit) throw new BrokerError(`交易代理配置无效：超过 ${limit} 字节`, 400, 'BROKER_CONFIG_INVALID');
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
 function serve(stateDir: string, args: string[], io: Io) {
   const { config, db, trading212, service } = openService(stateDir);
+  // Orders a previous broker process left in flight (killed mid-order) become 'unknown' before any new request.
+  service.recoverInterruptedOrders();
   const server = createBrokerSocketServer(service);
   const activated = io.env.LISTEN_FDS === '1' && Number(io.env.LISTEN_PID) === io.pid;
   const socketPath = option(args, '--socket') ?? io.env.STUDIO_TRADER_SOCKET ?? DEFAULT_SOCKET;
@@ -185,6 +201,15 @@ export async function runBrokerCommand(argv: string[], io: Io = { stdout: proces
           if (!config.origins.length) { io.stderr.write('config.json 没有 origins：任何网址都不能下单\n'); result = 1; }
           return result;
         } finally { db.close(); }
+      }
+      case 'validate-config': {
+        // Used by scripts/wsl/install-t212-broker.sh before it writes or keeps a config.json: the parser the broker
+        // starts with, so an invalid file (too many origins, a trailing /, ...) fails the install, not the broker.
+        const config = parseBrokerConfig(await readInput(io, MAX_CONFIG_BYTES), stateDir);
+        io.stdout.write(`配置有效：允许 ${config.allowedEnvs.join(', ') || '（无，下单关闭）'}；单笔上限 ${config.maxOrderValue}；`
+          + `每日累计上限 ${config.maxDailyOrderValue || '关'}；实盘冷却 ${config.liveOrderCooldownSeconds || '关'}；每小时 ${config.maxOrdersPerHour} 笔；`
+          + `来源 ${config.origins.join(', ') || '（无，任何网址都不能下单）'}\n`);
+        return 0;
       }
       default:
         io.stdout.write(`${USAGE}\n`);

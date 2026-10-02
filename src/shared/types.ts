@@ -2001,6 +2001,9 @@ export type T212TradingConfig = {
   // The broker's rolling-24h cumulative value cap, and the minimum seconds between live orders; 0 means off.
   maxDailyOrderValue: number;
   liveOrderCooldownSeconds: number;
+  // Per account (the cap applies to each separately): value used in the last 24 h and what is left, in that
+  // account's currency; `remaining` is null while the cap is off. Absent for an account the broker has no figures for.
+  dailyOrderValue?: Partial<Record<T212Env, { currency: string; used: number; remaining: number | null }>>;
   // Account currency from the broker's or Studio's last read; absent before the account was first read.
   currency?: string;
   // Passkeys on every domain; each domain trades only with its own.

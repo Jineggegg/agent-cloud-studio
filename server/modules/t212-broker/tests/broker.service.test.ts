@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { assertion, attestation, coded, enroll, fixture, ORDER, order, signedOrder, STUDIO, SUMMARY, TAILNET } from './broker-fixture.js';
+import { assertion, attestation, coded, enroll, fixture, ORDER, order, signedOrder, START, STUDIO, SUMMARY, TAILNET } from './broker-fixture.js';
 
 const HEALTHY_ISOLATION = { ok: true, interopActive: false, interopBinfmt: false, interopSocket: false, windowsDrives: [] as string[], notes: [] as string[] };
 
@@ -9,12 +9,12 @@ test('without allowed accounts, a trusted origin or a passkey nothing is preview
   const off = fixture({ config: { allowedEnvs: [] } });
   const f = fixture();
   try {
-    await assert.rejects(off.service.preview({ origin: STUDIO, order: order(), acknowledgeUnknown: false }), coded('T212_TRADING_DISABLED', /allowedEnvs/));
-    await assert.rejects(f.service.preview({ origin: 'https://evil.example', order: order(), acknowledgeUnknown: false }), coded('T212_UNTRUSTED_ORIGIN'));
-    await assert.rejects(f.service.preview({ origin: `${STUDIO}/`, order: order(), acknowledgeUnknown: false }), coded('T212_UNTRUSTED_ORIGIN'));
+    await assert.rejects(off.service.preview({ origin: STUDIO, order: order() }), coded('T212_TRADING_DISABLED', /allowedEnvs/));
+    await assert.rejects(f.service.preview({ origin: 'https://evil.example', order: order() }), coded('T212_UNTRUSTED_ORIGIN'));
+    await assert.rejects(f.service.preview({ origin: `${STUDIO}/`, order: order() }), coded('T212_UNTRUSTED_ORIGIN'));
     // Live orders always need a passkey: there is no double-confirmation path.
-    await assert.rejects(f.service.preview({ origin: STUDIO, order: order(), acknowledgeUnknown: false }), coded('T212_PASSKEY_REQUIRED', /注册码/));
-    await assert.rejects(f.service.preview({ origin: STUDIO, order: order({ env: 'demo' }), acknowledgeUnknown: false }), coded('T212_PASSKEY_REQUIRED'));
+    await assert.rejects(f.service.preview({ origin: STUDIO, order: order() }), coded('T212_PASSKEY_REQUIRED', /注册码/));
+    await assert.rejects(f.service.preview({ origin: STUDIO, order: order({ env: 'demo' }) }), coded('T212_PASSKEY_REQUIRED'));
     assert.equal(off.calls.length + f.calls.length, 0);
   } finally { off.close(); f.close(); }
 });
@@ -24,7 +24,7 @@ test('enrollment codes are random, stored only as a hash, expire after ten minut
   try {
     const first = f.service.createEnrollmentCode();
     assert.match(first.code, /^[0-9A-HJKMNP-TV-Z]{5}(-[0-9A-HJKMNP-TV-Z]{5}){3}$/);
-    assert.equal(Date.parse(first.expiresAt) - Date.parse('2026-10-02T10:00:00Z'), 10 * 60_000);
+    assert.equal(Date.parse(first.expiresAt) - START, 10 * 60_000);
     assert.notEqual(f.service.createEnrollmentCode().code, first.code);
     const stored = JSON.stringify(f.database.prepare('SELECT * FROM enrollment_codes').all());
     assert.ok(!stored.includes(first.code) && !stored.includes(first.code.replace(/-/g, '')), 'only a hash is stored');
@@ -93,7 +93,7 @@ test('a passkey order is valued by the broker, signed for exactly this challenge
     assert.equal(preview.requires, 'passkey');
     assert.equal(preview.estimatedValue, 240);
     assert.equal(preview.currency, 'GBP');
-    assert.equal(Date.parse(preview.expiresAt) - Date.parse('2026-10-02T10:00:00Z'), 60_000);
+    assert.equal(Date.parse(preview.expiresAt) - START, 60_000);
     assert.equal(preview.authentication?.userVerification, 'required');
     assert.deepEqual(((preview.authentication ?? {}).allowCredentials as { id: string }[]).map(item => item.id), ['cred-1']);
     assert.equal(f.posts().length, 0, 'previewing never places an order');
@@ -114,7 +114,7 @@ test('a passkey order is valued by the broker, signed for exactly this challenge
 
     // Replays: the same preview id, and the same assertion against a fresh preview.
     await assert.rejects(f.service.confirm({ origin: STUDIO, id: preview.id, proof: { assertion: signed } }), coded('T212_PREVIEW_GONE'));
-    const fresh = await f.service.preview({ origin: STUDIO, order: order({ quantity: 1.5 }), acknowledgeUnknown: false });
+    const fresh = await f.service.preview({ origin: STUDIO, order: order({ quantity: 1.5 }) });
     await assert.rejects(f.service.confirm({ origin: STUDIO, id: fresh.id, proof: { assertion: signed } }), coded('T212_PASSKEY_FAILED'));
     assert.equal(f.posts().length, 1, 'one signature places at most one order');
 
@@ -139,11 +139,11 @@ test('challenges expire after 60 seconds and are bound to the origin and RP ID t
     await assert.rejects(f.service.confirm({ origin: TAILNET, id: elsewhere.preview.id, proof: { assertion: elsewhere.assertion } }), coded('T212_UNTRUSTED_ORIGIN'));
 
     // An assertion signed for another RP ID, or by a passkey of another RP ID, does not verify.
-    const wrongRp = await f.service.preview({ origin: STUDIO, order: order(), acknowledgeUnknown: false });
+    const wrongRp = await f.service.preview({ origin: STUDIO, order: order() });
     await assert.rejects(f.service.confirm({ origin: STUDIO, id: wrongRp.id, proof: { assertion: assertion({ challenge: String(wrongRp.authentication?.challenge), origin: STUDIO, rpId: 'desktop.tail1234.ts.net' }) } }),
       coded('T212_PASSKEY_FAILED'));
     // A domain without its own passkey cannot trade, even though another domain has one.
-    await assert.rejects(f.service.preview({ origin: TAILNET, order: order(), acknowledgeUnknown: false }), coded('T212_PASSKEY_REQUIRED', /desktop\.tail1234\.ts\.net/));
+    await assert.rejects(f.service.preview({ origin: TAILNET, order: order() }), coded('T212_PASSKEY_REQUIRED', /desktop\.tail1234\.ts\.net/));
     await enroll(f, TAILNET, 'cred-tailnet');
     const tailnet = await signedOrder(f, {}, TAILNET, { id: 'cred-tailnet' });
     assert.deepEqual(((tailnet.preview.authentication ?? {}).allowCredentials as { id: string }[]).map(item => item.id), ['cred-tailnet']);
@@ -172,7 +172,7 @@ test('the signature counter must increase once an authenticator counts, and a pl
     const next = await signedOrder(f, { quantity: 0.5 }, STUDIO, { counter: 6 });
     await f.service.confirm({ origin: STUDIO, id: next.preview.id, proof: { assertion: next.assertion } });
 
-    const unsigned = await f.service.preview({ origin: STUDIO, order: order(), acknowledgeUnknown: false });
+    const unsigned = await f.service.preview({ origin: STUDIO, order: order() });
     await assert.rejects(f.service.confirm({ origin: STUDIO, id: unsigned.id, proof: { confirmed: true } }), coded('T212_PASSKEY_REQUIRED'));
     assert.equal(f.posts().length, 2);
   } finally { f.close(); }
@@ -195,7 +195,7 @@ test('failed assertions are limited: ten in fifteen minutes lock confirmations',
   try {
     await enroll(f);
     for (let attempt = 0; attempt < 10; attempt += 1) {
-      const preview = await f.service.preview({ origin: STUDIO, order: order(), acknowledgeUnknown: false });
+      const preview = await f.service.preview({ origin: STUDIO, order: order() });
       const forged = assertion({ challenge: String(preview.authentication?.challenge), origin: STUDIO, signature: 'forged' });
       await assert.rejects(f.service.confirm({ origin: STUDIO, id: preview.id, proof: { assertion: forged } }), coded('T212_PASSKEY_FAILED'));
     }
@@ -213,7 +213,7 @@ test('the cap uses the broker’s own FX-aware valuation, including limit sells 
   const f = fixture({ config: { maxOrderValue: 300 } });
   try {
     await enroll(f);
-    const preview = (input: Parameters<typeof order>[0]) => f.service.preview({ origin: STUDIO, order: order(input), acknowledgeUnknown: false });
+    const preview = (input: Parameters<typeof order>[0]) => f.service.preview({ origin: STUDIO, order: order(input) });
     await assert.rejects(preview({ quantity: 2 }), coded('T212_ORDER_CAP', /£320\.00.*£300\.00/));
     // A limit sell is valued at no less than the shares are worth.
     await assert.rejects(preview({ side: 'sell', quantity: 2, type: 'limit', limitPrice: 0.01 }), coded('T212_ORDER_CAP'));
@@ -239,7 +239,7 @@ test('the cap uses the broker’s own FX-aware valuation, including limit sells 
   });
   try {
     await enroll(forint);
-    await assert.rejects(forint.service.preview({ origin: STUDIO, order: order({ ticker: 'TSLA_US_EQ', type: 'limit', quantity: 1, limitPrice: 200 }), acknowledgeUnknown: false }),
+    await assert.rejects(forint.service.preview({ origin: STUDIO, order: order({ ticker: 'TSLA_US_EQ', type: 'limit', quantity: 1, limitPrice: 200 }) }),
       coded('T212_ORDER_CAP', /72,000/));
   } finally { forint.close(); }
 });
@@ -249,6 +249,8 @@ test('outcomes are audited as placed, rejected or unknown, and an unknown one ho
   try {
     await enroll(f);
     f.onOrder(() => new Response('', { status: 503 }));
+    // A preview of the same order made before the first outcome is known (a second tab, a forged request).
+    const early = await signedOrder(f);
     const first = await signedOrder(f);
     await assert.rejects(f.service.confirm({ origin: STUDIO, id: first.preview.id, proof: { assertion: first.assertion } }), coded('T212_ORDER_UNKNOWN', /订单状态未知/));
 
@@ -264,30 +266,115 @@ test('outcomes are audited as placed, rejected or unknown, and an unknown one ho
     assert.equal(f.posts().length, 3, 'never retried');
     assert.deepEqual(f.audit().map(row => row.status), ['unknown', 'rejected', 'unknown']);
 
-    // The identical order is held back, also through a preview made before; acknowledging lets it through.
+    // The identical order is held back for five minutes, also through the preview made before, and nothing the
+    // caller sends lifts the hold: an old acknowledgeUnknown flag is ignored.
     f.onOrder(() => Response.json(ORDER));
-    await assert.rejects(f.service.preview({ origin: STUDIO, order: order(), acknowledgeUnknown: false }), coded('T212_ORDER_UNKNOWN_PENDING'));
-    const acknowledged = await f.service.preview({ origin: STUDIO, order: order(), acknowledgeUnknown: true });
-    assert.ok(acknowledged.warnings.some(warning => warning.includes('状态未知')));
-    const signature = assertion({ challenge: String(acknowledged.authentication?.challenge), origin: STUDIO });
-    await f.service.confirm({ origin: STUDIO, id: acknowledged.id, proof: { assertion: signature } });
-    f.advance(5 * 60_000 + 1);
-    assert.equal((await f.service.preview({ origin: STUDIO, order: order(), acknowledgeUnknown: false })).requires, 'passkey');
+    await assert.rejects(f.service.preview({ origin: STUDIO, order: order() }), coded('T212_ORDER_UNKNOWN_PENDING', /约 5 分钟内不接受相同的订单/));
+    const flagged = { origin: STUDIO, order: order(), acknowledgeUnknown: true } as Parameters<typeof f.service.preview>[0];
+    await assert.rejects(f.service.preview(flagged), coded('T212_ORDER_UNKNOWN_PENDING'));
+    await assert.rejects(f.service.confirm({ origin: STUDIO, id: early.preview.id, proof: { assertion: early.assertion } }), coded('T212_ORDER_UNKNOWN_PENDING'));
+    assert.equal(f.posts().length, 3, 'the held order never reached Trading 212');
+    // A different order is not held; the identical one is accepted again once the hold has passed.
+    assert.equal((await f.service.preview({ origin: STUDIO, order: order({ quantity: 3 }) })).requires, 'passkey');
+    f.advance(4 * 60_000);
+    await assert.rejects(f.service.preview({ origin: STUDIO, order: order() }), coded('T212_ORDER_UNKNOWN_PENDING', /约 1 分钟内/));
+    f.advance(60_000 + 1);
+    const later = await signedOrder(f);
+    await f.service.confirm({ origin: STUDIO, id: later.preview.id, proof: { assertion: later.assertion } });
+    assert.equal(f.posts().length, 4);
   } finally { f.close(); }
+});
+
+test('an unexpected throw after the slot is reserved settles it: unknown once the order may have been sent, error before', async () => {
+  // Sent: placeOrder fails in a way it never reports as a value (a bug after the request went out).
+  const sent = fixture({ wrap: { trading212: client => ({ ...client, placeOrder: async () => { throw new TypeError('bug after the request'); } }) } });
+  try {
+    await enroll(sent);
+    const signed = await signedOrder(sent);
+    await assert.rejects(sent.service.confirm({ origin: STUDIO, id: signed.preview.id, proof: { assertion: signed.assertion } }),
+      coded('T212_ORDER_UNKNOWN', /订单状态未知/));
+    assert.deepEqual(sent.audit().map(row => [row.status, row.error]), [['unknown', '交易代理在提交订单时出错，订单状态未知']]);
+    assert.ok(sent.audit()[0].passkey_id, 'the verified passkey is recorded');
+    // It counts like any unknown outcome: the identical order is held back.
+    await assert.rejects(sent.service.preview({ origin: STUDIO, order: order() }), coded('T212_ORDER_UNKNOWN_PENDING'));
+  } finally { sent.close(); }
+
+  // Not sent: an internal failure while verifying the passkey, before placeOrder was called.
+  const early = fixture({
+    config: { maxOrdersPerHour: 1 },
+    wrap: {
+      webauthn: webauthn => ({
+        ...webauthn,
+        verifyAuthenticationResponse: (async () => ({ verified: true, get authenticationInfo(): never { throw new RangeError('database is locked'); } })) as unknown as typeof webauthn.verifyAuthenticationResponse,
+      }),
+    },
+  });
+  try {
+    await enroll(early);
+    const signed = await signedOrder(early);
+    await assert.rejects(early.service.confirm({ origin: STUDIO, id: signed.preview.id, proof: { assertion: signed.assertion } }), /database is locked/);
+    assert.deepEqual(early.audit().map(row => row.status), ['error']);
+    assert.equal(early.posts().length, 0);
+    // 'error' counts against nothing: with an hourly limit of one, the next order may still go through.
+    assert.ok(await early.service.preview({ origin: STUDIO, order: order() }));
+  } finally { early.close(); }
+});
+
+test('orders a killed broker left pending become unknown at the next start and keep counting', async () => {
+  const f = fixture({ config: { maxOrdersPerHour: 1 } });
+  try {
+    await enroll(f);
+    // What a broker killed between reserving the slot and recording the outcome leaves behind.
+    f.repository.recordPendingAudit({
+      previewId: 'p1', env: 'live', ticker: 'AAPL_US_EQ', side: 'buy', type: 'market', quantity: 1, limitPrice: null,
+      estimatedValue: 160, currency: 'GBP', method: 'passkey', rpId: 'studio.ajarche.com', passkeyId: null,
+    }, START);
+    assert.equal(f.service.recoverInterruptedOrders(), 1);
+    assert.equal(f.service.recoverInterruptedOrders(), 0, 'only once');
+    assert.deepEqual(f.audit().map(row => [row.status, row.error]), [['unknown', '交易代理在下单途中停止，订单状态未知：请在 Trading 212 核对']]);
+    assert.ok(f.logs.some(line => line.includes('marked 1 interrupted order(s) as unknown')));
+  } finally { f.close(); }
+});
+
+test('the daily value cap is per account and per currency, and status reports each account\'s budget', async () => {
+  const f = fixture({ config: { maxDailyOrderValue: 300 } });
+  try {
+    await enroll(f);
+    const live = await signedOrder(f, { env: 'live', quantity: 1 });
+    await f.service.confirm({ origin: STUDIO, id: live.preview.id, proof: { assertion: live.assertion } });
+    // £160 of live orders do not use up the demo account's budget.
+    const demo = await signedOrder(f, { env: 'demo', quantity: 1 });
+    await f.service.confirm({ origin: STUDIO, id: demo.preview.id, proof: { assertion: demo.assertion } });
+    await assert.rejects(f.service.preview({ origin: STUDIO, order: order({ env: 'live', quantity: 1 }) }), coded('T212_DAILY_LIMIT', /实盘账户 .*还剩 £140\.00/));
+    await assert.rejects(f.service.preview({ origin: STUDIO, order: order({ env: 'demo', quantity: 1 }) }), coded('T212_DAILY_LIMIT', /模拟盘账户/));
+    assert.deepEqual(f.service.status().dailyOrderValue, {
+      live: { currency: 'GBP', used: 160, remaining: 140 }, demo: { currency: 'GBP', used: 160, remaining: 140 },
+    });
+    // An order recorded in another currency (an account whose currency changed) is not added 1:1 to this one.
+    f.repository.recordAudit({
+      previewId: 'old', env: 'live', ticker: 'TSLA_US_EQ', side: 'buy', type: 'limit', quantity: 1, limitPrice: 250, estimatedValue: 250,
+      currency: 'USD', method: 'passkey', rpId: 'studio.ajarche.com', passkeyId: null, status: 'placed',
+    }, START - 1);
+    assert.deepEqual(f.service.status().dailyOrderValue.live, { currency: 'GBP', used: 160, remaining: 140 });
+    f.advance(24 * 60 * 60_000 + 1);
+    assert.deepEqual(f.service.status().dailyOrderValue.live, { currency: 'GBP', used: 0, remaining: 300 });
+  } finally { f.close(); }
+  const off = fixture();
+  try { assert.equal(off.service.status().dailyOrderValue.live, undefined, 'no account read yet and no orders: no figures'); } finally { off.close(); }
 });
 
 test('demo orders may skip the passkey only when the owner configured it; live never can', async () => {
   const f = fixture({ config: { demoConfirmWithoutPasskey: true } });
   try {
-    const demo = await f.service.preview({ origin: STUDIO, order: order({ env: 'demo' }), acknowledgeUnknown: false });
+    const demo = await f.service.preview({ origin: STUDIO, order: order({ env: 'demo' }) });
     assert.equal(demo.requires, 'confirm');
     assert.equal('authentication' in demo, false);
-    await assert.rejects(f.service.confirm({ origin: STUDIO, id: (await f.service.preview({ origin: STUDIO, order: order({ env: 'demo' }), acknowledgeUnknown: false })).id,
+    await assert.rejects(f.service.confirm({ origin: STUDIO, id: (await f.service.preview({ origin: STUDIO, order: order({ env: 'demo' }) })).id,
       proof: { assertion: assertion({ challenge: 'x', origin: STUDIO }) } }), coded('T212_CONFIRM_REQUIRED'));
     const result = await f.service.confirm({ origin: STUDIO, id: demo.id, proof: { confirmed: true } });
     assert.equal(result.method, 'confirm');
     assert.equal(f.posts()[0].url, 'https://demo.trading212.com/api/v0/equity/orders/market');
-    await assert.rejects(f.service.preview({ origin: STUDIO, order: order({ env: 'live' }), acknowledgeUnknown: false }), coded('T212_PASSKEY_REQUIRED'));
+    await assert.rejects(f.service.preview({ origin: STUDIO, order: order({ env: 'live' }) }), coded('T212_PASSKEY_REQUIRED'));
     assert.equal(f.service.status().demoConfirm, true);
   } finally { f.close(); }
 });
@@ -300,12 +387,12 @@ test('the hourly order limit and the pending-challenge limit bound abuse through
       const signed = await signedOrder(f, { quantity });
       await f.service.confirm({ origin: STUDIO, id: signed.preview.id, proof: { assertion: signed.assertion } });
     }
-    await assert.rejects(f.service.preview({ origin: STUDIO, order: order(), acknowledgeUnknown: false }), coded('T212_HOURLY_LIMIT'));
+    await assert.rejects(f.service.preview({ origin: STUDIO, order: order() }), coded('T212_HOURLY_LIMIT'));
     f.advance(60 * 60_000 + 1);
-    for (let index = 0; index < 50; index += 1) await f.service.preview({ origin: STUDIO, order: order(), acknowledgeUnknown: false });
-    await assert.rejects(f.service.preview({ origin: STUDIO, order: order(), acknowledgeUnknown: false }), coded('T212_TOO_MANY_PENDING'));
+    for (let index = 0; index < 50; index += 1) await f.service.preview({ origin: STUDIO, order: order() });
+    await assert.rejects(f.service.preview({ origin: STUDIO, order: order() }), coded('T212_TOO_MANY_PENDING'));
     f.advance(60_001);
-    assert.ok(await f.service.preview({ origin: STUDIO, order: order(), acknowledgeUnknown: false }), 'expired challenges are pruned');
+    assert.ok(await f.service.preview({ origin: STUDIO, order: order() }), 'expired challenges are pruned');
   } finally { f.close(); }
 });
 
@@ -390,7 +477,7 @@ test('a daily cumulative value cap holds back further orders until the 24h windo
     const first = await signedOrder(f, { quantity: 1 });
     await f.service.confirm({ origin: STUDIO, id: first.preview.id, proof: { assertion: first.assertion } });
     // 160 + 160 would exceed 300, so the next preview is refused before any passkey prompt.
-    await assert.rejects(f.service.preview({ origin: STUDIO, order: order({ quantity: 1 }), acknowledgeUnknown: false }), coded('T212_DAILY_LIMIT', /每日累计上限/));
+    await assert.rejects(f.service.preview({ origin: STUDIO, order: order({ quantity: 1 }) }), coded('T212_DAILY_LIMIT', /每日累计上限/));
     assert.equal(f.posts().length, 1);
     // After 24 hours the window clears and trading resumes.
     f.advance(24 * 60 * 60_000 + 1);
@@ -407,9 +494,9 @@ test('a live cooldown spaces out live orders but leaves demo orders alone', asyn
     const first = await signedOrder(f, { env: 'live', quantity: 1 });
     await f.service.confirm({ origin: STUDIO, id: first.preview.id, proof: { assertion: first.assertion } });
     // A second live order within the cooldown is refused, at preview and (for a preview made earlier) at confirm.
-    await assert.rejects(f.service.preview({ origin: STUDIO, order: order({ env: 'live' }), acknowledgeUnknown: false }), coded('T212_LIVE_COOLDOWN', /实盘冷却/));
+    await assert.rejects(f.service.preview({ origin: STUDIO, order: order({ env: 'live' }) }), coded('T212_LIVE_COOLDOWN', /实盘冷却/));
     // Demo orders are not subject to the live cooldown.
-    const demo = await f.service.preview({ origin: STUDIO, order: order({ env: 'demo' }), acknowledgeUnknown: false });
+    const demo = await f.service.preview({ origin: STUDIO, order: order({ env: 'demo' }) });
     assert.equal(demo.requires, 'passkey');
     f.advance(60_000 + 1);
     const third = await signedOrder(f, { env: 'live', quantity: 0.5 });

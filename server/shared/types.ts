@@ -1781,6 +1781,14 @@ export type StudioT212BrokerIsolation = {
 };
 
 /**
+ * One account's use of the broker's rolling-24h value cap (maxDailyOrderValue), in that account's
+ * `currency`: `used` sums the orders that reached Trading 212 or may have (placed, unknown, in flight)
+ * in the last 24 hours; `remaining` is what is left under the cap, or null while the cap is off. The cap
+ * applies to each account separately. Part of GET /v1/status, shown on Studio's Settings page.
+ */
+export type StudioT212DailyOrderValue = { currency: string; used: number; remaining: number | null };
+
+/**
  * GET /v1/status: the broker's own configuration and passkeys, read-only. `keys` says which
  * order key files exist (never their content); `currencies` holds the account currency the
  * broker last read per account; `demoConfirm` is true only when the owner allowed demo orders
@@ -1794,6 +1802,8 @@ export type StudioT212BrokerStatus = {
   // Cumulative value cap over a rolling 24 h, and the minimum seconds between live orders; 0 means off.
   maxDailyOrderValue: number;
   liveOrderCooldownSeconds: number;
+  // Per account with a known currency: the rolling-24h value used and left under maxDailyOrderValue.
+  dailyOrderValue: Partial<Record<StudioT212Environment, StudioT212DailyOrderValue>>;
   origins: string[];
   demoConfirm: boolean;
   keys: Record<StudioT212Environment, boolean>;

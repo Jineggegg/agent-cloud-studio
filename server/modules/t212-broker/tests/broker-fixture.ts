@@ -112,9 +112,13 @@ function fakeWebAuthn() {
 // A healthy machine by default; a test can pass its own to exercise the "isolation invalid" path.
 const HEALTHY_ISOLATION = { ok: true, interopActive: false, interopBinfmt: false, interopSocket: false, windowsDrives: [] as string[], notes: [] as string[] };
 
+type Trading212Client = ReturnType<typeof createBrokerTrading212Client>;
+
 export type FixtureOptions = {
   config?: Record<string, unknown>; summary?: Record<string, unknown>; positions?: unknown[]; keys?: boolean;
   isolation?: typeof HEALTHY_ISOLATION;
+  // Replace parts of the fakes, e.g. to make placeOrder or the WebAuthn library fail in an unexpected way.
+  wrap?: { trading212?: (client: Trading212Client) => Trading212Client; webauthn?: (webauthn: WebAuthn) => WebAuthn };
 };
 
 /** Builds a broker service over fakes; `close` removes its temporary state directory. */
@@ -148,11 +152,13 @@ export function fixture(options: FixtureOptions = {}) {
   const { webauthn, calls: webauthnCalls } = fakeWebAuthn();
   const logs: string[] = [];
   const service = createBrokerService({
-    config, repository, trading212, webauthn, now: () => clock, log: line => logs.push(line),
+    config, repository, now: () => clock, log: line => logs.push(line),
+    trading212: options.wrap?.trading212?.(trading212) ?? trading212,
+    webauthn: options.wrap?.webauthn?.(webauthn) ?? webauthn,
     isolation: () => options.isolation ?? HEALTHY_ISOLATION,
   });
   return {
-    service, database, calls, webauthnCalls, logs, directory,
+    service, database, repository, calls, webauthnCalls, logs, directory,
     posts: () => calls.filter(call => call.method === 'POST'),
     advance: (ms: number) => { clock += ms; },
     onOrder: (respond: (url: string) => Response) => { respondToOrder = respond; },
@@ -175,7 +181,7 @@ export async function enroll(f: Fixture, origin = STUDIO, id = 'cred-1') {
 
 /** Previews an order and signs its challenge with the given passkey, as Face ID in the browser would. */
 export async function signedOrder(f: Fixture, input: Partial<StudioT212OrderInput> = {}, origin = STUDIO, extra: { counter?: number; id?: string } = {}) {
-  const preview = await f.service.preview({ origin, order: order(input), acknowledgeUnknown: false });
+  const preview = await f.service.preview({ origin, order: order(input) });
   const challenge = String(preview.authentication?.challenge);
   return { preview, assertion: assertion({ challenge, origin, ...extra }) };
 }

@@ -346,23 +346,22 @@ test('an outcome that arrives after the sheet was unmounted is reported with a t
   })));
 });
 
-test('an identical order held back after an unknown outcome needs an explicit acknowledgement', async () => {
+test('an identical order held back after an unknown outcome shows the broker’s guidance and offers no override', async () => {
   account(TRADING_LIVE);
   trading.preview
-    .mockImplementationOnce(json('约 2 分钟前一笔相同的订单状态未知：请先在 Trading 212 核对', 409, 'T212_ORDER_UNKNOWN_PENDING'))
+    .mockImplementationOnce(json('约 2 分钟前一笔相同的订单状态未知：请先在 Trading 212 核对它是否已经成交。为免重复下单，交易代理在约 3 分钟内不接受相同的订单', 409, 'T212_ORDER_UNKNOWN_PENDING'))
     .mockImplementation(json(PREVIEW));
   const sheet = await openBuyApple();
   fireEvent.change(within(sheet).getByLabelText('数量'), { target: { value: '1' } });
   fireEvent.click(within(sheet).getByRole('button', { name: '下一步' }));
-  expect((await within(sheet).findByRole('alert')).textContent).toContain('状态未知');
-  const acknowledgement = { name: /我已在 Trading 212 核对过/ };
-  expect(within(sheet).getByRole('button', acknowledgement)).toBeTruthy();
-  // Changing the order hides the acknowledgement, which only covers the order the server held back.
-  fireEvent.change(within(sheet).getByLabelText('数量'), { target: { value: '0.5' } });
-  expect(within(sheet).queryByRole('button', acknowledgement)).toBeNull();
-  fireEvent.change(within(sheet).getByLabelText('数量'), { target: { value: '1' } });
-  fireEvent.click(within(sheet).getByRole('button', acknowledgement));
-  await waitFor(() => expect(trading.preview).toHaveBeenLastCalledWith({ env: 'live', ticker: 'AAPL_US_EQ', side: 'buy', type: 'market', quantity: 1, acknowledgeUnknown: true }));
+  const alert = await within(sheet).findByRole('alert');
+  expect(alert.textContent).toContain('请先在 Trading 212 核对');
+  expect(alert.textContent).toContain('约 3 分钟内不接受相同的订单');
+  // Nothing in Studio can lift the hold: no acknowledgement button, and a retry sends the plain order again.
+  expect(within(sheet).queryByRole('button', { name: /核对过|仍要下单/ })).toBeNull();
+  expect(within(sheet).queryByText('买入 1 股')).toBeNull();
+  fireEvent.click(within(sheet).getByRole('button', { name: '下一步' }));
+  await waitFor(() => expect(trading.preview).toHaveBeenLastCalledWith({ env: 'live', ticker: 'AAPL_US_EQ', side: 'buy', type: 'market', quantity: 1 }));
   expect(await within(sheet).findByText('买入 1 股')).toBeTruthy();
 });
 

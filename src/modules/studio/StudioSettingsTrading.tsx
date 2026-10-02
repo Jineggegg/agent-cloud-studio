@@ -20,6 +20,15 @@ function money(value: number, currency: string | undefined) {
   try { return new Intl.NumberFormat('zh-CN', { style: 'currency', currency, maximumFractionDigits: 2 }).format(value); }
   catch { return `${value.toLocaleString('zh-CN')} ${currency}`; }
 }
+// "实盘剩余 £1,840（已用 £160）· 模拟盘剩余 …" for the accounts the broker reports a daily budget for; '' when none.
+function dailyBudgets(config: T212TradingConfig) {
+  if (!(config.maxDailyOrderValue > 0)) return '';
+  return (['live', 'demo'] as T212Env[]).flatMap(env => {
+    const budget = config.dailyOrderValue?.[env];
+    if (!budget || budget.remaining === null) return [];
+    return [`${env === 'live' ? '实盘' : '模拟盘'}剩余 ${money(budget.remaining, budget.currency)}（已用 ${money(budget.used, budget.currency)}）`];
+  }).join(' · ');
+}
 function day(iso: string) {
   return new Date(iso).toLocaleDateString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric' });
 }
@@ -82,9 +91,12 @@ export function StudioSettingsTrading() {
             <span className={`status-badge ${config.allowedEnvs.includes('live') ? 'warn' : config.allowedEnvs.length ? 'good' : ''}`}>{environments(config.allowedEnvs)}</span>
           </div>
           <div className="ios-row no-icon">
-            <span className="ios-row-body"><strong>单笔上限</strong><small>超过的订单由交易代理拒绝 · 每小时最多 {config.maxOrdersPerHour} 笔{config.maxDailyOrderValue ? ` · 每日累计上限 ${money(config.maxDailyOrderValue, config.currency)}` : ''}{config.liveOrderCooldownSeconds ? ` · 实盘冷却 ${config.liveOrderCooldownSeconds} 秒` : ''}</small></span>
+            <span className="ios-row-body"><strong>单笔上限</strong><small>超过的订单由交易代理拒绝 · 每小时最多 {config.maxOrdersPerHour} 笔{config.maxDailyOrderValue ? ` · 每个账户每日累计上限 ${money(config.maxDailyOrderValue, config.currency)}` : ''}{config.liveOrderCooldownSeconds ? ` · 实盘冷却 ${config.liveOrderCooldownSeconds} 秒` : ''}</small></span>
             <span className="t212-settings-value">{money(config.maxOrderValue, config.currency)}</span>
           </div>
+          {dailyBudgets(config) && <div className="ios-row no-icon">
+            <span className="ios-row-body"><strong>今日剩余额度</strong><small>{dailyBudgets(config)} · 滚动 24 小时，实盘和模拟盘分别计算</small></span>
+          </div>}
           <div className="ios-row no-icon">
             <span className="ios-row-body"><strong>当前网址</strong><small className="mono">{window.location.origin}</small></span>
             <span className={`status-badge ${trusted && enabledHere ? 'good' : 'warn'}`}>{!trusted ? '未列入白名单' : enabledHere ? '可下单' : '需先启用面容 ID'}</span>

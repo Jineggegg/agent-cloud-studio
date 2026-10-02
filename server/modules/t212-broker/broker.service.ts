@@ -13,6 +13,7 @@ import type {
   StudioT212BrokerPasskey,
   StudioT212BrokerPreview,
   StudioT212BrokerStatus,
+  StudioT212DailyOrderValue,
   StudioT212Environment,
   StudioT212OrderInput,
 } from '@/shared/types.js';
@@ -50,7 +51,7 @@ type TrustedOrigin = { origin: string; rpId: string };
 // What a stored order challenge is bound to; it never leaves the broker's database.
 type PendingOrder = {
   order: StudioT212OrderInput; estimatedValue: number; currency: string;
-  requires: 'passkey' | 'confirm'; acknowledgedUnknown: boolean;
+  requires: 'passkey' | 'confirm';
 };
 type OrderProof = { assertion: AuthenticationResponseJSON } | { confirmed: true };
 type RemovalProof = { assertion: AuthenticationResponseJSON } | { enrollmentCode: string };
@@ -60,7 +61,8 @@ const PREVIEW_TTL_MS = 60_000;
 // Registration and removal ceremonies (the browser prompt may wait for the user a little longer).
 const CEREMONY_TTL_MS = 5 * 60_000;
 const ENROLLMENT_CODE_TTL_MS = 10 * 60_000;
-// After an order whose outcome is unknown, an identical order is refused for this long unless acknowledged.
+// After an order whose outcome is unknown, an identical order is refused for this long. Nothing the caller sends
+// lifts the hold: the caller is Studio, which the broker does not trust, so it cannot vouch for Trading 212's state.
 const UNKNOWN_HOLD_MS = 5 * 60_000;
 // Failed passkey assertions and wrong enrollment codes: ten in fifteen minutes lock that action for the window.
 const FAILURE_WINDOW_MS = 15 * 60_000;
@@ -180,19 +182,29 @@ export function createBrokerService(deps: Dependencies) {
     const waitSeconds = Math.max(1, Math.ceil((last + cooldownMs - now()) / 1000));
     return `实盘冷却中：距离上一笔实盘订单不足 ${config.liveOrderCooldownSeconds} 秒，请约 ${waitSeconds} 秒后再试`;
   }
-  // A rolling-24h ceiling on the total value submitted; counts reserved and placed orders, so it bounds the
-  // damage from repeatedly coaxed confirmations even within the hourly limit. Needs the valued amount. Off when 0.
-  function dailyRefusal(estimatedValue: number, currency: string) {
-    if (config.maxDailyOrderValue <= 0) return null;
-    const soFar = repo.submittedValueSince(now() - DAY_MS);
-    if (soFar + estimatedValue <= config.maxDailyOrderValue) return null;
-    return `24 小时内已累计下单约 ${money(soFar, currency)}，再加这笔会超过每日累计上限 ${money(config.maxDailyOrderValue, currency)}（maxDailyOrderValue）`;
+  // Rolling-24h value one account has submitted (placed, unknown or reserved) in one currency, its account currency.
+  function dailyUsed(env: Environment, currency: string) {
+    return repo.submittedValueByCurrency(env, now() - DAY_MS).find(row => row.currency === currency)?.total ?? 0;
   }
+  // A rolling-24h ceiling on the total value submitted per account, in that account's currency; counts reserved and
+  // placed orders, so it bounds the damage from repeatedly coaxed confirmations even within the hourly limit. Each
+  // account has its own budget: live and demo values, and values in different currencies, are never added together.
+  // Needs the valued amount. Off when 0.
+  function dailyRefusal(env: Environment, estimatedValue: number, currency: string) {
+    if (config.maxDailyOrderValue <= 0) return null;
+    const soFar = dailyUsed(env, currency);
+    if (soFar + estimatedValue <= config.maxDailyOrderValue) return null;
+    return `${ENV_LABEL[env]}账户 24 小时内已累计下单约 ${money(soFar, currency)}，再加这笔会超过每日累计上限 `
+      + `${money(config.maxDailyOrderValue, currency)}（maxDailyOrderValue），还剩 ${money(Math.max(0, config.maxDailyOrderValue - soFar), currency)}`;
+  }
+  // The hold after an unknown outcome: a hard refusal until UNKNOWN_HOLD_MS has passed since that order.
   function unknownRefusal(order: StudioT212OrderInput) {
     const at = repo.unknownSince(order, now() - UNKNOWN_HOLD_MS);
     if (at === null) return null;
-    const minutes = Math.max(1, Math.round((now() - at) / 60_000));
-    return `约 ${minutes} 分钟前一笔相同的订单（${SIDE_LABEL[order.side]} ${order.quantity} 股 ${order.ticker}）状态未知：请先在 Trading 212 核对它是否已经成交；确认没有成交后，再明确确认重新下单`;
+    const ago = Math.max(1, Math.round((now() - at) / 60_000));
+    const wait = Math.max(1, Math.ceil((at + UNKNOWN_HOLD_MS - now()) / 60_000));
+    return `约 ${ago} 分钟前一笔相同的订单（${SIDE_LABEL[order.side]} ${order.quantity} 股 ${order.ticker}）状态未知：请先在 Trading 212 核对它是否已经成交。`
+      + `为免重复下单，交易代理在约 ${wait} 分钟内不接受相同的订单；确认没有成交的话，到时再下单`;
   }
   // Checks a typed enrollment code and, only when `consume` is set, deletes it. Wrong codes count as failures.
   function checkEnrollmentCode(value: string, consume: boolean) {
@@ -287,20 +299,29 @@ export function createBrokerService(deps: Dependencies) {
   return {
     status(): StudioT212BrokerStatus {
       const currencies: Partial<Record<Environment, string>> = {};
+      const dailyOrderValue: Partial<Record<Environment, StudioT212DailyOrderValue>> = {};
       for (const env of ['live', 'demo'] as Environment[]) {
         const currency = trading212.lastCurrency(env);
         if (currency) currencies[env] = currency;
+        // The account currency the broker last read, or else that of the account's latest order in the window.
+        const budgetCurrency = currency ?? repo.submittedValueByCurrency(env, now() - DAY_MS)[0]?.currency;
+        if (!budgetCurrency) continue;
+        const used = round2(dailyUsed(env, budgetCurrency));
+        dailyOrderValue[env] = {
+          currency: budgetCurrency, used,
+          remaining: config.maxDailyOrderValue > 0 ? round2(Math.max(0, config.maxDailyOrderValue - used)) : null,
+        };
       }
       return {
         version: 1, allowedEnvs: config.allowedEnvs, maxOrderValue: config.maxOrderValue, maxOrdersPerHour: config.maxOrdersPerHour,
-        maxDailyOrderValue: config.maxDailyOrderValue, liveOrderCooldownSeconds: config.liveOrderCooldownSeconds,
+        maxDailyOrderValue: config.maxDailyOrderValue, liveOrderCooldownSeconds: config.liveOrderCooldownSeconds, dailyOrderValue,
         origins: config.origins, demoConfirm: config.demoConfirm,
         keys: { live: trading212.keyConfigured('live'), demo: trading212.keyConfigured('demo') },
         currencies, passkeys: repo.passkeys().map(summary), isolation: isolation(),
       };
     },
 
-    async preview(input: { origin: string; order: StudioT212OrderInput; acknowledgeUnknown: boolean }): Promise<StudioT212BrokerPreview> {
+    async preview(input: { origin: string; order: StudioT212OrderInput }): Promise<StudioT212BrokerPreview> {
       const origin = trusted(input.origin);
       const { order } = input;
       assertAllowed(order.env);
@@ -313,22 +334,21 @@ export function createBrokerService(deps: Dependencies) {
       // Live orders always need a passkey; demo orders may use a plain confirmation only if the owner allowed it.
       const requires = keys.length ? 'passkey' : order.env === 'demo' && config.demoConfirm ? 'confirm' : null;
       if (!requires) fail(`先为 ${origin.rpId} 启用通行密钥：交易代理只接受通行密钥确认的订单，启用需要服务器上生成的注册码`, 403, 'T212_PASSKEY_REQUIRED');
-      const unknown = input.acknowledgeUnknown ? null : unknownRefusal(order);
+      const unknown = unknownRefusal(order);
       if (unknown) fail(unknown, 409, 'T212_ORDER_UNKNOWN_PENDING');
       assertRoomForChallenge();
 
       const overview = await trading212.overview(order.env);
       const { estimatedValue, warnings } = await valuation(order, overview);
-      const daily = dailyRefusal(estimatedValue, overview.currency);
+      const daily = dailyRefusal(order.env, estimatedValue, overview.currency);
       if (daily) fail(daily, 429, 'T212_DAILY_LIMIT');
-      if (input.acknowledgeUnknown) warnings.push('你已确认之前状态未知的相同订单没有成交');
       const authentication = requires === 'passkey' ? await webauthn.generateAuthenticationOptions({
         rpID: origin.rpId, userVerification: 'required', timeout: PREVIEW_TTL_MS,
         allowCredentials: keys.map(row => ({ id: row.credential_id, transports: transports(row) })),
       }) : undefined;
       const id = randomUUID();
       const expiresAt = now() + PREVIEW_TTL_MS;
-      const pending: PendingOrder = { order, estimatedValue, currency: overview.currency, requires, acknowledgedUnknown: input.acknowledgeUnknown };
+      const pending: PendingOrder = { order, estimatedValue, currency: overview.currency, requires };
       repo.insertChallenge({
         id, kind: 'order', challenge: authentication?.challenge ?? randomBytes(32).toString('base64url'),
         rp_id: origin.rpId, origin: origin.origin, payload: JSON.stringify(pending), expires_at: expiresAt,
@@ -370,10 +390,10 @@ export function createBrokerService(deps: Dependencies) {
       if (hourly) refuse(hourly, 429, 'T212_HOURLY_LIMIT');
       const cooldown = cooldownRefusal(order.env);
       if (cooldown) refuse(cooldown, 429, 'T212_LIVE_COOLDOWN');
-      const daily = dailyRefusal(pending.estimatedValue, pending.currency);
+      const daily = dailyRefusal(order.env, pending.estimatedValue, pending.currency);
       if (daily) refuse(daily, 429, 'T212_DAILY_LIMIT');
       // A parallel preview of the same order must not slip through after the first one ended unknown.
-      const unknown = pending.acknowledgedUnknown ? null : unknownRefusal(order);
+      const unknown = unknownRefusal(order);
       if (unknown) refuse(unknown, 409, 'T212_ORDER_UNKNOWN_PENDING');
       // Proof shape is a client error, checked before a slot is reserved so a malformed confirm wastes none.
       if (pending.requires === 'passkey' && !('assertion' in input.proof)) refuse('请用通行密钥确认这笔订单', 400, 'T212_PASSKEY_REQUIRED');
@@ -386,55 +406,88 @@ export function createBrokerService(deps: Dependencies) {
       // Reserve the hourly/daily/cooldown slot synchronously, before the first await below. better-sqlite3 is
       // synchronous, so the checks above and this insert run in one event-loop turn and are atomic against other
       // confirmations: concurrent callers each see the others' 'pending' rows in the limit counts. The reservation
-      // is finalized to the real outcome (placed / rejected / unknown / refused) before this method returns.
+      // is finalized to the real outcome (placed / rejected / unknown / refused / error) before this method returns.
       const reserved = repo.recordPendingAudit({
         previewId: row.id, env: order.env, ticker: order.ticker, side: order.side, type: order.type, quantity: order.quantity,
         limitPrice: order.limitPrice ?? null, estimatedValue: pending.estimatedValue, currency: pending.currency, method, rpId: row.rp_id, passkeyId: null,
       }, now());
-      // Settle the reserved row; a refusal after reservation never leaves a 'pending' row counting against limits.
+      // Every way out from here settles the reserved row exactly once: the outcome, a refusal, or, for an unexpected
+      // throw, 'unknown' once placeOrder may have sent the order and 'error' before that. A broker killed in between
+      // leaves 'pending', which recoverInterruptedOrders turns into 'unknown' when the broker starts again.
+      let settled = false;
+      let mayHaveSent = false;
+      const settle = (status: 'placed' | 'rejected' | 'unknown' | 'refused' | 'error', extra: { brokerOrderId?: string | null; brokerStatus?: string | null; error?: string } = {}) => {
+        repo.finalizeAudit(reserved, status, { passkeyId, ...extra });
+        settled = true;
+      };
+      // A refusal after reservation never leaves a 'pending' row counting against limits.
       function refuseReserved(message: string, statusCode: number, code: string): never {
-        repo.finalizeAudit(reserved, 'refused', { error: message });
+        settle('refused', { error: message });
         fail(message, statusCode, code);
       }
-
-      if (pending.requires === 'passkey') {
-        const proof = input.proof as { assertion: AuthenticationResponseJSON };
-        const key = repo.passkeys(row.rp_id).find(item => item.credential_id === proof.assertion.id);
-        if (!key || !await verifyAssertion(key, proof.assertion, row)) {
-          repo.recordFailure('assertion', now());
-          log(`refused an order confirmation: passkey verification failed (rpId ${row.rp_id})`);
-          refuseReserved('通行密钥验证失败，订单没有提交', 403, 'T212_PASSKEY_FAILED');
-        }
-        passkeyId = key.id;
-      }
-
-      const quantity = order.side === 'sell' ? -order.quantity : order.quantity;
-      const body = order.type === 'market'
-        ? { ticker: order.ticker, quantity }
-        : { ticker: order.ticker, quantity, limitPrice: order.limitPrice ?? 0, timeValidity: order.timeValidity };
-      let result: Awaited<ReturnType<Trading212['placeOrder']>>;
-      try {
-        result = await trading212.placeOrder(order.env, order.type, body);
-      } catch (error) {
-        // Only a missing key throws here, before anything was sent.
-        refuseReserved(error instanceof Error ? error.message : '下单失败', 503, 'TRADING212_ERROR');
-      }
       const label = `${order.env} ${order.side} ${order.quantity} ${order.ticker}`;
-      if (result.status !== 'placed') {
-        repo.finalizeAudit(reserved, result.status, { passkeyId, error: result.message });
-        log(`order ${result.status}: ${label}`);
-        if (result.status === 'unknown') fail(result.message, 502, 'T212_ORDER_UNKNOWN');
-        fail(result.message, 400, 'TRADING212_REJECTED');
+
+      try {
+        if (pending.requires === 'passkey') {
+          const proof = input.proof as { assertion: AuthenticationResponseJSON };
+          const key = repo.passkeys(row.rp_id).find(item => item.credential_id === proof.assertion.id);
+          if (!key || !await verifyAssertion(key, proof.assertion, row)) {
+            repo.recordFailure('assertion', now());
+            log(`refused an order confirmation: passkey verification failed (rpId ${row.rp_id})`);
+            refuseReserved('通行密钥验证失败，订单没有提交', 403, 'T212_PASSKEY_FAILED');
+          }
+          passkeyId = key.id;
+        }
+
+        const quantity = order.side === 'sell' ? -order.quantity : order.quantity;
+        const body = order.type === 'market'
+          ? { ticker: order.ticker, quantity }
+          : { ticker: order.ticker, quantity, limitPrice: order.limitPrice ?? 0, timeValidity: order.timeValidity };
+        let result: Awaited<ReturnType<Trading212['placeOrder']>>;
+        try {
+          mayHaveSent = true;
+          result = await trading212.placeOrder(order.env, order.type, body);
+        } catch (error) {
+          // placeOrder reports every outcome of the request as a value; it throws a BrokerError only for a missing
+          // key, before anything is sent. Anything else may have come after the request: handled below as unknown.
+          if (!(error instanceof BrokerError)) throw error;
+          mayHaveSent = false;
+          refuseReserved(error.message, 503, 'TRADING212_ERROR');
+        }
+        if (result.status !== 'placed') {
+          settle(result.status, { error: result.message });
+          log(`order ${result.status}: ${label}`);
+          if (result.status === 'unknown') fail(result.message, 502, 'T212_ORDER_UNKNOWN');
+          fail(result.message, 400, 'TRADING212_REJECTED');
+        }
+        const placed = result.order;
+        const brokerOrder = {
+          id: text(placed.id), status: text(placed.status), ticker: text(placed.ticker) ?? order.ticker,
+          side: text(placed.side), type: text(placed.type), quantity: numberOrNull(placed.quantity),
+          filledQuantity: numberOrNull(placed.filledQuantity), limitPrice: numberOrNull(placed.limitPrice), createdAt: text(placed.createdAt),
+        };
+        settle('placed', { brokerOrderId: brokerOrder.id, brokerStatus: brokerOrder.status });
+        log(`order placed: ${label} (Trading 212 order ${brokerOrder.id ?? '?'}, ${method})`);
+        return { order: brokerOrder, method, env: order.env, estimatedValue: pending.estimatedValue, currency: pending.currency };
+      } catch (error) {
+        if (!settled) {
+          // An unexpected failure (a bug, a database error): never leave the reservation 'pending' for ever.
+          settle(mayHaveSent ? 'unknown' : 'error', {
+            error: mayHaveSent ? '交易代理在提交订单时出错，订单状态未知' : '交易代理内部错误，订单没有提交',
+          });
+          log(`order ${mayHaveSent ? 'outcome unknown' : 'not sent'} after an internal error: ${label}`);
+          if (mayHaveSent) fail('交易代理在提交订单时出错，订单状态未知：请先在 Trading 212 核对，不要直接重新下单', 502, 'T212_ORDER_UNKNOWN');
+        }
+        throw error;
       }
-      const placed = result.order;
-      const brokerOrder = {
-        id: text(placed.id), status: text(placed.status), ticker: text(placed.ticker) ?? order.ticker,
-        side: text(placed.side), type: text(placed.type), quantity: numberOrNull(placed.quantity),
-        filledQuantity: numberOrNull(placed.filledQuantity), limitPrice: numberOrNull(placed.limitPrice), createdAt: text(placed.createdAt),
-      };
-      repo.finalizeAudit(reserved, 'placed', { passkeyId, brokerOrderId: brokerOrder.id, brokerStatus: brokerOrder.status });
-      log(`order placed: ${label} (Trading 212 order ${brokerOrder.id ?? '?'}, ${method})`);
-      return { order: brokerOrder, method, env: order.env, estimatedValue: pending.estimatedValue, currency: pending.currency };
+    },
+
+    // Used by the CLI's `serve` once at start, before the socket accepts requests: settles what a previous broker
+    // process left 'pending' (killed, crashed or a power cut mid-order) as 'unknown'. Returns how many it changed.
+    recoverInterruptedOrders() {
+      const count = repo.resolveInterruptedOrders('交易代理在下单途中停止，订单状态未知：请在 Trading 212 核对');
+      if (count) log(`marked ${count} interrupted order(s) as unknown`);
+      return count;
     },
 
     // Registration options only for a valid enrollment code; the code is consumed when a passkey is stored.

@@ -5,8 +5,12 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable, Writable } from 'node:stream';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+
+import { runBrokerCommand } from '../index.js';
+import { parseBrokerConfig } from '../broker.config.js';
 
 // Runs the installer's checks (scripts/wsl/t212-broker-install-lib.sh) with bash as the current, non-root user.
 // The machine is described by fixtures: T212_BINFMT_DIR, T212_WSL_RUN_DIR and T212_MOUNTS_FILE point at temporary
@@ -330,6 +334,60 @@ test('the stage script copies plain files only and refuses every link, inside a 
     assert.equal(result.status, 1);
     assert.match(result.stderr, /refusing .*@simplewebauthn\/server: it is a symbolic link/);
   } finally { remove(linked); }
+});
+
+// The installer's validate_config step: the new config.json goes through the broker's own validate-config.
+async function validateConfig(text: string) {
+  let stdout = '';
+  let stderr = '';
+  const sink = (append: (chunk: string) => void) => new Writable({ write(chunk, _encoding, done) { append(String(chunk)); done(); } });
+  const code = await runBrokerCommand(['validate-config'], {
+    stdout: sink(chunk => { stdout += chunk; }), stderr: sink(chunk => { stderr += chunk; }),
+    stdin: Readable.from([text]), env: { STUDIO_TRADER_STATE_DIR: '/nonexistent' }, pid: process.pid,
+  });
+  return { code, stdout, stderr };
+}
+
+test('the installer writes config.json the broker accepts, and its own parser catches what the shell cannot', async () => {
+  const generate = (origins: string, values = '500 2000 60 10') =>
+    bash(`broker_config_json demo "$ORIGINS" ${values}`, { ORIGINS: origins });
+
+  const typical = generate('https://studio.ajarche.com, https://desktop.tail1234.ts.net:8443');
+  assert.equal(typical.code, 0, typical.stderr);
+  const config = parseBrokerConfig(typical.stdout, '/x');
+  assert.deepEqual(
+    [config.allowedEnvs, config.origins, config.maxOrderValue, config.maxDailyOrderValue, config.liveOrderCooldownSeconds, config.maxOrdersPerHour, config.demoConfirm],
+    [['demo'], ['https://studio.ajarche.com', 'https://desktop.tail1234.ts.net:8443'], 500, 2000, 60, 10, false],
+  );
+  const accepted = await validateConfig(typical.stdout);
+  assert.equal(accepted.code, 0, accepted.stderr);
+  assert.match(accepted.stdout, /配置有效/);
+
+  // These pass the shell's character check, so only the broker's parser stops them before anything is installed.
+  const nine = generate(Array.from({ length: 9 }, (_, index) => `https://s${index}.example.com`).join(','));
+  assert.equal(nine.code, 0);
+  assert.match((await validateConfig(nine.stdout)).stderr, /origins 必须是最多 8 个网址的数组/);
+  for (const origin of ['https://Studio.Example.com', 'https://studio.example.com:99999', 'http://localhost:99999']) {
+    const generated = generate(origin);
+    assert.equal(generated.code, 0, origin);
+    const refused = await validateConfig(generated.stdout);
+    assert.equal(refused.code, 1, origin);
+    assert.match(refused.stderr, /交易代理配置无效/, origin);
+  }
+
+  // What cannot be put into JSON safely never gets that far.
+  for (const bad of ['https://studio.example.com/', 'https://a"b.example.com', 'javascript:alert(1)']) {
+    const refused = generate(bad);
+    assert.equal(refused.code, 1, bad);
+    assert.match(refused.stderr, /invalid value/, bad);
+  }
+  assert.match(generate('https://a.example.com', '007 2000 60 10').stderr, /--max-order-value must be a number/);
+  assert.match(generate('https://a.example.com', '500 2000 1.5 10').stderr, /--live-cooldown-seconds must be a number/);
+  assert.match(generate('https://a.example.com', '500 2000 60 101').stderr, /--max-orders-per-hour must be a number/);
+  assert.match(bash('broker_config_json paper "" 500 2000 60 10').stderr, /invalid value: paper/);
+  // An empty account list or origin list is valid JSON and a valid config: trading stays off.
+  assert.equal((await validateConfig(bash('broker_config_json "" "" 500 0 0 10').stdout)).code, 0);
+  assert.match((await validateConfig(' '.repeat(70 * 1024))).stderr, /超过 65536 字节/);
 });
 
 const SHELL_SCRIPTS = readdirSync(SCRIPTS).filter(name => name.endsWith('.sh')).map(name => path.join(SCRIPTS, name));

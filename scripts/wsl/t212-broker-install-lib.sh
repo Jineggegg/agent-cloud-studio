@@ -88,6 +88,45 @@ require_plain_tree() {
   [ -z "$bad" ] || die "refusing $bad: it has a set-user-ID, set-group-ID or sticky bit"
 }
 
+# "a, b" -> ["a","b"] after checking each item (whole) against an extended regular expression. The patterns keep
+# quotes, backslashes and control characters out of the JSON; the broker's own parser has the final word
+# (install-t212-broker.sh runs the new broker's validate-config on the result).
+json_list() {
+  local list="$1" pattern="$2" out="" item items=()
+  IFS=',' read -r -a items <<< "$list"
+  for item in "${items[@]}"; do
+    item="$(printf '%s' "$item" | tr -d '[:space:]')"
+    [ -n "$item" ] || continue
+    printf '%s' "$item" | grep -Eqx "$pattern" || die "invalid value: $item"
+    out="${out:+$out,}\"$item\""
+  done
+  printf '[%s]' "$out"
+}
+
+# Dies unless VALUE is a plain JSON number (an integer when the fifth argument is "integer") from MIN to MAX.
+number_in() {
+  local value="$1" min="$2" max="$3" name="$4" pattern='^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+  [ "${5:-}" != integer ] || pattern='^(0|[1-9][0-9]*)$'
+  if ! [[ "$value" =~ $pattern ]] || ! awk -v v="$value" -v lo="$min" -v hi="$max" 'BEGIN { exit !(v >= lo && v <= hi) }'; then
+    die "$name must be a number from $min to $max (got: $value)"
+  fi
+}
+
+# Prints the config.json the installer writes into a new state directory, from its options: ENVS ORIGINS
+# MAX_ORDER_VALUE MAX_DAILY_ORDER_VALUE LIVE_COOLDOWN_SECONDS MAX_ORDERS_PER_HOUR. Dies on a value that cannot be
+# put into JSON safely; whether the result is a valid broker config is for the broker to say (validate-config).
+broker_config_json() {
+  local envs_json origins_json
+  number_in "$3" 0.01 100000 --max-order-value
+  number_in "$4" 0 1000000 --max-daily-order-value
+  number_in "$5" 0 86400 --live-cooldown-seconds integer
+  number_in "$6" 1 100 --max-orders-per-hour integer
+  envs_json="$(json_list "$1" '(live|demo)')" || exit 1
+  origins_json="$(json_list "$2" 'https://[A-Za-z0-9.-]+(:[0-9]{1,5})?|http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?')" || exit 1
+  printf '{\n  "allowedEnvs": %s,\n  "maxOrderValue": %s,\n  "maxDailyOrderValue": %s,\n  "liveOrderCooldownSeconds": %s,\n  "maxOrdersPerHour": %s,\n  "origins": %s,\n  "demoConfirmWithoutPasskey": false\n}\n' \
+    "$envs_json" "$3" "$4" "$5" "$6" "$origins_json"
+}
+
 # Copies an official Node.js linux tarball into WORK (a root-only directory), checks it against the SHA-256 the
 # owner took from nodejs.org before anything in it runs, and unpacks it to WORK/node. Sets NODE_PREFIX. The file
 # may come from anywhere, the Studio user's downloads included: only the hash decides whether it is used.
