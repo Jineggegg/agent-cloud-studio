@@ -23,6 +23,15 @@ icon, plus **+** to create more.
   lab), read-only Trading 212 analysis (balance, day P&L, equity curve,
   positions; keys stay in a server-side key file), read-only Gmail, and
   automation drafts with explicit one-time scheduling.
+- **Remote hosts**: a project can run on an SSH host from `STUDIO_SSH_HOSTS`
+  (reached over Tailscale); Claude Code, Codex or a shell open in a full-screen
+  terminal inside a tmux session on that host. See [docs/remote-hosts.md](docs/remote-hosts.md).
+- **Home widgets** (customisable per device): Claude / Codex plan usage with
+  reset countdowns, DeepSeek balance, Trading 212 and SNR status.
+- **Websites per project**: a globe button lists the project's links with live
+  status; embeddable sites open in an in-app browser, others in a new tab.
+- Flowing WebGL wallpaper, light / dark / system themes, icon-to-app launch
+  animation; optional passwordless sign-in for your own Tailscale identity.
 - Encrypted local API-key storage; saved keys are never returned to the browser.
 - The original IDE remains available at `/workspace` and `/session/:sessionId`.
 

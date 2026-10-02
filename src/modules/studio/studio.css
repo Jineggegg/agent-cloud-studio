@@ -980,3 +980,7 @@ html.dark [data-sonner-toaster] .studio-toast[data-type="success"] [data-icon] {
   .link-field input + input { border-left: 0; padding-left: 0; }
 }
 .snr-capabilities { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 4px; }
+@media (max-width: 699px) {
+  .home-date h1 { font-size: 34px; white-space: nowrap; }
+  .home-actions .glass-icon { min-width: 40px; height: 40px; border-radius: 20px; }
+}
