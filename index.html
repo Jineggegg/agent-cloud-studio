@@ -6,54 +6,249 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>Agent Cloud Studio</title>
 
-    <!-- Fonts: Encode Sans (UI) + Merriweather (chat) -->
+    <!-- Fonts: Encode Sans (UI) + Merriweather (chat). Loaded without blocking the first paint:
+         the Studio uses the system font stack, and a slow or blocked Google Fonts request
+         (common on mainland networks) must never hold the launch screen back. -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Encode+Sans:wght@400;500;600;700&family=Merriweather:ital,wght@0,400;0,700;1,400;1,700&display=swap"
       rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
     />
 
     <!-- PWA Manifest -->
     <link rel="manifest" href="/manifest.json" crossorigin="use-credentials"  />
-    
+
     <!-- iOS Safari PWA Meta Tags -->
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Agent Studio" />
-    
+
     <!-- iOS Safari Icons -->
     <link rel="apple-touch-icon" sizes="152x152" href="/icons/studio-152.png" />
     <link rel="apple-touch-icon" sizes="192x192" href="/icons/studio-192.png" />
-    
+
     <!-- Theme Color -->
     <meta name="theme-color" content="#ffffff" />
     <meta name="msapplication-TileColor" content="#ffffff" />
-    
+
     <!-- Prevent zoom on iOS -->
     <meta name="format-detection" content="telephone=no" />
 
-    <!-- Apply the saved theme before first paint so dark mode never flashes white (mirrors ThemeContext). -->
+    <!-- Apply the saved theme before first paint so dark mode never flashes white (mirrors ThemeContext).
+         The launch screen below reads the same `html.dark` class. -->
     <script>
       (function () {
+        var root = document.documentElement;
+        var systemDark = !!window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var dark = systemDark;
         try {
           var prefs = JSON.parse(localStorage.getItem('user-preferences') || '{}');
           var mode = prefs.theme === 'dark' || prefs.theme === 'light' ? prefs.theme : 'system';
-          var dark = mode === 'dark' || (mode === 'system' && !!window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
-          var root = document.documentElement;
-          if (dark) root.classList.add('dark');
-          root.style.colorScheme = dark ? 'dark' : 'light';
-          root.style.backgroundColor = dark ? '#121315' : '#efede8';
-          var meta = document.querySelector('meta[name="theme-color"]');
-          if (meta) meta.setAttribute('content', dark ? '#121315' : '#efede8');
-        } catch (error) { /* Storage unavailable: the app applies the theme after loading. */ }
+          dark = mode === 'dark' || (mode === 'system' && systemDark);
+        } catch (error) { /* Storage unavailable: follow the system until the app applies the saved theme. */ }
+        if (dark) root.classList.add('dark');
+        root.style.colorScheme = dark ? 'dark' : 'light';
+        root.style.backgroundColor = dark ? '#121315' : '#efede8';
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', dark ? '#121315' : '#efede8');
       })();
     </script>
+
+    <!-- Launch screen. Pure CSS/SVG so it paints before any script runs. It mirrors the Studio home
+         wallpaper (same paper background and blurred mineral colour fields), so the crossfade into
+         the home screen reads as the wallpaper staying put while the icons arrive. React removes it
+         (LaunchSplashRelease in src/shared/ui/LaunchScreen.tsx) once the first real screen has
+         painted; LaunchScreen in the same file reuses these `.acs-launch` styles for in-app loading. -->
+    <style>
+      .acs-launch {
+        --launch-bg: #efede8;
+        --launch-wall-a: rgba(143, 168, 154, .5);
+        --launch-wall-b: rgba(196, 160, 136, .38);
+        --launch-wall-c: rgba(142, 159, 184, .42);
+        --launch-glass-top: rgba(255, 255, 255, .82);
+        --launch-glass-bottom: rgba(255, 255, 255, .38);
+        --launch-edge: rgba(255, 255, 255, .9);
+        --launch-ink: #3b5b7a;
+        --launch-ink-2: #5d7b6a;
+        --launch-glow: rgba(142, 159, 184, .62);
+        --launch-track: rgba(110, 104, 92, .14);
+        --launch-shine: #3b5b7a;
+        --launch-label: #66635d;
+        --launch-ease: cubic-bezier(.22, .8, .2, 1);
+        position: fixed;
+        inset: 0;
+        overflow: hidden;
+        background:
+          radial-gradient(circle calc(31vmax + 70px) at 13vmax 9vmax, var(--launch-wall-a) calc(31vmax - 70px), transparent),
+          radial-gradient(circle calc(31vmax + 70px) at calc(100vw - 9vmax) calc(18vh + 31vmax), var(--launch-wall-b) calc(31vmax - 70px), transparent),
+          radial-gradient(circle calc(31vmax + 70px) at calc(12vw + 31vmax) calc(100vh + 3vmax), var(--launch-wall-c) calc(31vmax - 70px), transparent),
+          var(--launch-bg);
+        color: var(--launch-label);
+        font: 500 13px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", "Segoe UI", sans-serif;
+        letter-spacing: .02em;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      html.dark .acs-launch {
+        --launch-bg: #121315;
+        --launch-wall-a: rgba(83, 112, 96, .42);
+        --launch-wall-b: rgba(128, 96, 78, .32);
+        --launch-wall-c: rgba(78, 94, 122, .4);
+        --launch-glass-top: rgba(255, 255, 255, .17);
+        --launch-glass-bottom: rgba(255, 255, 255, .05);
+        --launch-edge: rgba(255, 255, 255, .24);
+        --launch-ink: #9db4cc;
+        --launch-ink-2: #8cc2a2;
+        --launch-glow: rgba(157, 180, 204, .38);
+        --launch-track: rgba(200, 195, 185, .14);
+        --launch-shine: #9db4cc;
+        --launch-label: #a7a39b;
+      }
+      /* The emblem sits at the exact centre, like an iOS launch screen; the hairline and hint hang below it. */
+      .acs-launch-emblem {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 92px;
+        height: 92px;
+        margin: -46px 0 0 -46px;
+      }
+      .acs-launch-halo {
+        position: absolute;
+        inset: -55%;
+        border-radius: 50%;
+        background: radial-gradient(closest-side, var(--launch-glow), transparent);
+        animation: acs-launch-breathe 2.8s ease-in-out infinite alternate;
+      }
+      .acs-launch-mark {
+        position: relative;
+        display: grid;
+        place-items: center;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        border-radius: 23%;
+        background: linear-gradient(160deg, var(--launch-glass-top), var(--launch-glass-bottom));
+        box-shadow:
+          inset 0 1px 0 var(--launch-edge),
+          inset 0 0 0 .5px var(--launch-edge),
+          0 1px 2px rgba(40, 35, 25, .05),
+          0 22px 48px -18px rgba(40, 35, 25, .34);
+        -webkit-backdrop-filter: blur(18px) saturate(150%);
+        backdrop-filter: blur(18px) saturate(150%);
+        animation: acs-launch-in 560ms var(--launch-ease) both;
+      }
+      /* Soft top light, the same highlight the home-screen icons carry. */
+      .acs-launch-mark::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(120% 80% at 20% 0%, rgba(255, 255, 255, .42), transparent 55%);
+        pointer-events: none;
+      }
+      .acs-launch-mark svg { position: relative; z-index: 1; width: 70%; height: 70%; fill: none; stroke-width: 26; stroke-linecap: round; stroke-linejoin: round; }
+      .acs-launch-cloud { stroke: var(--launch-ink); }
+      .acs-launch-base { stroke: var(--launch-ink-2); }
+      /* A slim progress hairline; it only fades in when loading takes longer than a blink. */
+      .acs-launch-line {
+        position: absolute;
+        left: 50%;
+        top: calc(50% + 86px);
+        width: 112px;
+        height: 2px;
+        margin-left: -56px;
+        overflow: hidden;
+        border-radius: 1px;
+        background: var(--launch-track);
+        opacity: 0;
+        animation: acs-launch-show 420ms ease 600ms forwards;
+      }
+      .acs-launch-line::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 42%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, transparent, var(--launch-shine), transparent);
+        transform: translateX(-100%);
+        animation: acs-launch-sweep 1.5s var(--launch-ease) infinite;
+      }
+      /* Only when the network is genuinely slow: an honest note and a way to retry. */
+      .acs-launch-hint {
+        position: absolute;
+        left: 16px;
+        right: 16px;
+        top: calc(50% + 104px);
+        margin: 0;
+        text-align: center;
+        opacity: 0;
+        visibility: hidden;
+        animation: acs-launch-reveal 500ms ease 12s forwards;
+      }
+      .acs-launch-hint :is(a, button) {
+        display: inline-block;
+        min-height: 44px;
+        padding: 12px 10px;
+        border: 0;
+        background: none;
+        color: var(--launch-ink);
+        font: inherit;
+        font-weight: 600;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      @keyframes acs-launch-in { from { opacity: 0; transform: scale(.94); } }
+      @keyframes acs-launch-breathe { from { opacity: .32; transform: scale(.9); } to { opacity: .95; transform: scale(1.06); } }
+      @keyframes acs-launch-show { to { opacity: 1; } }
+      @keyframes acs-launch-sweep { from { transform: translateX(-100%); } to { transform: translateX(240%); } }
+      @keyframes acs-launch-reveal { to { opacity: 1; visibility: visible; } }
+      @keyframes acs-launch-pulse { from { opacity: .35; } to { opacity: .9; } }
+
+      /* Leaving: the splash fades while the emblem drifts forward and the app settles from 0.985 to 1. */
+      #launch-splash {
+        z-index: 2147483000;
+        transition: opacity 420ms cubic-bezier(.4, 0, .2, 1), visibility 0s linear 420ms;
+      }
+      #launch-splash[data-state="leaving"] { opacity: 0; visibility: hidden; pointer-events: none; }
+      #launch-splash[data-state="leaving"] .acs-launch-emblem { transform: scale(1.08); transition: transform 420ms var(--launch-ease); }
+      /* #root sits outside .acs-launch, so its easing is spelled out; it matches the fade so the settle
+         stays visible while the splash dissolves instead of finishing underneath it. */
+      html.acs-app-entering #root { animation: acs-app-enter 420ms cubic-bezier(.4, 0, .2, 1); }
+      @keyframes acs-app-enter { from { transform: scale(.985); } }
+
+      @media (prefers-reduced-motion: reduce) {
+        .acs-launch-mark, .acs-launch-halo { animation: none; }
+        .acs-launch-halo { opacity: .6; }
+        .acs-launch-line::before { width: 100%; transform: none; animation: acs-launch-pulse 1.4s ease-in-out infinite alternate; }
+        #launch-splash { transition-duration: 200ms, 0s; transition-delay: 0s, 200ms; }
+        #launch-splash[data-state="leaving"] .acs-launch-emblem { transform: none; }
+        html.acs-app-entering #root { animation: none; }
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <div id="launch-splash" class="acs-launch" role="status" aria-live="polite" aria-label="正在启动 Agent Cloud Studio">
+      <div class="acs-launch-emblem" aria-hidden="true">
+        <span class="acs-launch-halo"></span>
+        <span class="acs-launch-mark">
+          <svg viewBox="0 0 512 512" focusable="false">
+            <path class="acs-launch-cloud" d="M165 345h178c53 0 85-32 85-77s-34-80-80-80c-20-59-63-85-108-85-58 0-100 40-107 94-36 8-63 37-63 72 0 46 38 76 95 76Z" />
+            <path class="acs-launch-base" d="M198 397h116" />
+          </svg>
+        </span>
+      </div>
+      <div class="acs-launch-line" aria-hidden="true"></div>
+      <p class="acs-launch-hint">网络较慢，仍在加载…<a href="">重新加载</a></p>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
-    
+
     <!-- Service Worker Registration -->
     <script>
       if ('serviceWorker' in navigator) {

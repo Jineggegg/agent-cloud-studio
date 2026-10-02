@@ -63,19 +63,28 @@ export default defineConfig(({ mode }) => {
       chunkSizeWarningLimit: 1000,
       rollupOptions: {
         output: {
-          manualChunks: {
-            'vendor-react': ['react', 'react-dom', 'react-router-dom'],
-            'vendor-codemirror': [
-              '@uiw/react-codemirror',
-              '@codemirror/lang-css',
-              '@codemirror/lang-html',
-              '@codemirror/lang-javascript',
-              '@codemirror/lang-json',
-              '@codemirror/lang-markdown',
-              '@codemirror/lang-python',
-              '@codemirror/theme-one-dark'
-            ],
-            'vendor-xterm': ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-clipboard', '@xterm/addon-webgl']
+          // Function form on purpose: the object form also pulls each listed package's
+          // dependencies into its group, which put react/jsx-runtime inside vendor-codemirror
+          // and made every chunk (the entry included) statically import the editor and the
+          // terminal. Only the packages named here are grouped; shared helpers such as
+          // @babel/runtime are left to Rollup so no unrelated chunk depends on these groups.
+          // The editor and terminal groups stay lazy because only the IDE routes import them.
+          manualChunks(id) {
+            // Each non-English language's namespaces travel together, so switching language is one
+            // request (src/modules/i18n/config.ts loads them on demand; English stays in the entry).
+            const locale = id.match(/\/src\/modules\/i18n\/locales\/([^/]+)\//)
+            if (locale && locale[1] !== 'en') return `locale-${locale[1]}`
+            if (!id.includes('/node_modules/')) return undefined
+            // The server renderer is only used by lazily loaded export code; keep it out of vendor-react.
+            if (/\/node_modules\/react-dom\/(server|cjs\/react-dom-server)/.test(id)) return undefined
+            if (/\/node_modules\/(react|react-dom|scheduler|react-router|react-router-dom|@remix-run\/router)\//.test(id)) {
+              return 'vendor-react'
+            }
+            if (/\/node_modules\/(@codemirror|@lezer|@uiw|@replit\/codemirror-[^/]+|@marijn|style-mod|w3c-keyname|crelt)\//.test(id)) {
+              return 'vendor-codemirror'
+            }
+            if (/\/node_modules\/@xterm\//.test(id)) return 'vendor-xterm'
+            return undefined
           }
         }
       }

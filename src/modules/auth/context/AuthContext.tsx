@@ -135,7 +135,9 @@ export function useAuth(): AuthContextValue {
 
 /** Used by App to expose the session, and its login/logout actions, to every module through useAuth. */
 export function AuthProvider({ children }: AuthProviderProps) {
-  const { t } = useTranslation('auth');
+  // Never suspend here: the provider sits above every Suspense boundary and must start the session
+  // check at once. Until a non-English language's strings arrive, `t` falls back to bundled English.
+  const { t } = useTranslation('auth', { useSuspense: false });
   const [user, setUser] = useState<AuthUser | null>(null);
   const [token, setToken] = useState<string | null>(() => readStoredToken());
   const [isLoading, setIsLoading] = useState(true);

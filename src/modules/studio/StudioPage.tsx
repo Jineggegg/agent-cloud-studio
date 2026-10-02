@@ -10,18 +10,21 @@ import { useAuth } from '@/modules/auth';
 import { api, readApiJson } from '@/shared/api';
 import type { HubProject, StudioChatSpace, StudioConversation, StudioHomeTile, T212Status } from '@/shared/types';
 import { useStudio } from '@/modules/studio/hooks/useStudio';
-import { StudioChatPane } from '@/modules/studio/StudioChatPane';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
-import { StudioConnections } from '@/modules/studio/StudioConnections';
 import { StudioHomeScreen } from '@/modules/studio/StudioHomeScreen';
+import { lazyStudioPanel } from '@/modules/studio/lazyStudioPanel';
 import { StudioLinksSheet } from '@/modules/studio/StudioLinksSheet';
-import { StudioProjectAgents } from '@/modules/studio/StudioProjectAgents';
-import { StudioProjectEditor } from '@/modules/studio/StudioProjectEditor';
-import { StudioProjectMail } from '@/modules/studio/StudioProjectMail';
-import { StudioProjectTasks } from '@/modules/studio/StudioProjectTasks';
-import { StudioSnrPanel } from '@/modules/studio/StudioSnrPanel';
-import { StudioTrading212 } from '@/modules/studio/StudioTrading212';
 import '@/modules/studio/studio.css';
+
+// Sub-apps stay out of the home screen's first load (and are warmed once it is idle); same props as the originals.
+const StudioChatPane = lazyStudioPanel(() => import('@/modules/studio/StudioChatPane').then(module => module.StudioChatPane), 'chat');
+const StudioConnections = lazyStudioPanel(() => import('@/modules/studio/StudioConnections').then(module => module.StudioConnections), 'list');
+const StudioProjectAgents = lazyStudioPanel(() => import('@/modules/studio/StudioProjectAgents').then(module => module.StudioProjectAgents), 'list');
+const StudioProjectEditor = lazyStudioPanel(() => import('@/modules/studio/StudioProjectEditor').then(module => module.StudioProjectEditor), 'form');
+const StudioProjectMail = lazyStudioPanel(() => import('@/modules/studio/StudioProjectMail').then(module => module.StudioProjectMail), 'list');
+const StudioProjectTasks = lazyStudioPanel(() => import('@/modules/studio/StudioProjectTasks').then(module => module.StudioProjectTasks), 'list');
+const StudioSnrPanel = lazyStudioPanel(() => import('@/modules/studio/StudioSnrPanel').then(module => module.StudioSnrPanel), 'list');
+const StudioTrading212 = lazyStudioPanel(() => import('@/modules/studio/StudioTrading212').then(module => module.StudioTrading212), 'dashboard');
 
 // Layout/drag features load after first paint; plain animations work immediately.
 const loadMotionFeatures = () => import('@/modules/studio/motionFeatures').then(module => module.default);
