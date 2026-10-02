@@ -6,6 +6,7 @@ import {
 import type { StudioChatSpace } from '@/shared/types';
 import { IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
+import type { HubProjectInput, HubTaskInput } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -159,6 +160,24 @@ const pluginAssetPath = (pluginName: string, assetFile: string) =>
 
 export const api = {
   studio: {
+    projects: {
+      list: () => get('/api/studio/projects'),
+      get: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}`),
+      create: (input: HubProjectInput) => post('/api/studio/projects', input),
+      update: (id: string, input: HubProjectInput) => put(`/api/studio/projects/${encodeURIComponent(id)}`, input),
+      launch: (id: string, provider: 'claude' | 'codex') => post(`/api/studio/projects/${encodeURIComponent(id)}/launch`, { provider }),
+      sessions: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/sessions`),
+      tasks: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/tasks`),
+      saveTask: (id: string, input: HubTaskInput, taskId?: string) => taskId
+        ? put(`/api/studio/projects/${encodeURIComponent(id)}/tasks/${encodeURIComponent(taskId)}`, input)
+        : post(`/api/studio/projects/${encodeURIComponent(id)}/tasks`, input),
+      scheduleTask: (id: string, taskId: string, sessionId: string, scheduledFor: string) =>
+        post(`/api/studio/projects/${encodeURIComponent(id)}/tasks/${encodeURIComponent(taskId)}/schedule`, { sessionId, scheduledFor }),
+      mailStatus: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/mail/status`),
+      connectMail: (id: string) => post(`/api/studio/projects/${encodeURIComponent(id)}/mail/connect`),
+      mailMessages: (id: string, q: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/mail/messages${query({ q })}`),
+      mailMessage: (id: string, messageId: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/mail/messages/${encodeURIComponent(messageId)}`),
+    },
     status: () => get('/api/studio/status'),
     snr: () => get('/api/studio/snr'),
     snrAccess: () => post('/api/studio/snr/access'),

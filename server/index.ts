@@ -156,6 +156,7 @@ app.use('/api', validateApiKey);
 app.use('/api/auth', authRoutes);
 const studioModule = createStudioModule();
 app.use('/api/studio/snr-site', studioModule.snrRoutes);
+app.use('/api/studio/gmail/callback', studioModule.mailCallbackRoutes);
 app.use('/api/studio', authenticateToken, studioModule.routes);
 
 // File Tree API Routes (protected)

@@ -13,6 +13,7 @@ vi.mock('@/shared/context/SessionProtectionContext', () => ({
 vi.mock('@/shared/context/WebSocketContext', () => ({ useWebSocket: () => ({ ws: null, sendMessage: vi.fn(), subscribe: vi.fn() }) }));
 vi.mock('@/shared/hooks/useDeviceSettings', () => ({ useDeviceSettings: () => ({ isMobile: false }) }));
 vi.mock('@/modules/project-workspace/hooks/useVisualViewportKeyboardOffset', () => ({ useVisualViewportKeyboardOffset: () => {} }));
+vi.mock('@/modules/project-workspace/controllers/WorkspaceProjectIntent', () => ({ WorkspaceProjectIntent: () => null }));
 vi.mock('@/modules/project-workspace/ProjectWorkspaceShell', () => ({
   default: ({ navigate }: { navigate: NavigateFunction }) => <div>IDE<button onClick={() => navigate('/')}>Clear session</button></div>,
 }));
