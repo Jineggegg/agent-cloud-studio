@@ -43,6 +43,22 @@ export function createTrading212BrokerClient(deps: Dependencies) {
   function call<T>(method: 'GET' | 'POST', path: string, body: Json | undefined, options: CallOptions) {
     return new Promise<T>((resolve, reject) => {
       const payload = body === undefined ? undefined : JSON.stringify(body);
+      // Every way this call can end goes through settle, exactly once: a broken or stalled response must reject
+      // (for a confirmation as "outcome unknown"), never leave the order sheet waiting forever.
+      let settled = false;
+      let deadline: NodeJS.Timeout | undefined;
+      const settle = (error: Error | null, value?: T) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        if (error) reject(error);
+        else resolve(value as T);
+      };
+      // The request may have reached the broker: for a confirmation the order may already be placed.
+      const broken = () => (options.placesOrder
+        ? new AppError('与交易代理的连接中断，订单状态未知：请先在 Trading 212 核对，不要直接重新下单', { statusCode: 502, code: 'T212_ORDER_UNKNOWN' })
+        : new AppError('交易代理没有响应，请稍后再试', { statusCode: 503, code: 'T212_BROKER_UNREACHABLE' }));
+
       const request = http.request({
         socketPath: deps.socketPath, path, method,
         headers: payload === undefined ? {} : { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
@@ -51,29 +67,42 @@ export function createTrading212BrokerClient(deps: Dependencies) {
         let size = 0;
         response.on('data', (chunk: Buffer) => {
           size += chunk.length;
-          if (size > MAX_RESPONSE_BYTES) { request.destroy(Object.assign(new Error('response too large'), { code: 'ETOOBIG' })); return; }
+          if (size > MAX_RESPONSE_BYTES) {
+            settle(broken());
+            response.destroy();
+            return;
+          }
           chunks.push(chunk);
         });
         response.on('end', () => {
           let parsed: unknown = null;
-          try { parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { parsed = null; }
+          let complete = true;
+          try { parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { complete = false; }
           const status = response.statusCode ?? 502;
-          if (status >= 200 && status < 300) { resolve(parsed as T); return; }
+          if (status >= 200 && status < 300) {
+            // A success whose body does not parse was cut short (a body delimited by the connection closing ends
+            // normally): the order may have been placed, so it is never reported as a result.
+            settle(complete ? null : broken(), parsed as T);
+            return;
+          }
           const failure = (parsed && typeof parsed === 'object' ? parsed : {}) as Partial<StudioT212BrokerErrorBody>;
           const message = typeof failure.error === 'string' && failure.error ? failure.error.slice(0, 300) : `交易代理返回 ${status}`;
           const code = typeof failure.code === 'string' && /^[A-Z0-9_]{1,64}$/.test(failure.code) ? failure.code : 'T212_BROKER_ERROR';
-          reject(new AppError(message, { statusCode: status >= 400 && status < 600 ? status : 502, code }));
+          settle(new AppError(message, { statusCode: status >= 400 && status < 600 ? status : 502, code }));
         });
-        response.on('error', () => {});
+        // A connection that breaks after the headers (broker restarted, crashed or killed) emits 'aborted'/'error'
+        // and then 'close' on the response, but never 'end' and nothing more on the request.
+        response.on('aborted', () => settle(broken()));
+        response.on('error', () => settle(broken()));
+        response.on('close', () => settle(broken()));
       });
-      request.setTimeout(options.timeoutMs, () => request.destroy(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' })));
+      // An absolute deadline: unlike the socket's idle timeout it also ends a response that trickles in forever.
+      deadline = setTimeout(() => {
+        settle(broken());
+        request.destroy();
+      }, options.timeoutMs);
       request.on('error', (error: NodeJS.ErrnoException) => {
-        if (NOT_CONNECTED.has(error.code ?? '')) { reject(unreachable(error.code)); return; }
-        if (options.placesOrder) {
-          reject(new AppError('与交易代理的连接中断，订单状态未知：请先在 Trading 212 核对，不要直接重新下单', { statusCode: 502, code: 'T212_ORDER_UNKNOWN' }));
-          return;
-        }
-        reject(new AppError('交易代理没有响应，请稍后再试', { statusCode: 503, code: 'T212_BROKER_UNREACHABLE' }));
+        settle(NOT_CONNECTED.has(error.code ?? '') ? unreachable(error.code) : broken());
       });
       request.end(payload);
     });
