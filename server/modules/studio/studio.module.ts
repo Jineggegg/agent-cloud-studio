@@ -14,27 +14,32 @@ import { createSnrGatewayRouter } from './snr-gateway.routes.js';
 import { createProjectHubService } from './project-hub.service.js';
 import { createProjectMailService } from './project-mail.service.js';
 import { createProjectHubRouter, createProjectMailCallbackRouter } from './project-hub.routes.js';
+import { createTrading212Service } from './trading212.service.js';
+import { createTrading212Router } from './trading212.routes.js';
+
+// An explicit env path wins; otherwise a conventional checkout under ~/projects is used when it exists.
+function defaultWorkspace(variable: string, folder: string) {
+  const configured = process.env[variable];
+  if (configured !== undefined) return configured;
+  const candidate = path.join(os.homedir(), 'projects', folder);
+  return existsSync(candidate) ? candidate : '';
+}
 
 /** Used by server/index to assemble Studio independently of the inherited CLI providers. */
 export function createStudioModule() {
+  const vaultDirectory = path.join(path.dirname(getDatabasePath()), 'studio-vault');
   const gateway = createSnrGateway({
     baseUrl: process.env.STUDIO_SNR_BASE_URL ?? 'http://127.0.0.1:8768',
     validUser: id => Boolean(userDb.getUserById(id)),
   });
-  const service = createStudioService({
-    database: getConnection(),
-    vaultDirectory: path.join(path.dirname(getDatabasePath()), 'studio-vault'),
-    snrBaseUrl: process.env.STUDIO_SNR_BASE_URL,
-    agentWorkbenchUrl: process.env.STUDIO_AGENT_WORKBENCH_URL,
-  });
-  const defaultProfessorPath = path.join(os.homedir(), 'projects', 'super-professor');
   const hub = createProjectHubService({
     database: getConnection(),
-    professorPath: process.env.STUDIO_SUPER_PROFESSOR_PATH ?? (existsSync(defaultProfessorPath) ? defaultProfessorPath : ''),
+    professorPath: defaultWorkspace('STUDIO_SUPER_PROFESSOR_PATH', 'super-professor'),
+    snrPath: defaultWorkspace('STUDIO_SNR_PATH', 'snr3-lab'),
+    trading212Path: defaultWorkspace('STUDIO_TRADING212_PATH', 'trading212'),
     async resolveWorkspace(directory) {
       if (!existsSync(directory)) throw new AppError('工作目录不存在', { statusCode: 400 });
       const canonical = realpathSync(directory);
-      if (/snr/i.test(canonical)) throw new AppError('SNR 保留在独立实验室', { statusCode: 400 });
       const existing = projectsDb.getProjectPath(canonical);
       if (existing) {
         if (existing.isArchived) throw new AppError('请先在开发工具中恢复已归档的项目', { statusCode: 409 });
@@ -46,7 +51,6 @@ export function createStudioModule() {
     listSessions(directory) {
       if (!existsSync(directory)) return [];
       const canonical = realpathSync(directory);
-      if (/snr/i.test(canonical)) return [];
       return (getConnection().prepare('SELECT session_id FROM sessions WHERE project_path = ? AND isArchived = 0 ORDER BY updated_at DESC LIMIT 100').all(canonical) as { session_id: string }[])
         .flatMap(({ session_id }) => {
           const session = sessionsDb.getSessionById(session_id);
@@ -60,16 +64,35 @@ export function createStudioModule() {
       ).length;
     },
     schedule: input => scheduledMessagesService.schedule(input),
+    forget(userId, projectId) {
+      service.removeSpace(userId, `project:${projectId}`);
+      mail.forget(projectId);
+    },
+  });
+  const service = createStudioService({
+    database: getConnection(),
+    vaultDirectory,
+    snrBaseUrl: process.env.STUDIO_SNR_BASE_URL,
+    agentWorkbenchUrl: process.env.STUDIO_AGENT_WORKBENCH_URL,
+    project(userId, id) {
+      try { return hub.get(userId, id); } catch { return null; }
+    },
   });
   const mail = createProjectMailService({
     database: getConnection(),
-    vaultDirectory: path.join(path.dirname(getDatabasePath()), 'studio-vault'),
+    vaultDirectory,
     project: hub.get,
     clientId: process.env.STUDIO_GMAIL_CLIENT_ID,
     clientSecret: process.env.STUDIO_GMAIL_CLIENT_SECRET,
     publicOrigin: process.env.STUDIO_PUBLIC_ORIGIN,
   });
+  const trading212 = createTrading212Service({
+    database: getConnection(),
+    envFiles: { live: process.env.STUDIO_T212_ENV_FILE || undefined, demo: process.env.STUDIO_T212_DEMO_ENV_FILE || undefined },
+  });
+  trading212.startSnapshots(Number(process.env.STUDIO_T212_SNAPSHOT_MINUTES ?? 30));
   const routes = createStudioRouter(service, gateway);
   routes.use('/projects', createProjectHubRouter(hub, mail));
+  routes.use('/trading212', createTrading212Router(trading212));
   return { routes, snrRoutes: createSnrGatewayRouter(gateway), mailCallbackRoutes: createProjectMailCallbackRouter(mail) };
 }

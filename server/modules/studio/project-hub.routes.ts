@@ -23,12 +23,14 @@ function projectInput(body: Record<string, unknown>): StudioProjectInput {
   return {
     name: text(body.name), description: text(body.description), workspacePath: text(body.workspacePath),
     modules: body.modules as StudioProjectInput['modules'], providers: body.providers as StudioProjectInput['providers'],
+    // Older clients omit the icon; the service validates the values against fixed lists.
+    tone: body.tone === undefined ? 'stone' : text(body.tone), glyph: body.glyph === undefined ? 'folder' : text(body.glyph),
   };
 }
 function taskInput(body: Record<string, unknown>): StudioTaskInput {
   const provider = text(body.provider);
-  if (provider !== 'claude' && provider !== 'codex') throw new AppError('助手无效', { statusCode: 400 });
-  return { title: text(body.title), prompt: text(body.prompt), provider };
+  if (!['claude', 'codex', 'cursor', 'opencode'].includes(provider)) throw new AppError('助手无效', { statusCode: 400 });
+  return { title: text(body.title), prompt: text(body.prompt), provider: provider as StudioTaskInput['provider'] };
 }
 
 /** Mounted by studio.module behind authentication; performs transport validation only. */
@@ -39,6 +41,7 @@ export function createProjectHubRouter(hub: ReturnType<typeof createProjectHubSe
   router.post('/', asyncHandler(async (req, res) => { res.status(201).json(hub.create(user(req), projectInput(req.body ?? {}))); }));
   router.get('/:id', asyncHandler(async (req, res) => { res.json(hub.get(user(req), String(req.params.id))); }));
   router.put('/:id', asyncHandler(async (req, res) => { res.json(hub.update(user(req), String(req.params.id), projectInput(req.body ?? {}))); }));
+  router.delete('/:id', asyncHandler(async (req, res) => { res.json(hub.remove(user(req), String(req.params.id))); }));
   router.post('/:id/launch', asyncHandler(async (req, res) => { res.json(await hub.launch(user(req), String(req.params.id), text(req.body?.provider))); }));
   router.get('/:id/sessions', asyncHandler(async (req, res) => { res.json(hub.sessions(user(req), String(req.params.id))); }));
   router.get('/:id/tasks', asyncHandler(async (req, res) => { res.json(hub.tasks(user(req), String(req.params.id))); }));

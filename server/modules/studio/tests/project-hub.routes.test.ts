@@ -50,11 +50,17 @@ test('project routes validate transport input, ownership and disabled modules be
     const list = await request('');
     assert.equal(list.headers.get('Cache-Control'), 'no-store');
     const [project] = await list.json() as { id: string }[];
+    // None of the built-in projects enables mail, so a mail-only project is created for the mailbox checks.
+    const created = await request('', '1', { name: '邮件', description: '', workspacePath: '', providers: [], modules: ['mail'], tone: 'rose', glyph: 'mail' });
+    assert.equal(created.status, 201);
+    const mailProject = await created.json() as { id: string };
     assert.equal((await request(`/${project.id}`, '2')).status, 404);
     assert.equal((await request('', '1', { name: 'bad', providers: 'claude', modules: [] })).status, 400);
     assert.equal((await request(`/${project.id}/launch`, '1', { provider: 42 })).status, 400);
-    assert.equal((await request(`/${project.id}/mail/messages?q=a&q=b`)).status, 400);
-    assert.equal((await request(`/${project.id}/mail/connect`, '1', {})).status, 503);
+    assert.equal((await request(`/${mailProject.id}/mail/messages?q=a&q=b`)).status, 400);
+    assert.equal((await request(`/${mailProject.id}/mail/connect`, '1', {})).status, 503);
+    assert.equal((await request(`/${mailProject.id}`, '2', undefined, 'DELETE')).status, 404);
+    assert.equal((await request(`/${mailProject.id}`, '1', undefined, 'DELETE')).status, 200);
     const input = { name: '项目', description: '', workspacePath: '', providers: ['claude'], modules: ['agents'] };
     assert.equal((await request(`/${project.id}`, '1', input, 'PUT')).status, 200);
     assert.equal((await request(`/${project.id}/mail/messages`)).status, 400);

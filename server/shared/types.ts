@@ -1577,17 +1577,29 @@ export type SandboxCommandService = {
 
 // ---------------------------
 //----------------- STUDIO PROJECT CONTRACTS ------------
-/** Editable project metadata consumed by the Studio project router and service. Modules only expose their own tools; SNR is excluded. */
+/** A coding agent that runs inside the inherited IDE, in the project's own directory. */
+export type StudioAgentProvider = 'claude' | 'codex' | 'cursor' | 'opencode';
+
+/** Any model a project can enable: the IDE agents plus Studio's own DeepSeek API chat. */
+export type StudioProjectProvider = StudioAgentProvider | 'deepseek';
+
+/** Optional tools a project shows as tabs; integrations only appear when enabled. */
+export type StudioProjectModule = 'agents' | 'mail' | 'automations' | 'snr-lab' | 'trading212';
+
+/** Editable project metadata consumed by the Studio project router and service; one project is one home-screen icon. */
 export type StudioProjectInput = {
   name: string;
   description: string;
   workspacePath: string;
-  modules: ('agents' | 'mail' | 'automations')[];
-  providers: ('claude' | 'codex')[];
+  modules: StudioProjectModule[];
+  providers: StudioProjectProvider[];
+  // Home-screen icon colour family and glyph, chosen from fixed lists.
+  tone: string;
+  glyph: string;
 };
 
 /** Persisted, user-owned project returned to the Studio UI, with no credentials or provider tokens. */
 export type StudioProjectRecord = StudioProjectInput & { id: string; updatedAt: string };
 
 /** An automation draft passed from the Studio router to its service. Saving does not execute or schedule a task. */
-export type StudioTaskInput = { title: string; prompt: string; provider: 'claude' | 'codex' };
+export type StudioTaskInput = { title: string; prompt: string; provider: StudioAgentProvider };

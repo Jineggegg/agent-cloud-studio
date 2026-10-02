@@ -11,7 +11,9 @@ import { createStudioService } from '../studio.service.js';
 function fixture(request?: typeof fetch) {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'studio-test-'));
   const database = new Database(':memory:');
-  const service = createStudioService({ database, vaultDirectory: directory, request });
+  // User 1 owns project p1; nobody owns p2.
+  const project = (userId: number, id: string) => userId === 1 && id === 'p1' ? { name: '超级教授', description: '教学网站' } : null;
+  const service = createStudioService({ database, vaultDirectory: directory, request, project });
   return { service, database, directory, close: () => { database.close(); rmSync(directory, { recursive: true }); } };
 }
 
@@ -43,17 +45,38 @@ test('conversation access and deletion cannot cross users', () => {
   } finally { f.close(); }
 });
 
-test('each home-screen chat app keeps an isolated history and rejects unknown spaces', () => {
+test('each project keeps an isolated DeepSeek history; foreign and unknown spaces are rejected', () => {
   const f = fixture();
   try {
     const general = f.service.createConversation(1, 'deepseek-flash');
-    const professor = f.service.createConversation(1, 'deepseek-v4-pro', 'super-professor');
+    const professor = f.service.createConversation(1, 'deepseek-v4-pro', 'project:p1');
     assert.equal(general.space, 'deepseek');
-    assert.equal(professor.space, 'super-professor');
+    assert.equal(professor.space, 'project:p1');
     assert.deepEqual(f.service.listConversations(1).map(row => (row as { id: string }).id), [general.id]);
-    assert.deepEqual(f.service.listConversations(1, 'super-professor').map(row => (row as { id: string }).id), [professor.id]);
+    assert.deepEqual(f.service.listConversations(1, 'project:p1').map(row => (row as { id: string }).id), [professor.id]);
+    assert.throws(() => f.service.listConversations(2, 'project:p1'), /未知的对话空间/);
+    assert.throws(() => f.service.createConversation(1, 'deepseek-flash', 'project:p2'), /未知的对话空间/);
     assert.throws(() => f.service.listConversations(1, 'snr-trading'), /未知的对话空间/);
     assert.throws(() => f.service.createConversation(1, 'deepseek-flash', '__proto__'), /未知的对话空间/);
+    f.service.removeSpace(1, 'project:p1');
+    assert.equal(f.service.listConversations(1, 'project:p1').length, 0);
+    assert.equal(f.service.listConversations(1).length, 1);
+  } finally { f.close(); }
+});
+
+test('project conversations tell DeepSeek which project they belong to, framed as background data', async () => {
+  let body = '';
+  const f = fixture((async (_url, init) => {
+    body = String(init?.body);
+    return Response.json({ choices: [{ message: { content: '好的' } }] });
+  }) as typeof fetch);
+  try {
+    f.service.saveKey(1, 'fake-unit-test-key-not-valid');
+    const row = f.service.createConversation(1, 'deepseek-flash', 'project:p1');
+    await f.service.send(1, row.id, '下一步？', false, new AbortController().signal);
+    const system = (JSON.parse(body) as { messages: { role: string; content: string }[] }).messages[0].content;
+    assert.ok(system.includes('「超级教授」'));
+    assert.ok(system.includes('仅作背景资料'));
   } finally { f.close(); }
 });
 
@@ -65,7 +88,7 @@ test('conversations created before spaces existed migrate into the DeepSeek app'
     database.prepare('INSERT INTO studio_conversations VALUES (?, ?, ?, ?, ?)').run('old', 1, '旧对话', 'deepseek-flash', new Date().toISOString());
     const service = createStudioService({ database, vaultDirectory: directory });
     assert.equal(service.conversation(1, 'old').space, 'deepseek');
-    assert.equal(service.listConversations(1, 'super-professor').length, 0);
+    assert.equal(service.listConversations(1, 'deepseek').length, 1);
     createStudioService({ database, vaultDirectory: directory });
   } finally { database.close(); rmSync(directory, { recursive: true }); }
 });

@@ -101,6 +101,8 @@ export function createProjectMailService(deps: Dependencies) {
     return response.json();
   }
   return {
+    // Called when a project is deleted; drops its encrypted Gmail tokens.
+    forget(projectId: string) { db.prepare('DELETE FROM studio_project_mail WHERE project_id = ?').run(projectId); },
     status(userId: number, id: string) {
       check(userId, id);
       const tokens = load(id);

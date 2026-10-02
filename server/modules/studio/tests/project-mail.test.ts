@@ -24,7 +24,7 @@ function fixture(configured = true, failed = false) {
     database, vaultDirectory: directory, request,
     project(userId, id) {
       if (userId !== 1 || id !== 'project-one') throw Error('项目不存在');
-      return { id, updatedAt: '', name: '测试项目', description: '', workspacePath: '', modules: ['mail'], providers: ['claude'] };
+      return { id, updatedAt: '', name: '测试项目', description: '', workspacePath: '', modules: ['mail'], providers: ['claude'], tone: 'rose', glyph: 'mail' };
     },
     clientId: configured ? 'fake-client-id' : undefined,
     clientSecret: configured ? 'fake-client-secret' : undefined,
