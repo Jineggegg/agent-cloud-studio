@@ -202,7 +202,7 @@ export function StudioTrading212() {
         </div>
       </section>}
       <p className="ios-section-footer">数据来自 Trading 212 公共 API（Beta），{new Date(current.fetchedAt).toLocaleTimeString('zh-CN')} 更新。{tradable && trading
-        ? `每笔订单都要经过面容 ID / 触控 ID 或二次确认，单笔上限 ${format(trading.caps.envs[env].maxOrderValue)}，今日还可下单 ${format(trading.caps.envs[env].dailyRemaining)}（每日上限 ${format(trading.caps.envs[env].dailyLimit)}）。`
+        ? `每笔订单都要经过面容 ID / 触控 ID 或二次确认，单笔上限 ${format(trading.caps.envs[env].maxOrderValue)}，今日还可买入 ${format(trading.caps.envs[env].dailyRemaining)}（每日买入上限 ${format(trading.caps.envs[env].dailyLimit)}）。`
         : '当前账户只读，不会下单或修改账户。'}</p>
     </>}
 

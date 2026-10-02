@@ -1,4 +1,6 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
+import type { KeyboardEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { browserSupportsWebAuthn, startAuthentication } from '@simplewebauthn/browser';
 import type { PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/browser';
 import { ArrowDownRight, ArrowUpRight, Check, ScanFace, ShieldX } from 'lucide-react';
@@ -13,13 +15,20 @@ import '@/modules/studio/studio-orders.css';
 /** POST /caps/challenge: a single-use Face ID / Touch ID challenge for exactly the values being raised to. */
 type CapsChallenge = { challengeId: string; expiresAt: string; authentication: PublicKeyCredentialRequestOptionsJSON };
 type Direction = 'raise' | 'lower';
+// What the editor is doing: saving a lowering, fetching a raise challenge, showing the raise for review, or running
+// Face ID and the save. Anything but null locks the account switch and the fields.
+type CapsBusy = 'saving' | 'challenge' | 'review' | 'passkey' | null;
+// A raise waiting for the user's go-ahead: the exact values the challenge was issued for.
+type PendingRaise = { input: T212CapsInput; challenge: CapsChallenge };
 
 const ENV_LABEL: Record<T212Env, string> = { live: '实盘', demo: '模拟盘' };
 const ENVS: T212Env[] = ['live', 'demo'];
 // Caps are amounts of money: the server accepts at most two decimals.
 const CAP_PLACES = 2;
-// Audit entries shown before "显示全部".
+// Audit entries shown per list before "显示全部".
 const HISTORY_PREVIEW = 4;
+// Matches the alert's CSS exit animation in studio.css.
+const EXIT_MS = 180;
 
 function money(value: number, currency: string | undefined) {
   if (!currency) return `${value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}（账户货币）`;
@@ -28,6 +37,13 @@ function money(value: number, currency: string | undefined) {
 }
 function when(iso: string) {
   return new Date(iso).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+function exitDelay() {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 0 : EXIT_MS;
+}
+// "£250.00 → £400.00", or just the value when it does not change.
+function change(from: number, to: number, currency: string | undefined) {
+  return from === to ? money(to, currency) : `${money(from, currency)} → ${money(to, currency)}`;
 }
 // Raising either cap is a raise even when the other goes down, exactly as the server decides; null when unchanged.
 function capDirection(current: T212CapLimits, next: T212CapLimits): Direction | null {
@@ -57,60 +73,55 @@ function raiseBlocker(config: T212TradingConfig, trusted: boolean) {
 
 /**
  * Used by StudioSettingsTrading (Settings → 交易安全) to show and edit this user's Trading 212 caps per account:
- * the per-order cap and the rolling-24-hour cap with today's usage, the server ceiling, and the audit trail.
- * Lowering is saved with the session alone; raising asks the server for a challenge bound to the exact new values
- * and signs it with Face ID / Touch ID, so it needs a passkey on this domain (the editor explains when there is none).
+ * the per-order cap and the rolling-24-hour cap on buys with today's usage, the server ceiling, applied changes and,
+ * listed apart, refused raises. Lowering is saved with the session alone; raising asks the server for a challenge
+ * bound to the exact new values, shows them for review, then signs it with Face ID / Touch ID, so it needs a passkey
+ * on this domain (the editor explains when there is none).
  */
 export function StudioT212CapsEditor({ config, trusted, onSaved }: {
   config: T212TradingConfig; trusted: boolean; onSaved: () => Promise<void> | void;
 }) {
   // The account whose caps are shown and edited; starts on the first account that may trade.
   const [env, setEnv] = useState<T212Env>(() => config.allowedEnvs[0] ?? 'live');
-  // Whether the audit list shows every returned entry instead of the latest few.
-  const [showAllChanges, setShowAllChanges] = useState(false);
+  // The save in progress; kept here so the account switch stays locked through the whole raise.
+  const [busy, setBusy] = useState<CapsBusy>(null);
   const headingId = useId();
   const caps = config.caps.envs[env];
   const currency = caps.currency ?? config.currency;
-  const changes = showAllChanges ? config.capChanges : config.capChanges.slice(0, HISTORY_PREVIEW);
+  const currencyOf = (item: T212CapChange) => (item.env ? config.caps.envs[item.env].currency : undefined) ?? config.currency;
 
   return <>
     <div className="t212-caps-heading">
       <h3 id={headingId}>下单上限</h3>
       <div className="segmented small" role="radiogroup" aria-label="上限所属账户">
-        {ENVS.map(value => <button key={value} type="button" role="radio" aria-checked={env === value} onClick={() => setEnv(value)}>{ENV_LABEL[value]}</button>)}
+        {ENVS.map(value => <button key={value} type="button" role="radio" aria-checked={env === value} disabled={busy !== null}
+          onClick={() => setEnv(value)}>{ENV_LABEL[value]}</button>)}
       </div>
     </div>
     {/* Remounted whenever the saved caps change, so the fields start from what the server now enforces. */}
     <CapsForm key={`${env}:${caps.maxOrderValue}:${caps.dailyLimit}:${caps.updatedAt ?? ''}`} env={env} caps={caps} currency={currency}
-      ceiling={config.caps.ceiling} blocker={raiseBlocker(config, trusted)} labelledBy={headingId} onSaved={onSaved} />
+      ceiling={config.caps.ceiling} blocker={raiseBlocker(config, trusted)} labelledBy={headingId} busy={busy} setBusy={setBusy} onSaved={onSaved} />
     <p className="ios-section-footer t212-settings-note">
       服务器硬上限 {money(config.caps.ceiling, currency)}（<code>STUDIO_T212_CAP_CEILING</code>），任何修改都不能超过。
-      降低上限立即生效，不需要验证；提高上限要用这个网址的面容 ID / 触控 ID，验证 60 秒内有效。
-      每日上限按过去 24 小时已提交和状态未知的订单计算。
+      降低上限立即生效，不需要验证；提高上限要先核对数值，再用这个网址的面容 ID / 触控 ID 验证，60 秒内有效。
+      每日上限只计买入：过去 24 小时已提交、正在提交和状态未知的买单；卖出不占用额度，但仍受单笔上限限制。
       {!caps.custom && ` 当前是服务器默认值（单笔 ${money(config.caps.defaults.maxOrderValue, currency)}，每日 ${money(config.caps.defaults.dailyLimit, currency)}）。`}
     </p>
 
-    {config.capChanges.length > 0 && <>
-      <div className="t212-caps-heading"><h3>上限变更记录</h3></div>
-      <div className="ios-list t212-caps-history" role="list" aria-label="上限变更记录">
-        {changes.map(change => <CapChangeRow key={change.id} change={change} currency={config.caps.envs[change.env].currency ?? config.currency} />)}
-      </div>
-      {config.capChanges.length > HISTORY_PREVIEW && <button type="button" className="t212-caps-more" onClick={() => setShowAllChanges(value => !value)}>
-        {showAllChanges ? '收起' : `显示全部 ${config.capChanges.length} 条`}
-      </button>}
-    </>}
+    <CapChangeList title="上限变更记录" changes={config.capChanges} currencyOf={currencyOf} />
+    <CapChangeList title="被拒绝的提高" changes={config.capRefusals} currencyOf={currencyOf} />
   </>;
 }
 
-function CapsForm({ env, caps, currency, ceiling, blocker, labelledBy, onSaved }: {
+function CapsForm({ env, caps, currency, ceiling, blocker, labelledBy, busy, setBusy, onSaved }: {
   env: T212Env; caps: T212AccountCaps; currency: string | undefined; ceiling: number; blocker: string; labelledBy: string;
-  onSaved: () => Promise<void> | void;
+  busy: CapsBusy; setBusy: (busy: CapsBusy) => void; onSaved: () => Promise<void> | void;
 }) {
   // Typed caps, kept as text so partial input such as "1." is not rewritten; the key resets them after a save.
   const [orderText, setOrderText] = useState(() => String(caps.maxOrderValue));
   const [dailyText, setDailyText] = useState(() => String(caps.dailyLimit));
-  // Save in flight: 'session' while lowering, 'passkey' while the challenge, Face ID and the save run.
-  const [busy, setBusy] = useState<'session' | 'passkey' | null>(null);
+  // The raise shown for review between fetching its challenge and Face ID; null otherwise.
+  const [pendingRaise, setPendingRaise] = useState<PendingRaise | null>(null);
   // Failure of the last attempt (server refusal, cancelled Face ID), shown until the next attempt.
   const [error, setError] = useState('');
   const orderId = useId();
@@ -127,29 +138,51 @@ function CapsForm({ env, caps, currency, ceiling, blocker, labelledBy, onSaved }
   const ready = busy === null && direction !== null && !blocked;
   const usedRatio = caps.dailyLimit > 0 ? Math.min(1, caps.dailyUsed / caps.dailyLimit) : 0;
 
+  const fail = (reason: unknown, raising: boolean) => {
+    const message = saveError(reason);
+    setError(message);
+    // A cancelled Face ID prompt is the user's own choice; everything else is reported as a failure too.
+    if (!cancelled(reason)) toast.error(raising ? '上限没有提高' : '上限没有保存', { description: message });
+  };
+  // Lowering saves at once; raising first fetches the challenge bound to these values and shows them for review.
   const save = async () => {
     if (!ready || maxOrderValue === null || dailyLimit === null) return;
     const input: T212CapsInput = { env, maxOrderValue, dailyLimit };
-    setBusy(direction === 'raise' ? 'passkey' : 'session'); setError('');
-    try {
-      if (direction === 'raise') {
+    setError('');
+    if (direction === 'raise') {
+      setBusy('challenge');
+      try {
         const challenge = await readApiJson<CapsChallenge>(await api.studio.t212Trading.capsChallenge(input));
-        const assertion = await startAuthentication({ optionsJSON: challenge.authentication });
-        await readApiJson(await api.studio.t212Trading.updateCaps(input, { challengeId: challenge.challengeId, assertion }));
-      } else {
-        await readApiJson(await api.studio.t212Trading.updateCaps(input));
-      }
-      toast.success(direction === 'raise' ? `已用面容 ID / 触控 ID 提高${ENV_LABEL[env]}上限` : `已降低${ENV_LABEL[env]}上限`, {
-        description: `单笔 ${money(maxOrderValue, currency)} · 每日 ${money(dailyLimit, currency)}`,
-      });
+        setPendingRaise({ input, challenge });
+        setBusy('review');
+      } catch (reason) { fail(reason, true); setBusy(null); }
+      return;
+    }
+    setBusy('saving');
+    try {
+      await readApiJson(await api.studio.t212Trading.updateCaps(input));
+      toast.success(`已降低${ENV_LABEL[env]}上限`, { description: `单笔 ${money(maxOrderValue, currency)} · 每日 ${money(dailyLimit, currency)}` });
       await onSaved();
-    } catch (reason) {
-      const message = saveError(reason);
-      setError(message);
-      // A cancelled Face ID prompt is the user's own choice; everything else is reported as a failure too.
-      if (!cancelled(reason)) toast.error(direction === 'raise' ? '上限没有提高' : '上限没有保存', { description: message });
-    } finally { setBusy(null); }
+    } catch (reason) { fail(reason, false); }
+    finally { setBusy(null); }
   };
+  // Called straight from the review's confirm tap, so Face ID starts within that user gesture.
+  const confirmRaise = async () => {
+    if (!pendingRaise) return;
+    const { input, challenge } = pendingRaise;
+    setBusy('passkey');
+    try {
+      const assertion = await startAuthentication({ optionsJSON: challenge.authentication });
+      await readApiJson(await api.studio.t212Trading.updateCaps(input, { challengeId: challenge.challengeId, assertion }));
+      toast.success(`已用面容 ID / 触控 ID 提高${ENV_LABEL[env]}上限`, {
+        description: `单笔 ${money(input.maxOrderValue, currency)} · 每日 ${money(input.dailyLimit, currency)}`,
+      });
+      setPendingRaise(null);
+      await onSaved();
+    } catch (reason) { setPendingRaise(null); fail(reason, true); }
+    finally { setBusy(null); }
+  };
+  const cancelRaise = () => { setPendingRaise(null); setBusy(null); };
 
   return <>
     <form className="ios-list t212-caps-form" aria-labelledby={labelledBy} onSubmit={event => { event.preventDefault(); void save(); }}>
@@ -167,37 +200,119 @@ function CapsForm({ env, caps, currency, ceiling, blocker, labelledBy, onSaved }
       </div>
       <div className="ios-row no-icon">
         <span className="ios-row-body">
-          <strong>过去 24 小时</strong>
-          <small>已用 {money(caps.dailyUsed, currency)} · 还可下单 {money(caps.dailyRemaining, currency)}</small>
+          <strong>过去 24 小时买入</strong>
+          <small>已用 {money(caps.dailyUsed, currency)} · 还可买入 {money(caps.dailyRemaining, currency)}</small>
         </span>
         <span className={`t212-order-meter t212-caps-meter ${usedRatio >= 1 ? 'full' : usedRatio >= 0.8 ? 'near' : ''}`} aria-hidden="true">
           <span style={{ transform: `scaleX(${usedRatio})` }} />
         </span>
       </div>
       <button type="submit" className="ios-row action left no-icon" disabled={!ready}>
-        {busy ? <StudioSpinner size={16} /> : direction === 'raise' ? <ScanFace size={19} aria-hidden="true" /> : <Check size={19} aria-hidden="true" />}
+        {busy === 'saving' || busy === 'challenge' ? <StudioSpinner size={16} /> : direction === 'raise' ? <ScanFace size={19} aria-hidden="true" /> : <Check size={19} aria-hidden="true" />}
         {direction === 'raise' ? '用面容 ID / 触控 ID 提高上限' : direction === 'lower' ? '降低上限' : '保存上限'}
       </button>
     </form>
     {problem && <p className="studio-feedback error" role="alert">{problem}</p>}
     {!problem && blocked && <p className="studio-feedback t212-caps-blocked">{blocker}</p>}
     {error && <p className="studio-feedback error" role="alert">{error}</p>}
+    {pendingRaise && <RaiseReviewSheet env={env} from={caps} to={pendingRaise.input} currency={currency} verifying={busy === 'passkey'}
+      onConfirm={() => void confirmRaise()} onCancel={cancelRaise} />}
   </>;
 }
 
-function CapChangeRow({ change, currency }: { change: T212CapChange; currency: string | undefined }) {
-  const refused = change.status === 'refused';
-  const Icon = refused ? ShieldX : change.direction === 'raise' ? ArrowUpRight : ArrowDownRight;
-  const tone = refused ? 'tone-rose' : change.direction === 'raise' ? 'tone-clay' : 'tone-sage';
-  const action = refused ? '提高被拒绝' : change.direction === 'raise' ? '提高' : '降低';
-  const pair = (from: number, to: number) => (from === to ? money(to, currency) : `${money(from, currency)} → ${money(to, currency)}`);
-  const method = change.method === 'passkey' ? '面容 ID / 触控 ID' : '登录会话';
+// The review step of a raise: which account, and both caps from → to, before Face ID / Touch ID is asked for.
+function RaiseReviewSheet({ env, from, to, currency, verifying, onConfirm, onCancel }: {
+  env: T212Env; from: T212CapLimits; to: T212CapLimits; currency: string | undefined; verifying: boolean;
+  onConfirm: () => void; onCancel: () => void;
+}) {
+  // The exit animation runs before a cancel unmounts the alert.
+  const [closing, setClosing] = useState(false);
+  const panel = useRef<HTMLDivElement>(null);
+  const cancelButton = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
+  const messageId = useId();
+
+  useEffect(() => {
+    // Focus starts on the safe choice and returns to the trigger afterwards.
+    const previous = document.activeElement as HTMLElement | null;
+    cancelButton.current?.focus();
+    return () => previous?.focus?.();
+  }, []);
+
+  const cancel = () => {
+    if (verifying || closing) return;
+    setClosing(true);
+    window.setTimeout(onCancel, exitDelay());
+  };
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') { event.preventDefault(); cancel(); return; }
+    if (event.key !== 'Tab' || !panel.current) return;
+    // Keep keyboard focus inside the alert.
+    const focusable = [...panel.current.querySelectorAll<HTMLElement>('button:not(:disabled)')];
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+  };
+
+  return createPortal(
+    <div className={`studio-layer ${closing ? 'closing' : ''}`} onKeyDown={onKeyDown}>
+      <div className="sheet-scrim" aria-hidden="true" onClick={cancel} />
+      <div ref={panel} className="sheet-panel t212-caps-review" role="alertdialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={messageId}
+        aria-busy={verifying || undefined}>
+        <div className="sheet-text">
+          <h2 id={titleId}>{`提高${ENV_LABEL[env]}上限？`}</h2>
+          <p id={messageId}>服务器只接受下面这组数值。确认后用面容 ID / 触控 ID 验证，验证 60 秒内有效。</p>
+        </div>
+        <dl className="t212-caps-review-values">
+          <div><dt>账户</dt><dd>{ENV_LABEL[env]}</dd></div>
+          <div><dt>单笔上限</dt><dd>{change(from.maxOrderValue, to.maxOrderValue, currency)}</dd></div>
+          <div><dt>每日上限</dt><dd>{change(from.dailyLimit, to.dailyLimit, currency)}</dd></div>
+        </dl>
+        <div className="sheet-actions">
+          <button type="button" className="sheet-action t212-caps-review-confirm" disabled={verifying || closing} onClick={onConfirm}>
+            {verifying ? <StudioSpinner size={16} /> : <ScanFace size={18} aria-hidden="true" />}用面容 ID / 触控 ID 确认
+          </button>
+          <button ref={cancelButton} type="button" className="sheet-action" disabled={verifying || closing} onClick={cancel}>取消</button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function CapChangeList({ title, changes, currencyOf }: {
+  title: string; changes: T212CapChange[]; currencyOf: (item: T212CapChange) => string | undefined;
+}) {
+  // Whether every returned entry is shown instead of the latest few.
+  const [expanded, setExpanded] = useState(false);
+  if (!changes.length) return null;
+  return <>
+    <div className="t212-caps-heading"><h3>{title}</h3></div>
+    <div className="ios-list t212-caps-history" role="list" aria-label={title}>
+      {(expanded ? changes : changes.slice(0, HISTORY_PREVIEW)).map(item => <CapChangeRow key={item.id} change={item} currency={currencyOf(item)} />)}
+    </div>
+    {changes.length > HISTORY_PREVIEW && <button type="button" className="t212-caps-more" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>
+      {expanded ? '收起' : `显示全部 ${changes.length} 条`}
+    </button>}
+  </>;
+}
+
+function CapChangeRow({ change: item, currency }: { change: T212CapChange; currency: string | undefined }) {
+  const refused = item.status === 'refused';
+  const Icon = refused ? ShieldX : item.direction === 'raise' ? ArrowUpRight : ArrowDownRight;
+  const tone = refused ? 'tone-rose' : item.direction === 'raise' ? 'tone-clay' : 'tone-sage';
+  const action = refused ? '提高被拒绝' : item.direction === 'raise' ? '提高' : '降低';
+  const method = item.method === 'passkey' ? '面容 ID / 触控 ID' : '登录会话';
+  const values = item.from && item.to
+    ? `单笔 ${change(item.from.maxOrderValue, item.to.maxOrderValue, currency)} · 每日 ${change(item.from.dailyLimit, item.to.dailyLimit, currency)}`
+    : '请求无效，没有可识别的数值';
   return <div className="ios-row" role="listitem">
     <span className={`home-icon small ${tone}`} aria-hidden="true"><Icon size={18} strokeWidth={1.8} /></span>
     <span className="ios-row-body">
-      <strong>{ENV_LABEL[change.env]} · {action}</strong>
-      <small>单笔 {pair(change.from.maxOrderValue, change.to.maxOrderValue)} · 每日 {pair(change.from.dailyLimit, change.to.dailyLimit)}</small>
-      <small title={change.reason ?? undefined}>{method} · {when(change.createdAt)}{change.reason ? ` · ${change.reason}` : ''}</small>
+      <strong>{item.env ? ENV_LABEL[item.env] : '未知账户'} · {action}</strong>
+      <small>{values}</small>
+      <small title={item.reason ?? undefined}>{method} · {when(item.createdAt)}{item.reason ? ` · ${item.reason}` : ''}</small>
     </span>
     {refused && <span className="status-badge warn">已拒绝</span>}
   </div>;

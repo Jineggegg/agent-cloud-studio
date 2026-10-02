@@ -33,7 +33,7 @@ const accountCaps = (maxOrderValue: number, dailyLimit: number, dailyUsed = 0, c
 });
 const CAPS = { ceiling: 10_000, defaults: { maxOrderValue: 500, dailyLimit: 2000 }, envs: { live: accountCaps(500, 2000), demo: accountCaps(250, 1000, 160, true) } };
 const CONFIG = {
-  allowedEnvs: ['demo'], caps: CAPS, capChanges: [] as unknown[], currency: 'GBP', passkeys: [OTHER_DOMAIN],
+  allowedEnvs: ['demo'], caps: CAPS, capChanges: [] as unknown[], capRefusals: [] as unknown[], currency: 'GBP', passkeys: [OTHER_DOMAIN],
   trustedOrigins: [], allowLocalhost: true, requirePasskey: false,
 };
 const capChange = (id: number, change: Record<string, unknown> = {}) => ({
@@ -74,7 +74,7 @@ test('shows the allowed accounts, the cap and passkeys by domain, then registers
   // The caps editor opens on the account that may trade, with its saved caps and today's usage.
   expect((within(capsForm()).getByLabelText('单笔上限') as HTMLInputElement).value).toBe('250');
   expect((within(capsForm()).getByLabelText('每日上限') as HTMLInputElement).value).toBe('1000');
-  expect(within(capsForm()).getByText('已用 £160.00 · 还可下单 £840.00')).toBeTruthy();
+  expect(within(capsForm()).getByText('已用 £160.00 · 还可买入 £840.00')).toBeTruthy();
   expect(screen.getByText('desktop.tail1234.ts.net')).toBeTruthy();
   // Face ID exists on another domain, so this one cannot trade until it has its own.
   expect(screen.getByText('需先启用面容 ID')).toBeTruthy();
@@ -214,11 +214,54 @@ test('raising asks for a challenge bound to the new values and signs it with Fac
   const form = await typeCaps('400', '900');
   fireEvent.click(within(form).getByRole('button', { name: '用面容 ID / 触控 ID 提高上限' }));
   const input = { env: 'demo', maxOrderValue: 400, dailyLimit: 900 };
-  await waitFor(() => expect(trading.updateCaps).toHaveBeenCalledWith(input, { challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', assertion }));
+
+  // Before Face ID, the account and both caps from → to are shown for review; everything else is locked.
+  const review = await screen.findByRole('alertdialog', { name: '提高模拟盘上限？' });
   expect(trading.capsChallenge).toHaveBeenCalledWith(input);
+  expect(webauthn.startAuthentication).not.toHaveBeenCalled();
+  expect(within(review).getByText('模拟盘')).toBeTruthy();
+  expect(within(review).getByText('£250.00 → £400.00')).toBeTruthy();
+  expect(within(review).getByText('£1,000.00 → £900.00')).toBeTruthy();
+  expect((within(form).getByLabelText('单笔上限') as HTMLInputElement).disabled).toBe(true);
+  expect((within(form).getByLabelText('每日上限') as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByRole('radio', { name: '实盘' }) as HTMLButtonElement).disabled).toBe(true);
+
+  fireEvent.click(within(review).getByRole('button', { name: '用面容 ID / 触控 ID 确认' }));
   expect(webauthn.startAuthentication).toHaveBeenCalledWith({ optionsJSON: authentication });
+  await waitFor(() => expect(trading.updateCaps).toHaveBeenCalledWith(input, { challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', assertion }));
   await waitFor(() => expect(toast.success).toHaveBeenCalledWith('已用面容 ID / 触控 ID 提高模拟盘上限', { description: '单笔 £400.00 · 每日 £900.00' }));
+  await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
   expect(trading.config).toHaveBeenCalledTimes(2);
+  expect((screen.getByRole('radio', { name: '实盘' }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test('cancelling the review sends nothing to Face ID and unlocks the editor', async () => {
+  trading.config.mockImplementation(json({ ...CONFIG, passkeys: [THIS_DOMAIN] }));
+  trading.capsChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '', authentication: { challenge: 'c' } }));
+  render(<StudioSettingsTrading />);
+  const form = await typeCaps('400');
+  fireEvent.click(within(form).getByRole('button', { name: '用面容 ID / 触控 ID 提高上限' }));
+  const review = await screen.findByRole('alertdialog', { name: '提高模拟盘上限？' });
+  // Only the per-order cap changes; the daily one is shown as it stays.
+  expect(within(review).getByText('£1,000.00')).toBeTruthy();
+  fireEvent.click(within(review).getByRole('button', { name: '取消' }));
+  await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+  expect(webauthn.startAuthentication).not.toHaveBeenCalled();
+  expect(trading.updateCaps).not.toHaveBeenCalled();
+  expect((within(form).getByLabelText('单笔上限') as HTMLInputElement).disabled).toBe(false);
+  expect((within(form).getByLabelText('单笔上限') as HTMLInputElement).value).toBe('400');
+});
+
+test('a rate-limited raise is explained and toasted without a review', async () => {
+  trading.config.mockImplementation(json({ ...CONFIG, passkeys: [THIS_DOMAIN] }));
+  trading.capsChallenge.mockImplementation(json('一小时内发起提高上限的次数过多，请约 42 分钟后再试；降低上限不受影响', 429, 'T212_CAPS_RATE_LIMITED'));
+  render(<StudioSettingsTrading />);
+  const form = await typeCaps('400');
+  fireEvent.click(within(form).getByRole('button', { name: '用面容 ID / 触控 ID 提高上限' }));
+  expect((await screen.findByRole('alert')).textContent).toContain('次数过多');
+  expect(toast.error).toHaveBeenCalledWith('上限没有提高', { description: expect.stringContaining('42 分钟') });
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  expect((within(form).getByLabelText('单笔上限') as HTMLInputElement).disabled).toBe(false);
 });
 
 test('without a passkey caps cannot be raised and the editor says to enable Face ID first; lowering still works', async () => {
@@ -265,39 +308,53 @@ test('a cancelled Face ID changes nothing quietly; a server refusal is shown and
   webauthn.startAuthentication.mockRejectedValueOnce(Object.assign(new Error('The operation either timed out or was not allowed.'), { name: 'NotAllowedError' }));
   render(<StudioSettingsTrading />);
   const form = await typeCaps('400');
-  fireEvent.click(within(form).getByRole('button', { name: '用面容 ID / 触控 ID 提高上限' }));
+  const confirmReview = async () => {
+    fireEvent.click(within(form).getByRole('button', { name: '用面容 ID / 触控 ID 提高上限' }));
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '用面容 ID / 触控 ID 确认' }));
+  };
+  await confirmReview();
   expect((await screen.findByRole('alert')).textContent).toBe('已取消面容 ID / 触控 ID 验证，上限没有改变');
+  expect(screen.queryByRole('alertdialog')).toBeNull();
   expect(trading.updateCaps).not.toHaveBeenCalled();
   expect(toast.error).not.toHaveBeenCalled();
 
   webauthn.startAuthentication.mockResolvedValue({ id: 'cred-local', rawId: 'cred-local', response: { signature: 'sig' } });
   trading.updateCaps.mockImplementation(json('提交的上限和面容 ID 验证时的不一致，没有保存', 403, 'T212_CAPS_TAMPERED'));
-  fireEvent.click(within(form).getByRole('button', { name: '用面容 ID / 触控 ID 提高上限' }));
+  await confirmReview();
   await waitFor(() => expect(toast.error).toHaveBeenCalledWith('上限没有提高', { description: '提交的上限和面容 ID 验证时的不一致，没有保存' }));
+  expect(trading.capsChallenge).toHaveBeenCalledTimes(2);
   expect(screen.getByRole('alert').textContent).toBe('提交的上限和面容 ID 验证时的不一致，没有保存');
   expect(toast.success).not.toHaveBeenCalled();
   expect((within(form).getByLabelText('单笔上限') as HTMLInputElement).value).toBe('400');
 });
 
-test('the editor switches accounts and lists refused raises with their reason, the latest few first', async () => {
+test('the editor switches accounts and lists applied changes apart from refused raises', async () => {
   const changes = [
-    capChange(6, { env: 'live', direction: 'raise', method: 'passkey', status: 'refused', reason: '面容 ID / 触控 ID 验证失败，上限没有改变', to: { maxOrderValue: 900, dailyLimit: 2000 }, from: { maxOrderValue: 500, dailyLimit: 2000 } }),
     capChange(5, { env: 'live', direction: 'raise', method: 'passkey', from: { maxOrderValue: 300, dailyLimit: 2000 }, to: { maxOrderValue: 500, dailyLimit: 2000 } }),
-    capChange(4), capChange(3), capChange(2),
+    capChange(4), capChange(3), capChange(2), capChange(1),
   ];
-  trading.config.mockImplementation(json({ ...CONFIG, capChanges: changes }));
+  const refusals = [
+    capChange(9, { env: null, direction: 'raise', method: 'passkey', status: 'refused', reason: '面容 ID 验证编号无效，请重新提交', from: null, to: null }),
+    capChange(8, { env: 'live', direction: 'raise', method: 'passkey', status: 'refused', reason: '面容 ID / 触控 ID 验证失败，上限没有改变', to: { maxOrderValue: 900, dailyLimit: 2000 }, from: { maxOrderValue: 500, dailyLimit: 2000 } }),
+  ];
+  trading.config.mockImplementation(json({ ...CONFIG, capChanges: changes, capRefusals: refusals }));
   render(<StudioSettingsTrading />);
   const history = await screen.findByRole('list', { name: '上限变更记录' });
   expect(within(history).getAllByRole('listitem')).toHaveLength(4);
-  expect(within(history).getByText('实盘 · 提高被拒绝')).toBeTruthy();
-  expect(within(history).getByText('已拒绝')).toBeTruthy();
-  expect(within(history).getByText(/面容 ID \/ 触控 ID · .* · 面容 ID \/ 触控 ID 验证失败/)).toBeTruthy();
   expect(within(history).getByText('实盘 · 提高')).toBeTruthy();
+  expect(within(history).queryByText('已拒绝')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: '显示全部 5 条' }));
   expect(within(history).getAllByRole('listitem')).toHaveLength(5);
 
+  const refused = screen.getByRole('list', { name: '被拒绝的提高' });
+  expect(within(refused).getAllByText('已拒绝')).toHaveLength(2);
+  expect(within(refused).getByText('实盘 · 提高被拒绝')).toBeTruthy();
+  expect(within(refused).getByText(/面容 ID \/ 触控 ID · .* · 面容 ID \/ 触控 ID 验证失败/)).toBeTruthy();
+  expect(within(refused).getByText('未知账户 · 提高被拒绝')).toBeTruthy();
+  expect(within(refused).getByText('请求无效，没有可识别的数值')).toBeTruthy();
+
   fireEvent.click(screen.getByRole('radio', { name: '实盘' }));
   expect((within(capsForm()).getByLabelText('单笔上限') as HTMLInputElement).value).toBe('500');
-  expect(within(capsForm()).getByText('已用 £0.00 · 还可下单 £2,000.00')).toBeTruthy();
+  expect(within(capsForm()).getByText('已用 £0.00 · 还可买入 £2,000.00')).toBeTruthy();
   expect(screen.getByText(/当前是服务器默认值（单笔 £500\.00，每日 £2,000\.00）/)).toBeTruthy();
 });

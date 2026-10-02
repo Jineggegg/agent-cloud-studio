@@ -2027,12 +2027,13 @@ export type T212AccountCaps = T212CapLimits & {
   custom: boolean; updatedAt: string | null; dailyUsed: number; dailyRemaining: number; currency?: string;
 };
 /**
- * One audited cap change in Settings → 交易安全, newest first: lowering is saved with the session alone, raising with
- * Face ID / Touch ID; `refused` entries are raises whose Face ID challenge was spent without saving (with a reason).
+ * One audited cap entry in Settings → 交易安全, newest first. `applied`: a saved change (lowering with the session,
+ * raising with Face ID / Touch ID). `refused`: a raise attempt that was turned down, with its reason; `method` is
+ * 'passkey' when it named a challenge. Account and values are null only for a malformed attempt naming no challenge.
  */
 export type T212CapChange = {
-  id: number; env: T212Env; direction: 'raise' | 'lower'; method: 'passkey' | 'session'; status: 'applied' | 'refused';
-  from: T212CapLimits; to: T212CapLimits; reason: string | null; origin: string | null; createdAt: string;
+  id: number; env: T212Env | null; direction: 'raise' | 'lower'; method: 'passkey' | 'session'; status: 'applied' | 'refused';
+  from: T212CapLimits | null; to: T212CapLimits | null; reason: string | null; origin: string | null; createdAt: string;
 };
 /** Server order-safety settings shared by the order sheet and Settings: tradable accounts, per-user caps and passkeys. */
 export type T212TradingConfig = {
@@ -2040,8 +2041,10 @@ export type T212TradingConfig = {
   allowedEnvs: T212Env[];
   // Per-account caps; `defaults` come from STUDIO_T212_MAX_ORDER_VALUE / _MAX_DAILY_VALUE, nothing exceeds `ceiling`.
   caps: { ceiling: number; defaults: T212CapLimits; envs: Record<T212Env, T212AccountCaps> };
-  // This user's latest cap changes and refused raises, newest first.
+  // This user's latest applied cap changes, newest first; refused raises are listed apart so they cannot crowd them out.
   capChanges: T212CapChange[];
+  // This user's latest refused raise attempts, newest first.
+  capRefusals: T212CapChange[];
   // Account currency from the last stored balance snapshot; absent before the account was first read.
   currency?: string;
   // This user's passkeys on every domain; once there is one, a domain without its own passkey cannot trade.

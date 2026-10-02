@@ -82,7 +82,7 @@ function errorCode(reason: unknown) {
 
 /**
  * Used by StudioTrading212 to place one Trading 212 order: form with a live estimate against the per-order cap
- * and the remaining rolling-24-hour allowance (both per account, edited in Settings), a server-checked review, then Face ID / Touch ID (passkey) or, while the user has no passkey anywhere, a second
+ * and, for buys, the remaining rolling-24-hour allowance (both per account, edited in Settings), a server-checked review, then Face ID / Touch ID (passkey) or, while the user has no passkey anywhere, a second
  * destructive confirmation. Where a passkey is required but missing, it offers to enable one for this domain.
  */
 export function StudioT212OrderSheet({ env, config, positions, format, initialTicker, initialSide, onClose, onPlaced, onTradingChange }: {
@@ -148,8 +148,9 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
   // Only a held ticker's estimate is in the account currency; the server converts and checks the others.
   const converted = Boolean(position);
   const overCap = converted && estimate > cap;
-  // Informational only: the allowance can be stale (the 24-hour window rolls on), so the server has the last word.
-  const overDaily = converted && !overCap && estimate > caps.dailyRemaining;
+  // Only buys use the daily allowance. Informational only: it can be stale (the 24-hour window rolls on), so the
+  // server has the last word.
+  const overDaily = orderSide === 'buy' && converted && !overCap && estimate > caps.dailyRemaining;
   const overHolding = Boolean(orderSide === 'sell' && position && quantity !== null && quantity > position.quantity + 1e-9);
   const ready = enabled && TICKER.test(code) && quantity !== null && (orderType === 'market' || limitPrice !== null) && !overCap && !overHolding;
   const orderKey = `${env}|${code}|${orderSide}|${quantity ?? ''}`;
@@ -268,9 +269,11 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
   const estimateNote = !converted && estimate > 0
     ? `按标的计价货币计算；预览时服务器换算成账户货币，再按单笔上限 ${format(cap)} 和今日剩余额度检查`
     : overCap ? `超过单笔上限 ${format(cap)}，请减少数量` : `单笔上限 ${format(cap)}`;
-  const dailyNote = overDaily
-    ? `超过今日剩余额度 ${format(caps.dailyRemaining)}，服务器会拒绝；可以在「设置 → 交易安全」调整每日上限`
-    : `今日剩余额度 ${format(caps.dailyRemaining)} · 每日上限 ${format(caps.dailyLimit)}（滚动 24 小时）`;
+  const dailyNote = orderSide === 'sell'
+    ? `卖出不占用每日买入额度（今日还可买入 ${format(caps.dailyRemaining)}）`
+    : overDaily
+      ? `超过今日剩余买入额度 ${format(caps.dailyRemaining)}，服务器会拒绝；可以在「设置 → 交易安全」调整每日上限`
+      : `今日剩余买入额度 ${format(caps.dailyRemaining)} · 每日上限 ${format(caps.dailyLimit)}（滚动 24 小时）`;
 
   const form = <m.form key="form" className="t212-order-step" custom={direction} variants={STEP_VARIANTS} initial="enter" animate="center" exit="exit"
     onSubmit={event => { event.preventDefault(); void requestPreview(); }}>
@@ -355,7 +358,9 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
         <div><dt>账户</dt><dd>{preview.env === 'live' ? '实盘 · 真实资金' : '模拟盘'}</dd></div>
         <div><dt>类型</dt><dd>{preview.type === 'market' ? '市价单' : `限价 ${preview.limitPrice} · ${preview.timeValidity === 'GOOD_TILL_CANCEL' ? '撤单前有效' : '当日有效'}`}</dd></div>
         <div><dt>单笔上限</dt><dd>{format(preview.maxOrderValue)}</dd></div>
-        <div><dt>今日剩余额度</dt><dd>{format(preview.dailyRemaining)} · 下单后 {format(Math.max(0, preview.dailyRemaining - preview.estimatedValue))}</dd></div>
+        <div><dt>今日买入额度</dt><dd>{preview.side === 'sell'
+          ? `${format(preview.dailyRemaining)} · 卖出不占用`
+          : `${format(preview.dailyRemaining)} · 下单后 ${format(Math.max(0, preview.dailyRemaining - preview.estimatedValue))}`}</dd></div>
         <div><dt>确认方式</dt><dd>{preview.requires === 'passkey' ? '面容 ID / 触控 ID' : '二次确认'}</dd></div>
       </dl>
     </section>

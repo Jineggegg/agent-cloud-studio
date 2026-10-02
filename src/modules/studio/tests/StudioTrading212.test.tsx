@@ -41,7 +41,7 @@ const accountCaps = (dailyUsed = 0) => ({
   maxOrderValue: 500, dailyLimit: 2000, custom: false, updatedAt: null, dailyUsed, dailyRemaining: 2000 - dailyUsed, currency: 'GBP',
 });
 const CAPS = { ceiling: 10_000, defaults: { maxOrderValue: 500, dailyLimit: 2000 }, envs: { live: accountCaps(), demo: accountCaps() } };
-const TRADING_OFF = { allowedEnvs: [], caps: CAPS, capChanges: [], passkeys: [], trustedOrigins: [], allowLocalhost: true, requirePasskey: false };
+const TRADING_OFF = { allowedEnvs: [], caps: CAPS, capChanges: [], capRefusals: [], passkeys: [], trustedOrigins: [], allowLocalhost: true, requirePasskey: false };
 const TRADING_LIVE = { ...TRADING_OFF, allowedEnvs: ['live'], currency: 'GBP' };
 const PREVIEW = {
   id: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', env: 'live', ticker: 'AAPL_US_EQ', side: 'buy', type: 'market', quantity: 1,
@@ -142,9 +142,9 @@ test('the form shows the remaining daily allowance; an order over it is flagged 
   account({ ...TRADING_LIVE, caps: { ...CAPS, envs: { ...CAPS.envs, live: accountCaps(1800) } } });
   trading.preview.mockImplementation(json('超过每日上限：过去 24 小时已下单 £1,800.00，这笔约 £400.00，每日上限 £2,000.00（还剩 £200.00）', 400, 'T212_DAILY_CAP'));
   const sheet = await openBuyApple();
-  expect(within(sheet).getByText('今日剩余额度 £200.00 · 每日上限 £2,000.00（滚动 24 小时）')).toBeTruthy();
+  expect(within(sheet).getByText('今日剩余买入额度 £200.00 · 每日上限 £2,000.00（滚动 24 小时）')).toBeTruthy();
   fireEvent.change(within(sheet).getByLabelText('数量'), { target: { value: '1' } });
-  expect(within(sheet).getByText(/超过今日剩余额度 £200\.00，服务器会拒绝/)).toBeTruthy();
+  expect(within(sheet).getByText(/超过今日剩余买入额度 £200\.00，服务器会拒绝/)).toBeTruthy();
   // The allowance may be stale, so the server still decides.
   const next = within(sheet).getByRole('button', { name: '下一步' }) as HTMLButtonElement;
   expect(next.disabled).toBe(false);
@@ -153,6 +153,18 @@ test('the form shows the remaining daily allowance; an order over it is flagged 
   expect((await within(sheet).findByRole('alert')).textContent).toContain('超过每日上限');
   await waitFor(() => expect(trading.config).toHaveBeenCalledTimes(2));
   expect(trading.confirm).not.toHaveBeenCalled();
+});
+
+test('a sell never warns about the daily allowance, which only buys use', async () => {
+  account({ ...TRADING_LIVE, caps: { ...CAPS, envs: { ...CAPS.envs, live: accountCaps(1800) } } });
+  trading.preview.mockImplementation(json({ ...PREVIEW, side: 'sell', dailyUsed: 1800, dailyRemaining: 200 }));
+  const sheet = await openOrder('卖出 Apple');
+  fireEvent.change(within(sheet).getByLabelText('数量'), { target: { value: '1' } });
+  // £400 is above the £200 left for buys, yet a sell is neither flagged nor counted.
+  expect(within(sheet).getByText('卖出不占用每日买入额度（今日还可买入 £200.00）')).toBeTruthy();
+  expect(within(sheet).queryByText(/超过今日剩余买入额度/)).toBeNull();
+  fireEvent.click(within(sheet).getByRole('button', { name: '下一步' }));
+  expect(await within(sheet).findByText('£200.00 · 卖出不占用')).toBeTruthy();
 });
 
 test('a limit sell at a token price is still valued at what the shares are worth', async () => {

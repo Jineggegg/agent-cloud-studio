@@ -165,6 +165,16 @@
 .t212-caps-history .ios-row-body small { font-variant-numeric: tabular-nums; }
 .studio .t212-caps-more { min-height: 44px; padding: 0 16px; font-size: 15px; color: var(--ios-tint); }
 
+/* Raise review: the account and both caps from → to, then Face ID (stacked actions, as iOS does for long labels). */
+.t212-caps-review-values { display: grid; margin: 0; padding: 0 18px 6px; text-align: left; }
+.t212-caps-review-values div { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-top: .5px solid var(--ios-separator); font-size: 15px; }
+.t212-caps-review-values dt { flex-shrink: 0; color: var(--ios-label-2); }
+.t212-caps-review-values dd { margin: 0; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+.t212-caps-review .sheet-actions { grid-template-columns: 1fr; }
+.t212-caps-review .sheet-action + .sheet-action { border-left: 0; border-top: .5px solid var(--ios-separator); }
+.studio-layer .sheet-action.t212-caps-review-confirm { display: flex; align-items: center; justify-content: center; gap: 6px; font-weight: 600; }
+.t212-caps-review .sheet-action:disabled { opacity: .45; }
+
 /* Removal alert with a password step-up (and, on the passkey's own domain, Face ID). */
 .t212-stepup-field { display: grid; gap: 8px; padding: 0 16px 16px; }
 .studio-layer .t212-stepup-field input {
