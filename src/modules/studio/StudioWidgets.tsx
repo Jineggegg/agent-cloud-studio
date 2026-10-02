@@ -96,7 +96,7 @@ function QuotaWidget({ snapshot, size, title, tone, glyph }: { snapshot: StudioQ
       {snapshot && <span className={`widget-source ${snapshot.stale ? 'is-stale' : ''}`}>{snapshot.stale ? '可能过期' : SOURCE_LABEL[snapshot.source]}</span>}
     </header>
     {!snapshot ? <div className="widget-loading" aria-label="读取中"><span /><span /></div>
-      : !snapshot.available || !windows.length ? <p className="widget-note">{snapshot.note ?? '暂时没有额度数据'}</p>
+      : !snapshot.available || !windows.length ? <p className="widget-note" title={snapshot.note}>{snapshot.note ?? '暂时没有额度数据'}</p>
         : <div className="widget-rings">{windows.map(window => <Ring key={window.id} window={window} now={now} size={size === 'medium' ? 64 : 58} />)}</div>}
   </>;
 }
@@ -106,7 +106,7 @@ function DeepSeekWidget({ snapshot }: { snapshot: StudioQuotaSnapshot | undefine
   return <>
     <header className="widget-head"><StudioTileIcon tone="slate" glyph="sparkles" size={14} variant="small" /><span>DeepSeek</span></header>
     {!snapshot ? <div className="widget-loading" aria-label="读取中"><span /><span /></div>
-      : !snapshot.available || !balance ? <p className="widget-note">{snapshot.note ?? '在设置里保存 API 密钥后显示余额'}</p>
+      : !snapshot.available || !balance ? <p className="widget-note" title={snapshot.note}>{snapshot.note ?? '在设置里保存 API 密钥后显示余额'}</p>
         : <div className="widget-figure">
           <strong><NumberFlow value={balance.total} format={{ style: 'currency', currency: balance.currency, maximumFractionDigits: 2 }} locales="zh-CN" /></strong>
           <small>{balance.granted > 0 ? `含赠送 ${balance.granted.toFixed(2)}` : 'API 余额'}</small>

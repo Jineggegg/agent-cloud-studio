@@ -18,7 +18,7 @@ export default function StudioRemoteTerminal({ launch, hostLabel, onClose }: { l
       <header>
         <button type="button" className="navbar-back ios-press" onClick={onClose}><ChevronDown size={22} aria-hidden="true" />完成</button>
         <strong>{launch.title}</strong>
-        <span>{hostLabel} · tmux</span>
+        <span>{hostLabel} · SSH</span>
       </header>
       <div className="terminal-cover-body">
         <StandaloneShell project={project} command={launch.command} isPlainShell minimal />
