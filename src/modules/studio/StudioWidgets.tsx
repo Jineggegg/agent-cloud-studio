@@ -1,8 +1,8 @@
-import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
-import type { MouseEvent, ReactNode, RefObject, SyntheticEvent } from 'react';
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject, SyntheticEvent } from 'react';
 import NumberFlow from '@number-flow/react';
 import { AnimatePresence, m } from 'motion/react';
-import { ArrowDownRight, ArrowUpRight, ChevronLeft, ChevronRight, Maximize2, Minimize2, Minus } from 'lucide-react';
+import { ArrowDownRight, ArrowUpRight, Minus } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { DndContext, DragOverlay, useDndContext } from '@dnd-kit/core';
 import { SortableContext } from '@dnd-kit/sortable';
@@ -14,8 +14,11 @@ import { useHomeSortableItem, useHomeSortableList } from '@/modules/studio/hooks
 import '@/modules/studio/studio-home.css';
 
 type WidgetType = 'claude' | 'codex' | 'deepseek' | 'trading212' | 'snr';
-type WidgetSize = 'small' | 'medium';
+// iPadOS widget sizes: small is one grid cell, medium two cells wide, large two wide and two tall.
+type WidgetSize = 'small' | 'medium' | 'large';
 type WidgetConfig = { id: string; type: WidgetType; size: WidgetSize };
+const SIZES: WidgetSize[] = ['small', 'medium', 'large'];
+const SIZE_LABEL: Record<WidgetSize, string> = { small: '小', medium: '中', large: '大' };
 
 // Per-device widget layout, like iPadOS (each device arranges its own home screen).
 const STORAGE_KEY = 'studio-widgets-v1';
@@ -47,7 +50,7 @@ function readWidgets(): WidgetConfig[] {
     if (!Array.isArray(saved)) return DEFAULT_WIDGETS;
     const seen = new Set<string>();
     // Ids are React keys and edit targets, so a missing or repeated id (older layouts) gets a fresh one.
-    return saved.filter(item => item && CATALOG.some(entry => entry.type === item.type) && (item.size === 'small' || item.size === 'medium'))
+    return saved.filter(item => item && CATALOG.some(entry => entry.type === item.type) && SIZES.includes(item.size))
       .map(item => {
         const id = typeof item.id === 'string' && item.id && !seen.has(item.id) ? item.id : newWidgetId(item.type);
         seen.add(id);
@@ -107,9 +110,26 @@ function Ring({ window: quota, now, size = 64, still }: { window: StudioQuotaWin
   </div>;
 }
 
+// How long a quota window is ("5 小时", "每周"), for the large widget's detail rows.
+function windowLength(minutes: number | null) {
+  if (!minutes) return null;
+  if (minutes === 10_080) return '每周';
+  if (minutes % 1440 === 0) return `${minutes / 1440} 天`;
+  if (minutes % 60 === 0) return `${minutes / 60} 小时`;
+  return `${minutes} 分钟`;
+}
+
+const resetClock = new Intl.DateTimeFormat('zh-CN', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+const shortClock = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
+function money(value: number, currency: string, digits = 2) {
+  try { return new Intl.NumberFormat('zh-CN', { style: 'currency', currency: currency || 'GBP', maximumFractionDigits: digits }).format(value); }
+  catch { return value.toFixed(digits); }
+}
+
 function QuotaWidget({ snapshot, size, title, tone, glyph, still }: { snapshot: StudioQuotaSnapshot | undefined; size: WidgetSize; title: string; tone: string; glyph: string; still: boolean }) {
   const now = useNow(30_000);
-  const windows = (snapshot?.windows ?? []).slice(0, size === 'medium' ? 3 : 1);
+  const windows = (snapshot?.windows ?? []).slice(0, size === 'small' ? 1 : 3);
   return <>
     <header className="widget-head">
       <StudioTileIcon tone={tone} glyph={glyph} size={14} variant="small" />
@@ -118,20 +138,39 @@ function QuotaWidget({ snapshot, size, title, tone, glyph, still }: { snapshot: 
     </header>
     {!snapshot ? <div className="widget-loading" aria-label="读取中"><span /><span /></div>
       : !snapshot.available || !windows.length ? <p className="widget-note" title={snapshot.note}>{snapshot.note ?? '暂时没有额度数据'}</p>
-        : <div className="widget-rings">{windows.map(window => <Ring key={window.id} window={window} now={now} size={size === 'medium' ? 64 : 58} still={still} />)}</div>}
+        : <>
+          <div className="widget-rings">{windows.map(window => <Ring key={window.id} window={window} now={now} size={size === 'small' ? 58 : size === 'medium' ? 64 : 76} still={still} />)}</div>
+          {/* Large: what is left in each window, how long the window is and the exact time it resets. */}
+          {size === 'large' && <ul className="widget-rows">
+            {windows.map(window => <li key={window.id}>
+              <span>{window.label}{windowLength(window.windowMinutes) ? ` · ${windowLength(window.windowMinutes)}` : ''}</span>
+              <small>{window.resetsAt ? `${resetClock.format(new Date(window.resetsAt))} 重置` : '重置时间未知'}</small>
+              <strong>剩余 {Math.max(0, 100 - Math.round(window.usedPercent))}%</strong>
+            </li>)}
+          </ul>}
+          {size === 'large' && snapshot.observedAt && <p className="widget-footnote">更新于 {shortClock.format(new Date(snapshot.observedAt))}</p>}
+        </>}
   </>;
 }
 
-function DeepSeekWidget({ snapshot, still }: { snapshot: StudioQuotaSnapshot | undefined; still: boolean }) {
+function DeepSeekWidget({ snapshot, size, still }: { snapshot: StudioQuotaSnapshot | undefined; size: WidgetSize; still: boolean }) {
   const balance = snapshot?.balances[0];
   return <>
     <header className="widget-head"><StudioTileIcon tone="slate" glyph="sparkles" size={14} variant="small" /><span>DeepSeek</span></header>
     {!snapshot ? <div className="widget-loading" aria-label="读取中"><span /><span /></div>
       : !snapshot.available || !balance ? <p className="widget-note" title={snapshot.note}>{snapshot.note ?? '在设置里保存 API 密钥后显示余额'}</p>
-        : <div className="widget-figure">
-          <strong><NumberFlow value={balance.total} format={{ style: 'currency', currency: balance.currency, maximumFractionDigits: 2 }} locales="zh-CN" animated={!still} /></strong>
-          <small>{balance.granted > 0 ? `含赠送 ${balance.granted.toFixed(2)}` : 'API 余额'}</small>
-        </div>}
+        : <>
+          <div className="widget-figure">
+            <strong><NumberFlow value={balance.total} format={{ style: 'currency', currency: balance.currency, maximumFractionDigits: 2 }} locales="zh-CN" animated={!still} /></strong>
+            <small>{size === 'small' && balance.granted > 0 ? `含赠送 ${balance.granted.toFixed(2)}` : 'API 余额'}</small>
+          </div>
+          {/* Medium and large split the balance into what was topped up and what was granted. */}
+          {size !== 'small' && <ul className="widget-rows">
+            <li><span>充值余额</span><strong>{money(balance.toppedUp, balance.currency)}</strong></li>
+            <li><span>赠送余额</span><strong>{money(balance.granted, balance.currency)}</strong></li>
+          </ul>}
+          {size === 'large' && snapshot.observedAt && <p className="widget-footnote">更新于 {shortClock.format(new Date(snapshot.observedAt))}</p>}
+        </>}
   </>;
 }
 
@@ -179,23 +218,48 @@ function TradingWidget({ size, reading: { overview, points }, still }: { size: W
     <header className="widget-head"><StudioTileIcon tone="moss" glyph="candles" size={14} variant="small" /><span>Trading 212</span></header>
     {overview === null ? <div className="widget-loading" aria-label="读取中"><span /><span /></div>
       : overview === 'off' ? <p className="widget-note">未接入账户</p>
-        : <div className="widget-figure">
-          <strong><NumberFlow value={overview.totalValue} format={{ style: 'currency', currency: overview.currency || 'GBP', maximumFractionDigits: size === 'medium' ? 2 : 0 }} locales="zh-CN" animated={!still} /></strong>
-          {change ? <small className={`widget-delta ${change.amount >= 0 ? 'gain' : 'loss'}`}>{change.amount >= 0 ? <ArrowUpRight size={13} aria-hidden="true" /> : <ArrowDownRight size={13} aria-hidden="true" />}
-            {change.amount >= 0 ? '+' : '−'}{Math.abs(change.amount).toFixed(2)}（{Math.abs(change.percent).toFixed(2)}%）今日</small> : <small>今日变化记录中</small>}
-          {size === 'medium' && <Sparkline points={points} />}
-        </div>}
+        : <>
+          <div className="widget-figure">
+            <strong><NumberFlow value={overview.totalValue} format={{ style: 'currency', currency: overview.currency || 'GBP', maximumFractionDigits: size === 'small' ? 0 : 2 }} locales="zh-CN" animated={!still} /></strong>
+            {change ? <small className={`widget-delta ${change.amount >= 0 ? 'gain' : 'loss'}`}>{change.amount >= 0 ? <ArrowUpRight size={13} aria-hidden="true" /> : <ArrowDownRight size={13} aria-hidden="true" />}
+              {change.amount >= 0 ? '+' : '−'}{Math.abs(change.amount).toFixed(2)}（{Math.abs(change.percent).toFixed(2)}%）今日</small> : <small>今日变化记录中</small>}
+            {size !== 'small' && <Sparkline points={points} />}
+          </div>
+          {/* Large adds where the money sits and the biggest positions. */}
+          {size === 'large' && <>
+            <dl className="widget-stats">
+              <div><dt>可用现金</dt><dd>{money(overview.cash.available, overview.currency, 0)}</dd></div>
+              <div><dt>持仓市值</dt><dd>{money(overview.investments.value, overview.currency, 0)}</dd></div>
+              <div><dt>未实现盈亏</dt><dd className={`widget-delta ${overview.investments.unrealized >= 0 ? 'gain' : 'loss'}`}>{money(overview.investments.unrealized, overview.currency, 0)}</dd></div>
+            </dl>
+            {overview.positions.length > 0 && <ul className="widget-rows">
+              {[...overview.positions].sort((a, b) => b.value - a.value).slice(0, 3).map(position => <li key={position.ticker}>
+                <span>{position.name || position.ticker}</span>
+                <strong className={`widget-delta ${position.pnl >= 0 ? 'gain' : 'loss'}`}>{position.pnl >= 0 ? '+' : '−'}{money(Math.abs(position.pnl), overview.currency)}</strong>
+              </li>)}
+            </ul>}
+          </>}
+        </>}
   </>;
 }
 
-function SnrWidget({ snr }: { snr: StudioSnr | null }) {
+function SnrWidget({ snr, size }: { snr: StudioSnr | null; size: WidgetSize }) {
   const online = Boolean(snr?.connected);
+  const capabilities = snr?.manifest?.capabilities ?? [];
   return <>
     <header className="widget-head"><StudioTileIcon tone="sage" glyph="activity" size={14} variant="small" /><span>SNR 实验室</span></header>
     <div className="widget-figure">
       <strong className="widget-status"><span className={`status-dot ${online ? 'good' : ''}`} aria-hidden="true" />{online ? '在线' : '离线'}</strong>
       <small>{snr?.phase ? `Phase ${snr.phase}` : '研究阶段未知'}{snr?.manifest?.version ? ` · v${snr.manifest.version}` : ''}</small>
     </div>
+    {size !== 'small' && <ul className="widget-rows">
+      <li><span>数据集</span><strong>{snr?.datasetCount ?? '—'}</strong></li>
+      {size === 'large' && <>
+        <li><span>交易</span><strong>{snr?.tradingEnabled ? '已开启' : '未开启'}</strong></li>
+        <li><span>规则</span><strong>{snr?.rulesApproved ? '已批准' : '待批准'}</strong></li>
+      </>}
+    </ul>}
+    {size === 'large' && capabilities.length > 0 && <p className="widget-chips">{capabilities.slice(0, 6).map(item => <span key={item}>{item}</span>)}</p>}
   </>;
 }
 
@@ -207,6 +271,74 @@ function nameOf(type: WidgetType) {
 const stopDragStart = { onPointerDown: (event: SyntheticEvent) => event.stopPropagation(), onTouchStart: (event: SyntheticEvent) => event.stopPropagation() };
 const preventContextMenu = (event: MouseEvent) => event.preventDefault();
 
+// Grid cells a widget covers. iPadOS has no tall narrow widget, so two rows is always the large size.
+const sizeForSpan = (columns: number, rows: number): WidgetSize => rows > 1 ? 'large' : columns > 1 ? 'medium' : 'small';
+
+/**
+ * The resize corner of a widget in edit mode, as on iPadOS: dragging it snaps the card between small, medium and
+ * large as soon as the corner passes half a grid cell, so the grid reflows under the finger. It is also a slider
+ * for the keyboard and assistive technology (arrow keys step through the sizes).
+ */
+function WidgetResizeHandle({ name, size, onResize }: { name: string; size: WidgetSize; onResize: (size: WidgetSize) => void }) {
+  // Where the drag started and the card's grid cell, measured once at the start.
+  const drag = useRef<{ x: number; y: number; width: number; height: number; cell: number; row: number; gap: number; rowGap: number } | null>(null);
+  // The size last asked for, so a drag asks only once per change even before the new size renders.
+  const asked = useRef(size);
+  const [active, setActive] = useState(false);
+
+  const start = (event: PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    event.preventDefault();
+    const card = event.currentTarget.closest('.widget');
+    const grid = card?.closest('.widget-grid');
+    if (!card || !grid) return;
+    const rect = card.getBoundingClientRect();
+    const style = getComputedStyle(grid);
+    const gap = parseFloat(style.columnGap) || 0;
+    const rowGap = parseFloat(style.rowGap) || gap;
+    const columns = size === 'small' ? 1 : 2;
+    const rows = size === 'large' ? 2 : 1;
+    drag.current = {
+      x: event.clientX, y: event.clientY, width: rect.width, height: rect.height, gap, rowGap,
+      cell: (rect.width - gap * (columns - 1)) / columns, row: (rect.height - rowGap * (rows - 1)) / rows,
+    };
+    asked.current = size;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    setActive(true);
+  };
+  const follow = (event: PointerEvent<HTMLDivElement>) => {
+    const from = drag.current;
+    if (!from) return;
+    const columns = from.width + event.clientX - from.x > from.cell * 1.5 + from.gap / 2 ? 2 : 1;
+    const rows = from.height + event.clientY - from.y > from.row * 1.5 + from.rowGap / 2 ? 2 : 1;
+    const next = sizeForSpan(columns, rows);
+    if (next === asked.current) return;
+    asked.current = next;
+    onResize(next);
+  };
+  const end = () => {
+    if (!drag.current) return;
+    drag.current = null;
+    setActive(false);
+  };
+  const step = (event: KeyboardEvent<HTMLDivElement>) => {
+    const index = SIZES.indexOf(size);
+    const target = { ArrowRight: index + 1, ArrowUp: index + 1, ArrowLeft: index - 1, ArrowDown: index - 1, Home: 0, End: SIZES.length - 1 }[event.key];
+    if (target === undefined) return;
+    // The card's own keyboard handler would otherwise pick the widget up.
+    event.preventDefault();
+    event.stopPropagation();
+    const next = SIZES[Math.min(SIZES.length - 1, Math.max(0, target))];
+    if (next !== size) onResize(next);
+  };
+  return <div role="slider" tabIndex={0} className={`widget-resize ${active ? 'is-active' : ''}`} aria-label={`调整 ${name} 大小`}
+    aria-valuemin={1} aria-valuemax={SIZES.length} aria-valuenow={SIZES.indexOf(size) + 1} aria-valuetext={SIZE_LABEL[size]}
+    onPointerDown={start} onPointerMove={follow} onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end} onKeyDown={step}>
+    <svg viewBox="0 0 44 44" aria-hidden="true"><path d="M38 12A26 26 0 0 1 12 38" /></svg>
+  </div>;
+}
+
 /**
  * One widget on the grid. The outer cell carries the enter/exit animation (and is what AnimatePresence pops
  * out of the layout on removal, hence the forwarded ref); the inner card is the sortable item, so the drop
@@ -216,10 +348,8 @@ const preventContextMenu = (event: MouseEvent) => event.preventDefault();
  */
 const SortableWidget = forwardRef<HTMLDivElement, {
   widget: WidgetConfig; name: string; editing: boolean; children: ReactNode;
-  // Whether the widget is already first or last, where its 前移 or 后移 button has nowhere to go.
-  first: boolean; last: boolean;
-  onRemove: () => void; onResize: () => void; onMove: (step: -1 | 1) => void;
-}>(function SortableWidget({ widget, name, editing, children, first, last, onRemove, onResize, onMove }, ref) {
+  onRemove: () => void; onResize: (size: WidgetSize) => void;
+}>(function SortableWidget({ widget, name, editing, children, onRemove, onResize }, ref) {
   const { attributes, isDragging, itemAttributes, listeners, setActivatorNodeRef, setNodeRef, style } = useHomeSortableItem(widget.id);
   const setCardRef = useCallback((node: HTMLElement | null) => { setNodeRef(node); setActivatorNodeRef(node); }, [setNodeRef, setActivatorNodeRef]);
   // Focusable and described as sortable only in edit mode, where the keyboard can move it.
@@ -231,16 +361,7 @@ const SortableWidget = forwardRef<HTMLDivElement, {
       {children}
       {editing && <div className="widget-edit" role="group" aria-label={`调整 ${name}`} {...stopDragStart}>
         <button type="button" className="home-remove widget-remove" aria-label={`移除 ${name}`} onClick={onRemove}><Minus size={14} strokeWidth={3} aria-hidden="true" /></button>
-        <div className="widget-edit-bar">
-          {/* Moving with buttons is the path for VoiceOver and Switch Control, which cannot drag. aria-disabled
-              (not disabled) keeps a button focused when its widget reaches an end. */}
-          <button type="button" className="widget-move" aria-label={`前移 ${name}`} aria-disabled={first} onClick={() => { if (!first) onMove(-1); }}>
-            <ChevronLeft size={15} aria-hidden="true" /></button>
-          <button type="button" className="widget-move" aria-label={`后移 ${name}`} aria-disabled={last} onClick={() => { if (!last) onMove(1); }}>
-            <ChevronRight size={15} aria-hidden="true" /></button>
-          <button type="button" aria-label={widget.size === 'small' ? `放大 ${name}` : `缩小 ${name}`} onClick={onResize}>
-            {widget.size === 'small' ? <Maximize2 size={14} aria-hidden="true" /> : <Minimize2 size={14} aria-hidden="true" />}</button>
-        </div>
+        <WidgetResizeHandle name={name} size={widget.size} onResize={onResize} />
       </div>}
     </article>
   </m.div>;
@@ -265,7 +386,8 @@ function WidgetDragOverlay({ widgets, cardRef, renderBody }: {
 /**
  * Used by StudioHomeScreen for the customizable widget row above the app icons. Long-pressing a widget lifts it
  * and asks the home screen to enter edit mode; in edit mode widgets jiggle, drag to a new place (the grid
- * reflows live, so what you see while dragging is where the widget lands) or move with their 前移/后移 buttons.
+ * reflows live, so what you see while dragging is where the widget lands, or move with the keyboard) and resize
+ * between small, medium and large by dragging their corner.
  */
 export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, galleryOpen, onGalleryClose }: {
   editing: boolean; snr: StudioSnr | null; paused?: boolean;
@@ -310,9 +432,9 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, galle
     // A stale order (a widget was removed mid-drag) keeps the current layout rather than losing widgets.
     return next.length === previous.length ? next : previous;
   }), []);
-  const { containerRef, overlayRef, glide, move, moveMessage, dndProps, sortableProps } = useHomeSortableList({
+  const { containerRef, overlayRef, glide, moveMessage, dndProps, sortableProps } = useHomeSortableList({
     ids, editing, onEnterEdit, onReorder: reorder, labelOf,
-    // Small and medium widgets share one grid, so only a real reorder previews where a drop lands.
+    // Widgets of three sizes share one grid, so only a real reorder previews where a drop lands.
     reorderWhileDragging: true,
   });
 
@@ -322,9 +444,9 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, galle
   const renderBody = (widget: WidgetConfig, still: boolean) => <>
     {widget.type === 'claude' && <QuotaWidget snapshot={find('claude')} size={widget.size} title="Claude Code" tone="clay" glyph="sparkles" still={still} />}
     {widget.type === 'codex' && <QuotaWidget snapshot={find('codex')} size={widget.size} title="Codex" tone="graphite" glyph="terminal" still={still} />}
-    {widget.type === 'deepseek' && <DeepSeekWidget snapshot={find('deepseek')} still={still} />}
+    {widget.type === 'deepseek' && <DeepSeekWidget snapshot={find('deepseek')} size={widget.size} still={still} />}
     {widget.type === 'trading212' && <TradingWidget size={widget.size} reading={trading} still={still} />}
-    {widget.type === 'snr' && <SnrWidget snr={snr} />}
+    {widget.type === 'snr' && <SnrWidget snr={snr} size={widget.size} />}
   </>;
   const add = (type: WidgetType, size: WidgetSize) => {
     setWidgets(previous => [...previous, { id: newWidgetId(type), type, size }]);
@@ -332,7 +454,7 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, galle
   };
   // Removing or resizing reflows the grid; the neighbours glide into their new places.
   const remove = (id: string) => glide(() => setWidgets(previous => previous.filter(item => item.id !== id)));
-  const resize = (id: string) => glide(() => setWidgets(previous => previous.map(item => item.id === id ? { ...item, size: item.size === 'small' ? 'medium' : 'small' } : item)));
+  const resize = (id: string, size: WidgetSize) => glide(() => setWidgets(previous => previous.map(item => item.id === id ? { ...item, size } : item)));
 
   const gallery = galleryOpen && createPortal(<div className="studio-layer" onKeyDown={event => { if (event.key === 'Escape') onGalleryClose(); }}>
     <div className="sheet-scrim" aria-hidden="true" onClick={onGalleryClose} />
@@ -343,8 +465,7 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, galle
         {CATALOG.map(entry => <div className="ios-row" key={entry.type}>
           <StudioTileIcon tone={entry.tone} glyph={entry.glyph} size={17} variant="small" />
           <span className="ios-row-body"><strong>{entry.name}</strong><small>{entry.caption}</small></span>
-          <button type="button" className="ios-button tinted" onClick={() => add(entry.type, 'small')}>小</button>
-          <button type="button" className="ios-button tinted" onClick={() => add(entry.type, 'medium')}>中</button>
+          {SIZES.map(size => <button type="button" key={size} className="ios-button tinted" aria-label={`添加${SIZE_LABEL[size]}号 ${entry.name}`} onClick={() => add(entry.type, size)}>{SIZE_LABEL[size]}</button>)}
         </div>)}
       </div>
       <p className="ios-section-footer">额度来自各模型的官方接口或快照；标注「可能过期」时表示最近没有新数据。</p>
@@ -357,9 +478,8 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, galle
       <SortableContext {...sortableProps}>
         {/* popLayout takes a removed widget out of the flow at once, so its neighbours can glide into the gap. */}
         <AnimatePresence initial={false} mode="popLayout">
-          {widgets.map((widget, index) => <SortableWidget key={widget.id} widget={widget} name={nameOf(widget.type)} editing={editing}
-            first={index === 0} last={index === widgets.length - 1}
-            onRemove={() => remove(widget.id)} onResize={() => resize(widget.id)} onMove={step => move(widget.id, step)}>
+          {widgets.map(widget => <SortableWidget key={widget.id} widget={widget} name={nameOf(widget.type)} editing={editing}
+            onRemove={() => remove(widget.id)} onResize={size => resize(widget.id, size)}>
             {renderBody(widget, false)}
           </SortableWidget>)}
         </AnimatePresence>
