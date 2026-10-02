@@ -45,6 +45,18 @@ export const BODY_LIMITS = {
 } as const;
 
 /**
+ * How long a request body may take to arrive on routes that read it before any session check
+ * (BODY_LIMITS.public and .gateway): those bodies are small, so a client trickling one in is
+ * answered 408 and cut off long before requestTimeout, and cannot hold an in-flight slot for
+ * minutes. Routes behind authenticateToken keep the full requestTimeout for large uploads.
+ * Used by the server entrypoint and the request-guard tests.
+ */
+export const BODY_RECEIVE_DEADLINES = {
+  public: 30_000,
+  gateway: 60_000,
+} as const;
+
+/**
  * Largest WebSocket message accepted (ws closes the socket with 1009 beyond it). Chat prompts and
  * terminal input are text; images travel over HTTP uploads, never over the socket.
  * Used by the websocket module through the server entrypoint.
@@ -63,14 +75,42 @@ export function applyHttpServerLimits(server: Server, limits: typeof HTTP_SERVER
   server.maxConnections = limits.maxConnections;
 }
 
+// Answers 408 and closes the connection when a request's body has not fully arrived within
+// `deadlineMs` of reaching the route group; requests without a body pass untouched.
+function bodyDeadline(deadlineMs: number): RequestHandler {
+  return (req, res, next) => {
+    const hasBody = Number(req.headers['content-length'] ?? 0) > 0 || req.headers['transfer-encoding'] !== undefined;
+    if (!hasBody || req.complete) {
+      next();
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (req.complete) return;
+      if (!res.headersSent) {
+        res.setHeader('Connection', 'close');
+        res.status(408).json({ success: false, error: { code: 'REQUEST_TIMEOUT', message: '请求内容发送太慢' } });
+      }
+      // Once the answer is out the connection goes, so the trickle cannot keep it open.
+      res.once('finish', () => req.socket.destroy());
+    }, deadlineMs);
+    timer.unref();
+    const stop = () => clearTimeout(timer);
+    req.once('end', stop);
+    res.once('close', stop);
+    next();
+  };
+}
+
 /**
- * The JSON and URL-encoded body parsers with one size limit. Mounted per route group by the
- * server entrypoint instead of globally, so an unauthenticated request can never make the server
- * read more than BODY_LIMITS.public (or .gateway) bytes, and the large limit only applies after
+ * The JSON and URL-encoded body parsers with one size limit and, optionally, a receive deadline
+ * (BODY_RECEIVE_DEADLINES). Mounted per route group by the server entrypoint instead of globally,
+ * so an unauthenticated request can never make the server read more than BODY_LIMITS.public (or
+ * .gateway) bytes, nor take long doing it, and the large limit only applies after
  * authenticateToken. Multipart uploads are left to the routes' own multer limits.
  */
-export function createBodyParsers(limit: string): RequestHandler[] {
+export function createBodyParsers(limit: string, receiveDeadlineMs?: number): RequestHandler[] {
   return [
+    ...(receiveDeadlineMs ? [bodyDeadline(receiveDeadlineMs)] : []),
     express.json({
       limit,
       type: (req) => {

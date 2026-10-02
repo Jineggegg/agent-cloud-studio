@@ -334,6 +334,7 @@ test('退出所有设备 through the real app revokes tokens, API keys and live 
   assert.equal((await createKey({ keyName: 'ci', password: 'not the password' })).status, 403);
 
   const apiKey = database.apiKeysDb.createApiKey(ownerId, 'script').apiKey;
+  database.pushSubscriptionsDb.createPushSubscription(ownerId, 'https://push.example.test/1', 'key', 'auth');
   assert.ok(database.apiKeysDb.validateApiKey(apiKey));
   const socket = new WebSocket(`ws://127.0.0.1:${port}/shell?token=${token}`, { headers: SERVE_HEADERS });
   await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
@@ -344,6 +345,8 @@ test('退出所有设备 through the real app revokes tokens, API keys and live 
   const body = JSON.parse(revoke.body) as { revoked: Record<string, unknown> };
   assert.equal(body.revoked.apiKeys, 1);
   assert.equal(body.revoked.webSockets, 1);
+  assert.equal(body.revoked.pushSubscriptions, 1);
+  assert.deepEqual(database.pushSubscriptionsDb.getPushSubscriptions(ownerId), []);
   assert.equal(await closed, 1006);
   assert.equal(database.apiKeysDb.validateApiKey(apiKey), undefined);
   assert.equal((await request(port, '/api/auth/user', { headers })).status, 401);

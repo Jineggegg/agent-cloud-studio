@@ -25,6 +25,7 @@ import {
 import {
     applyHttpServerLimits,
     BODY_LIMITS,
+    BODY_RECEIVE_DEADLINES,
     clientErrorStatus,
     createBodyParsers,
     createRequestGuard,
@@ -48,7 +49,7 @@ import { assetsRoutes } from './modules/assets/index.js';
 import { fileTreeRoutes } from './modules/file-tree/index.js';
 import { worktreesRoutes } from './modules/worktrees/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
-import { apiKeysDb, sessionsDb } from './modules/database/index.js';
+import { apiKeysDb, pushSubscriptionsDb, sessionsDb } from './modules/database/index.js';
 import { createStudioModule } from './modules/studio/index.js';
 import { createWebClientModule } from './modules/web-client/index.js';
 
@@ -140,11 +141,13 @@ export function createStudioServer(): { app: express.Express; server: http.Serve
     });
     const studioModule = createStudioModule();
     // "退出所有设备" refuses the user's old tokens from now on; what outlives a token goes here:
-    // open sockets are terminated, API keys deactivated and SNR gateway cookies dropped.
+    // open sockets are terminated, API keys deactivated, SNR gateway cookies dropped and Web Push
+    // subscriptions removed (each device subscribes again after signing in).
     onSessionsRevoked((userId) => ({
         webSockets: closeUserWebSockets(userId),
         apiKeys: apiKeysDb.deactivateAllForUser(userId),
         snrAccess: studioModule.revokeSnrAccess(userId),
+        pushSubscriptions: pushSubscriptionsDb.deletePushSubscriptionsForUser(userId),
     }));
 
     app.use(cors({ exposedHeaders: ['X-Refreshed-Token', 'X-Auth-Error', 'Retry-After'] }));
@@ -156,8 +159,10 @@ export function createStudioServer(): { app: express.Express; server: http.Serve
 
     // Body parsers per route group (BODY_LIMITS): small for public endpoints, the large limit only
     // after authenticateToken has accepted the token.
-    const publicBodies = createBodyParsers(BODY_LIMITS.public);
-    const gatewayBodies = createBodyParsers(BODY_LIMITS.gateway);
+    // Pre-auth bodies must also arrive quickly (BODY_RECEIVE_DEADLINES), so a trickle cannot hold
+    // an in-flight slot until requestTimeout.
+    const publicBodies = createBodyParsers(BODY_LIMITS.public, BODY_RECEIVE_DEADLINES.public);
+    const gatewayBodies = createBodyParsers(BODY_LIMITS.gateway, BODY_RECEIVE_DEADLINES.gateway);
     const protectedRoute = [authenticateToken, ...createBodyParsers(BODY_LIMITS.authenticated)];
 
     // Public health check endpoint (no authentication required). It carries no user data: the
@@ -274,6 +279,10 @@ export function createStudioServer(): { app: express.Express; server: http.Serve
 
     // global error middleware must be last
     app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
+      // Already answered (e.g. a 408 for a body that arrived too slowly): let Express close up.
+      if (res.headersSent) {
+        return next(err);
+      }
       if (err instanceof AppError) {
         // A refusal that knows when to come back (the password lock) says so the standard way too.
         const retryAfterSeconds = (err.details as { retryAfterSeconds?: unknown } | undefined)?.retryAfterSeconds;

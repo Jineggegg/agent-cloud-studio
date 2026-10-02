@@ -14,6 +14,7 @@ import { startCloudflaredListener } from '../tunnel-listener.service.js';
 import {
   applyHttpServerLimits,
   BODY_LIMITS,
+  BODY_RECEIVE_DEADLINES,
   clientErrorStatus,
   createBodyParsers,
   HTTP_SERVER_LIMITS,
@@ -180,4 +181,33 @@ test('the cloudflared listener hands its connections to the main server, which s
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test('a pre-auth body that trickles in is answered 408 and cut off at its deadline', async () => {
+  const app = express();
+  app.post('/public', ...createBodyParsers(BODY_LIMITS.public, 300), (req: express.Request, res: express.Response) => { res.json({ got: req.body }); });
+  app.use((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (res.headersSent) { next(error); return; }
+    res.status(clientErrorStatus(error) ?? 500).json({});
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  const { port } = server.address() as AddressInfo;
+  try {
+    const slow = rawSocket(port);
+    const started = Date.now();
+    slow.write('POST /public HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 40\r\n\r\n{"a":');
+    await slow.waitFor(/408/, 3000);
+    await slow.closed();
+    assert.ok(Date.now() - started < 2000);
+    // A body that arrives in time is unaffected.
+    const quick = await fetch(`http://127.0.0.1:${port}/public`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"a":1}' });
+    assert.deepEqual(await quick.json(), { got: { a: 1 } });
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+  // Pre-auth deadlines are short; only authenticated uploads get the long requestTimeout.
+  assert.ok(BODY_RECEIVE_DEADLINES.public <= 60_000 && BODY_RECEIVE_DEADLINES.gateway <= 60_000);
+  assert.ok(HTTP_SERVER_LIMITS.requestTimeoutMs > BODY_RECEIVE_DEADLINES.gateway);
 });
