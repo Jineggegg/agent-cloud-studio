@@ -1,0 +1,22 @@
+[Unit]
+Description=Studio Trading 212 broker isolation: close WSL interop for non-root users (docs/t212-broker.md)
+# Runs early, without the default dependencies: those would order it after sockets.target, which already holds
+# the broker socket that this unit must precede.
+DefaultDependencies=no
+After=sysinit.target systemd-binfmt.service proc-sys-fs-binfmt_misc.mount
+# systemd-binfmt registers handlers again when it is restarted (for example by a package that ships a binfmt.d
+# entry); PartOf restarts this unit after it, so the WSLInterop handler is removed again.
+PartOf=systemd-binfmt.service
+# The broker must not accept orders before interop is closed.
+Before=studio-trader-broker.service studio-trader-broker.socket shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# A root-owned copy installed by scripts/wsl/install-t212-broker.sh; neither Studio's user nor studio-trader can
+# change it.
+ExecStart=/opt/studio-trader/bin/studio-trader-isolation
+
+[Install]
+WantedBy=multi-user.target

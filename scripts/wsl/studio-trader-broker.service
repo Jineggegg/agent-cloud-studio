@@ -1,8 +1,10 @@
 [Unit]
 Description=Studio Trading 212 order broker (holds the order key; docs/t212-broker.md)
 Requires=studio-trader-broker.socket
-After=studio-trader-broker.socket network-online.target
-Wants=network-online.target
+# studio-trader-isolation closes WSL interop at boot; the broker starts after it and reports its result in
+# GET /v1/status and `studio-trader check`.
+After=studio-trader-broker.socket network-online.target studio-trader-isolation.service
+Wants=network-online.target studio-trader-isolation.service
 
 [Service]
 Type=simple
@@ -34,7 +36,8 @@ ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
 ProtectProc=invisible
-ProcSubset=pid
+# ProcSubset=pid is left off on purpose: it hides /proc/sys/fs/binfmt_misc, and the broker's isolation check
+# (broker-isolation.ts) would then have to report the interop handler as unknown, i.e. isolation invalid.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictNamespaces=yes
 RestrictRealtime=yes

@@ -1,0 +1,13 @@
+{
+  // Compiles only the Trading 212 order broker (server/modules/t212-broker, without its tests) for
+  // scripts/wsl/build-t212-broker.sh. The broker's type-only imports from server/shared are checked and
+  // erased; its runtime imports are Node built-ins, better-sqlite3 and @simplewebauthn/server only.
+  // Output keeps the dist-server layout that scripts/wsl/stage-t212-broker.mjs reads:
+  //   <outDir>/server/modules/t212-broker/*.js
+  "extends": "../../server/tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../dist-server",
+    "sourceMap": false
+  },
+  "include": ["../../server/modules/t212-broker/*.ts"]
+}
