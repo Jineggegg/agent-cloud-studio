@@ -14,6 +14,10 @@ type AuthLoginUser = AuthUser & { password_hash: string };
 
 type TailscaleSessionRequest = Parameters<typeof evaluateTailscaleSessionRequest>[0];
 type TailscaleSignInConfig = Parameters<typeof evaluateTailscaleSessionRequest>[1];
+type TailscaleSessionClaim = Extract<
+  ReturnType<typeof evaluateTailscaleSessionRequest>,
+  { allowed: true }
+>['session'];
 
 type AuthDependencies = {
   users: {
@@ -31,8 +35,15 @@ type AuthDependencies = {
   };
   hashPassword(password: string): Promise<string>;
   comparePassword(password: string, passwordHash: string): Promise<boolean>;
-  generateToken(user: AuthUser): string;
-  /** Current Tailscale sign-in settings; read per request so the policy follows the env. */
+  /**
+   * Signs a session token. `tailscaleSession` marks a session issued by Tailscale sign-in; the
+   * token must carry it so auth.middleware can revoke the session when the allowlist changes.
+   */
+  generateToken(user: AuthUser, tailscaleSession?: TailscaleSessionClaim): string;
+  /**
+   * Current Tailscale sign-in settings, read per request from process.env (which load-env fills
+   * from .env once at startup, so .env edits need a restart).
+   */
   tailscaleSignIn(): TailscaleSignInConfig;
   /** Info-level sink for Tailscale sign-in outcomes. */
   logInfo(message: string): void;
@@ -163,15 +174,21 @@ export function createAuthService(dependencies: AuthDependencies) {
     },
 
     /**
-     * Issues the same session as `login`, without a password, for an allowlisted Tailscale
-     * identity proxied by Tailscale Serve. Every refusal is the same 403; the reason is logged.
+     * Issues a session like `login`, without a password, for an allowlisted Tailscale identity
+     * proxied by Tailscale Serve. The token records the login and device so the session is
+     * revoked when either leaves the allowlist. Every refusal is the same 403; the reason is
+     * logged together with the validated tailnet address, which is what STUDIO_TAILSCALE_NODES
+     * lists.
      */
     signInWithTailscale(request: TailscaleSessionRequest) {
       const config = dependencies.tailscaleSignIn();
       const decision = evaluateTailscaleSessionRequest(request, config);
       const maskedLogin = maskTailscaleLogin(decision.login);
+      const node = decision.allowed ? decision.session.node : decision.node;
+      // Only addresses that passed validation are logged, so the line stays printable.
+      const fromNode = node ? ` from ${node}` : '';
       const refuse = (reason: string) => {
-        dependencies.logInfo(`[auth] Tailscale sign-in refused (${reason}) for ${maskedLogin}`);
+        dependencies.logInfo(`[auth] Tailscale sign-in refused (${reason}) for ${maskedLogin}${fromNode}`);
         return tailscaleSignInUnavailable();
       };
       if (!decision.allowed) {
@@ -186,12 +203,12 @@ export function createAuthService(dependencies: AuthDependencies) {
       const sessionUser = { id: user.id, username: user.username };
       dependencies.users.updateLastLogin(numericUserId(user.id));
       dependencies.logInfo(
-        `[auth] Tailscale sign-in granted for ${maskedLogin} as local user "${user.username}"`,
+        `[auth] Tailscale sign-in granted for ${maskedLogin}${fromNode} as local user "${user.username}"`,
       );
       return {
         success: true,
         user: sessionUser,
-        token: dependencies.generateToken(sessionUser),
+        token: dependencies.generateToken(sessionUser, decision.session),
       };
     },
 
@@ -199,7 +216,11 @@ export function createAuthService(dependencies: AuthDependencies) {
       return { user };
     },
 
-    refreshSession(user: unknown) {
+    /**
+     * Issues a replacement token. A Tailscale-issued session passes its verified claim, which the
+     * replacement keeps; dropping it would turn a revocable session into a password-equivalent one.
+     */
+    refreshSession(user: unknown, tailscaleSession?: TailscaleSessionClaim) {
       if (
         typeof user !== 'object'
         || user === null
@@ -214,7 +235,7 @@ export function createAuthService(dependencies: AuthDependencies) {
         });
       }
 
-      return { token: dependencies.generateToken(user as AuthUser) };
+      return { token: dependencies.generateToken(user as AuthUser, tailscaleSession) };
     },
 
     logout() {

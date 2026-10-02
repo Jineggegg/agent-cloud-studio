@@ -122,6 +122,17 @@ STUDIO_SNR_PASSWORD_FILE=/home/<用户名>/.config/agent-cloud-studio/snr-passwo
 把你自己的账号加入白名单后，iPad 打开 Studio 就会直接进入，不再显示登录页；
 tailnet 里其他人（包括共享给你的设备）仍然需要密码。
 
+**先弄清信任范围。** Serve 告诉后端的是 Tailscale **账号**，不是具体设备，更不是具体程序。
+页面「同源」检查依赖 `Origin` / `Sec-Fetch-Site` 请求头，只能挡住别的网页，挡不住会自己填写请求头的程序。
+开启后，下列任何一方都能不输密码拿到完整的 Studio 会话（能打开 Claude / Codex 和终端，等于能在这台电脑上执行代码）：
+
+- 登录了白名单账号、没有打 tag 的**每一台设备**上的**每一个程序**，不只是浏览器。
+  例如 iPhone / iPad 开着 Tailscale 时的任何第三方 App，或者你另一台电脑上的任何进程。
+- 设置 `STUDIO_TAILSCALE_NODES` 后，范围缩小到列出的设备；但这些设备上的每一个程序仍然受信任。
+- 本机上的任何程序：它们可以直接访问 `127.0.0.1:3002` 并伪造全部请求头。
+
+所以强烈建议用 `STUDIO_TAILSCALE_NODES` 只列出你的 iPad。
+
 1. 查出你的 Tailscale 登录名（在 Windows PowerShell 中）：
 
    ```powershell
@@ -131,25 +142,41 @@ tailnet 里其他人（包括共享给你的设备）仍然需要密码。
 
    这是本机所登录账号的登录名，例如 `you@gmail.com` 或 `name@github`。如果 iPad 登录的是另一个账号，
    用 `tailscale whois <iPad 的 100.x 地址>` 查看 iPad 那一端的登录名。
-2. 在 WSL 的 `.env` 中设置：
+2. 查出 iPad 的两个 Tailscale 地址：在 PowerShell 中运行 `tailscale ip <iPad 的设备名>`，
+   或者在 iPad 的 Tailscale App 里点开本机查看。会有一个 `100.x.y.z` 和一个 `fd7a:115c:a1e0:…`；
+   两个都要写，因为 iPad 可能用其中任意一个连接。
+3. 在 WSL 的 `.env` 中设置：
 
    ```ini
    STUDIO_TAILSCALE_LOGINS=you@gmail.com
+   # 只允许这些设备免密码登录（逗号分隔）；留空表示该账号下所有未打 tag 的设备
+   STUDIO_TAILSCALE_NODES=100.x.y.z,fd7a:115c:a1e0::xxxx
    # Studio 里有多个账号时，指定登录成哪一个；只有一个账号时可以留空
    STUDIO_TAILSCALE_USER=
    ```
 
-   如果设置了 `STUDIO_PUBLIC_ORIGIN`，免密码登录只接受来自这个地址的页面。
-3. `systemctl --user restart agent-cloud-studio.service`，然后在 iPad 上重新打开 Studio。
+   - `STUDIO_TAILSCALE_NODES` 里只要有一项不是 Tailscale 地址，免密码登录就会全部拒绝（日志原因 `nodes-invalid`），
+     而不会退回「所有设备」。
+   - 如果设置了 `STUDIO_PUBLIC_ORIGIN`，免密码登录只接受来自这个地址的页面。它必须写成完整的
+     `https://<机器名>.<tailnet>.ts.net:8443`（带 `https://`、不带路径）；格式不对时免密码登录会全部拒绝
+     （日志原因 `public-origin-invalid`）。
+4. `systemctl --user restart agent-cloud-studio.service`，然后在 iPad 上重新打开 Studio。
 
 只有同时满足下列条件才会免密码登录，否则照常显示登录页：请求经由 Tailscale Serve（`https://…ts.net`）
-到达、Studio 只监听 `127.0.0.1`、不是 Funnel（公网）请求、页面与地址同源、登录名在白名单中。
+到达、Studio 只监听 `127.0.0.1`、不是 Funnel（公网）请求、页面与地址同源且是 https、
+设备在 `STUDIO_TAILSCALE_NODES` 中（如果设置了）、登录名在白名单中。
 每次登录成功或被拒绝都会写一行日志（`journalctl --user -u agent-cloud-studio -f` 中的
-`[auth] Tailscale sign-in …`），登录名只显示前两个字符。
+`[auth] Tailscale sign-in …`），包括原因、只显示前两个字符的登录名，以及发起请求的设备地址
+（`from 100.x.y.z`）。设备不在名单里时原因是 `node-not-allowed`，可以据此核对要加入的地址。
+
+撤销：免密码登录签发的会话会记下登录名和设备地址，每次请求都会按当前设置重新检查。
+清空 `STUDIO_TAILSCALE_LOGINS`、把登录名移出白名单，或者让 `STUDIO_TAILSCALE_NODES` 不再包含那台设备，
+重启服务后这些会话立即失效（Studio 自动续期得到的新 token 也一样）。用密码登录的会话不受影响；
+要让**所有**会话都失效，在 `.env` 中设置一个新的随机 `JWT_SECRET` 并重启服务。
 
 注意：
 
-- 开启后，**本机上的任何程序**都能伪装成 Serve 访问 `127.0.0.1:3002`。只在你信任这台电脑上所有程序和用户时开启。
+- 只在你信任这台电脑上的所有程序和用户、以及上面列出的设备上的所有 App 时开启。
 - 不要再用 cloudflared、ngrok、nginx 等其他反向代理把 3002 端口转发出去；它们可能原样转发伪造的请求头。
 - 不要对 Studio 开启 Tailscale Funnel。
 - 「退出登录」后刷新页面会自动重新登录；要关闭此功能，清空 `STUDIO_TAILSCALE_LOGINS` 并重启服务。
