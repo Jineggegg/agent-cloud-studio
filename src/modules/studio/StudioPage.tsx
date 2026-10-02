@@ -25,6 +25,8 @@ const StudioProjectMail = lazyStudioPanel(() => import('@/modules/studio/StudioP
 const StudioProjectTasks = lazyStudioPanel(() => import('@/modules/studio/StudioProjectTasks').then(module => module.StudioProjectTasks), 'list');
 const StudioSnrPanel = lazyStudioPanel(() => import('@/modules/studio/StudioSnrPanel').then(module => module.StudioSnrPanel), 'list');
 const StudioTrading212 = lazyStudioPanel(() => import('@/modules/studio/StudioTrading212').then(module => module.StudioTrading212), 'dashboard');
+// ── v6 track: github — lazy panel (kept apart from the other tracks' insertions) ──
+const StudioGitHub = lazyStudioPanel(() => import('@/modules/studio/StudioGitHub').then(module => module.StudioGitHub), 'list');
 
 // Layout/drag features load after first paint; plain animations work immediately.
 const loadMotionFeatures = () => import('@/modules/studio/motionFeatures').then(module => module.default);
@@ -150,6 +152,7 @@ export function StudioPage() {
         : item.modules.includes('trading212') && t212Ready === false ? '未接入' : undefined,
     })),
     // ── v6 track: github — home tile below this line ──
+    { id: 'github', name: 'GitHub', tone: 'graphite', glyph: 'pull-request' },
     // ── v6 track: memory — home tile below this line ──
     { id: 'deepseek', name: 'DeepSeek', tone: 'slate', glyph: 'sparkles', status: studio.loading || configured ? undefined : '待配置' },
     { id: 'workspace', name: '工作台', tone: 'graphite', glyph: 'terminal', href: '/work' },
@@ -221,6 +224,7 @@ export function StudioPage() {
               {!tabs.length && <div className="studio-large-title"><h1>{title}</h1></div>}
               {target.kind === 'app' && target.id === 'connections' && <StudioConnections status={studio.status} onChange={studio.refresh} />}
               {/* ── v6 track: github — app content below this line ── */}
+              {target.kind === 'app' && target.id === 'github' && <StudioGitHub refreshing={refreshing} />}
               {/* ── v6 track: memory — app content below this line ── */}
               {target.kind === 'project' && !project && (projects === null
                 ? <div className="studio-skeleton" role="status" aria-label="正在加载项目"><div className="skeleton-block" style={{ height: 160 }} /></div>
