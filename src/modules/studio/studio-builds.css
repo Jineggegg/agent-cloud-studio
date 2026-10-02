@@ -115,6 +115,25 @@
 .ios-list:has(> .build-prompt:focus-visible) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ios-tint) 45%, transparent); }
 .build-counter { font-variant-numeric: tabular-nums; }
 .build-composer-note { margin-top: 22px; padding: 0 16px; font-size: 13px; line-height: 1.55; color: var(--ios-label-2); }
+/* Restricted mode: the same warm notice tint as the mail warnings, with the one command that lifts it. */
+.build-env-notice {
+  display: flex; align-items: flex-start; gap: 10px; margin-top: 22px; padding: 12px 14px; border-radius: 16px;
+  font-size: 13px; line-height: 1.55; color: var(--ios-label); background: color-mix(in srgb, var(--ios-orange) 10%, transparent);
+}
+.build-env-notice > svg { flex-shrink: 0; margin-top: 1px; color: var(--ios-orange); }
+/* One shrinkable column, so the unbreakable command scrolls inside its chip instead of widening the notice. */
+.build-env-notice > div { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; flex: 1; min-width: 0; }
+.build-env-title { font-size: 14px; font-weight: 600; color: var(--ios-orange); }
+.build-env-command {
+  display: flex; align-items: center; gap: 4px; margin-top: 2px; padding-left: 12px; border-radius: 12px;
+  background: color-mix(in srgb, var(--ios-bg) 72%, transparent);
+}
+/* On a phone the command wraps at its spaces rather than hiding its end; one tap still selects all of it. */
+.build-env-command code {
+  flex: 1; min-width: 0; padding: 9px 0; overflow-wrap: anywhere; user-select: all;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; line-height: 1.5; color: var(--ios-label);
+}
+.build-env-command .icon-button { flex-shrink: 0; }
 @media (max-width: 699px) {
   .build-composer-note { padding: 0 6px; }
   .build-prompt { min-height: 132px; }

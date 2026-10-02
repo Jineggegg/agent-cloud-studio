@@ -2073,5 +2073,11 @@ export type StudioBuild = {
 };
 /** What starting an AI build returns: the build and the hub project that became its icon (added to the home screen at once). */
 export type StudioBuildCreated = { build: StudioBuild; project: HubProject };
+/**
+ * How the server runs AI builds right now (GET /api/studio/builds/environment): `sandbox` lets the agent install, run
+ * and test inside Claude Code's OS sandbox; `restricted` only writes code and commits. `missing` names the packages
+ * to install for the sandbox (empty when it was switched off on purpose). Shown by the build composer.
+ */
+export type StudioBuildEnvironment = { mode: 'sandbox' | 'restricted'; missing: string[] };
 // ── v6 track: memory — types below this line ──
 // ---------------------------

@@ -14,8 +14,14 @@ const RUNNING_CEILING = 0.96;
 const CANCELLED = '已取消';
 
 const isActive = (build: StudioBuild) => build.state === 'queued' || build.state === 'building';
-// The workbench session doing the work, where a tap on a building icon goes to watch it live.
-const workbenchUrl = (build: StudioBuild) => `/work/${encodeURIComponent(build.ideProjectId)}/s/${encodeURIComponent(build.sessionId)}`;
+/**
+ * The workbench session doing the work, where a tap on a building or failed icon goes: the workbench's
+ * `/work/:projectId/s/:sessionId` route (IDE project id + app session id). A build without an IDE project id falls
+ * back to `/session/:sessionId`, which the workbench resolves to its project and redirects.
+ */
+const workbenchUrl = (build: StudioBuild) => (build.ideProjectId
+  ? `/work/${encodeURIComponent(build.ideProjectId)}/s/${encodeURIComponent(build.sessionId)}`
+  : `/session/${encodeURIComponent(build.sessionId)}`);
 
 // Checked-off steps, with half a step of credit for the one in progress so the arc keeps moving between ticks.
 function ringValue(build: StudioBuild) {
@@ -42,6 +48,8 @@ export function useStudioBuilds(projects: HubProject[] | null) {
   const projectsRef = useRef(projects);
   // Light-up timers, cleared if the home screen unmounts mid-moment.
   const timers = useRef<number[]>([]);
+  // When this page last changed each build (start, continue, stop): a poll sent before that knows less than we do.
+  const changedAt = useRef(new Map<string, number>());
   useEffect(() => { projectsRef.current = projects; }, [projects]);
   useEffect(() => () => { for (const timer of timers.current) window.clearTimeout(timer); }, []);
 
@@ -49,6 +57,7 @@ export function useStudioBuilds(projects: HubProject[] | null) {
 
   const track = useCallback((build: StudioBuild) => {
     seen.current.set(build.id, build.state);
+    changedAt.current.set(build.id, Date.now());
     setBuilds(previous => [...(previous ?? []).filter(item => item.id !== build.id), build]);
   }, []);
 
@@ -67,8 +76,12 @@ export function useStudioBuilds(projects: HubProject[] | null) {
     timers.current.push(window.setTimeout(() => setLightingUp(previous => previous.filter(id => id !== hubProjectId)), reduced ? 700 : LIGHT_UP_MS));
   }, []);
 
-  const apply = useCallback((next: StudioBuild[]) => {
+  // `requestedAt` is when the poll left: builds this page changed since then keep their newer local copy (a slow
+  // poll that answered after 开始开发 must not take the new icon's ring away, nor revive a build just stopped).
+  const apply = useCallback((next: StudioBuild[], requestedAt: number) => {
+    const newerHere = (id: string) => (changedAt.current.get(id) ?? -Infinity) >= requestedAt;
     for (const build of next) {
+      if (newerHere(build.id)) continue;
       const before = seen.current.get(build.id);
       if (before === 'queued' || before === 'building') {
         if (build.state === 'done') {
@@ -84,14 +97,19 @@ export function useStudioBuilds(projects: HubProject[] | null) {
       }
       seen.current.set(build.id, build.state);
     }
-    setBuilds(next);
+    setBuilds(previous => {
+      const listed = new Set(next.map(build => build.id));
+      const merged = next.map(build => (newerHere(build.id) ? previous?.find(item => item.id === build.id) ?? build : build));
+      return [...merged, ...(previous ?? []).filter(build => !listed.has(build.id) && newerHere(build.id))];
+    });
   }, [lightUp, nameOf, resume]);
 
   const load = useCallback(async () => {
+    const requestedAt = Date.now();
     try {
       // Called through a promise so a server (or test double) without the builds API simply has no builds.
       const next = await Promise.resolve().then(() => api.studio.builds.list()).then(readApiJson<StudioBuild[]>);
-      if (Array.isArray(next)) apply(next);
+      if (Array.isArray(next)) apply(next, requestedAt);
     } catch {
       // Rings are an overlay on the home screen: a failed poll keeps the last known state and tries again.
     }

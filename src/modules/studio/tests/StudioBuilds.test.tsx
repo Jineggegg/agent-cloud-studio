@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import type * as ApiModule from '@/shared/api';
@@ -13,7 +13,7 @@ const build = (patch: Partial<StudioBuild> = {}): StudioBuild => ({
 });
 const mocks = vi.hoisted(() => ({
   projects: [] as unknown[],
-  builds: { list: vi.fn(), create: vi.fn(), resume: vi.fn(), cancel: vi.fn() },
+  builds: { list: vi.fn(), environment: vi.fn(), create: vi.fn(), resume: vi.fn(), cancel: vi.fn() },
 }));
 
 vi.mock('@/modules/auth', () => ({ useAuth: () => ({ user: { username: 'tester' }, logout: vi.fn() }) }));
@@ -46,14 +46,25 @@ beforeEach(() => {
   localStorage.clear();
   mocks.projects = [];
   mocks.builds.list.mockImplementation(() => json([]));
+  mocks.builds.environment.mockImplementation(() => json({ mode: 'sandbox', missing: [] }));
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+// Stands in for the workbench and shows which of its routes matched, with the decoded parameters.
+function WorkbenchProbe({ route }: { route: string }) {
+  const { projectId = '', sessionId = '' } = useParams();
+  return <div>{`workbench ${route} project=${projectId} session=${sessionId}`}</div>;
+}
 
 function renderStudio() {
   render(<MemoryRouter initialEntries={['/']}><Routes>
     <Route path="/" element={<StudioPage />} />
     <Route path="/projects/:id" element={<StudioPage />} />
-    <Route path="/work/:projectId/s/:sessionId" element={<div>workbench open</div>} />
+    {/* The workbench's routes on feat/studio-v6 (src/App.tsx). */}
+    <Route path="/work" element={<WorkbenchProbe route="home" />} />
+    <Route path="/work/:projectId" element={<WorkbenchProbe route="project" />} />
+    <Route path="/work/:projectId/s/:sessionId" element={<WorkbenchProbe route="session" />} />
+    <Route path="/session/:sessionId" element={<WorkbenchProbe route="legacy" />} />
   </Routes></MemoryRouter>);
 }
 
@@ -193,4 +204,71 @@ test('stopping a build from edit mode asks first', async () => {
   await waitFor(() => expect(mocks.builds.cancel).toHaveBeenCalledWith('b1'));
   expect(await screen.findByText('已停止开发「喝水打卡」')).toBeTruthy();
   expect(await within(apps).findByRole('link', { name: '喝水打卡，已停止' })).toBeTruthy();
+});
+
+test('tapping a building or failed icon opens its session on the workbench route (review medium: /work link)', async () => {
+  mocks.projects = [PROJECT, { ...PROJECT, id: 'timer', name: '番茄钟' }];
+  // Ids with characters a URL must escape still arrive intact.
+  mocks.builds.list.mockImplementation(() => json([
+    build({ ideProjectId: 'ide/1 a', sessionId: 'session#1', total: 2, completed: 1 }),
+    build({ id: 'b2', hubProjectId: 'timer', ideProjectId: '', sessionId: 'session-2', state: 'failed', error: 'Claude AI usage limit reached' }),
+  ]));
+  renderStudio();
+  const apps = await screen.findByRole('navigation', { name: '应用' });
+  const failed = await within(apps).findByRole('link', { name: '番茄钟，未完成' });
+  // A build without an IDE project id uses the legacy address the workbench redirects from.
+  expect(failed.getAttribute('href')).toBe('/session/session-2');
+  fireEvent.click(await within(apps).findByRole('link', { name: '喝水打卡，开发中 50%' }));
+  expect(await screen.findByText('workbench session project=ide/1 a session=session#1')).toBeTruthy();
+});
+
+test('a slow poll that answers after 开始开发 keeps the new icon and its ring (review low: stale poll)', async () => {
+  let answerFirstPoll: (response: Response) => void = () => {};
+  mocks.builds.list.mockImplementationOnce(() => new Promise<Response>(resolve => { answerFirstPoll = resolve; }));
+  mocks.builds.create.mockImplementation(() => json({ build: build(), project: PROJECT }, 201));
+  renderStudio();
+  fireEvent.click(await screen.findByRole('button', { name: '新建项目' }));
+  const sheet = await screen.findByRole('dialog', { name: '新建项目' });
+  fireEvent.change(within(sheet).getByRole('textbox', { name: '名称' }), { target: { value: '喝水打卡' } });
+  fireEvent.change(within(sheet).getByRole('textbox', { name: '想做什么' }), { target: { value: '记录每天喝水' } });
+  fireEvent.click(within(sheet).getByRole('button', { name: '开始开发' }));
+  const apps = screen.getByRole('navigation', { name: '应用' });
+  expect(await within(apps).findByRole('link', { name: '喝水打卡，规划中' })).toBeTruthy();
+
+  // The poll sent on arrival, before the build existed, finally answers with an empty list.
+  await act(async () => { answerFirstPoll(new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } })); });
+  expect(within(apps).getByRole('link', { name: '喝水打卡，规划中' })).toBeTruthy();
+});
+
+test('the composer says plainly when builds are restricted and how to enable the sandbox', async () => {
+  mocks.builds.environment.mockImplementation(() => json({ mode: 'restricted', missing: ['bubblewrap', 'socat'] }));
+  const writeText = vi.fn(() => Promise.resolve());
+  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+  renderStudio();
+  fireEvent.click(await screen.findByRole('button', { name: '新建项目' }));
+  const sheet = await screen.findByRole('dialog', { name: '新建项目' });
+  const notice = await within(sheet).findByRole('note', { name: '受限模式' });
+  expect(notice.textContent).toContain('不能安装依赖、运行代码或测试');
+  expect(within(notice).getByText('sudo apt-get install -y bubblewrap socat')).toBeTruthy();
+  fireEvent.click(within(notice).getByRole('button', { name: '复制命令' }));
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith('sudo apt-get install -y bubblewrap socat'));
+  expect(await within(notice).findByRole('button', { name: '已复制' })).toBeTruthy();
+  // Building is still possible, just limited.
+  expect(within(sheet).getByRole('button', { name: '开始开发' })).toBeTruthy();
+});
+
+test('a sandboxed server promises installs and tests, and a server that cannot say makes no promise', async () => {
+  renderStudio();
+  fireEvent.click(await screen.findByRole('button', { name: '新建项目' }));
+  let sheet = await screen.findByRole('dialog', { name: '新建项目' });
+  expect(await within(sheet).findByText(/命令在沙箱里运行，只能写这个文件夹、只连软件包仓库/)).toBeTruthy();
+  expect(within(sheet).queryByRole('note', { name: '受限模式' })).toBeNull();
+  fireEvent.click(within(sheet).getByRole('button', { name: '取消' }));
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建项目' })).toBeNull());
+
+  mocks.builds.environment.mockImplementation(() => json({ error: 'unavailable' }, 500));
+  fireEvent.click(screen.getByRole('button', { name: '新建项目' }));
+  sheet = await screen.findByRole('dialog', { name: '新建项目' });
+  expect(await within(sheet).findByText(/它只在这个文件夹里工作，不会推送或发布/)).toBeTruthy();
+  expect(within(sheet).queryByText(/沙箱/)).toBeNull();
 });

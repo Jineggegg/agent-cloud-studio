@@ -1,9 +1,9 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
-import { Sparkles } from 'lucide-react';
+import { Check, Copy, ShieldAlert, Sparkles } from 'lucide-react';
 
 import { api, readApiJson } from '@/shared/api';
-import type { StudioBuildCreated, StudioGlyph } from '@/shared/types';
+import type { StudioBuildCreated, StudioBuildEnvironment, StudioGlyph } from '@/shared/types';
 import { StudioBuildProgress } from '@/modules/studio/StudioBuildProgress';
 import { StudioIconPicker } from '@/modules/studio/StudioIconPicker';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
@@ -42,6 +42,54 @@ function writeDraft(draft: Draft | null) {
   }
 }
 
+// What the owner runs on the server to give builds Claude Code's OS sandbox (docs/ai-builds.md).
+const SANDBOX_INSTALL = 'sudo apt-get install -y bubblewrap socat';
+// How long the copy button shows its check mark.
+const COPIED_MS = 1600;
+
+// The closing note, true to how the server will run the build. Each is one string: a line break inside JSX text
+// would put a space between two Chinese sentences.
+const NOTE_INTRO = 'Claude Code 会在电脑的 projects 文件夹里新建一个 git 仓库：先列计划，再实现、写 README';
+const NOTE_SANDBOX = `${NOTE_INTRO} 和测试，最后提交到本地。命令在沙箱里运行，只能写这个文件夹、只连软件包仓库，不会推送或发布；开发中随时点开图标，就能看它在做什么。`;
+const NOTE_PENDING = `${NOTE_INTRO}，最后提交到本地。它只在这个文件夹里工作，不会推送或发布；开发中随时点开图标，就能看它在做什么。`;
+
+/** Restricted mode, said before the owner starts: what the build cannot do here and the one command that fixes it. */
+function RestrictedNotice({ environment }: { environment: StudioBuildEnvironment }) {
+  // The copy button's check mark after a successful copy.
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(SANDBOX_INSTALL);
+      setCopied(true);
+      window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => setCopied(false), COPIED_MS);
+    } catch {
+      // No clipboard (an insecure origin): the command stays selectable.
+    }
+  };
+  const installable = environment.missing.length > 0;
+  return <div className="build-env-notice" role="note" aria-labelledby="build-env-title">
+    <ShieldAlert size={18} aria-hidden="true" />
+    <div>
+      <strong id="build-env-title" className="build-env-title">受限模式</strong>
+      <p>{installable
+        ? '服务器还没装沙箱组件，这次 AI 只能写代码、写 README 并提交到本地，不能安装依赖、运行代码或测试。'
+        : '这台服务器的沙箱已关闭或不可用，这次 AI 只能写代码、写 README 并提交到本地，不能安装依赖、运行代码或测试。'}</p>
+      {installable && <>
+        <p>在服务器上运行这条命令，之后的开发就能在沙箱里完整进行：</p>
+        <div className="build-env-command">
+          <code>{SANDBOX_INSTALL}</code>
+          <button type="button" className="icon-button plain" aria-label={copied ? '已复制' : '复制命令'} title="复制命令" onClick={() => void copy()}>
+            {copied ? <Check size={16} className="copied-pop" aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
+          </button>
+        </div>
+      </>}
+    </div>
+  </div>;
+}
+
 /**
  * Used by StudioPage inside the new-project sheet (让 AI 开发): name an app, pick its icon, describe it, and hand it
  * to Claude Code. The preview icon dims and starts circling while the server prepares the build, the same icon that
@@ -56,6 +104,16 @@ export function StudioBuildComposer({ onStarted, onCancel }: { onStarted: (creat
   const [busy, setBusy] = useState(false);
   // Validation and transport failures stay next to the form.
   const [error, setError] = useState('');
+  // Whether builds on this server run sandboxed or restricted; null until known (or when the server cannot say).
+  const [environment, setEnvironment] = useState<StudioBuildEnvironment | null>(null);
+  useEffect(() => {
+    let alive = true;
+    // Called through a promise so a server (or test double) without the endpoint simply shows the neutral note.
+    void Promise.resolve().then(() => api.studio.builds.environment()).then(readApiJson<StudioBuildEnvironment>)
+      .then(next => { if (alive && (next?.mode === 'sandbox' || next?.mode === 'restricted')) setEnvironment(next); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
   const ready = Boolean(draft.name.trim() && draft.prompt.trim());
 
   async function start(event?: FormEvent) {
@@ -113,9 +171,9 @@ export function StudioBuildComposer({ onStarted, onCancel }: { onStarted: (creat
       </section>
     </fieldset>
 
-    {/* One string: a line break inside the JSX text would put a space between the two Chinese sentences. */}
-    <p className="build-composer-note">{'Claude Code 会在电脑的 projects 文件夹里新建一个 git 仓库：先列计划，再实现、写 README 和测试，最后提交到本地。'
-      + '它只在这个文件夹里工作，不会推送或发布；开发中随时点开图标，就能看它在做什么。'}</p>
+    {environment?.mode === 'restricted'
+      ? <RestrictedNotice environment={environment} />
+      : <p className="build-composer-note">{environment?.mode === 'sandbox' ? NOTE_SANDBOX : NOTE_PENDING}</p>}
     {error && <p role="alert" className="studio-feedback error">{error}</p>}
     <div className="project-form-actions">
       <button className="ios-button" type="button" disabled={busy} onClick={onCancel}>取消</button>
