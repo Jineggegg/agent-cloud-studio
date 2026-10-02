@@ -1,3 +1,70 @@
+# Agent Cloud Studio
+
+Personal, mobile-first workbench for iPad, iPhone and desktop. This is a
+**modified version**, not the original CloudCLI UI.
+
+Source attribution: **CloudCLI UI (https://github.com/siteboon/claudecodeui)**.
+The upstream AGPL-3.0-or-later license and Section 7 additional terms in
+`LICENSE` remain applicable. This fork is public; secrets and personal runtime
+data must never be committed.
+
+## Studio v0.1
+
+- A responsive Chinese workspace with iPad sidebar and phone tab navigation.
+- DeepSeek API chat with user-scoped, persistent history, stop and delete controls.
+- Encrypted local API-key storage; saved keys are never returned to the browser.
+- Explicit per-message opt-in to send a small SNR health summary to DeepSeek.
+- A login-protected, short-lived gateway to an existing local SNR research app.
+- Existing Claude/Codex subscription workbench links; no provider credentials
+  are overwritten and subscriptions are not converted to API billing.
+- The original IDE remains available at `/workspace` and `/session/:sessionId`.
+
+## Local Development
+
+Use Node.js 22+ and copy `.env.example` to a local `.env`. Keep the service on
+loopback. Choose separate ports from your existing CloudCLI installation.
+
+```sh
+npm ci
+npm run dev
+```
+
+The development UI defaults to `http://127.0.0.1:5174`; the isolated development
+backend uses port 3003 and `.data/dev-auth.db`. The built private preview uses
+port 3002 when using the example configuration:
+
+```sh
+npm run build
+npm run server
+```
+
+Configure a DeepSeek key in Studio's Connections view. `Verify` calls the
+models endpoint, not a paid chat completion. Chat submissions use the separate
+DeepSeek API account. Do not paste keys into issues, commits or chat logs.
+
+SNR must already be running at the fixed loopback `STUDIO_SNR_BASE_URL`.
+Studio does not start, train, approve, trade, or modify SNR source files.
+Opening the lab lets the signed-in user interact with SNR's own app, including
+its existing save actions. The gateway cookie is HttpOnly, SameSite Strict and
+expires after 30 minutes; reopen the lab from Studio after expiry.
+No arbitrary-network proxy or SNR auto-training is provided.
+
+Set `STUDIO_PUBLIC_ORIGIN` to the exact HTTPS origin for a reverse-proxied
+preview, so scoped cookies and write-origin checks remain correct.
+Expose only through a private authenticated channel such as Tailscale Serve.
+The computer must remain powered, awake and signed in. Do not expose port 3002
+to the public internet or enable platform auth bypass.
+
+## Next Work
+
+See [the Studio plan](docs/studio-plan.md) for adapter boundaries, mobile
+acceptance, and the feature order. Real device Safari, microphone and live
+DeepSeek inference are separate acceptance checks from automated tests.
+
+---
+
+## Upstream Documentation
+
 <div align="center">
  <img src="public/logo.svg" alt="CloudCLI UI" width="64" height="64">
  <h1>Cloud CLI (aka Claude Code UI)</h1>

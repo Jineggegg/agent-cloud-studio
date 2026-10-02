@@ -21,6 +21,9 @@ out/
 .env.development.local
 .env.test.local
 .env.production.local
+.data/
+work/
+outputs/
 
 # IDE and editor files
 .vscode/

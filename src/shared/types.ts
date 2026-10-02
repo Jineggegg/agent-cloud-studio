@@ -1821,3 +1821,21 @@ type TaskStatus =
 
 /** A TaskMaster task's priority; high, medium and low are the known values and the string fallback tolerates anything else TaskMaster emits. */
 type TaskPriority = 'high' | 'medium' | 'low' | string;
+
+//----------------- STUDIO CONTRACTS ------------
+/** Studio's server-confirmed connector state; never includes an API secret. */
+export type StudioStatus = {
+  deepseek: { configured: boolean; models: string[]; baseUrl: string };
+  agentWorkbenchUrl: string | null;
+  snrRemoteUrl: string | null;
+};
+/** A persisted Studio conversation summary shared by its history and chat views. */
+export type StudioConversation = {
+  id: string; title: string; model: string; updated_at: string;
+  messages?: { id: number; role: 'user' | 'assistant'; content: string; status: string }[];
+};
+/** A bounded read-only SNR health snapshot, not a strategy approval or training result. */
+export type StudioSnr = {
+  connected: boolean; reason?: string; phase?: number;
+  tradingEnabled?: boolean; rulesApproved?: boolean; datasetCount?: number;
+};

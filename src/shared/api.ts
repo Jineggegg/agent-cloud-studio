@@ -157,6 +157,21 @@ const pluginAssetPath = (pluginName: string, assetFile: string) =>
 // import a named method instead of assembling URLs of their own.
 
 export const api = {
+  studio: {
+    status: () => get('/api/studio/status'),
+    snr: () => get('/api/studio/snr'),
+    snrAccess: () => post('/api/studio/snr/access'),
+    closeSnr: () => post('/api/studio/snr/close'),
+    saveKey: (apiKey: string) => put('/api/studio/deepseek/key', { apiKey }),
+    removeKey: () => del('/api/studio/deepseek/key'),
+    testKey: () => post('/api/studio/deepseek/test'),
+    conversations: () => get('/api/studio/conversations'),
+    createConversation: (model: string) => post('/api/studio/conversations', { model }),
+    conversation: (id: string) => get(`/api/studio/conversations/${encodeURIComponent(id)}`),
+    removeConversation: (id: string) => del(`/api/studio/conversations/${encodeURIComponent(id)}`),
+    send: (id: string, text: string, includeSnr: boolean, signal: AbortSignal) =>
+      post(`/api/studio/conversations/${encodeURIComponent(id)}/messages`, { text, includeSnr }, { signal }),
+  },
   // Auth endpoints (no token required)
   auth: {
     status: () => fetch('/api/auth/status'),

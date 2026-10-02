@@ -1,8 +1,8 @@
 {
-  "name": "@cloudcli-ai/cloudcli",
+  "name": "agent-cloud-studio",
   "version": "1.37.3",
-  "productName": "CloudCLI",
-  "description": "A web-based UI for Claude Code CLI",
+  "productName": "Agent Cloud Studio",
+  "description": "Personal mobile agent workbench, modified from CloudCLI UI",
   "type": "module",
   "main": "dist-server/server/index.js",
   "bin": {
@@ -18,16 +18,16 @@
     "scripts/",
     "README.md"
   ],
-  "homepage": "https://cloudcli.ai",
+  "homepage": "https://github.com/Jineggegg/agent-cloud-studio",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/siteboon/claudecodeui.git"
+    "url": "git+https://github.com/Jineggegg/agent-cloud-studio.git"
   },
   "bugs": {
-    "url": "https://github.com/siteboon/claudecodeui/issues"
+    "url": "https://github.com/Jineggegg/agent-cloud-studio/issues"
   },
   "scripts": {
-    "dev": "concurrently --kill-others \"npm run server:dev\" \"npm run client\"",
+    "dev": "cross-env HOST=127.0.0.1 SERVER_PORT=3003 VITE_PORT=5174 DATABASE_PATH=.data/dev-auth.db STUDIO_PUBLIC_ORIGIN=http://127.0.0.1:5174 concurrently --kill-others \"npm run server:dev\" \"npm run client\"",
     "preserver": "node scripts/promote-dist-server.mjs recover",
     "server": "node dist-server/server/index.js",
     "server:dev": "tsx --tsconfig server/tsconfig.json server/index.ts",
@@ -185,6 +185,7 @@
     "multer": "^2.0.1",
     "node-fetch": "^2.7.0",
     "node-pty": "^1.2.0-beta.12",
+    "parse5": "^7.3.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-dropzone": "^14.2.3",
@@ -255,5 +256,10 @@
   "optionalDependencies": {
     "@nut-tree-fork/nut-js": "^4.2.6",
     "screenshot-desktop": "^1.15.4"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "esbuild@0.25.8": true,
+    "esbuild@0.27.7": true
   }
 }
