@@ -1,0 +1,141 @@
+/*
+ * AI builds on the home screen, the App Store way. While Claude Code works, the project's icon drains of colour under
+ * a dark veil and a thin ring fills with its checklist; queued builds circle, a build still planning breathes. When it
+ * finishes the ring closes, then lifts away with the veil, the colour returns, a light sweeps across the glass and
+ * the icon gives one soft bounce: the moment it becomes an app. A failed build keeps a lighter veil and a badge.
+ *
+ * Timing of the light-up (the hook keeps the overlay for 1.7 s): ring completes 0–450 ms, ring lifts from 380 ms,
+ * veil (and with it the drained colour) from 420 ms, bounce from 500 ms, sweep from 560 ms. The bounce animates
+ * `scale` on the wrapper, which composes with the icon's own press and hover transforms instead of replacing them.
+ */
+
+/* ---------- Icon wrapper ---------- */
+.home-icon-wrap { position: relative; display: inline-grid; flex-shrink: 0; }
+/* The glyph steps back while the ring works (smaller and faint, so the two never tangle) and returns on light-up. */
+.home-icon-wrap[data-build] > .home-icon > svg:first-child { transition: opacity 560ms var(--ease-out), scale var(--dur-slow) var(--ease-spring); }
+.home-icon-wrap:is([data-build="queued"], [data-build="building"]) > .home-icon > svg:first-child { opacity: .26; scale: .78; }
+.home-icon-wrap[data-build="failed"] > .home-icon > svg:first-child { opacity: .8; }
+.home-icon-wrap[data-build="done"] > .home-icon > svg:first-child { transition-delay: 420ms; }
+
+/* ---------- Overlay on the icon's face ---------- */
+.build-overlay { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; pointer-events: none; }
+/* The veil drains the colour beneath it (backdrop-filter) instead of filtering the icon itself, so the icon keeps its
+   own press, hover and drag filters in and out of edit mode, and fading the veil out is what brings the colour back. */
+.build-veil {
+  position: absolute; inset: 0; background: rgba(14, 13, 11, .44);
+  -webkit-backdrop-filter: saturate(.18) brightness(.9); backdrop-filter: saturate(.18) brightness(.9);
+  transition: opacity 640ms var(--ease-out), background-color var(--dur-base) ease, backdrop-filter var(--dur-base) ease, -webkit-backdrop-filter var(--dur-base) ease;
+}
+.build-overlay[data-state="failed"] .build-veil {
+  background: rgba(14, 13, 11, .2); -webkit-backdrop-filter: saturate(.45) brightness(.96); backdrop-filter: saturate(.45) brightness(.96);
+}
+.build-overlay[data-state="done"] .build-veil { opacity: 0; transition-delay: 420ms; }
+
+.home-icon .build-ring {
+  position: relative; width: 58%; height: 58%; overflow: visible; rotate: -90deg;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .22));
+  transition: opacity 320ms ease, scale 460ms var(--ease-out);
+}
+.build-ring circle { fill: none; stroke-width: 2.2; }
+.build-ring-track { stroke: rgba(255, 255, 255, .24); }
+.build-ring-arc { stroke: #fff; stroke-linecap: round; }
+.build-overlay[data-state="queued"] .build-ring { animation: build-orbit 1.15s linear infinite; }
+.build-overlay[data-planning] .build-ring-track { animation: build-breathe 1.8s ease-in-out infinite; }
+.build-overlay[data-state="done"] .build-ring { opacity: 0; scale: 1.24; transition-delay: 380ms; }
+@keyframes build-orbit { from { rotate: -90deg; } to { rotate: 270deg; } }
+@keyframes build-breathe { 50% { stroke: rgba(255, 255, 255, .5); } }
+
+/* The light that crosses the glass as the colour comes back. */
+.build-sheen {
+  position: absolute; inset: -30%; translate: -110% 0; pointer-events: none;
+  background: linear-gradient(112deg, transparent 38%, rgba(255, 255, 255, .5) 50%, transparent 62%);
+  animation: build-sweep 760ms var(--ease-out) 560ms forwards;
+}
+@keyframes build-sweep { to { translate: 110% 0; } }
+.home-icon-wrap[data-build="done"] { animation: build-light-up 680ms cubic-bezier(.3, .7, .2, 1) 500ms both; }
+@keyframes build-light-up { 0% { scale: 1; } 38% { scale: 1.085; } 68% { scale: .985; } 100% { scale: 1; } }
+
+/* ---------- Badge for a build that did not finish ---------- */
+.build-badge {
+  --badge: #b5483f;
+  position: absolute; top: -7px; right: -7px; z-index: 3; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%;
+  background: var(--badge); color: #fff; box-shadow: 0 2px 6px rgba(30, 20, 15, .22);
+  animation: studio-pop var(--dur-base) var(--ease-spring);
+}
+.dark .build-badge { --badge: #c4554c; }
+.build-badge svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
+.build-badge circle { fill: currentColor; stroke: none; }
+
+/* ---------- Status line ---------- */
+.home-status.build-status { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.home-status.build-status.is-failed { color: var(--ios-red); }
+/* Large icons hide ordinary status lines, but a build's progress is the point of the tile. */
+.large-icons .home-status.build-status { display: block; }
+.no-labels .home-status.build-status { display: none; }
+
+/* ---------- Edit mode: stop a running build, continue a failed one ---------- */
+.home-remove.build-stop { color: var(--ios-red); }
+.home-resume {
+  position: absolute; top: -4px; right: calc(50% - var(--icon) / 2 - 8px); z-index: 4;
+  display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%;
+  background: var(--ios-glass-strong); color: var(--ios-tint);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .18); animation: studio-pop var(--dur-base) var(--ease-spring);
+}
+/* The 26px badge gets a 44px hit area. */
+.home-resume::before { content: ""; position: absolute; inset: -9px; }
+.is-lifted .home-resume { opacity: 0; scale: .6; transition: opacity var(--dur-fast) ease, scale var(--dur-fast) ease; }
+
+/* ---------- New-project sheet: 让 AI 开发 ---------- */
+/* A quiet scrollbar that stays inside the sheet's rounded edge instead of the platform's boxed one. */
+.create-sheet { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ios-label) 22%, transparent) transparent; }
+/* The title and the 创建方式 switch stay reachable while a long description scrolls the form. The sheet's top
+   padding (10px) is pulled under the header so nothing peeks above it. */
+.create-sheet header {
+  position: sticky; top: -10px; z-index: 5; flex-wrap: wrap; gap: 10px 12px;
+  margin: -10px -20px 0; padding: 18px 20px 6px; background: var(--ios-bg);
+}
+/* The form fades as it slides under the header instead of being cut by a hard edge. */
+.create-sheet header::after {
+  content: ""; position: absolute; top: 100%; left: 0; right: 0; height: 14px; pointer-events: none;
+  background: linear-gradient(var(--ios-bg), transparent);
+}
+.create-sheet-body:not([hidden]) { animation: studio-rise var(--dur-base) var(--ease-out) backwards; }
+.build-composer-hero { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 10px 0 2px; }
+.build-composer-hero .home-icon { --icon: 76px; }
+.build-composer-name { max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 600; }
+.build-composer-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
+.build-composer-fields:disabled { opacity: .6; transition: opacity var(--dur-fast) ease; }
+.build-prompt {
+  display: block; width: 100%; min-height: 148px; padding: 14px 16px; border: 0; outline: none; resize: vertical;
+  background: transparent; color: var(--ios-label); caret-color: var(--ios-tint); font-size: 17px; line-height: 1.5;
+}
+.build-prompt::placeholder { color: var(--ios-label-3); }
+/* The grouped list clips an outline, so keyboard focus rings the whole card instead. */
+.ios-list:has(> .build-prompt:focus-visible) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ios-tint) 45%, transparent); }
+.build-counter { font-variant-numeric: tabular-nums; }
+.build-composer-note { margin-top: 22px; padding: 0 16px; font-size: 13px; line-height: 1.55; color: var(--ios-label-2); }
+@media (max-width: 699px) {
+  .build-composer-note { padding: 0 6px; }
+  .build-prompt { min-height: 132px; }
+  /* On a phone the grabber comes first and scrolls away under the header. */
+  .create-sheet header { margin-top: 0; padding-top: 12px; }
+  /* The sticky buttons reach the sheet's bottom edge, covering its safe-area padding, so the form never shows
+     through underneath them. */
+  .create-sheet .project-form-actions {
+    bottom: calc(-24px - env(safe-area-inset-bottom)); margin-bottom: calc(-24px - env(safe-area-inset-bottom));
+    padding-bottom: calc(10px + 24px + env(safe-area-inset-bottom));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .build-overlay[data-state="queued"] .build-ring, .build-overlay[data-planning] .build-ring-track { animation: none; }
+  .home-icon-wrap[data-build="done"] { animation: none; }
+  .build-sheen { display: none; }
+  .build-overlay[data-state] :is(.build-veil, .build-ring), .home-icon-wrap[data-build] > .home-icon > svg:first-child {
+    transition-duration: 200ms; transition-delay: 0ms;
+  }
+  .home-icon-wrap:is([data-build="queued"], [data-build="building"]) > .home-icon > svg:first-child { scale: 1; }
+  .build-overlay[data-state="done"] .build-ring { scale: 1; }
+  .create-sheet-body:not([hidden]) { animation: none; }
+}

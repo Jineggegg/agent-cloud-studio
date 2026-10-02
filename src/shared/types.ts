@@ -2059,5 +2059,19 @@ export type WorkbenchChatProps = {
 // ── v6 track: chat — types below this line ──
 // ── v6 track: github — types below this line ──
 // ── v6 track: builder — types below this line ──
+/** Lifecycle of an App Store-style AI build (server `studio_builds.state`); drives the home tile's veil and ring. */
+export type StudioBuildState = 'queued' | 'building' | 'done' | 'failed';
+/**
+ * One AI build as `/api/studio/builds` returns it. `hubProjectId` is its home-screen icon; `ideProjectId` + `sessionId`
+ * open the workbench session doing the work. `total`/`completed`/`currentTask` follow the agent's checklist;
+ * `error` explains a failed build ('已取消' when the owner stopped it).
+ */
+export type StudioBuild = {
+  id: string; hubProjectId: string; ideProjectId: string; sessionId: string; workspacePath: string;
+  state: StudioBuildState; total: number; completed: number; currentTask: string | null;
+  createdAt: string; startedAt: string | null; finishedAt: string | null; error: string | null;
+};
+/** What starting an AI build returns: the build and the hub project that became its icon (added to the home screen at once). */
+export type StudioBuildCreated = { build: StudioBuild; project: HubProject };
 // ── v6 track: memory — types below this line ──
 // ---------------------------

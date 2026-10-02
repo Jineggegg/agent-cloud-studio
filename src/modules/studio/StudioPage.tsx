@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { CSSProperties, UIEvent } from 'react';
-import { createPortal } from 'react-dom';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AnimatePresence, LazyMotion, MotionConfig, m } from 'motion/react';
 import { Toaster, toast } from 'sonner';
@@ -8,9 +7,11 @@ import { ChevronLeft, FolderX, Globe, LayoutGrid, RefreshCw, ShieldCheck, Square
 
 import { useAuth } from '@/modules/auth';
 import { api, readApiJson } from '@/shared/api';
-import type { HubProject, StudioChatSpace, StudioConversation, StudioHomeTile, T212Status } from '@/shared/types';
+import type { HubProject, StudioBuildCreated, StudioChatSpace, StudioConversation, StudioHomeTile, T212Status } from '@/shared/types';
 import { useStudio } from '@/modules/studio/hooks/useStudio';
+import { useStudioBuilds } from '@/modules/studio/hooks/useStudioBuilds';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
+import { StudioCreateSheet } from '@/modules/studio/StudioCreateSheet';
 import { StudioHomeScreen } from '@/modules/studio/StudioHomeScreen';
 import { lazyStudioPanel } from '@/modules/studio/lazyStudioPanel';
 import { StudioLinksSheet } from '@/modules/studio/StudioLinksSheet';
@@ -18,6 +19,7 @@ import '@/modules/studio/studio.css';
 
 // Sub-apps stay out of the home screen's first load (and are warmed once it is idle); same props as the originals.
 const StudioChatPane = lazyStudioPanel(() => import('@/modules/studio/StudioChatPane').then(module => module.StudioChatPane), 'chat');
+const StudioBuildComposer = lazyStudioPanel(() => import('@/modules/studio/StudioBuildComposer').then(module => module.StudioBuildComposer), 'form');
 const StudioConnections = lazyStudioPanel(() => import('@/modules/studio/StudioConnections').then(module => module.StudioConnections), 'list');
 const StudioProjectAgents = lazyStudioPanel(() => import('@/modules/studio/StudioProjectAgents').then(module => module.StudioProjectAgents), 'list');
 const StudioProjectEditor = lazyStudioPanel(() => import('@/modules/studio/StudioProjectEditor').then(module => module.StudioProjectEditor), 'form');
@@ -89,6 +91,8 @@ export function StudioPage() {
   const [creating, setCreating] = useState(false);
   // Deleting a project waits for an explicit confirmation in the alert.
   const [confirmProjectDelete, setConfirmProjectDelete] = useState(false);
+  // AI builds: progress rings on project icons, polled only while one is running.
+  const builds = useStudioBuilds(projects);
 
   const loadProjects = useCallback(async () => {
     try { setProjects(await api.studio.projects.list().then(readApiJson<HubProject[]>)); setProjectsError(''); }
@@ -123,6 +127,13 @@ export function StudioPage() {
   };
   // Home works even mid-zoom: the closing animation simply replaces the opening one.
   const goHome = () => { if (transition !== 'closing') setTransition('closing'); };
+  // An AI build lands on the home screen at once as a dimmed icon; the sheet closes and nothing zooms open.
+  const startBuild = ({ build, project: created }: StudioBuildCreated) => {
+    setProjects(previous => [...(previous ?? []), created]);
+    builds.track(build);
+    setCreating(false);
+    toast(`「${created.name}」开始开发`, { description: '完成后图标会亮起；随时点开图标就能看它在做什么。' });
+  };
   const refresh = async () => {
     setRefreshing(true);
     try { await Promise.all([studio.refresh(), loadProjects(), loadT212()]); } finally { setRefreshing(false); }
@@ -148,6 +159,8 @@ export function StudioPage() {
       id: `project:${item.id}`, name: item.name, tone: item.tone, glyph: item.glyph,
       status: item.modules.includes('snr-lab') ? (studio.loading ? undefined : snrOnline ? '在线' : '离线')
         : item.modules.includes('trading212') && t212Ready === false ? '未接入' : undefined,
+      // An AI build in progress dims the icon under a ring and links it to the live workbench session.
+      ...builds.tileFor(item.id),
     })),
     // ── v6 track: github — home tile below this line ──
     // ── v6 track: memory — home tile below this line ──
@@ -182,7 +195,7 @@ export function StudioPage() {
     {/* The home screen stays mounted under an open app so its entrance animation and edit state persist. */}
     <div className={`home-layer ${target && !transition ? 'is-covered' : ''}`} aria-hidden={target ? true : undefined}>
       <StudioHomeScreen tiles={tiles} loading={projects === null} covered={Boolean(target && !transition)} snr={studio.snr} onOpen={openTile} onCreate={() => setCreating(true)}
-        onRefresh={() => void refresh()} onSignOut={signOut} refreshing={refreshing} />
+        onRefresh={() => void refresh()} onSignOut={signOut} refreshing={refreshing} onBuildAction={(tile, action) => builds.act(tile.id.slice(8), action)} />
     </div>
 
     {target && <div className={`studio-app ${transition ?? ''} ${origin ? `has-origin tone-${origin.tone}` : ''}`} style={appStyle} role="region" aria-label={title || '应用'}>
@@ -233,21 +246,20 @@ export function StudioPage() {
       </main>
     </div>}
 
-    {creating && createPortal(<div className="studio-layer" onKeyDown={event => { if (event.key === 'Escape') setCreating(false); }}>
-      <div className="sheet-scrim" aria-hidden="true" onClick={() => setCreating(false)} />
-      <div className="library-sheet project-sheet" role="dialog" aria-modal="true" aria-labelledby="studio-new-project-title">
-        <div className="library-grabber" aria-hidden="true" />
-        <header><h2 id="studio-new-project-title">新建项目</h2></header>
-        <StudioProjectEditor onCancel={() => setCreating(false)} onSaved={saved => {
-          setProjects(previous => [...(previous ?? []), saved]);
-          setCreating(false);
-          toast.success(`已创建「${saved.name}」`);
-          setOrigin(null);
-          setTransition('opening');
-          navigate(`/projects/${encodeURIComponent(saved.id)}`, { state: { fromHome: true } });
-        }} />
-      </div>
-    </div>, document.body)}
+    {creating && <StudioCreateSheet onClose={() => setCreating(false)}
+      build={<StudioBuildComposer onCancel={() => setCreating(false)} onStarted={startBuild} />}
+      manual={<StudioProjectEditor onCancel={() => setCreating(false)} onSaved={saved => {
+        setProjects(previous => [...(previous ?? []), saved]);
+        setCreating(false);
+        toast.success(`已创建「${saved.name}」`);
+        setOrigin(null);
+        setTransition('opening');
+        navigate(`/projects/${encodeURIComponent(saved.id)}`, { state: { fromHome: true } });
+      }} />} />}
+
+    {builds.pendingStop && <StudioConfirmSheet title={`停止开发「${builds.pendingStop.name}」？`}
+      message="Claude Code 会立刻停下，已经写好的文件都会保留。之后可以在编辑主屏幕时继续开发。" confirmLabel="停止"
+      onCancel={builds.cancelStop} onConfirm={() => void builds.confirmStop()} />}
 
     {pendingDelete && <StudioConfirmSheet title="删除此对话？" message={`“${pendingDelete.title}”及全部消息将被删除，此操作无法撤销。`} confirmLabel="删除"
       onCancel={() => setPendingDelete(null)}

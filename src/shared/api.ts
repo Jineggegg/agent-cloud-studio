@@ -237,6 +237,13 @@ export const api = {
     // ── v6 track: chat — endpoints below this line ──
     // ── v6 track: github — endpoints below this line ──
     // ── v6 track: builder — endpoints below this line ──
+    // App Store-style AI builds: poll the list, start one (name, icon, what to build), continue it with a follow-up, stop it.
+    builds: {
+      list: () => get('/api/studio/builds'),
+      create: (input: { name: string; tone: string; glyph: string; prompt: string }) => post('/api/studio/builds', input),
+      resume: (id: string, message = '') => post(`/api/studio/builds/${encodeURIComponent(id)}/continue`, { message }),
+      cancel: (id: string) => post(`/api/studio/builds/${encodeURIComponent(id)}/cancel`),
+    },
     // ── v6 track: memory — endpoints below this line ──
     status: () => get('/api/studio/status'),
     snr: () => get('/api/studio/snr'),

@@ -1774,4 +1774,89 @@ export type StudioOutlookTokens = { accessToken: string; refreshToken: string; e
 // ── v6 track: chat — server types below this line ──
 // ── v6 track: github — server types below this line ──
 // ── v6 track: builder — server types below this line ──
+//----------------- STUDIO AI BUILD TYPES ------------
+/**
+ * Lifecycle of one App Store-style AI build.
+ *
+ * `queued` waits for a free build slot (STUDIO_BUILDS_MAX_PARALLEL), `building` has a Claude Code turn running,
+ * `done` ended with a successful turn, and `failed` covers errors, interruptions and explicit cancellation (the
+ * record's `error` says which). A failed or done build can be continued, which returns it to `queued`.
+ */
+export type StudioBuildState = 'queued' | 'building' | 'done' | 'failed';
+
+/**
+ * A new AI build as POST /api/studio/builds receives it: the home-screen name and icon (validated by the project
+ * hub against its tone and glyph lists) and the owner's description of what to build (1–8000 characters).
+ */
+export type StudioBuildInput = { name: string; tone: string; glyph: string; prompt: string };
+
+/**
+ * One step of a build's plan as the agent's latest checklist states it.
+ *
+ * Read from Claude's `TodoWrite` input, or from its incremental `TaskCreate`/`TaskUpdate` calls once
+ * `prepareTranscriptMessages` has folded them into the same snapshot shape. Any status other than
+ * `in_progress` or `completed` is reported as `pending`.
+ */
+export type StudioBuildTodo = { content: string; status: 'pending' | 'in_progress' | 'completed'; activeForm?: string };
+
+/**
+ * A build as the builds service stores it and the `/api/studio/builds` routes return it.
+ *
+ * `hubProjectId` is the home-screen project, `ideProjectId` + `sessionId` address the workbench session that does
+ * the work (`/work/:ideProjectId/s/:sessionId`). `total`/`completed`/`currentTask` mirror the latest checklist;
+ * timestamps are ISO-8601. The owning user id is never part of the record.
+ */
+export type StudioBuildRecord = {
+  id: string;
+  hubProjectId: string;
+  ideProjectId: string;
+  sessionId: string;
+  workspacePath: string;
+  state: StudioBuildState;
+  total: number;
+  completed: number;
+  currentTask: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+};
+
+/**
+ * How one build turn ended, as the build runner reports it to the builds service.
+ *
+ * `started` is false when the turn never reached the provider (deleted session, busy session, missing runtime);
+ * `success` is true only for a turn that completed normally and was not aborted. `error` is a short,
+ * already-sanitised reason suitable for the owner, or null.
+ */
+export type StudioBuildOutcome = { started: boolean; success: boolean; error: string | null };
+
+/**
+ * A run of a build's session as the chat run registry currently sees it, including runs started elsewhere (the
+ * owner continuing in the workbench). `startedAt` is epoch milliseconds; `success` is null while running;
+ * `todos` is the run's latest checklist, or null when the run has not planned yet.
+ */
+export type StudioBuildRunSnapshot = { running: boolean; startedAt: number; success: boolean | null; todos: StudioBuildTodo[] | null };
+
+/**
+ * The seam between the builds service and the agent runtime.
+ *
+ * Implemented in production by the Studio build runner (Claude Code through `runDetachedChatTurn`, with the
+ * unattended permission policy) and by fakes in tests. `start` resolves once the turn ends — at its terminal
+ * `complete` event, or when the run settles without one — and reports checklist changes through `onChecklist`
+ * while it runs. `inspect` and `readChecklist` never start anything.
+ */
+export type StudioBuildRunner = {
+  start(input: {
+    sessionId: string;
+    userId: number;
+    content: string;
+    workspacePath: string;
+    onChecklist: (todos: StudioBuildTodo[]) => void;
+  }): Promise<StudioBuildOutcome>;
+  abort(sessionId: string): Promise<boolean>;
+  inspect(sessionId: string): StudioBuildRunSnapshot | null;
+  readChecklist(sessionId: string): Promise<StudioBuildTodo[] | null>;
+};
+// ---------------------------
 // ── v6 track: memory — server types below this line ──
