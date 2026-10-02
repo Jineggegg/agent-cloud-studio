@@ -42,7 +42,8 @@ cp .env.example .env   # 如已存在则直接编辑
 - `STUDIO_TAILNET_ORIGIN=https://<机器名>.<tailnet>.ts.net:8443`（Tailscale 入口）
 - `STUDIO_PUBLIC_ORIGIN`：公网域名入口，例如 `https://studio.ajarche.com`；还没开 Cloudflare 隧道时可以先留空。
   两个入口的配置和切换见 [连接方式](network.md)。
-- `STUDIO_T212_ENV_FILE`、`STUDIO_T212_DEMO_ENV_FILE`：指向包含 `TRADING212_API_KEY` / `TRADING212_API_SECRET` 的文件。
+- `STUDIO_T212_ENV_FILE`、`STUDIO_T212_DEMO_ENV_FILE`：指向包含 `TRADING212_API_KEY` / `TRADING212_API_SECRET` 的文件。这里只放**只读**密钥（不要开 orders:execute）。
+- 需要下单时，另外安装独立的交易代理，并设置 `STUDIO_T212_BROKER_SOCKET=/run/studio-trader/broker.sock`，见 [Trading 212 交易代理](t212-broker.md)。
 - 需要时填写 `STUDIO_SNR_PATH` 等项目目录。目录必须在 WSL 用户主目录下，才能在里面启动 Claude / Codex。
 
 然后：
