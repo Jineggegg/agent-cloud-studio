@@ -3,8 +3,8 @@ import { test } from 'node:test';
 
 import Database from 'better-sqlite3';
 
-import { createProjectHubService } from '../project-hub.service.js';
 import type { StudioProjectInput } from '@/shared/types.js';
+import { createProjectHubService } from '../project-hub.service.js';
 
 function fixture(pendingSchedules = 0) {
   const database = new Database(':memory:');

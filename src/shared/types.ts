@@ -1829,10 +1829,20 @@ export type StudioStatus = {
   agentWorkbenchUrl: string | null;
   snrRemoteUrl: string | null;
 };
-/** A Studio home-screen app; `workspace` routes to the inherited IDE instead of opening inside Studio. */
-export type StudioAppId = 'snr' | 'professor' | 'deepseek' | 'workspace' | 'connections';
-/** A home-screen chat app whose conversations are stored and listed separately from every other app. */
-export type StudioChatSpace = 'deepseek' | 'super-professor';
+/** Built-in home-screen apps that are not projects; `workspace` routes to the inherited IDE. */
+export type StudioSystemApp = 'deepseek' | 'workspace' | 'connections';
+/** Icon glyphs a home-screen tile can show; the server accepts exactly this list. */
+export type StudioGlyph = 'activity' | 'graduation' | 'candles' | 'mail' | 'folder' | 'terminal' | 'sparkles' | 'book' | 'chart' | 'globe';
+/** One icon on the Studio home screen: a project (`project:<id>`) or a system app. */
+export type StudioHomeTile = {
+  id: string; name: string; tone: string; glyph: StudioGlyph | 'settings' | 'plug';
+  // Short live state under the label, such as 在线 or 待配置.
+  status?: string;
+  // Tiles with an href navigate away (the IDE) instead of zooming open inside Studio.
+  href?: string;
+};
+/** A DeepSeek conversation space: the general app or one project; histories never cross spaces. */
+export type StudioChatSpace = 'deepseek' | `project:${string}`;
 /** A persisted Studio conversation summary shared by its history and chat views. */
 export type StudioConversation = {
   id: string; title: string; model: string; updated_at: string; space?: StudioChatSpace;
@@ -1844,24 +1854,59 @@ export type StudioSnr = {
   tradingEnabled?: boolean; rulesApproved?: boolean; datasetCount?: number;
 };
 //----------------- STUDIO PROJECT CONTRACTS ------------
-/** User-owned modular project; its credentials never travel in this record. */
+/** A coding agent that runs in the inherited IDE inside the project's directory. */
+export type HubAgentProvider = LLMProvider;
+/** Any model a project can enable: the IDE agents plus Studio's DeepSeek API chat. */
+export type HubProvider = HubAgentProvider | 'deepseek';
+/** Optional project tools, each shown as a tab in the project app. */
+export type HubModule = 'agents' | 'mail' | 'automations' | 'snr-lab' | 'trading212';
+/** User-owned project (one home-screen icon); its credentials never travel in this record. */
 export type HubProjectInput = {
   name: string;
   description: string;
   workspacePath: string;
-  modules: ('agents' | 'mail' | 'automations')[];
-  providers: ('claude' | 'codex')[];
+  modules: HubModule[];
+  providers: HubProvider[];
+  tone: string;
+  glyph: StudioGlyph;
 };
 /** Project identity and editable configuration displayed by Studio. */
 export type HubProject = HubProjectInput & { id: string; updatedAt: string };
 /** Saved automation instructions; saving alone never activates a task. */
-export type HubTaskInput = { title: string; prompt: string; provider: 'claude' | 'codex' };
+export type HubTaskInput = { title: string; prompt: string; provider: HubAgentProvider };
 /** An automation draft returned by the server, not a running job. */
 export type HubTask = HubTaskInput & { id: string; updatedAt: string };
 /** Existing native agent session associated with one project directory. */
-export type HubSession = { id: string; title: string; provider: 'claude' | 'codex' };
+export type HubSession = { id: string; title: string; provider: HubAgentProvider };
 /** Gmail OAuth connection metadata, without access tokens. */
 export type HubMailStatus = { configured: boolean; connected: boolean; email: string | null; access: 'readonly' };
 /** Read-only Gmail search result. Full text is fetched only when opened. */
 export type HubMailMessage = { id: string; subject: string; from: string; date: string; snippet: string };
+/** Trading 212 account environment; live and demo use separate keys. */
+export type T212Env = 'live' | 'demo';
+/** Whether the server found a key file for an environment; never contains the key. */
+export type T212Status = { env: T212Env; configured: boolean; source: string | null };
+/** A profit/loss change between two stored balance snapshots, net of deposits when known. */
+export type T212Change = { amount: number; percent: number; since: string; flowAdjusted: boolean };
+/** One open position, valued in the account currency. */
+export type T212Position = {
+  ticker: string; name: string; currency: string; quantity: number; averagePrice: number; currentPrice: number;
+  value: number; cost: number; pnl: number; fx: number | null; openedAt: string;
+};
+/** Read-only account overview returned by the Trading 212 module. */
+export type T212Overview = {
+  env: T212Env; currency: string; totalValue: number; fetchedAt: string;
+  cash: { available: number; reserved: number; inPies: number };
+  investments: { value: number; cost: number; unrealized: number; realized: number };
+  changes: { today: T212Change | null; yesterday: T212Change | null };
+  recordedSince: string | null;
+  positions: T212Position[];
+};
+/** One stored balance snapshot for the equity curve. */
+export type T212Point = { at: string; value: number; unrealized: number };
+/** A recent fill or dividend. */
+export type T212Activity = {
+  id: string; kind: 'buy' | 'sell' | 'dividend'; ticker: string; name: string; quantity: number;
+  price: number | null; value: number | null; realized: number | null; currency: string; at: string; status: string;
+};
 // ---------------------------

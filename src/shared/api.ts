@@ -3,10 +3,9 @@ import {
   getStoredAuthToken,
   storeAuthToken,
 } from '@/shared/authToken';
-import type { StudioChatSpace } from '@/shared/types';
 import { IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
-import type { HubProjectInput, HubTaskInput } from '@/shared/types';
+import type { HubAgentProvider, HubProjectInput, HubTaskInput, StudioChatSpace, T212Env } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -165,7 +164,8 @@ export const api = {
       get: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}`),
       create: (input: HubProjectInput) => post('/api/studio/projects', input),
       update: (id: string, input: HubProjectInput) => put(`/api/studio/projects/${encodeURIComponent(id)}`, input),
-      launch: (id: string, provider: 'claude' | 'codex') => post(`/api/studio/projects/${encodeURIComponent(id)}/launch`, { provider }),
+      remove: (id: string) => del(`/api/studio/projects/${encodeURIComponent(id)}`),
+      launch: (id: string, provider: HubAgentProvider) => post(`/api/studio/projects/${encodeURIComponent(id)}/launch`, { provider }),
       sessions: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/sessions`),
       tasks: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/tasks`),
       saveTask: (id: string, input: HubTaskInput, taskId?: string) => taskId
@@ -177,6 +177,12 @@ export const api = {
       connectMail: (id: string) => post(`/api/studio/projects/${encodeURIComponent(id)}/mail/connect`),
       mailMessages: (id: string, q: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/mail/messages${query({ q })}`),
       mailMessage: (id: string, messageId: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/mail/messages/${encodeURIComponent(messageId)}`),
+    },
+    trading212: {
+      status: () => get('/api/studio/trading212/status'),
+      overview: (env: T212Env) => get(`/api/studio/trading212/overview${query({ env })}`),
+      history: (env: T212Env, days: number) => get(`/api/studio/trading212/history${query({ env, days: String(days) })}`),
+      activity: (env: T212Env) => get(`/api/studio/trading212/activity${query({ env })}`),
     },
     status: () => get('/api/studio/status'),
     snr: () => get('/api/studio/snr'),

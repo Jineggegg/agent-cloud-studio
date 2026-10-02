@@ -9,6 +9,7 @@ import Database from 'better-sqlite3';
 import express from 'express';
 
 import { AppError } from '@/shared/utils.js';
+
 import { createProjectHubService } from '../project-hub.service.js';
 import { createProjectMailService } from '../project-mail.service.js';
 import { createProjectHubRouter } from '../project-hub.routes.js';

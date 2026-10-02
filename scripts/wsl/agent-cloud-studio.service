@@ -1,0 +1,23 @@
+[Unit]
+Description=Agent Cloud Studio (personal iPad workbench)
+After=network.target
+
+[Service]
+Type=simple
+# __ROOT__ and __NODE__ are filled in by scripts/wsl/install-studio-service.sh.
+WorkingDirectory=__ROOT__
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=SERVER_PORT=3002
+Environment=DATABASE_PATH=__ROOT__/.data/auth.db
+# Subscription logins only: never let an API key silently replace them.
+UnsetEnvironment=ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL OPENAI_API_KEY OPENAI_BASE_URL CLAUDE_CODE_OAUTH_TOKEN
+# Studio settings (paths, origins) live in __ROOT__/.env, which the server reads at start.
+ExecStart=__NODE__ __ROOT__/dist-server/server/index.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

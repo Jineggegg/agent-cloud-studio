@@ -20,7 +20,7 @@ import { createTrading212Router } from './trading212.routes.js';
 // An explicit env path wins; otherwise a conventional checkout under ~/projects is used when it exists.
 function defaultWorkspace(variable: string, folder: string) {
   const configured = process.env[variable];
-  if (configured !== undefined) return configured;
+  if (configured) return configured;
   const candidate = path.join(os.homedir(), 'projects', folder);
   return existsSync(candidate) ? candidate : '';
 }

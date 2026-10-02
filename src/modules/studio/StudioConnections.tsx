@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronRight, ExternalLink, Info, KeyRound, LoaderCircle, MessagesSquare, ShieldCheck, SquareTerminal } from 'lucide-react';
+import { CandlestickChart, ChevronRight, ExternalLink, Info, KeyRound, LoaderCircle, MessagesSquare, ShieldCheck, SquareTerminal } from 'lucide-react';
 
 import { api, readApiJson } from '@/shared/api';
-import type { StudioStatus } from '@/shared/types';
+import type { StudioStatus, T212Status } from '@/shared/types';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 
 /** Used by StudioPage for local secret provisioning without ever reading a saved key back to the browser. */
@@ -18,6 +18,13 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
   const [error, setError] = useState('');
   // Removing a key waits for an explicit confirmation in the alert.
   const [confirmRemove, setConfirmRemove] = useState(false);
+  // Which Trading 212 key files the server found; the keys themselves are never sent.
+  const [t212, setT212] = useState<T212Status[] | null>(null);
+  useEffect(() => {
+    let active = true;
+    void api.studio.trading212.status().then(readApiJson<T212Status[]>).then(value => { if (active) setT212(value); }).catch(() => { if (active) setT212([]); });
+    return () => { active = false; };
+  }, []);
   const configured = Boolean(status?.deepseek.configured);
 
   const act = async (kind: 'save' | 'test' | 'remove', operation: () => Promise<void>) => {
@@ -79,6 +86,19 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
         </a>}
       </div>
       <p className="ios-section-footer">开发工具直接调用这台电脑上已登录的 Claude Code 与 Codex CLI，不替换凭据，也不会转为 API 计费。</p>
+    </section>
+
+    <section className="ios-section" aria-labelledby="studio-t212-heading">
+      <div className="ios-section-header"><h2 id="studio-t212-heading">Trading 212</h2><span className="caption">只读</span></div>
+      <div className="ios-list">
+        {(t212 ?? []).map(item => <div className="ios-row" key={item.env}>
+          <span className="home-icon small tone-moss" aria-hidden="true"><CandlestickChart size={17} strokeWidth={1.6} /></span>
+          <span className="ios-row-body"><strong>{item.env === 'live' ? '实盘账户' : '模拟账户'}</strong><small>{item.source ? `密钥文件 · ${item.source}` : '未设置密钥文件'}</small></span>
+          <span className={`status-badge ${item.configured ? 'good' : ''}`}>{item.configured ? '已接入' : '未接入'}</span>
+        </div>)}
+        {t212 === null && <div className="ios-row no-icon"><span className="ios-row-body"><small>正在检查…</small></span></div>}
+      </div>
+      <p className="ios-section-footer">密钥只保存在服务器指定的 .env 文件里（STUDIO_T212_ENV_FILE / STUDIO_T212_DEMO_ENV_FILE），Studio 只发送读取请求，不会下单。</p>
     </section>
 
     <section className="ios-section" aria-labelledby="studio-about-heading">
