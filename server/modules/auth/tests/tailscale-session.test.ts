@@ -200,6 +200,14 @@ test('STUDIO_PUBLIC_ORIGIN pins the only accepted origin', () => {
   );
 });
 
+test('a malformed STUDIO_PUBLIC_ORIGIN refuses sign-in instead of skipping the origin pin', () => {
+  assertRefused(
+    createHarness({ env: { STUDIO_TAILSCALE_LOGINS: OWNER_LOGIN, STUDIO_PUBLIC_ORIGIN: 'not a url' } }),
+    serveRequest(),
+    'cross-site',
+  );
+});
+
 test('parseTailscaleSignInConfig normalises the allowlist and optional settings', () => {
   assert.deepEqual(parseTailscaleSignInConfig({}), { allowedLogins: [], mappedUsername: null, publicOrigin: null });
   assert.deepEqual(

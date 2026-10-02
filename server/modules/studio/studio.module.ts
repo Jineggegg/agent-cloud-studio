@@ -33,12 +33,19 @@ function defaultWorkspace(variable: string, folder: string) {
   return existsSync(candidate) ? candidate : '';
 }
 
-// "label=url; label=url" from env, e.g. STUDIO_SUPER_PROFESSOR_LINKS. Invalid entries are left for the hub to reject.
+// "label=url; label=url" from env, e.g. STUDIO_SUPER_PROFESSOR_LINKS. Malformed entries are skipped with a warning,
+// because the hub validates seeds strictly and one bad link would otherwise block seeding every built-in project.
 function linksFromEnv(variable: string) {
-  return (process.env[variable] ?? '').split(';').map(entry => entry.trim()).filter(Boolean).map(entry => {
+  const links = (process.env[variable] ?? '').split(';').map(entry => entry.trim()).filter(Boolean).map(entry => {
     const split = entry.indexOf('=');
-    return { label: entry.slice(0, split).trim(), url: entry.slice(split + 1).trim() };
-  }).filter(link => link.label && link.url);
+    return { label: split > 0 ? entry.slice(0, split).trim() : '', url: split > 0 ? entry.slice(split + 1).trim() : '' };
+  });
+  const valid = links.filter(link => {
+    if (!link.label || link.label.length > 40 || !link.url || link.url.length > 500) return false;
+    try { return ['http:', 'https:'].includes(new URL(link.url).protocol); } catch { return false; }
+  }).slice(0, 8);
+  if (valid.length !== links.length) console.warn(`[studio] ${variable}: skipped ${links.length - valid.length} invalid link(s)`);
+  return valid;
 }
 
 /** Used by server/index to assemble Studio independently of the inherited CLI providers. */

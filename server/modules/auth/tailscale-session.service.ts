@@ -122,6 +122,10 @@ function isSameOriginRequest(request: TailscaleSessionRequest, host: string, pub
     return false;
   }
   const expected = parseOrigin(publicOrigin);
+  // A configured origin that does not parse must not silently disable the pin.
+  if (publicOrigin && !expected) {
+    return false;
+  }
   if (expected && origin.origin !== expected.origin) {
     return false;
   }

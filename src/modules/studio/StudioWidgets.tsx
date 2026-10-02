@@ -30,11 +30,22 @@ const CATALOG: { type: WidgetType; name: string; caption: string; tone: string; 
 const QUOTA_REFRESH_MS = 60_000;
 const T212_REFRESH_MS = 5 * 60_000;
 
+function newWidgetId(type: WidgetType) {
+  return `w-${type}-${typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+}
+
 function readWidgets(): WidgetConfig[] {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null') as WidgetConfig[] | null;
     if (!Array.isArray(saved)) return DEFAULT_WIDGETS;
-    return saved.filter(item => item && CATALOG.some(entry => entry.type === item.type) && (item.size === 'small' || item.size === 'medium'));
+    const seen = new Set<string>();
+    // Ids are React keys and edit targets, so a missing or repeated id (older layouts) gets a fresh one.
+    return saved.filter(item => item && CATALOG.some(entry => entry.type === item.type) && (item.size === 'small' || item.size === 'medium'))
+      .map(item => {
+        const id = typeof item.id === 'string' && item.id && !seen.has(item.id) ? item.id : newWidgetId(item.type);
+        seen.add(id);
+        return { id, type: item.type, size: item.size };
+      });
   } catch { return DEFAULT_WIDGETS; }
 }
 
@@ -50,7 +61,8 @@ function useNow(interval: number) {
 
 function countdown(resetsAt: string | null, now: number) {
   if (!resetsAt) return '重置时间未知';
-  const minutes = Math.max(0, Math.round((Date.parse(resetsAt) - now) / 60_000));
+  // Rounded up, so a window with seconds left never reads as already reset.
+  const minutes = Math.max(0, Math.ceil((Date.parse(resetsAt) - now) / 60_000));
   if (minutes <= 0) return '已重置';
   const days = Math.floor(minutes / 1440);
   const hours = Math.floor((minutes % 1440) / 60);
@@ -169,7 +181,7 @@ function SnrWidget({ snr }: { snr: StudioSnr | null }) {
 }
 
 /** Used by StudioHomeScreen for the customizable widget row above the app icons. */
-export function StudioWidgets({ editing, snr }: { editing: boolean; snr: StudioSnr | null }) {
+export function StudioWidgets({ editing, snr, paused = false }: { editing: boolean; snr: StudioSnr | null; paused?: boolean }) {
   // The widgets this device shows, in order, with their sizes.
   const [widgets, setWidgets] = useState<WidgetConfig[]>(readWidgets);
   // Quota snapshots for Claude / Codex / DeepSeek; null until the first response.
@@ -182,15 +194,19 @@ export function StudioWidgets({ editing, snr }: { editing: boolean; snr: StudioS
   }, [widgets]);
   const needsQuota = widgets.some(widget => widget.type === 'claude' || widget.type === 'codex' || widget.type === 'deepseek');
   const loadQuota = useCallback(async () => {
-    const next = await api.studio.quota().then(readApiJson<StudioQuotaSnapshot[]>).catch(() => [] as StudioQuotaSnapshot[]);
-    setQuota(next);
+    const next = await api.studio.quota().then(readApiJson<StudioQuotaSnapshot[]>).catch(() => null);
+    // A failed poll keeps the last reading (the per-snapshot "stale" flag still ages it); only a first failure shows the fallback.
+    setQuota(previous => next ?? previous ?? []);
   }, []);
   useEffect(() => {
-    if (!needsQuota) return;
-    void loadQuota();
-    const timer = window.setInterval(() => void loadQuota(), QUOTA_REFRESH_MS);
-    return () => window.clearInterval(timer);
-  }, [needsQuota, loadQuota]);
+    // Each poll can start a Codex app-server on the host, so polling stops while an app covers the home screen or the tab is hidden.
+    if (!needsQuota || paused) return;
+    const tick = () => { if (!document.hidden) void loadQuota(); };
+    tick();
+    const timer = window.setInterval(tick, QUOTA_REFRESH_MS);
+    document.addEventListener('visibilitychange', tick);
+    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', tick); };
+  }, [needsQuota, paused, loadQuota]);
 
   const find = (provider: StudioQuotaSnapshot['provider']) => quota === null ? undefined
     : quota.find(item => item.provider === provider) ?? { provider, available: false, windows: [], balances: [], source: 'unavailable', observedAt: null, stale: false, note: '额度服务暂不可用' };
@@ -202,7 +218,7 @@ export function StudioWidgets({ editing, snr }: { editing: boolean; snr: StudioS
     return next;
   });
   const add = (type: WidgetType, size: WidgetSize) => {
-    setWidgets(previous => [...previous, { id: `w-${type}-${previous.length}-${size}`, type, size }]);
+    setWidgets(previous => [...previous, { id: newWidgetId(type), type, size }]);
     setGallery(false);
   };
 

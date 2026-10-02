@@ -91,6 +91,16 @@ describe('Studio projects', () => {
     expect(mocks.api.update.mock.calls[0][1]).toMatchObject({ remoteHost: 'aj', remoteDir: '~/projects/super-professor', links: [{ label: '网站', url: 'https://example.test/' }] });
   });
 
+  it('moving a remote project back to this computer drops its hidden remote directory', async () => {
+    mocks.api.update.mockImplementation(async (_id: string, input: object) => Response.json({ ...project, ...input }));
+    const saved = vi.fn();
+    render(<StudioProjectEditor project={{ ...project, remoteHost: 'aj', remoteDir: '~/projects/super-professor' }} onSaved={saved} />);
+    fireEvent.click(await screen.findByRole('radio', { name: '本机' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存项目' }));
+    await waitFor(() => expect(saved).toHaveBeenCalled());
+    expect(mocks.api.update.mock.calls[0][1]).toMatchObject({ remoteHost: '', remoteDir: '' });
+  });
+
   it('runs agents on the remote host only when the host has them installed', async () => {
     mocks.remote.status.mockResolvedValue(Response.json({ name: 'aj', online: true, latencyMs: 42, checkedAt: '', tools: { claude: true, codex: false, tmux: true } }));
     mocks.api.launchRemote.mockResolvedValue(Response.json({ command: 'ssh sp-remote tmux new-session -A', title: 'Claude Code · AJ 服务器' }));

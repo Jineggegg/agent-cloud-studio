@@ -131,7 +131,7 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreat
       </label>
     </div>}
 
-    <StudioWidgets editing={editing} snr={snr} />
+    <StudioWidgets editing={editing} snr={snr} paused={covered} />
 
     <nav className="home-grid" aria-label="应用" aria-busy={loading}>
       {visible.map((tile, index) => {

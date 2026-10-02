@@ -79,7 +79,7 @@ export function StudioProjectEditor({ project, onSaved, onCancel, onDelete }: {
     <section className="ios-section" aria-labelledby={`${formId}-where`}>
       <div className="ios-section-header"><h2 id={`${formId}-where`}>运行位置</h2>
         {hostOptions.length > 0 && <div className="segmented" role="radiogroup" aria-label="运行位置">
-          <button type="button" role="radio" aria-checked={!form.remoteHost} onClick={() => setForm({ ...form, remoteHost: '' })}>本机</button>
+          <button type="button" role="radio" aria-checked={!form.remoteHost} onClick={() => setForm({ ...form, remoteHost: '', remoteDir: '' })}>本机</button>
           {hostOptions.map(host => <button type="button" role="radio" key={host.name} aria-checked={form.remoteHost === host.name} onClick={() => setForm({ ...form, remoteHost: host.name })}>{host.label}</button>)}
         </div>}
       </div>

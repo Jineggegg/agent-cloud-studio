@@ -55,7 +55,9 @@ function RemoteAgents({ project }: { project: HubProject }) {
     finally { setLaunching(null); }
   }
   const label = host?.label ?? project.remoteHost;
-  const missing = status?.online ? REMOTE_AGENTS.filter(agent => agent.tool && !status.tools[agent.tool]).map(agent => agent.name) : [];
+  // The shell is always offered; Claude Code / Codex only when enabled for this project, as the server enforces.
+  const agents = REMOTE_AGENTS.filter(agent => agent.tool === null || (project.modules.includes('agents') && project.providers.includes(agent.tool)));
+  const missing = status?.online ? agents.filter(agent => agent.tool && !status.tools[agent.tool]).map(agent => agent.name) : [];
 
   return <div className="studio-stagger">
     <section className="ios-section first">
@@ -73,7 +75,7 @@ function RemoteAgents({ project }: { project: HubProject }) {
       </div>
       {status && !status.online && status.error && <p className="studio-feedback error">{status.error}</p>}
       <div className="agent-grid remote-agent-grid">
-        {REMOTE_AGENTS.map(agent => {
+        {agents.map(agent => {
           const unavailable = !status?.online || (agent.tool !== null && !status.tools[agent.tool]);
           return <button type="button" key={agent.id} className="agent-card ios-press" disabled={launching !== null || unavailable} onClick={() => void launch(agent.id)}>
             <span className={`home-icon tone-${agent.tone} agent-mark`} aria-hidden="true">{launching === agent.id ? <StudioSpinner size={22} /> : agent.mark || <SquareTerminal size={22} strokeWidth={1.6} />}</span>
@@ -84,7 +86,8 @@ function RemoteAgents({ project }: { project: HubProject }) {
       {error && <p className="studio-feedback error" role="alert">{error}</p>}
       <p className="ios-section-footer">
         通过 Tailscale 与 SSH 连接；每个会话运行在远程主机的 tmux 里，关掉页面不会中断，再次打开会接回同一个会话。
-        {missing.length > 0 && ` 这台主机还没有安装 ${missing.join('、')}${status?.tools.tmux ? '' : '，也没有 tmux（会话无法在断开后保留）'}。`}
+        {missing.length > 0 && ` 这台主机还没有安装 ${missing.join('、')}。`}
+        {status?.online && !status.tools.tmux && ' 主机上没有 tmux，会话在断开后不会保留。'}
       </p>
     </section>
     {session && <Suspense fallback={<div className="studio-layer terminal-loading"><StudioSpinner size={28} label="正在打开终端" /></div>}>
