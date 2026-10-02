@@ -114,6 +114,44 @@ STUDIO_SNR_PASSWORD_FILE=/home/<用户名>/.config/agent-cloud-studio/snr-passwo
 
 密码文件里只放密码一行，并执行 `chmod 600`。Studio 每次请求 SNR 时都重新读取这个文件，所以改密码后不用重启。凭据只放在服务器端发给 SNR 的网关和状态请求的 `Authorization: Basic` 头里，不写日志，也不发给浏览器。两个变量缺一个就按不认证处理；文件读不到时，状态会显示「SNR 认证配置不可用」。
 
+## 8. 用自己的 Tailscale 身份免密码登录（可选）
+
+通过 Tailscale Serve 打开 Studio 时，Serve 会告诉后端「这个请求来自哪个 Tailscale 账号」。
+把你自己的账号加入白名单后，iPad 打开 Studio 就会直接进入，不再显示登录页；
+tailnet 里其他人（包括共享给你的设备）仍然需要密码。
+
+1. 查出你的 Tailscale 登录名（在 Windows PowerShell 中）：
+
+   ```powershell
+   $s = tailscale status --json | ConvertFrom-Json
+   $s.User."$($s.Self.UserID)".LoginName
+   ```
+
+   这是本机所登录账号的登录名，例如 `you@gmail.com` 或 `name@github`。如果 iPad 登录的是另一个账号，
+   用 `tailscale whois <iPad 的 100.x 地址>` 查看 iPad 那一端的登录名。
+2. 在 WSL 的 `.env` 中设置：
+
+   ```ini
+   STUDIO_TAILSCALE_LOGINS=you@gmail.com
+   # Studio 里有多个账号时，指定登录成哪一个；只有一个账号时可以留空
+   STUDIO_TAILSCALE_USER=
+   ```
+
+   如果设置了 `STUDIO_PUBLIC_ORIGIN`，免密码登录只接受来自这个地址的页面。
+3. `systemctl --user restart agent-cloud-studio.service`，然后在 iPad 上重新打开 Studio。
+
+只有同时满足下列条件才会免密码登录，否则照常显示登录页：请求经由 Tailscale Serve（`https://…ts.net`）
+到达、Studio 只监听 `127.0.0.1`、不是 Funnel（公网）请求、页面与地址同源、登录名在白名单中。
+每次登录成功或被拒绝都会写一行日志（`journalctl --user -u agent-cloud-studio -f` 中的
+`[auth] Tailscale sign-in …`），登录名只显示前两个字符。
+
+注意：
+
+- 开启后，**本机上的任何程序**都能伪装成 Serve 访问 `127.0.0.1:3002`。只在你信任这台电脑上所有程序和用户时开启。
+- 不要再用 cloudflared、ngrok、nginx 等其他反向代理把 3002 端口转发出去；它们可能原样转发伪造的请求头。
+- 不要对 Studio 开启 Tailscale Funnel。
+- 「退出登录」后刷新页面会自动重新登录；要关闭此功能，清空 `STUDIO_TAILSCALE_LOGINS` 并重启服务。
+
 ## 安全说明
 
 - 只通过 Tailscale 暴露，不要把 3002 端口开放到公网。你的 tailnet 列表里有其他人共享的设备，建议在 Tailscale ACL 中只允许你自己的设备访问 443 / 8443。

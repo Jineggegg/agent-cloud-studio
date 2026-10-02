@@ -5,6 +5,7 @@ import { getConnection, userDb } from '@/modules/database/index.js';
 import { authenticateToken, generateToken } from './auth.middleware.js';
 import { createAuthRouter } from './auth.routes.js';
 import { createAuthService } from './auth.service.js';
+import { parseTailscaleSignInConfig } from './tailscale-session.service.js';
 
 type BcryptAdapter = {
   hash(password: string, saltRounds: number): Promise<string>;
@@ -23,6 +24,8 @@ const authService = createAuthService({
     createUser: (username, passwordHash) => userDb.createUser(username, passwordHash),
     getUserByUsername: (username) => userDb.getUserByUsername(username),
     updateLastLogin: (userId) => userDb.updateLastLogin(userId),
+    countActiveUsers: () => userDb.countActiveUsers(),
+    getFirstUser: () => userDb.getFirstUser(),
   },
   transaction: {
     begin: () => databaseConnection.prepare('BEGIN').run(),
@@ -32,6 +35,10 @@ const authService = createAuthService({
   hashPassword: (password) => bcrypt.hash(password, 12),
   comparePassword: (password, passwordHash) => bcrypt.compare(password, passwordHash),
   generateToken,
+  // STUDIO_TAILSCALE_LOGINS enables passwordless sign-in through Tailscale Serve;
+  // STUDIO_TAILSCALE_USER and STUDIO_PUBLIC_ORIGIN refine it.
+  tailscaleSignIn: () => parseTailscaleSignInConfig(process.env),
+  logInfo: (message) => console.info(message),
 });
 
 /** Auth router assembled for the server entrypoint. */
