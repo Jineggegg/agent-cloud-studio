@@ -47,10 +47,13 @@ export const pushSubscriptionsDb = {
     db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').run(endpoint);
   },
 
-  /** Deletes all subscriptions for a user. */
-  deletePushSubscriptionsForUser(userId: number): void {
+  /**
+   * Deletes all subscriptions for a user and returns how many there were. Used by the server
+   * entrypoint when "退出所有设备" also stops Web Push to every device.
+   */
+  deletePushSubscriptionsForUser(userId: number): number {
     const db = getConnection();
-    db.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').run(userId);
+    return db.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').run(userId).changes;
   },
 
   // Legacy aliases used by existing services/routes

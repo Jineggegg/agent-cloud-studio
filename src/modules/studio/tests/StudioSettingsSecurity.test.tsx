@@ -35,6 +35,7 @@ const OVERVIEW = {
   events: EVENTS,
   importantEvents: [EVENTS[0], { id: 4, at: '2026-10-02T09:40:00Z', type: 'lockout-cleared', door: 'tailnet', client: '100.101.*.*', detail: 'Tailscale · Tailscale 密码登录' }],
   passwordLocks: { public: { locked: true, lockedUntil: '2026-10-02T09:45:00Z' }, tailnet: UNLOCKED, session: UNLOCKED },
+  signIns: [{ id: 5, at: '2026-10-02T09:50:00Z', type: 'tailscale-signin', door: 'tailnet', client: '100.101.*.*', detail: 'ow***@example.com' }],
 };
 
 beforeEach(() => {
@@ -55,6 +56,8 @@ test('shows each door\'s lock, the passkeys by domain and the events in plain wo
   expect(screen.queryByText('设置里的密码确认')).toBeNull();
   expect(screen.getByText(/前不能用密码/)).toBeTruthy();
   expect(screen.getByText('重要事件')).toBeTruthy();
+  expect(screen.getByText('最近登录')).toBeTruthy();
+  expect(screen.getByText('Tailscale 登录')).toBeTruthy();
   expect(screen.getByText(/由 Tailscale 登录解除 · Tailscale 密码登录/)).toBeTruthy();
   expect(screen.getByText('studio.ajarche.com')).toBeTruthy();
   expect(screen.getAllByText('密码登录已锁定').length).toBe(2);
@@ -128,7 +131,7 @@ test('removing a passkey asks for the password in an alert', async () => {
 
 test('退出所有设备 asks first, revokes every session and signs this page out', async () => {
   security.overview.mockImplementation(ok(OVERVIEW));
-  security.revokeAll.mockImplementation(ok({ success: true, revoked: { sessions: true, webSockets: 3, apiKeys: 2, snrAccess: 0, handoffCodes: 0 } }));
+  security.revokeAll.mockImplementation(ok({ success: true, revoked: { sessions: true, webSockets: 3, apiKeys: 2, snrAccess: 0, pushSubscriptions: 1, handoffCodes: 0 } }));
   render(<StudioSettingsSecurity />);
   fireEvent.click(await screen.findByRole('button', { name: '退出所有设备' }));
   expect(security.revokeAll).not.toHaveBeenCalled();
@@ -137,5 +140,5 @@ test('退出所有设备 asks first, revokes every session and signs this page o
   fireEvent.click(within(confirm).getByRole('button', { name: '退出所有设备' }));
   await waitFor(() => expect(security.revokeAll).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(auth.logout).toHaveBeenCalledTimes(1));
-  expect(toast.success).toHaveBeenCalledWith('已退出所有设备：停用 2 个 API 密钥、断开 3 个连接。请重新登录');
+  expect(toast.success).toHaveBeenCalledWith('已退出所有设备：停用 2 个 API 密钥、断开 3 个连接、移除 1 个推送订阅。请重新登录');
 });

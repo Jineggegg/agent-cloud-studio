@@ -11,6 +11,8 @@ type SecurityEventType =
   | 'account-locked'
   | 'lockout-cleared'
   | 'passkey-signin'
+  | 'tailscale-signin'
+  | 'handoff-signin'
   | 'passkey-signin-failed'
   | 'passkey-added'
   | 'passkey-removed'
@@ -26,15 +28,23 @@ type SecurityEventInput = {
   detail?: string;
 };
 
-// Kept in their own retention class, so no amount of failed sign-ins can push them out of the log.
-const IMPORTANT_EVENTS = new Set<SecurityEventType>([
-  'account-locked',
-  'lockout-cleared',
-  'passkey-added',
-  'passkey-removed',
-  'sessions-revoked',
-  'api-keys-revoked',
-]);
+// Retention classes (auth-security.store): each keeps its own newest 500, so no amount of failed
+// attempts can push out an important change or the record of who actually got in.
+const NOISE = 0;
+const IMPORTANT = 1;
+const SIGN_IN = 2;
+const EVENT_CLASSES: Partial<Record<SecurityEventType, number>> = {
+  'account-locked': IMPORTANT,
+  'lockout-cleared': IMPORTANT,
+  'passkey-added': IMPORTANT,
+  'passkey-removed': IMPORTANT,
+  'sessions-revoked': IMPORTANT,
+  'api-keys-revoked': IMPORTANT,
+  'login-succeeded': SIGN_IN,
+  'passkey-signin': SIGN_IN,
+  'tailscale-signin': SIGN_IN,
+  'handoff-signin': SIGN_IN,
+};
 
 // Control characters never reach the log, whatever a caller passes in.
 function printable(text: string): string {
@@ -47,8 +57,9 @@ function view(row: ReturnType<EventStore['recent']>[number]) {
 
 /**
  * The security event log behind Settings → 安全: sign-ins, locks, passkey changes and "sign out
- * everywhere". The store keeps the newest 500 important events (locks, lock lifts, passkey changes,
- * revocations) and, separately, the newest 500 others.
+ * everywhere". The store keeps the newest 500 of each class: important changes (locks, lock lifts,
+ * passkey changes, revocations), successful sign-ins (password, passkey, Tailscale, handoff), and
+ * failed attempts.
  * Used by auth.module, which passes `record` to auth.service and the whole log to
  * account-security.service (which also reads it back for Settings).
  */
@@ -63,7 +74,7 @@ export function createSecurityEventLog(dependencies: { store: EventStore; now?: 
           door: event.client?.door ?? 'direct',
           client: event.client ? maskClientAddress(event.client.address) : 'unknown',
           detail: event.detail === undefined ? null : printable(event.detail),
-          important: IMPORTANT_EVENTS.has(event.type) ? 1 : 0,
+          important: EVENT_CLASSES[event.type] ?? NOISE,
         });
       } catch (error) {
         // Logging must never turn a sign-in into an error.
@@ -78,7 +89,12 @@ export function createSecurityEventLog(dependencies: { store: EventStore; now?: 
 
     /** Newest important events first (locks, lock lifts, passkey changes, revocations). */
     recentImportant(limit = 20) {
-      return dependencies.store.recentImportant(Math.max(1, Math.min(limit, 100))).map(view);
+      return dependencies.store.recentOfClass(IMPORTANT, Math.max(1, Math.min(limit, 100))).map(view);
+    },
+
+    /** Newest successful sign-ins first (password, passkey, Tailscale, handoff). */
+    recentSignIns(limit = 20) {
+      return dependencies.store.recentOfClass(SIGN_IN, Math.max(1, Math.min(limit, 100))).map(view);
     },
   };
 }

@@ -8,7 +8,8 @@ type LockoutStore = ReturnType<typeof createAuthSecurityStore>['lockouts'];
  * - `public`: password sign-in through the public domain (and anything not proven to be Tailscale);
  * - `tailnet`: password sign-in through Tailscale Serve;
  * - `session`: the password re-entered by an already signed-in session (Settings step-up, handoff
- *   to the public door), a per-user budget that sign-in locks never block.
+ *   to the public door), a budget per session (the token's session id, as `subject`) that sign-in
+ *   locks never block, so a stolen token can only ever lock its own step-ups.
  */
 type LockScope = 'public' | 'tailnet' | 'session';
 
@@ -66,7 +67,9 @@ export function createAccountLockout(dependencies: AccountLockoutDependencies) {
   const now = dependencies.now ?? Date.now;
   const maxTrackedUnknown = dependencies.maxTrackedUnknown ?? DEFAULT_MAX_TRACKED_UNKNOWN;
   const { store } = dependencies;
-  const keyOf = (username: string, scope: LockScope) => `${scope}:${usernameOf(username)}`;
+  // "<scope>:<username>", or "<scope>:<username>#<subject>" for one session's own budget.
+  const keyOf = (username: string, scope: LockScope, subject?: string) =>
+    `${scope}:${usernameOf(username)}${subject ? `#${subject.slice(0, 64)}` : ''}`;
 
   // Evicts the least recently relevant made-up usernames until there is room for one more row.
   function makeRoom() {
@@ -97,9 +100,9 @@ export function createAccountLockout(dependencies: AccountLockoutDependencies) {
      * Call before comparing a password. Refused while locked (or while the budget is taken by
      * attempts still in flight); `retryAfterMs` is how long until the scope reopens.
      */
-    begin(username: string, scope: LockScope): { allowed: true } | { allowed: false; retryAfterMs: number } {
+    begin(username: string, scope: LockScope, subject?: string): { allowed: true } | { allowed: false; retryAfterMs: number } {
       const at = now();
-      const key = keyOf(username, scope);
+      const key = keyOf(username, scope, subject);
       const row = current(key, at);
       if (row && row.locked_until > at) {
         return { allowed: false, retryAfterMs: row.locked_until - at };
@@ -121,9 +124,9 @@ export function createAccountLockout(dependencies: AccountLockoutDependencies) {
     },
 
     /** Call after a wrong password; returns the lock it applied, if this was the fifth in a row. */
-    fail(username: string, scope: LockScope): { locked: false } | { locked: true; level: number; durationMs: number; lockedUntil: number } {
+    fail(username: string, scope: LockScope, subject?: string): { locked: false } | { locked: true; level: number; durationMs: number; lockedUntil: number } {
       const at = now();
-      const key = keyOf(username, scope);
+      const key = keyOf(username, scope, subject);
       const row = current(key, at);
       if (!row || row.locked_until > at || row.failures < LOCKOUT_THRESHOLD) {
         return { locked: false };
@@ -135,18 +138,26 @@ export function createAccountLockout(dependencies: AccountLockoutDependencies) {
     },
 
     /** Call after a success that proved the owner on this scope; tells whether a lock was lifted. */
-    clear(username: string, scope: LockScope): { cleared: boolean; wasLocked: boolean } {
-      const key = keyOf(username, scope);
+    clear(username: string, scope: LockScope, subject?: string): { cleared: boolean; wasLocked: boolean } {
+      const key = keyOf(username, scope, subject);
       const row = store.get(key);
       if (!row) return { cleared: false, wasLocked: false };
       store.remove(key);
       return { cleared: true, wasLocked: row.locked_until > now() };
     },
 
-    /** Lock state of one username in one scope, for Settings. */
-    status(username: string, scope: LockScope): { locked: boolean; lockedUntil: number | null; failures: number; level: number } {
+    /**
+     * Forgets a scope for a user entirely, every session's budget included. Used after a sign-in
+     * that proved the owner and after "退出所有设备"; returns how many records went.
+     */
+    clearScope(username: string, scope: LockScope): number {
+      return store.removeFamily(keyOf(username, scope));
+    },
+
+    /** Lock state of one username in one scope (and session), for Settings. */
+    status(username: string, scope: LockScope, subject?: string): { locked: boolean; lockedUntil: number | null; failures: number; level: number } {
       const at = now();
-      const row = current(keyOf(username, scope), at);
+      const row = current(keyOf(username, scope, subject), at);
       const locked = Boolean(row && row.locked_until > at);
       return { locked, lockedUntil: locked && row ? row.locked_until : null, failures: row?.failures ?? 0, level: row?.level ?? 0 };
     },

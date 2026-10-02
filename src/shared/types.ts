@@ -2137,6 +2137,8 @@ export type StudioSecurityOverview = {
   // Newest first: locks, lock lifts, passkey changes and revocations, which a flood of failed
   // sign-ins can never push out of the log.
   importantEvents: StudioSecurityEvent[];
+  // Newest first: successful sign-ins (password, passkey, Tailscale, handoff), kept apart too.
+  signIns: StudioSecurityEvent[];
   // Each door locks on its own: the public domain's password sign-in, the Tailscale address's, and
   // the password a signed-in session re-enters in Settings. Passkeys and Tailscale sign-in still work.
   passwordLocks: { public: StudioPasswordLock; tailnet: StudioPasswordLock; session: StudioPasswordLock };
@@ -2144,6 +2146,6 @@ export type StudioSecurityOverview = {
 /** POST /api/auth/security/revoke-all: what "退出所有设备" took away, for the confirmation toast. */
 export type StudioRevokeAllResult = {
   success: boolean;
-  revoked: { sessions: boolean; webSockets: number; apiKeys: number; snrAccess: number; handoffCodes: number };
+  revoked: { sessions: boolean; webSockets: number; apiKeys: number; snrAccess: number; pushSubscriptions: number; handoffCodes: number };
 };
 // ---------------------------

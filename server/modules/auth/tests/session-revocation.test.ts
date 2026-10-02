@@ -70,8 +70,8 @@ const accountSecurity = createAccountSecurityService({
     list: () => [],
     remove: () => null,
   },
-  events: { record: () => undefined, recent: () => [], recentImportant: () => [] },
-  lockout: { status: () => ({ locked: false, lockedUntil: null, failures: 0, level: 0 }) },
+  events: { record: () => undefined, recent: () => [], recentImportant: () => [], recentSignIns: () => [] },
+  lockout: { status: () => ({ locked: false, lockedUntil: null, failures: 0, level: 0 }), clearScope: () => 0 },
   sessionVersions: store.sessionVersions,
   onSessionsRevoked: (revokedUserId) => {
     revokedUsers.push(revokedUserId);
@@ -143,4 +143,20 @@ test('the half-life refresh issues the current version, so a refreshed token sur
   assert.equal(claims.ver, store.sessionVersions.current(userId));
   store.sessionVersions.bump(userId);
   assert.equal(middleware.authenticateWebSocket(token, upgradeRequest), null);
+});
+
+test('each sign-in gets a session id that refreshes keep and responses never show', async () => {
+  const claims = (token: string) => JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8')) as { sid?: string };
+  const first = middleware.generateToken(sessionUser);
+  const second = middleware.generateToken(sessionUser);
+  assert.ok(claims(first).sid);
+  assert.notEqual(claims(first).sid, claims(second).sid);
+  await withServer(async (baseUrl) => {
+    const user = await fetch(`${baseUrl}/api/auth/user`, { headers: { authorization: `Bearer ${first}` } });
+    assert.equal(user.status, 200);
+    assert.equal(JSON.stringify(await user.json()).includes(claims(first).sid as string), false);
+    const refreshed = await fetch(`${baseUrl}/api/auth/refresh`, { method: 'POST', headers: { authorization: `Bearer ${first}` } });
+    const { token } = await refreshed.json() as { token: string };
+    assert.equal(claims(token).sid, claims(first).sid);
+  });
 });

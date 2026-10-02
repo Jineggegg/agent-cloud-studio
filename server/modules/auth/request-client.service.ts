@@ -16,8 +16,6 @@ type ClientRequest = {
 };
 
 const IPV4_MAPPED_PREFIX = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i;
-// Serve sets these from WhoIs (deleting client copies) on tailnet traffic; Cloudflare never does.
-const TAILSCALE_IDENTITY_HEADERS = ['tailscale-user-login', 'tailscale-user-name', 'tailscale-user-profile-pic'];
 
 function headerText(request: ClientRequest, name: string): string | undefined {
   const value = request.headers[name];
@@ -48,33 +46,18 @@ function clientAddressKey(value: string | undefined): string {
   return 'unknown';
 }
 
-// Signs that a loopback request came through Tailscale Serve rather than cloudflared: the MagicDNS
-// Host (or the configured tailnet origin's host), Serve's identity headers, or exactly one tailnet
-// address in X-Forwarded-For (Cloudflare appends the real client to any forged value, and never
-// sees a 100.64.0.0/10 client). Such a request is never the public door, whatever CF-* it carries.
-function looksLikeTailscaleServe(request: ClientRequest, env: Record<string, string | undefined>): boolean {
-  const host = headerText(request, 'host')?.trim().toLowerCase() ?? '';
-  try {
-    const tailnetOrigin = env.STUDIO_TAILNET_ORIGIN?.trim();
-    if (tailnetOrigin && host && new URL(tailnetOrigin).host.toLowerCase() === host) return true;
-  } catch {
-    // A malformed STUDIO_TAILNET_ORIGIN names no host.
-  }
-  if (TAILSCALE_IDENTITY_HEADERS.some((name) => request.headers[name] !== undefined)) return true;
-  if (singleTailnetAddress(headerText(request, 'x-forwarded-for')) !== null) return true;
-  return isTailnetHost(host);
-}
-
 /**
  * Tells who sent a request, for every per-client limit (see StudioRequestClient):
  * - With STUDIO_CLOUDFLARED_PORT set (the recommended setup, docs/security.md), exactly the
  *   connections that arrived on that loopback listener are the public door, keyed by
  *   CF-Connecting-IP; Cloudflare headers on every other port are ignored.
- * - Without it, CF-Connecting-IP counts only for a loopback request with Cloudflare's edge headers
- *   and no sign of Tailscale Serve (see looksLikeTailscaleServe), so a tailnet device cannot pose as
- *   an arbitrary public client.
+ * - Without it (header mode), every loopback request carrying any Cloudflare edge header is the
+ *   public door, whatever else it carries: Tailscale-* headers, a *.ts.net Host or a tailnet
+ *   X-Forwarded-For never move such a request into the direct or tailnet door, so the internet can
+ *   never spend the local or tailnet budgets. The price is that a tailnet device can pose as a
+ *   public client by forging CF-Connecting-IP; only the dedicated port closes that.
  * - Tailscale Serve traffic (loopback, *.ts.net Host, exactly one tailnet address in
- *   X-Forwarded-For) is keyed by that tailnet device.
+ *   X-Forwarded-For, and in header mode no Cloudflare headers) is keyed by that tailnet device.
  * - Otherwise the raw socket peer. X-Forwarded-For is never read for anything else.
  * Public and direct IPv6 clients are keyed by their /64.
  *
@@ -93,7 +76,7 @@ export function readRequestClient(
     if (fromLoopback && request.socket?.localPort === tunnelPort) {
       return { door: 'cloudflare', address: clientAddressKey(headerText(request, 'cf-connecting-ip')) };
     }
-  } else if (fromLoopback && isViaCloudflareEdge(request.headers) && !looksLikeTailscaleServe(request, env)) {
+  } else if (fromLoopback && isViaCloudflareEdge(request.headers)) {
     return { door: 'cloudflare', address: clientAddressKey(headerText(request, 'cf-connecting-ip')) };
   }
   if (fromLoopback && isTailnetHost(headerText(request, 'host')?.trim())) {

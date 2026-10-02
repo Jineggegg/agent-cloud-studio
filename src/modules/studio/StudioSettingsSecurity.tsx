@@ -24,6 +24,8 @@ const EVENT_LABELS: Record<string, string> = {
   'account-locked': '密码登录已锁定',
   'lockout-cleared': '密码锁定已解除',
   'passkey-signin': '面容 ID 登录',
+  'tailscale-signin': 'Tailscale 登录',
+  'handoff-signin': '切换入口登录',
   'passkey-signin-failed': '面容 ID 登录失败',
   'passkey-added': '添加了登录通行密钥',
   'passkey-removed': '移除了登录通行密钥',
@@ -84,6 +86,7 @@ function revocationSummary(result: StudioRevokeAllResult | null) {
     revoked?.apiKeys ? `停用 ${revoked.apiKeys} 个 API 密钥` : '',
     revoked?.webSockets ? `断开 ${revoked.webSockets} 个连接` : '',
     revoked?.snrAccess ? '关闭 SNR 研究入口' : '',
+    revoked?.pushSubscriptions ? `移除 ${revoked.pushSubscriptions} 个推送订阅` : '',
   ].filter(Boolean);
   return parts.length ? `已退出所有设备：${parts.join('、')}。请重新登录` : '已退出所有设备，请重新登录';
 }
@@ -227,6 +230,7 @@ export function StudioSettingsSecurity() {
   const events = overview?.events ?? [];
   const visibleEvents = showAllEvents ? events : events.slice(0, COLLAPSED_EVENTS);
   const importantEvents = overview?.importantEvents ?? [];
+  const signIns = overview?.signIns ?? [];
   const lockRows = overview ? LOCK_ROWS.filter((row) => row.key !== 'session' || overview.passwordLocks.session.locked) : [];
 
   const enroll = async () => {
@@ -314,6 +318,17 @@ export function StudioSettingsSecurity() {
         </div>)}
       </div>
     </>}
+    {signIns.length > 0 && <>
+      <h3 className="security-subheading" id="studio-security-signins-heading">最近登录</h3>
+      <div className="ios-list" role="group" aria-labelledby="studio-security-signins-heading">
+        {signIns.map(event => <div className="ios-row no-icon security-event" key={event.id}>
+          <span className="ios-row-body">
+            <strong>{EVENT_LABELS[event.type] ?? event.type}</strong>
+            <small>{[moment(event.at), DOOR_LABELS[event.door] ?? event.door, event.client !== 'unknown' ? event.client : '', eventDetail(event)].filter(Boolean).join(' · ')}</small>
+          </span>
+        </div>)}
+      </div>
+    </>}
     {overview && <h3 className="security-subheading" id="studio-security-events-heading">最近的安全事件</h3>}
     {overview && <div className="ios-list security-events" role="group" aria-labelledby="studio-security-events-heading">
       {events.length === 0 && <div className="ios-row no-icon"><span className="ios-row-body"><small>还没有安全事件</small></span></div>}
@@ -333,7 +348,7 @@ export function StudioSettingsSecurity() {
         {busy === 'revoke' ? <StudioSpinner size={16} /> : <LogOut size={18} aria-hidden="true" />}退出所有设备
       </button>
     </div>
-    <p className="ios-section-footer">所有已登录的浏览器（包括这台）都会立即退出，正在运行的对话和终端连接会断开，API 密钥会被停用、SNR 研究入口会关闭，之后需要重新登录。</p>
+    <p className="ios-section-footer">所有已登录的浏览器（包括这台）都会立即退出，正在运行的对话和终端连接会断开，API 密钥会被停用、SNR 研究入口会关闭、推送通知要在各设备上重新开启，之后需要重新登录。</p>
 
     {removing && <RemoveSignInPasskeySheet passkey={removing} onCancel={() => setRemoving(null)}
       onRemoved={() => { setRemoving(null); void reload(); }} />}

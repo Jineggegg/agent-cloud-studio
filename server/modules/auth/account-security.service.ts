@@ -17,7 +17,7 @@ type AccountSecurityDependencies = {
     'trustedOrigin' | 'allowedOrigins' | 'registrationOptions' | 'register' | 'list' | 'remove'
   >;
   events: ReturnType<typeof createSecurityEventLog>;
-  lockout: Pick<ReturnType<typeof createAccountLockout>, 'status'>;
+  lockout: Pick<ReturnType<typeof createAccountLockout>, 'status' | 'clearScope'>;
   sessionVersions: ReturnType<typeof createAuthSecurityStore>['sessionVersions'];
   /**
    * Called after "sign out everywhere" bumped the user's token version: auth.module discards the
@@ -40,12 +40,19 @@ function sessionUserOf(user: unknown): SessionUser {
   return { id, username: candidate.username };
 }
 
+// The session id authenticateToken attached to the user, if any (see auth.middleware).
+function sessionIdOf(user: unknown): string | undefined {
+  const value = typeof user === 'object' && user !== null ? (user as { sessionId?: unknown }).sessionId : undefined;
+  return typeof value === 'string' && value ? value : undefined;
+}
+
 // "API 密钥 2 · 连接 3 · SNR 1" for the event log; parts that revoked nothing are left out.
 function describeRevocation(revoked: StudioSessionRevocation): string {
   const parts: [keyof StudioSessionRevocation, string][] = [
     ['webSockets', '连接'],
     ['apiKeys', 'API 密钥'],
     ['snrAccess', 'SNR 入口'],
+    ['pushSubscriptions', '推送订阅'],
     ['handoffCodes', '切换代码'],
   ];
   return ['所有会话', ...parts.filter(([key]) => (revoked[key] ?? 0) > 0).map(([key, label]) => `${label} ${revoked[key]}`)].join(' · ');
@@ -59,8 +66,8 @@ function describeRevocation(revoked: StudioSessionRevocation): string {
  * authenticated by authenticateToken.
  */
 export function createAccountSecurityService(dependencies: AccountSecurityDependencies) {
-  const lockView = (username: string, scope: Parameters<AccountSecurityDependencies['lockout']['status']>[1]) => {
-    const lock = dependencies.lockout.status(username, scope);
+  const lockView = (username: string, scope: Parameters<AccountSecurityDependencies['lockout']['status']>[1], subject?: string) => {
+    const lock = dependencies.lockout.status(username, scope, subject);
     return { locked: lock.locked, lockedUntil: lock.lockedUntil ? new Date(lock.lockedUntil).toISOString() : null };
   };
 
@@ -76,10 +83,12 @@ export function createAccountSecurityService(dependencies: AccountSecurityDepend
         passkeys: dependencies.passkeys.list(sessionUser.id),
         events: dependencies.events.recent(30),
         importantEvents: dependencies.events.recentImportant(10),
+        signIns: dependencies.events.recentSignIns(10),
         passwordLocks: {
           public: lockView(sessionUser.username, 'public'),
           tailnet: lockView(sessionUser.username, 'tailnet'),
-          session: lockView(sessionUser.username, 'session'),
+          // This session's own step-up budget (other sessions, a stolen token's included, are apart).
+          session: lockView(sessionUser.username, 'session', sessionIdOf(user)),
         },
       };
     },
@@ -132,6 +141,8 @@ export function createAccountSecurityService(dependencies: AccountSecurityDepend
       const sessionUser = sessionUserOf(user);
       const version = dependencies.sessionVersions.bump(sessionUser.id);
       const revoked = dependencies.onSessionsRevoked(sessionUser.id);
+      // Every session is gone, so are their step-up locks.
+      dependencies.lockout.clearScope(sessionUser.username, 'session');
       dependencies.events.record({ type: 'sessions-revoked', client, detail: describeRevocation(revoked) });
       if ((revoked.apiKeys ?? 0) > 0) {
         dependencies.events.record({ type: 'api-keys-revoked', client, detail: `${revoked.apiKeys} 个` });
@@ -144,6 +155,7 @@ export function createAccountSecurityService(dependencies: AccountSecurityDepend
           webSockets: revoked.webSockets ?? 0,
           apiKeys: revoked.apiKeys ?? 0,
           snrAccess: revoked.snrAccess ?? 0,
+          pushSubscriptions: revoked.pushSubscriptions ?? 0,
           handoffCodes: revoked.handoffCodes ?? 0,
         },
       };

@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
 
 import {
@@ -31,10 +31,10 @@ type PasskeyCeremonyDependencies = {
   /** SimpleWebAuthn functions; injectable so tests never need a real authenticator. */
   webauthn?: WebAuthn;
   now?: () => number;
-  /** Sign-in ceremonies one client may have pending; its own oldest is dropped beyond it. */
-  maxPendingPerClient?: number;
-  /** Sign-in ceremonies one door may have pending; beyond it new ones are refused (429). */
-  maxPendingPerDoor?: number;
+  /** Key that signs sign-in ceremony tokens; a random key per process by default. */
+  ceremonyKey?: Buffer;
+  /** Most used sign-in challenges remembered for replay protection; the oldest go first. */
+  maxUsedChallenges?: number;
   /** Registration challenges waiting at once (signed-in users only); the oldest is dropped. */
   maxPendingRegistrations?: number;
 };
@@ -44,8 +44,8 @@ type TrustedOrigin = { origin: string; rpId: string };
 
 type Pending = TrustedOrigin & { challenge: string; expiresAt: number };
 
-/** A pending sign-in, owned by the client and door that asked for it. */
-type SignInCeremony = Pending & { clientKey: string; door: StudioRequestClient['door'] };
+/** What a sign-in ceremony token vouches for: challenge, door, origin and expiry. */
+type SignInCeremony = { challenge: string; door: StudioRequestClient['door']; origin: string; expiresAt: number };
 
 type SignInFailure =
   | 'malformed'
@@ -56,11 +56,12 @@ type SignInFailure =
 
 // Challenges are single-use and live one minute, like the WebAuthn prompt itself.
 const CHALLENGE_TTL_MS = 60_000;
-const DEFAULT_MAX_PER_CLIENT = 5;
-const DEFAULT_MAX_PER_DOOR = 100;
 const DEFAULT_MAX_REGISTRATIONS = 16;
-// 18 random bytes, base64url: what /api/auth/passkey must present to name its ceremony.
-const CEREMONY_ID_PATTERN = /^[A-Za-z0-9_-]{24}$/;
+// The public tier admits at most ~10 sign-in attempts per second per door, so 60 s of them is far
+// below this; a full set drops its oldest entries, whose challenges expire within the minute anyway.
+const DEFAULT_MAX_USED_CHALLENGES = 10_000;
+// "<payload>.<signature>", both base64url: what /api/auth/passkey must present.
+const CEREMONY_TOKEN_PATTERN = /^[A-Za-z0-9_-]{1,512}\.[A-Za-z0-9_-]{43}$/;
 const DEFAULT_WEBAUTHN: WebAuthn = {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -133,10 +134,10 @@ function isRegistrationShape(value: unknown): value is RegistrationResponseJSON 
  *   (studio.ajarche.com or the ts.net host). Only the configured doors' exact origins are trusted.
  * - User verification (Face ID / Touch ID / device PIN) is required; challenges are single-use and
  *   expire after 60 seconds; the signature counter is stored after every successful sign-in.
- * - Each sign-in is a ceremony with an opaque id, owned by the client and door that started it:
- *   a client keeps at most 5 pending (its own oldest goes first) and a door at most 100 (beyond
- *   that new ones are refused), so no request can push out another client's or another door's
- *   ceremony, and the assertion must come back with its ceremony's id on the same door.
+ * - Sign-in ceremonies are stateless: the options come with a token, an HMAC (per-process key)
+ *   over the challenge, door, origin and expiry, which the assertion must present on the same door
+ *   and origin. Only challenges already presented are remembered, until they expire, so no flood
+ *   of option requests can fill, evict or block anybody's sign-in.
  * Registering and removing need a signed-in session plus the password step-up, which the caller
  * (account-security.service) checks before calling in here.
  * Used by auth.module, which shares one instance between auth.service (sign-in) and
@@ -145,15 +146,15 @@ function isRegistrationShape(value: unknown): value is RegistrationResponseJSON 
 export function createPasskeyCeremonies(dependencies: PasskeyCeremonyDependencies) {
   const webauthn = dependencies.webauthn ?? DEFAULT_WEBAUTHN;
   const now = dependencies.now ?? Date.now;
-  const maxPerClient = dependencies.maxPendingPerClient ?? DEFAULT_MAX_PER_CLIENT;
-  const maxPerDoor = dependencies.maxPendingPerDoor ?? DEFAULT_MAX_PER_DOOR;
   const maxRegistrations = dependencies.maxPendingRegistrations ?? DEFAULT_MAX_REGISTRATIONS;
+  const maxUsedChallenges = dependencies.maxUsedChallenges ?? DEFAULT_MAX_USED_CHALLENGES;
+  const ceremonyKey = dependencies.ceremonyKey ?? randomBytes(32);
   const { store } = dependencies;
-  // Sign-in ceremonies by their opaque id; registration challenges by `${userId}:${rpId}`.
-  const signIns = new Map<string, SignInCeremony>();
+  // Registration challenges by `${userId}:${rpId}`. Sign-ins keep no state until they come back.
   const registrations = new Map<string, Pending>();
+  // Sign-in challenges already presented, until they expire (single use); insertion-ordered.
+  const usedChallenges = new Map<string, number>();
   const isoNow = () => new Date(now()).toISOString();
-  const clientKeyOf = (client: StudioRequestClient) => `${client.door} ${client.address}`;
 
   function pruneExpired<T extends Pending>(map: Map<string, T>) {
     const at = now();
@@ -174,22 +175,47 @@ export function createPasskeyCeremonies(dependencies: PasskeyCeremonyDependencie
     registrations.set(key, pending);
   }
 
-  /**
-   * Stores a sign-in ceremony for its client and door. A client at its cap loses its own oldest
-   * ceremony; a door at its cap refuses new ones. Nobody can push out another client's ceremony,
-   * and traffic on one door never touches another door's ceremonies.
-   */
-  function rememberSignIn(ceremony: SignInCeremony): string {
-    pruneExpired(signIns);
-    const own = [...signIns].filter(([, entry]) => entry.clientKey === ceremony.clientKey);
-    for (const [key] of own.slice(0, Math.max(0, own.length - maxPerClient + 1))) signIns.delete(key);
-    const doorCount = [...signIns.values()].filter((entry) => entry.door === ceremony.door).length;
-    if (doorCount >= maxPerDoor) {
-      fail('登录请求太多，请稍后再试', 429, 'AUTH_PASSKEY_BUSY');
+  const sign = (payload: string) => createHmac('sha256', ceremonyKey).update(payload).digest('base64url');
+
+  // The ceremony token: the signed facts of one sign-in. Nothing is stored when it is issued, so a
+  // flood of option requests has nothing to fill or evict.
+  function issueCeremony(ceremony: SignInCeremony): string {
+    const payload = Buffer.from(JSON.stringify([ceremony.challenge, ceremony.door, ceremony.origin, ceremony.expiresAt])).toString('base64url');
+    return `${payload}.${sign(payload)}`;
+  }
+
+  // The ceremony a token vouches for, or null when it is malformed or its signature is wrong.
+  function readCeremony(token: string): SignInCeremony | null {
+    if (!CEREMONY_TOKEN_PATTERN.test(token)) return null;
+    const [payload, signature] = token.split('.');
+    const expected = Buffer.from(sign(payload));
+    const given = Buffer.from(signature);
+    if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
+    try {
+      const [challenge, door, origin, expiresAt] = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as unknown[];
+      if (typeof challenge !== 'string' || typeof origin !== 'string' || typeof expiresAt !== 'number'
+        || (door !== 'cloudflare' && door !== 'tailnet' && door !== 'direct')) return null;
+      return { challenge, door, origin, expiresAt };
+    } catch {
+      return null;
     }
-    const ceremonyId = randomBytes(18).toString('base64url');
-    signIns.set(ceremonyId, ceremony);
-    return ceremonyId;
+  }
+
+  // Marks a challenge used until it expires; false when it was used already (a replay).
+  function useChallengeOnce(challenge: string, expiresAt: number): boolean {
+    const at = now();
+    for (const [key, expiry] of usedChallenges) {
+      if (expiry > at) break;
+      usedChallenges.delete(key);
+    }
+    if (usedChallenges.has(challenge)) return false;
+    usedChallenges.set(challenge, expiresAt);
+    while (usedChallenges.size > maxUsedChallenges) {
+      const oldest = usedChallenges.keys().next().value;
+      if (oldest === undefined) break;
+      usedChallenges.delete(oldest);
+    }
+    return true;
   }
 
   // A pending challenge counts only before it expires and only for the origin it was issued to.
@@ -245,8 +271,8 @@ export function createPasskeyCeremonies(dependencies: PasskeyCeremonyDependencie
 
     /**
      * Starts a sign-in on this door: options for navigator.credentials.get (no allowCredentials,
-     * user verification required) plus the opaque ceremony id the assertion must come back with.
-     * The ceremony belongs to the asking client and door (see rememberSignIn).
+     * user verification required) plus the ceremony token the assertion must come back with, an
+     * HMAC over the challenge, door, origin and expiry. Nothing is stored, so nothing can fill up.
      */
     async signInOptions(originHeader: string | undefined, client: StudioRequestClient) {
       const origin = trustedOrigin(originHeader);
@@ -255,20 +281,20 @@ export function createPasskeyCeremonies(dependencies: PasskeyCeremonyDependencie
         userVerification: 'required',
         timeout: CHALLENGE_TTL_MS,
       });
-      const ceremonyId = rememberSignIn({
-        ...origin,
+      const ceremonyId = issueCeremony({
         challenge: options.challenge,
-        expiresAt: now() + CHALLENGE_TTL_MS,
-        clientKey: clientKeyOf(client),
         door: client.door,
+        origin: origin.origin,
+        expiresAt: now() + CHALLENGE_TTL_MS,
       });
       return { ceremonyId, options };
     },
 
     /**
-     * Verifies a sign-in assertion against the ceremony it names and consumes that ceremony
-     * whatever the outcome. It must come back on the same door and origin, within 60 s, signing
-     * the ceremony's own challenge. On success the passkey's counter and last-used time are stored
+     * Verifies a sign-in assertion against the ceremony token it presents. The token must be
+     * genuine and unexpired and name this door and origin; the assertion must sign the token's
+     * challenge; and the challenge is used up by the first attempt that gets that far (a short
+     * replay set, kept until the challenge would have expired anyway). On success the passkey's counter and last-used time are stored
      * and its owner's id returned; a failure only carries a reason for the log, so every refusal
      * looks the same to the caller's client.
      */
@@ -280,14 +306,16 @@ export function createPasskeyCeremonies(dependencies: PasskeyCeremonyDependencie
       const origin = trustedOrigin(originHeader);
       const { response } = input;
       const challenge = signedChallenge(response);
-      if (typeof input.ceremonyId !== 'string' || !CEREMONY_ID_PATTERN.test(input.ceremonyId)
-        || !challenge || !isAssertionShape(response)) {
+      if (typeof input.ceremonyId !== 'string' || !challenge || !isAssertionShape(response)) {
         return { ok: false, reason: 'malformed' };
       }
-      const ceremony = signIns.get(input.ceremonyId);
-      signIns.delete(input.ceremonyId);
-      const pending = ceremony?.door === client.door ? stillValid(ceremony, origin) : null;
-      if (!pending || pending.challenge !== challenge) return { ok: false, reason: 'challenge-unknown' };
+      const ceremony = readCeremony(input.ceremonyId);
+      if (!ceremony || ceremony.door !== client.door || ceremony.origin !== origin.origin
+        || ceremony.expiresAt <= now() || ceremony.challenge !== challenge
+        || !useChallengeOnce(ceremony.challenge, ceremony.expiresAt)) {
+        return { ok: false, reason: 'challenge-unknown' };
+      }
+      const pending = ceremony;
       const row = store.findByCredentialId(response.id);
       if (!row || row.rp_id !== origin.rpId) return { ok: false, reason: 'credential-unknown' };
       const handle = response.response.userHandle;

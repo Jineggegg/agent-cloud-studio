@@ -123,15 +123,29 @@ test('a flood through the public domain blocks neither tailnet switches nor, per
   const grant = { userId: 1, username: 'andrew', target: 'tailnet' as const, targetOrigin: TAILNET_ORIGIN };
   // One public client is cut off after its own budget, while another public client still gets in.
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    assert.equal(store.redeem('x'.repeat(43), publicClient('198.51.100.7')).status, 'invalid');
+    assert.equal(store.redeem('junk', publicClient('198.51.100.7')).status, 'invalid');
   }
-  assert.equal(store.redeem('x'.repeat(43), publicClient('198.51.100.7')).status, 'rate-limited');
+  assert.equal(store.redeem('junk', publicClient('198.51.100.7')).status, 'rate-limited');
+  // Many public addresses sending malformed junk exhaust the public door's total...
+  assert.equal(store.redeem('junk', publicClient('203.0.113.10')).status, 'invalid');
+  assert.equal(store.redeem('junk', publicClient('203.0.113.11')).status, 'invalid');
+  assert.equal(store.redeem('junk', publicClient('203.0.113.12')).status, 'rate-limited');
+  // ...but a well-formed code still goes through on that door, and the tailnet door is apart.
   assert.equal(store.redeem(store.issue(grant).code, publicClient('203.0.113.9')).status, 'ok');
-  // Many public addresses exhaust the public door's total...
-  assert.equal(store.redeem('x'.repeat(43), publicClient('203.0.113.10')).status, 'invalid');
-  assert.equal(store.redeem('x'.repeat(43), publicClient('203.0.113.11')).status, 'rate-limited');
-  // ...but the tailnet door has its own budget, so the owner's switch still works.
   assert.equal(store.redeem(store.issue(grant).code, TAILNET_CLIENT).status, 'ok');
+});
+
+test('well-formed codes count per client only, so a crowd cannot block the owner\'s switch', () => {
+  const store = createHandoffCodeStore({ redeemAttemptsPerClient: 3, redeemAttemptsPerDoor: 5 });
+  const grant = { userId: 1, username: 'andrew', target: 'public' as const, targetOrigin: PUBLIC_ORIGIN };
+  // 50 public clients, each guessing well-formed codes up to its own limit.
+  for (let index = 0; index < 50; index += 1) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      assert.equal(store.redeem('x'.repeat(43), publicClient(`203.0.113.${index}`)).status, 'invalid');
+    }
+    assert.equal(store.redeem('x'.repeat(43), publicClient(`203.0.113.${index}`)).status, 'rate-limited');
+  }
+  assert.equal(store.redeem(store.issue(grant).code, publicClient('198.51.100.200')).status, 'ok');
 });
 
 test('a password session moves to either door as a password session', async () => {

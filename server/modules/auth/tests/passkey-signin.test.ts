@@ -42,7 +42,7 @@ function registration(credentialId: string) {
   return { id: credentialId, rawId: credentialId, type: 'public-key', response: { clientDataJSON: 'AA', attestationObject: 'AA' }, clientExtensionResults: {} };
 }
 
-function createHarness(limits: { maxPendingPerClient?: number; maxPendingPerDoor?: number } = {}) {
+function createHarness(limits: { maxUsedChallenges?: number } = {}) {
   const clock = { now: 1_000_000 };
   const database = new Database(':memory:');
   const store = createAuthSecurityStore(database);
@@ -149,7 +149,7 @@ async function codeOf(promise: Promise<unknown>) {
 test('sign-in options name no credential, require user verification and come with an opaque ceremony id', async () => {
   const { start, service, calls } = createHarness();
   const started = await start(PUBLIC_ORIGIN);
-  assert.match(started.ceremonyId, /^[A-Za-z0-9_-]{24}$/);
+  assert.match(started.ceremonyId, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/);
   assert.equal(started.options.rpId, 'studio.ajarche.com');
   assert.equal(started.options.userVerification, 'required');
   assert.equal(calls.signInOptions[0].allowCredentials, undefined);
@@ -190,37 +190,33 @@ test('a ceremony is single-use, expires after 60 s, and needs its own id and cha
   assert.equal(await codeOf(service.signInWithPasskey({ origin: PUBLIC_ORIGIN, ceremonyId: undefined, response: assertion('cred-public', second.options.challenge), client: CLIENT })), '401 AUTH_PASSKEY_FAILED');
 });
 
-test('reproduction: a flood of unauthenticated options requests cannot evict the owner\'s ceremony on either door', async () => {
+test('reproduction: no flood of options requests can evict, fill up or block anybody\'s sign-in', async () => {
   const { start, finish } = createHarness();
   const ownerTailnet = await start(TAILNET_ORIGIN, OWNER_DEVICE);
   const ownerPublic = await start(PUBLIC_ORIGIN, { door: 'cloudflare', address: '203.0.113.200' });
-  let refusedByDoorCap = 0;
-  // 300 public clients and one client asking 300 times: the old global 256-entry FIFO lost both.
-  for (let index = 0; index < 300; index += 1) {
-    const code = await codeOf(start(PUBLIC_ORIGIN, { door: 'cloudflare', address: `198.51.${Math.floor(index / 250)}.${index % 250}` }));
-    if (code === '429 AUTH_PASSKEY_BUSY') refusedByDoorCap += 1;
-    await codeOf(start(PUBLIC_ORIGIN, CLIENT));
+  // 2000 options requests from 500 public /64s: nothing is stored, so nothing is refused or lost.
+  for (let index = 0; index < 2000; index += 1) {
+    assert.equal(await codeOf(start(PUBLIC_ORIGIN, { door: 'cloudflare', address: `2001:db8:${index % 500}:1::/64` })), 'ok');
   }
-  assert.ok(refusedByDoorCap > 0, 'the public door caps its pending ceremonies');
   assert.equal(await codeOf(finish(TAILNET_ORIGIN, ownerTailnet, 'cred-tailnet', OWNER_DEVICE)), 'ok');
-  assert.equal(await codeOf(finish(PUBLIC_ORIGIN, ownerPublic, 'cred-public', { door: 'cloudflare', address: '203.0.113.200' })), 'ok');
+  assert.equal(await codeOf(finish(PUBLIC_ORIGIN, ownerPublic, 'cred-public', { door: 'cloudflare', address: '198.51.100.99' })), 'ok');
 });
 
-test('one client only ever pushes out its own oldest ceremonies, and a full door refuses new ones', async () => {
-  const { start, finish } = createHarness({ maxPendingPerClient: 2, maxPendingPerDoor: 4 });
-  const other = { door: 'cloudflare', address: '203.0.113.9' } as const;
-  const othersCeremony = await start(PUBLIC_ORIGIN, other);
-  const mine = [await start(PUBLIC_ORIGIN), await start(PUBLIC_ORIGIN), await start(PUBLIC_ORIGIN)];
-  // My first was pushed out by my third; the other client's is untouched.
-  assert.equal(await codeOf(finish(PUBLIC_ORIGIN, mine[0], 'cred-public')), '401 AUTH_PASSKEY_FAILED');
-  assert.equal(await codeOf(finish(PUBLIC_ORIGIN, othersCeremony, 'cred-public', other)), 'ok');
-  // Fill the door: 2 left of mine + 2 from new clients = 4.
-  await start(PUBLIC_ORIGIN, { door: 'cloudflare', address: '203.0.113.10' });
-  await start(PUBLIC_ORIGIN, { door: 'cloudflare', address: '203.0.113.11' });
-  assert.equal(await codeOf(start(PUBLIC_ORIGIN, { door: 'cloudflare', address: '203.0.113.12' })), '429 AUTH_PASSKEY_BUSY');
-  // The tailnet door has its own room.
-  assert.equal(await codeOf(start(TAILNET_ORIGIN, OWNER_DEVICE)), 'ok');
-  assert.equal(await codeOf(finish(PUBLIC_ORIGIN, mine[2], 'cred-public')), 'ok');
+test('a ceremony token cannot be forged, altered or replayed', async () => {
+  const { start, finish, service } = createHarness();
+  const started = await start(PUBLIC_ORIGIN);
+  const [payload, signature] = started.ceremonyId.split('.');
+  // Moving the ceremony to another door means changing the signed payload.
+  const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as unknown[];
+  const forgedPayload = Buffer.from(JSON.stringify([decoded[0], 'tailnet', decoded[2], decoded[3]])).toString('base64url');
+  assert.equal(await codeOf(finish(PUBLIC_ORIGIN, { ...started, ceremonyId: `${forgedPayload}.${signature}` }, 'cred-public', OWNER_DEVICE)), '401 AUTH_PASSKEY_FAILED');
+  assert.equal(await codeOf(finish(PUBLIC_ORIGIN, { ...started, ceremonyId: `${payload}.${'A'.repeat(43)}` }, 'cred-public')), '401 AUTH_PASSKEY_FAILED');
+  // Another process's key signs differently (a restart forgets pending sign-ins, nothing more).
+  const other = createHarness();
+  assert.equal(await codeOf(other.finish(PUBLIC_ORIGIN, started, 'cred-public')), '401 AUTH_PASSKEY_FAILED');
+  // The genuine token works once; the same challenge cannot come back.
+  assert.equal(await codeOf(finish(PUBLIC_ORIGIN, started, 'cred-public')), 'ok');
+  assert.equal(await codeOf(service.signInWithPasskey({ origin: PUBLIC_ORIGIN, ceremonyId: started.ceremonyId, response: assertion('cred-public', started.options.challenge), client: CLIENT })), '401 AUTH_PASSKEY_FAILED');
 });
 
 test('a passkey only works for its own RP ID, and a ceremony only on the door and origin that started it', async () => {
@@ -238,7 +234,13 @@ test('a passkey only works for its own RP ID, and a ceremony only on the door an
 
 test('unknown credentials, a foreign user handle, a counter that went backwards and missing user verification are all refused alike', async () => {
   const { start, finish, service, behaviour, events } = createHarness();
-  const attempt = async (credentialId: string, userHandle?: string) => codeOf(finish(PUBLIC_ORIGIN, await start(PUBLIC_ORIGIN), credentialId, CLIENT, userHandle));
+  let attempts = 0;
+  // A different client each time: refusals are logged once per client per minute.
+  const attempt = async (credentialId: string, userHandle?: string) => {
+    attempts += 1;
+    const client = { door: 'cloudflare', address: `203.0.113.${attempts}` } as const;
+    return codeOf(finish(PUBLIC_ORIGIN, await start(PUBLIC_ORIGIN, client), credentialId, client, userHandle));
+  };
   assert.equal(await attempt('cred-unknown'), '401 AUTH_PASSKEY_FAILED');
   assert.equal(await attempt('cred-public', Buffer.from('studio-signin-99').toString('base64url')), '401 AUTH_PASSKEY_FAILED');
   behaviour.throws = true;
@@ -251,8 +253,10 @@ test('unknown credentials, a foreign user handle, a counter that went backwards 
     ['credential-unknown', 'user-mismatch', 'verification-failed', 'verification-failed', 'malformed']);
 });
 
-test('malformed or replayed assertions are logged once per client per minute, not once each', async () => {
-  const { service, events, logs, clock } = createHarness();
+test('every anonymous refusal is logged once per client per minute, not once each', async () => {
+  const { service, events, logs, clock, start, finish } = createHarness();
+  // Unknown credentials with genuine ceremonies count against the same gate.
+  for (let index = 0; index < 5; index += 1) await codeOf(finish(PUBLIC_ORIGIN, await start(PUBLIC_ORIGIN), 'cred-unknown'));
   const junk = (client: StudioRequestClient) => codeOf(service.signInWithPasskey({ origin: PUBLIC_ORIGIN, ceremonyId: 'nope', response: {}, client }));
   for (let index = 0; index < 50; index += 1) await junk(CLIENT);
   await junk({ door: 'cloudflare', address: '203.0.113.77' });
@@ -318,7 +322,7 @@ test('sign out everywhere bumps the token version, tells the listeners and says 
   security.revokeAllSessions(OWNER, CLIENT);
   assert.equal(store.sessionVersions.current(OWNER.id), 2);
   assert.deepEqual(revoked, [OWNER.id, OWNER.id]);
-  assert.deepEqual(result.revoked, { sessions: true, webSockets: 2, apiKeys: 1, snrAccess: 0, handoffCodes: 0 });
+  assert.deepEqual(result.revoked, { sessions: true, webSockets: 2, apiKeys: 1, snrAccess: 0, pushSubscriptions: 0, handoffCodes: 0 });
   const important = events.recentImportant(4);
   assert.deepEqual(important.map((event) => event.type), ['api-keys-revoked', 'sessions-revoked', 'api-keys-revoked', 'sessions-revoked']);
   assert.equal(important[1].detail, '所有会话 · 连接 2 · API 密钥 1');
@@ -336,4 +340,15 @@ test('the event log keeps important events apart from a flood of noise', () => {
   assert.equal(events.recent(1)[0].detail, 'attempt 1199?');
   assert.equal(events.recent(1000).length, 100);
   assert.deepEqual(events.recentImportant(5).map((event) => event.detail), ['studio.ajarche.com']);
+});
+
+test('sign out everywhere also forgets every session\'s step-up lock', async () => {
+  const { service, security, lockout } = createHarness();
+  const stolen = Object.defineProperty({ ...OWNER }, 'sessionId', { value: 'stolen-session' });
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    assert.equal(await codeOf(service.verifyStepUpPassword(stolen, 'guess', CLIENT)), '403 AUTH_STEP_UP_FAILED');
+  }
+  assert.equal(lockout.status(OWNER.username, 'session', 'stolen-session').locked, true);
+  security.revokeAllSessions(OWNER, CLIENT);
+  assert.equal(lockout.status(OWNER.username, 'session', 'stolen-session').locked, false);
 });

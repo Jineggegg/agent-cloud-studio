@@ -279,3 +279,83 @@ test('a quiet day after the last lock ended starts the schedule again at 15 minu
   clock.now += 30 * MINUTE + 25 * 60 * MINUTE;
   assert.equal((lock() as { durationMs: number }).durationMs, 15 * MINUTE);
 });
+
+test('a database created by the first security build opens: columns are added and old locks become public locks', () => {
+  const database = new Database(':memory:');
+  // The schema of commits 3cc167c..55d01c4: no is_account / important, unscoped lock rows.
+  database.exec(`
+    CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL);
+    INSERT INTO users (id, username) VALUES (1, 'andrew');
+    CREATE TABLE auth_login_lockouts (
+      account_key TEXT PRIMARY KEY, failures INTEGER NOT NULL DEFAULT 0, level INTEGER NOT NULL DEFAULT 0,
+      locked_until INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX idx_auth_login_lockouts_updated ON auth_login_lockouts(updated_at);
+    CREATE TABLE auth_security_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, type TEXT NOT NULL, door TEXT NOT NULL,
+      client TEXT NOT NULL, detail TEXT
+    );
+    INSERT INTO auth_security_events (at, type, door, client, detail) VALUES ('2026-10-01T00:00:00Z', 'account-locked', 'cloudflare', '198.51.*.*', 'old');
+  `);
+  const insert = database.prepare('INSERT INTO auth_login_lockouts VALUES (?, ?, ?, ?, ?)');
+  insert.run('andrew', 0, 2, 1_000_000 + 30 * MINUTE, 1_000_000);
+  insert.run('mallory', 3, 0, 0, 1_000_000);
+  // A name that already has a scoped row keeps the scoped one.
+  insert.run('public:eve', 1, 0, 0, 1_000_000);
+  insert.run('eve', 4, 0, 0, 1_000_000);
+
+  const { lockout, store } = createLockout(database);
+  assert.deepEqual(lockout.status('andrew', 'public'), { locked: true, lockedUntil: 1_000_000 + 30 * MINUTE, failures: 0, level: 2 });
+  assert.equal(lockout.status('mallory', 'public').failures, 3);
+  assert.equal(lockout.status('eve', 'public').failures, 1);
+  assert.equal(store.lockouts.get('public:andrew')?.is_account, 1);
+  assert.equal(store.lockouts.get('public:mallory')?.is_account, 0);
+  assert.equal(store.lockouts.countUnknown(), 2);
+  const keys = (database.prepare('SELECT account_key FROM auth_login_lockouts ORDER BY account_key').all() as { account_key: string }[]).map((row) => row.account_key);
+  assert.deepEqual(keys, ['public:andrew', 'public:eve', 'public:mallory']);
+  // Events: the old row counts as an ordinary event, and new ones are recorded with classes.
+  const events = createSecurityEventLog({ store: store.events });
+  events.record({ type: 'passkey-added', detail: 'new' });
+  assert.deepEqual(events.recentImportant(5).map((event) => event.detail), ['new']);
+  assert.equal(events.recent(5).length, 2);
+  // Opening it again changes nothing.
+  createLockout(database);
+  assert.equal(store.lockouts.countUnknown(), 2);
+});
+
+test('a stolen token can only lock its own step-ups; a sign-in or revoke-all forgets those locks', async () => {
+  const { service, lockout } = createHarness();
+  const stolen = Object.defineProperty({ ...OWNER }, 'sessionId', { value: 'stolen-session' });
+  const owners = Object.defineProperty({ ...OWNER }, 'sessionId', { value: 'owner-session' });
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    assert.equal((await refusal(service.verifyStepUpPassword(stolen, 'guess', publicClient(attempt)))).code, 'AUTH_STEP_UP_FAILED');
+  }
+  assert.equal((await refusal(service.verifyStepUpPassword(stolen, PASSWORD, publicClient(9)))).statusCode, 429);
+  assert.equal(lockout.status(OWNER.username, 'session', 'stolen-session').locked, true);
+  // The owner's own session is untouched.
+  await service.verifyStepUpPassword(owners, PASSWORD, OWNER_DEVICE);
+  assert.equal(lockout.status(OWNER.username, 'session', 'owner-session').locked, false);
+  // A sign-in that proves the owner forgets every session's step-up lock.
+  await service.login(OWNER.username, PASSWORD, OWNER_DEVICE);
+  assert.equal(lockout.status(OWNER.username, 'session', 'stolen-session').locked, false);
+  assert.equal(lockout.clearScope(OWNER.username, 'session'), 0);
+});
+
+test('successful Tailscale and handoff sign-ins are recorded and kept apart from failed attempts', async () => {
+  const { service, events } = createHarness();
+  service.signInWithTailscale({
+    remoteAddress: '127.0.0.1',
+    host: 'laptop-acgghbuq.tail6e45f0.ts.net:8443',
+    origin: TAILNET_ORIGIN,
+    fetchSite: 'same-origin',
+    forwardedFor: '100.101.102.103',
+    userLogin: 'owner@example.com',
+    funnelRequest: undefined,
+  });
+  const ticket = await service.issueHandoff(OWNER, undefined, { target: 'public', password: undefined, client: OWNER_DEVICE });
+  service.redeemHandoff({ code: ticket.code, origin: PUBLIC_ORIGIN, client: publicClient(5) });
+  await service.login(OWNER.username, PASSWORD, publicClient(6));
+  for (let attempt = 0; attempt < 600; attempt += 1) events.record({ type: 'login-failed', detail: 'flood' });
+  assert.deepEqual(events.recentSignIns(10).map((event) => event.type), ['login-succeeded', 'handoff-signin', 'tailscale-signin']);
+  assert.equal(events.recentSignIns(10)[2].client, '100.101.*.*');
+});

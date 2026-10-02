@@ -152,6 +152,13 @@ function createMinuteGate(now: () => number) {
   };
 }
 
+// The session id authenticateToken attached to the signed-in user (one per sign-in, kept across
+// refreshes), or undefined for callers without a token (platform mode, tests).
+function sessionIdOf(user: unknown): string | undefined {
+  const value = typeof user === 'object' && user !== null ? (user as { sessionId?: unknown }).sessionId : undefined;
+  return typeof value === 'string' && value ? value : undefined;
+}
+
 // One refusal for every lock, whichever username was typed, so a lock never confirms a username.
 function accountLockedError(retryAfterMs: number): AppError {
   const minutes = Math.max(1, Math.ceil(retryAfterMs / 60_000));
@@ -254,13 +261,17 @@ export function createAuthService(dependencies: AuthDependencies) {
   // Wrong passwords re-entered by signed-in sessions (step-up, handoff): a per-user budget that the
   // sign-in throttles and locks never touch, so a public flood cannot block the owner's own checks.
   const sessionPasswordFailures = createClientThrottle({ ...SESSION_PASSWORD_LIMITS, now: dependencies.now });
-  const sessionBudgetKey = (username: string): StudioRequestClient => ({ door: 'direct', address: `session:${username}` });
+  // One budget per session token (its session id), so a stolen token can only exhaust its own.
+  const sessionBudgetKey = (username: string, sessionId?: string): StudioRequestClient =>
+    ({ door: 'direct', address: `session:${username}#${sessionId ?? ''}` });
   const noisyPasskeyFailures = createMinuteGate(dependencies.now ?? Date.now);
 
   // Forgets counted failures in one scope after a success that proved the owner there, and logs
-  // it when that lifted a lock.
-  function clearLockout(username: string, scope: LockScope, client: StudioRequestClient, method: string) {
-    const cleared = dependencies.accountLockout?.clear(username, scope);
+  // it when that lifted a lock. A sign-in proves the owner outright, so it also forgets every
+  // session's step-up lock (a stolen token's included).
+  function clearLockout(username: string, scope: LockScope, client: StudioRequestClient, method: string, sessionId?: string) {
+    if (scope !== 'session') dependencies.accountLockout?.clearScope(username, 'session');
+    const cleared = dependencies.accountLockout?.clear(username, scope, scope === 'session' ? sessionId : undefined);
     if (cleared?.wasLocked) {
       recordEvent({ type: 'lockout-cleared', client, detail: `${method} · ${SCOPE_LABELS[scope]}` });
       dependencies.logInfo(`[auth] Password lock (${scope}) cleared by ${method}`);
@@ -284,17 +295,19 @@ export function createAuthService(dependencies: AuthDependencies) {
     password: string,
     client: StudioRequestClient,
     purpose: 'login' | 'handoff' | 'step-up',
+    sessionId?: string,
   ): Promise<AuthLoginUser | null> {
     const scope = lockScopeFor(purpose, client);
+    const subject = scope === 'session' ? sessionId : undefined;
     const throttle = purpose === 'login' ? passwordFailures : sessionPasswordFailures;
-    const throttleKey = purpose === 'login' ? client : sessionBudgetKey(username);
+    const throttleKey = purpose === 'login' ? client : sessionBudgetKey(username, sessionId);
     if (throttle.isBlocked(throttleKey)) {
       dependencies.logInfo(purpose === 'login'
         ? `[auth] Login refused (rate-limited, ${client.door} door)`
         : `[auth] Password check refused (rate-limited, ${purpose})`);
       throw throttledError(purpose, null);
     }
-    const attempt = dependencies.accountLockout?.begin(username, scope);
+    const attempt = dependencies.accountLockout?.begin(username, scope, subject);
     if (attempt && !attempt.allowed) {
       dependencies.logInfo(`[auth] Password check refused (${scope} lock, ${client.door} door, ${purpose})`);
       throw purpose === 'login' ? accountLockedError(attempt.retryAfterMs) : throttledError(purpose, attempt.retryAfterMs);
@@ -310,7 +323,7 @@ export function createAuthService(dependencies: AuthDependencies) {
         client,
         detail: account ? `wrong-password (${purpose})` : `unknown-user (${purpose})`,
       });
-      const lock = dependencies.accountLockout?.fail(username, scope);
+      const lock = dependencies.accountLockout?.fail(username, scope, subject);
       if (lock?.locked) {
         recordEvent({ type: 'account-locked', client, detail: `${SCOPE_LABELS[scope]} · ${lockDescription(lock.durationMs)}` });
         dependencies.logInfo(`[auth] Password checks locked (${scope}, ${lockDescription(lock.durationMs)}, ${client.door} door)`);
@@ -318,12 +331,12 @@ export function createAuthService(dependencies: AuthDependencies) {
       return null;
     }
     throttle.forgive(throttleKey);
-    clearLockout(account.username, scope, client, purpose === 'login' ? 'password' : 'step-up');
+    clearLockout(account.username, scope, client, purpose === 'login' ? 'password' : 'step-up', subject);
     return account;
   }
 
   // Verifies the account password before a Tailscale session may move to the public door.
-  async function verifyHandoffPassword(username: string, passwordInput: unknown, client: StudioRequestClient) {
+  async function verifyHandoffPassword(username: string, passwordInput: unknown, client: StudioRequestClient, sessionId?: string) {
     if (typeof passwordInput !== 'string' || !passwordInput) {
       throw handoffError(
         'AUTH_HANDOFF_PASSWORD_REQUIRED',
@@ -331,7 +344,7 @@ export function createAuthService(dependencies: AuthDependencies) {
         403,
       );
     }
-    if (!await verifyAccountPassword(username, passwordInput.slice(0, MAX_PASSWORD_LENGTH), client, 'handoff')) {
+    if (!await verifyAccountPassword(username, passwordInput.slice(0, MAX_PASSWORD_LENGTH), client, 'handoff', sessionId)) {
       dependencies.logInfo('[auth] Handoff to the public door refused (wrong password)');
       throw handoffError('AUTH_INVALID_CREDENTIALS', '密码不正确', 401);
     }
@@ -456,7 +469,7 @@ export function createAuthService(dependencies: AuthDependencies) {
       if (typeof passwordInput !== 'string' || !passwordInput || passwordInput.length > MAX_PASSWORD_LENGTH) {
         throw new AppError('请输入 Studio 登录密码', { code: 'AUTH_STEP_UP_REQUIRED', statusCode: 400 });
       }
-      if (!await verifyAccountPassword(sessionUser.username, passwordInput, client, 'step-up')) {
+      if (!await verifyAccountPassword(sessionUser.username, passwordInput, client, 'step-up', sessionIdOf(user))) {
         throw new AppError('密码不正确', { code: 'AUTH_STEP_UP_FAILED', statusCode: 403 });
       }
     },
@@ -489,8 +502,8 @@ export function createAuthService(dependencies: AuthDependencies) {
       const account = result.ok ? dependencies.findUserById(result.userId) : undefined;
       if (!result.ok || !account) {
         const reason = result.ok ? 'user-missing' : result.reason;
-        const noisy = reason === 'malformed' || reason === 'challenge-unknown';
-        if (!noisy || noisyPasskeyFailures(client)) {
+        // Anyone can trigger every one of these reasons, so each client is logged once a minute.
+        if (noisyPasskeyFailures(client)) {
           dependencies.logInfo(`[auth] Passkey sign-in refused (${reason}, ${client.door} door)`);
           recordEvent({ type: 'passkey-signin-failed', client, detail: reason });
         }
@@ -540,6 +553,7 @@ export function createAuthService(dependencies: AuthDependencies) {
       dependencies.logInfo(
         `[auth] Tailscale sign-in granted for ${maskedLogin}${fromNode} as local user "${user.username}"`,
       );
+      recordEvent({ type: 'tailscale-signin', client: { door: 'tailnet', address: decision.session.node }, detail: maskedLogin });
       return {
         success: true,
         user: sessionUser,
@@ -602,7 +616,7 @@ export function createAuthService(dependencies: AuthDependencies) {
 
       let carriedClaim = tailscaleSession;
       if (tailscaleSession && target === 'public') {
-        await verifyHandoffPassword(sessionUser.username, input.password, input.client ?? UNKNOWN_CLIENT);
+        await verifyHandoffPassword(sessionUser.username, input.password, input.client ?? UNKNOWN_CLIENT, sessionIdOf(user));
         carriedClaim = undefined;
       }
 
@@ -665,6 +679,7 @@ export function createAuthService(dependencies: AuthDependencies) {
       const sessionUser = { id: account.id, username: account.username };
       dependencies.users.updateLastLogin(numericUserId(account.id));
       dependencies.logInfo(`[auth] Handoff to the ${grant.target} door granted for local user "${account.username}"`);
+      recordEvent({ type: 'handoff-signin', client, detail: grant.target });
       return {
         success: true,
         user: sessionUser,

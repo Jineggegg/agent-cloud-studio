@@ -217,12 +217,12 @@ test('the redeem route buckets by door, so a public flood leaves tailnet switche
   };
 
   try {
-    // 30 junk attempts from rotating public addresses exhaust the public door's total.
+    // 30 malformed junk attempts from rotating public addresses exhaust the public door's total.
     for (let index = 0; index < 30; index += 1) {
-      const junk = await post('/handoff/redeem', { code: 'x'.repeat(43) }, { 'CF-Ray': 'r', 'CF-Connecting-IP': `203.0.113.${index}` });
+      const junk = await post('/handoff/redeem', { code: 'junk' }, { 'CF-Ray': 'r', 'CF-Connecting-IP': `203.0.113.${index}` });
       assert.equal(junk.status, 400);
     }
-    const flooded = await post('/handoff/redeem', { code: 'x'.repeat(43) }, { 'CF-Ray': 'r', 'CF-Connecting-IP': '192.0.2.1' });
+    const flooded = await post('/handoff/redeem', { code: 'junk' }, { 'CF-Ray': 'r', 'CF-Connecting-IP': '192.0.2.1' });
     assert.equal(flooded.status, 429);
 
     const ticket = await post('/handoff', { target: 'tailnet' });

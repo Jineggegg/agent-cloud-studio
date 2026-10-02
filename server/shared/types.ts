@@ -1696,13 +1696,15 @@ export type StudioRequestClient = {
 /**
  * What "退出所有设备" took away besides the token version, so Settings can say so. Each
  * listener of the auth module's onSessionsRevoked returns the parts it handled (the server
- * entrypoint: open WebSockets, API keys, SNR gateway cookies); the auth module adds the pending
+ * entrypoint: open WebSockets, API keys, SNR gateway cookies, Web Push subscriptions); the auth
+ * module adds the pending
  * handoff codes and merges them into the response of POST /api/auth/security/revoke-all.
  */
 export type StudioSessionRevocation = {
   webSockets?: number;
   apiKeys?: number;
   snrAccess?: number;
+  pushSubscriptions?: number;
   handoffCodes?: number;
 };
 

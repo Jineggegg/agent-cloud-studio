@@ -1,4 +1,6 @@
 // @ts-nocheck -- JWT request augmentation is narrowed by Auth route contracts.
+import { randomUUID } from 'node:crypto';
+
 import jwt from 'jsonwebtoken';
 
 import { IS_PLATFORM } from '@/shared/utils.js';
@@ -35,6 +37,21 @@ const isTailscaleSessionOffTailnetDoor = (decoded, request) =>
 const tokenVersionOf = (decoded) => (Number.isSafeInteger(decoded.ver) ? decoded.ver : 0);
 const currentSessionVersion = (userId) => getAuthSecurityStore().sessionVersions.current(Number(userId));
 const isRevokedSessionVersion = (decoded) => tokenVersionOf(decoded) !== currentSessionVersion(decoded.userId);
+
+// Every sign-in gets its own session id (sid), which refreshes keep; the per-session step-up
+// budget (auth.service) is keyed by it, so a stolen token can only lock its own password checks.
+// Tokens signed before session ids existed fall back to their issue time and version.
+const sessionIdOf = (decoded) => (typeof decoded.sid === 'string' && decoded.sid
+  ? decoded.sid.slice(0, 64)
+  : `${decoded.iat ?? 0}.${tokenVersionOf(decoded)}`);
+
+// Attaches the token's session id to the user row as a non-enumerable property, so it reaches the
+// services and generateToken without ever appearing in a JSON response.
+const withSessionId = (user, decoded) => Object.defineProperty(user, 'sessionId', {
+  value: sessionIdOf(decoded),
+  enumerable: false,
+  configurable: true,
+});
 
 // Optional API key middleware
 const validateApiKey = (req, res, next) => {
@@ -127,12 +144,13 @@ const authenticateToken = async (req, res, next) => {
       const now = Math.floor(Date.now() / 1000);
       const halfLife = (decoded.exp - decoded.iat) / 2;
       if (now > decoded.iat + halfLife) {
-        const newToken = generateToken(user, decoded.tailscale);
+        const newToken = generateToken(withSessionId(user, decoded), decoded.tailscale);
         res.setHeader('X-Refreshed-Token', newToken);
       }
     }
 
-    req.user = user;
+    // The session id rides along (not serialized) for per-session step-up budgets and refreshes.
+    req.user = withSessionId(user, decoded);
     // Read by the /refresh route so an explicit refresh keeps the claim as well.
     req.tailscaleSession = decoded.tailscale;
     next();
@@ -165,6 +183,8 @@ const generateToken = (user, tailscaleSession?) => {
     userId: user.id,
     username: user.username,
     ver: currentSessionVersion(user.id),
+    // A refresh carries the session id on; a new sign-in starts a new session.
+    sid: typeof user.sessionId === 'string' && user.sessionId ? user.sessionId : randomUUID(),
   };
   if (tailscaleSession) {
     payload.tailscale = { login: tailscaleSession.login, node: tailscaleSession.node };

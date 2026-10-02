@@ -9,8 +9,9 @@ import { getConnection } from '@/modules/database/index.js';
  *   reveals which name exists; rows of real accounts are flagged and never evicted;
  * - auth_passkeys: WebAuthn sign-in credentials per user and RP ID (separate from the Trading 212
  *   order passkeys, which the Studio module keeps in its own table);
- * - auth_security_events: a bounded log of sign-ins, locks, passkey changes and revocations, with
- *   the important events kept apart from the noisy ones so a flood cannot push them out;
+ * - auth_security_events: a bounded log of sign-ins, locks, passkey changes and revocations, in
+ *   three retention classes (noise, important changes, successful sign-ins) so a flood of one can
+ *   never push out another;
  * - auth_session_versions: the per-user token version embedded in every JWT ("sign out everywhere").
  */
 
@@ -47,16 +48,55 @@ type SecurityEventRow = {
   door: string;
   client: string;
   detail: string | null;
-  /** 1 for the events worth keeping (locks, passkey changes, revocations), 0 for sign-in noise. */
+  /**
+   * Retention class: 0 for anonymous noise (failed attempts), 1 for important changes (locks,
+   * passkey changes, revocations), 2 for successful sign-ins. Each class keeps its own newest rows.
+   */
   important: number;
 };
 
 // Each class of events keeps its newest rows only; a flood of failed logins cannot grow the
-// database, nor push out a lock or a passkey change.
+// database, nor push out a lock, a passkey change or the record of a successful sign-in.
 const MAX_EVENTS_PER_CLASS = 500;
 
+const LOCK_SCOPES = ['public', 'tailnet', 'session'];
+
+function columnsOf(database: Database.Database, table: string): string[] {
+  return (database.prepare(`SELECT name FROM pragma_table_info('${table}')`).all() as { name: string }[]).map((row) => row.name);
+}
+
 /**
- * Creates the store on a better-sqlite3 connection, creating its tables when missing.
+ * Brings tables created by earlier builds of this store up to date, inside one transaction:
+ * - auth_login_lockouts gains is_account (rows of usernames that exist in the users table are
+ *   flagged), and its unscoped rows (one lock per typed name) become the public scope's rows;
+ * - auth_security_events gains important (earlier rows count as ordinary events).
+ * Safe to run on every start: it only touches what is missing or unscoped.
+ */
+function migrateSecurityTables(database: Database.Database) {
+  database.transaction(() => {
+    if (!columnsOf(database, 'auth_login_lockouts').includes('is_account')) {
+      database.exec('ALTER TABLE auth_login_lockouts ADD COLUMN is_account INTEGER NOT NULL DEFAULT 0');
+    }
+    const scoped = LOCK_SCOPES.map((scope) => `account_key LIKE '${scope}:%'`).join(' OR ');
+    // A scoped row for the same name wins; the unscoped leftover is then dropped.
+    database.exec(`UPDATE OR IGNORE auth_login_lockouts SET account_key = 'public:' || account_key WHERE NOT (${scoped})`);
+    database.exec(`DELETE FROM auth_login_lockouts WHERE NOT (${scoped})`);
+    const hasUsers = database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'").get();
+    if (hasUsers) {
+      database.exec(`
+        UPDATE auth_login_lockouts SET is_account = 1
+        WHERE is_account = 0 AND substr(account_key, instr(account_key, ':') + 1) IN (SELECT username FROM users)
+      `);
+    }
+    if (!columnsOf(database, 'auth_security_events').includes('important')) {
+      database.exec('ALTER TABLE auth_security_events ADD COLUMN important INTEGER NOT NULL DEFAULT 0');
+    }
+  })();
+}
+
+/**
+ * Creates the store on a better-sqlite3 connection, creating its tables when missing and
+ * migrating tables created by earlier builds (migrateSecurityTables).
  * Used by getAuthSecurityStore (production) and by the auth tests on an in-memory database.
  */
 export function createAuthSecurityStore(database: Database.Database) {
@@ -69,7 +109,6 @@ export function createAuthSecurityStore(database: Database.Database) {
       updated_at INTEGER NOT NULL,
       is_account INTEGER NOT NULL DEFAULT 0
     );
-    CREATE INDEX IF NOT EXISTS idx_auth_login_lockouts_unknown ON auth_login_lockouts(is_account, updated_at);
     CREATE TABLE IF NOT EXISTS auth_passkeys (
       id TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL,
@@ -92,11 +131,16 @@ export function createAuthSecurityStore(database: Database.Database) {
       detail TEXT,
       important INTEGER NOT NULL DEFAULT 0
     );
-    CREATE INDEX IF NOT EXISTS idx_auth_security_events_class ON auth_security_events(important, id);
     CREATE TABLE IF NOT EXISTS auth_session_versions (
       user_id INTEGER PRIMARY KEY,
       version INTEGER NOT NULL DEFAULT 0
     );
+  `);
+  migrateSecurityTables(database);
+  // Indexes last: they name columns that older databases only have after the migration.
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_auth_login_lockouts_unknown ON auth_login_lockouts(is_account, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_auth_security_events_class ON auth_security_events(important, id);
   `);
 
   const statements = {
@@ -109,6 +153,7 @@ export function createAuthSecurityStore(database: Database.Database) {
         updated_at = excluded.updated_at, is_account = excluded.is_account
     `),
     lockoutDelete: database.prepare('DELETE FROM auth_login_lockouts WHERE account_key = ?'),
+    lockoutDeleteFamily: database.prepare("DELETE FROM auth_login_lockouts WHERE account_key = ? OR account_key LIKE ? ESCAPE '\\'"),
     lockoutDeleteAll: database.prepare('DELETE FROM auth_login_lockouts'),
     lockoutCountUnknown: database.prepare('SELECT COUNT(*) AS count FROM auth_login_lockouts WHERE is_account = 0'),
     // Least recently relevant first: a row matters until both its last attempt and its lock are past.
@@ -133,7 +178,7 @@ export function createAuthSecurityStore(database: Database.Database) {
       )
     `),
     eventsRecent: database.prepare('SELECT * FROM auth_security_events ORDER BY id DESC LIMIT ?'),
-    eventsRecentImportant: database.prepare('SELECT * FROM auth_security_events WHERE important = 1 ORDER BY id DESC LIMIT ?'),
+    eventsRecentOfClass: database.prepare('SELECT * FROM auth_security_events WHERE important = ? ORDER BY id DESC LIMIT ?'),
     versionGet: database.prepare('SELECT version FROM auth_session_versions WHERE user_id = ?'),
     versionBump: database.prepare(`
       INSERT INTO auth_session_versions (user_id, version) VALUES (?, 1)
@@ -146,6 +191,8 @@ export function createAuthSecurityStore(database: Database.Database) {
       get: (accountKey: string) => statements.lockoutGet.get(accountKey) as LockoutRow | undefined,
       save: (row: LockoutRow) => { statements.lockoutUpsert.run(row); },
       remove: (accountKey: string) => statements.lockoutDelete.run(accountKey).changes > 0,
+      /** Removes `key` and every `key#<subject>` row; returns how many were removed. */
+      removeFamily: (key: string) => statements.lockoutDeleteFamily.run(key, `${key.replace(/[\\%_]/g, (character) => `\\${character}`)}#%`).changes,
       removeAll: () => statements.lockoutDeleteAll.run().changes,
       /** Rows of usernames that are not accounts; only these count against the cap. */
       countUnknown: () => (statements.lockoutCountUnknown.get() as { count: number }).count,
@@ -168,8 +215,8 @@ export function createAuthSecurityStore(database: Database.Database) {
       },
       /** Newest first, both classes mixed. */
       recent: (limit: number) => statements.eventsRecent.all(limit) as SecurityEventRow[],
-      /** Newest important events first. */
-      recentImportant: (limit: number) => statements.eventsRecentImportant.all(limit) as SecurityEventRow[],
+      /** Newest events of one retention class first (see SecurityEventRow.important). */
+      recentOfClass: (eventClass: number, limit: number) => statements.eventsRecentOfClass.all(eventClass, limit) as SecurityEventRow[],
     },
     sessionVersions: {
       /** 0 until the first "sign out everywhere"; tokens without a version count as 0. */

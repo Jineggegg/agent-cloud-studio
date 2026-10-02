@@ -96,27 +96,27 @@ test('with STUDIO_CLOUDFLARED_PORT set, only the cloudflared listener is the pub
   );
 });
 
-test('without the listener, a request that looks like Tailscale Serve is never the public door', () => {
-  // Reproduction: a tailnet device sends CF-Connecting-IP through Serve to pick any public bucket.
-  assert.deepEqual(
-    readRequestClient({
-      headers: { ...CLOUDFLARE_HEADERS, host: TAILNET_HOST, 'x-forwarded-for': '100.101.102.104' },
-      socket: { remoteAddress: '127.0.0.1' },
-    }, ENV),
-    { door: 'tailnet', address: '100.101.102.104' },
-  );
-  // Serve's identity headers, a single tailnet X-Forwarded-For or the tailnet origin's host each
-  // rule out the public door; such a request falls back to its socket address.
+test('without the listener, any Cloudflare header means the public door, whatever else is sent', () => {
+  // Reproduction of the regression: a public client adding Tailscale-* headers through Cloudflare
+  // must not land in the direct door (127.0.0.1), whose budgets the owner's local login uses.
   for (const extra of [
-    { 'tailscale-user-login': 'friend@example.com' },
+    { 'tailscale-user-login': 'x' },
+    { 'tailscale-user-name': 'x', 'tailscale-user-profile-pic': 'x' },
     { 'x-forwarded-for': '100.101.102.104' },
     { host: TAILNET_HOST },
+    { host: TAILNET_HOST, 'x-forwarded-for': '100.101.102.104', 'tailscale-user-login': 'owner@example.com' },
   ]) {
-    assert.notEqual(
-      readRequestClient({ headers: { ...CLOUDFLARE_HEADERS, ...extra }, socket: { remoteAddress: '127.0.0.1' } }, ENV).door,
-      'cloudflare',
+    assert.deepEqual(
+      readRequestClient({ headers: { ...CLOUDFLARE_HEADERS, ...extra }, socket: { remoteAddress: '127.0.0.1' } }, ENV),
+      { door: 'cloudflare', address: '198.51.100.7' },
     );
   }
+  // A single Cloudflare header is enough, and Serve traffic without them is still the tailnet door.
+  assert.equal(readRequestClient({ headers: { 'cdn-loop': 'cloudflare', host: TAILNET_HOST, 'x-forwarded-for': '100.101.102.104' }, socket: { remoteAddress: '127.0.0.1' } }, ENV).door, 'cloudflare');
+  assert.deepEqual(
+    readRequestClient({ headers: { host: TAILNET_HOST, 'x-forwarded-for': '100.101.102.104', 'tailscale-user-login': 'owner@example.com' }, socket: { remoteAddress: '127.0.0.1' } }, ENV),
+    { door: 'tailnet', address: '100.101.102.104' },
+  );
 });
 
 test('IPv6 clients are keyed by their /64, so rotating addresses inside it stays one client', () => {

@@ -17,8 +17,8 @@ import { createClientThrottle } from './client-throttle.service.js';
  *   it was issued.
  * - Each code is bound to one user and to the exact origin of its target door; the auth service
  *   compares that origin with the redeeming request's Origin header.
- * - Redemption is unauthenticated, so attempts are rate limited per client and per door
- *   (client-throttle.service). Requests through Cloudflare are counted by CF-Connecting-IP and
+ * - Redemption is unauthenticated, so attempts are rate limited per client, and malformed ones
+ *   also per door (client-throttle.service); well-formed codes never count towards the door total. Requests through Cloudflare are counted by CF-Connecting-IP and
  *   share their own total, so a flood on the public domain can neither block other public clients
  *   beyond that total nor block switches that arrive through the tailnet door. With 256-bit codes
  *   the limit only bounds wasted work, not guessing odds.
@@ -111,13 +111,18 @@ export function createHandoffCodeStore(options: HandoffStoreOptions = {}) {
      * so a leaked code is burned by its first use.
      */
     redeem(code: unknown, client: StudioRequestClient): HandoffRedemption {
-      if (redemptions.isBlocked(client)) {
+      // A well-formed code is 256 random bits, so attempts with one guess nothing: they count for
+      // the client only, and a crowd of clients cannot block the owner's switch on a whole door.
+      // Malformed junk still counts towards the door as well.
+      const wellFormed = typeof code === 'string' && CODE_PATTERN.test(code);
+      const scope = { door: !wellFormed };
+      if (redemptions.isBlocked(client, scope)) {
         return { status: 'rate-limited' };
       }
-      redemptions.record(client);
+      redemptions.record(client, scope);
       const at = now();
       prune(at);
-      if (typeof code !== 'string' || !CODE_PATTERN.test(code)) {
+      if (!wellFormed) {
         return { status: 'invalid' };
       }
       const hash = hashCode(code);
