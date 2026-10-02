@@ -8,6 +8,8 @@ import {
   readdir,
   readlink,
   realpath,
+  rename,
+  rm,
   stat,
   writeFile,
 } from 'node:fs/promises';
@@ -1334,4 +1336,154 @@ export function findApplicationRoot(startDirectory: string): string {
   return path.basename(parentDirectory) === 'dist-server'
     ? path.dirname(parentDirectory)
     : parentDirectory;
+}
+
+// ---------------------------
+//----------------- PLAN USAGE (RATE LIMIT) SNAPSHOT UTILITIES ------------
+/**
+ * Converts a timestamp of unknown shape into epoch milliseconds, or `null`.
+ *
+ * Provider usage sources disagree on units, so this accepts:
+ * - Unix seconds, which Claude and Codex use for reset times;
+ * - epoch milliseconds, recognised as any number above 1e12 (a seconds value
+ *   that large would lie tens of thousands of years in the future);
+ * - ISO 8601 or other `Date.parse`-able strings.
+ * Non-finite, non-positive and unparsable values yield `null`, so callers can
+ * treat `null` uniformly as "unknown".
+ *
+ * Used by `recordClaudeRateLimitEvent` below and by the Studio module's Claude
+ * and Codex quota adapters, which all read reset and observation times.
+ */
+export function readEpochMilliseconds(value: unknown): number | null {
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) || parsed <= 0 ? null : parsed;
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return value > 1e12 ? Math.round(value) : Math.round(value * 1000);
+}
+
+/**
+ * Path of the Claude plan-usage snapshot shown by Studio's home-screen quota widget.
+ *
+ * `STUDIO_CLAUDE_RATE_FILE` overrides the default
+ * `~/.claude/studio-rate-limits.json`. The variable is read on every call so a
+ * changed environment (or a test) is honoured without re-importing.
+ *
+ * The file holds usage percentages and reset times only, never credentials:
+ * `{ observedAt, source: "statusline" | "sdk-event", five_hour?, seven_day? }`
+ * where each window is `{ used_percentage, resets_at, observed_at? }` and
+ * `resets_at` is Unix seconds. It is written by
+ * `scripts/claude-statusline-snapshot.mjs` (a Claude Code statusLine command)
+ * and by `recordClaudeRateLimitEvent`, so both must keep that shape.
+ *
+ * Used by `recordClaudeRateLimitEvent` (writer) and by the Studio module's
+ * quota service (reader).
+ */
+export function resolveClaudeRateSnapshotPath(): string {
+  const configured = process.env.STUDIO_CLAUDE_RATE_FILE?.trim();
+  return configured || path.join(os.homedir(), '.claude', 'studio-rate-limits.json');
+}
+
+// Writes are chained so parallel sessions in this process cannot interleave
+// their read-merge-rename steps and drop each other's window.
+let claudeRateSnapshotQueue: Promise<void> = Promise.resolve();
+
+// Maps an SDK `rate_limit_info` onto one snapshot window, or null when it
+// carries nothing the snapshot can hold.
+function claudeRateWindowFromSdkInfo(info: unknown) {
+  const record = readObjectRecord(info);
+  const key = record?.rateLimitType;
+  if (!record || (key !== 'five_hour' && key !== 'seven_day')) {
+    return null;
+  }
+  const utilization = record.utilization;
+  let usedPercentage: number | null = null;
+  if (typeof utilization === 'number' && Number.isFinite(utilization) && utilization >= 0) {
+    // The SDK reports a 0..1 fraction; larger values are already percentages.
+    usedPercentage = utilization <= 1 ? utilization * 100 : utilization;
+  } else if (record.status === 'rejected') {
+    usedPercentage = 100;
+  }
+  if (usedPercentage === null) {
+    return null;
+  }
+  const resetsAt = readEpochMilliseconds(record.resetsAt);
+  return {
+    key: key as 'five_hour' | 'seven_day',
+    window: {
+      used_percentage: Math.round(usedPercentage * 10) / 10,
+      resets_at: resetsAt === null ? null : Math.round(resetsAt / 1000),
+    },
+  };
+}
+
+/**
+ * Merges one Claude Agent SDK `rate_limit_event` (its `rate_limit_info`) into
+ * the snapshot file named by `resolveClaudeRateSnapshotPath`.
+ *
+ * - Only the `five_hour` and `seven_day` windows are recorded; per-model weekly
+ *   and overage types have no slot in the snapshot and are ignored.
+ * - `utilization` is a 0..1 fraction in the SDK (values above 1 are taken as
+ *   percentages). An event without it is recorded as 100% only when its status
+ *   is `rejected`; otherwise it is skipped because it says nothing new.
+ * - The other window from earlier writes is kept, and every window carries its
+ *   own `observed_at` so a reader can tell an old weekly figure from a fresh
+ *   5-hour one. Top-level `observedAt`/`source` describe the latest write.
+ * - The file is replaced atomically (temporary file, then rename).
+ * - Never throws and the returned promise never rejects: a disk problem must
+ *   not reach the chat stream that reported the event.
+ *
+ * Used by the providers module's Claude runtime for every SDK
+ * `rate_limit_event`, fire-and-forget; the promise exists so tests can await
+ * the write. `options` lets tests pick the file and clock.
+ */
+export function recordClaudeRateLimitEvent(
+  info: unknown,
+  options: { filePath?: string; now?: () => number } = {},
+): Promise<void> {
+  let update: ReturnType<typeof claudeRateWindowFromSdkInfo> = null;
+  try {
+    update = claudeRateWindowFromSdkInfo(info);
+  } catch {
+    update = null;
+  }
+  if (!update) {
+    return claudeRateSnapshotQueue;
+  }
+  const { key, window } = update;
+  const write = async () => {
+    const filePath = options.filePath ?? resolveClaudeRateSnapshotPath();
+    const observedAt = new Date((options.now ?? Date.now)()).toISOString();
+    let existing: AnyRecord = {};
+    try {
+      existing = readObjectRecord(JSON.parse(await readFile(filePath, 'utf8'))) ?? {};
+    } catch {
+      // Missing or unreadable: start a fresh snapshot.
+    }
+    const next: AnyRecord = { observedAt, source: 'sdk-event' };
+    for (const other of ['five_hour', 'seven_day']) {
+      if (other !== key && readObjectRecord(existing[other])) {
+        next[other] = existing[other];
+      }
+    }
+    next[key] = { ...window, observed_at: observedAt };
+    // One level only (normally ~/.claude): a recursive mkdir can spin forever on
+    // special filesystems such as /proc, which would leave this queue stuck.
+    await mkdir(path.dirname(filePath)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EEXIST') throw error;
+    });
+    const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+      await rename(temporaryPath, filePath);
+    } catch (error) {
+      await rm(temporaryPath, { force: true }).catch(() => {});
+      throw error;
+    }
+  };
+  claudeRateSnapshotQueue = claudeRateSnapshotQueue.then(write).catch(() => {});
+  return claudeRateSnapshotQueue;
 }

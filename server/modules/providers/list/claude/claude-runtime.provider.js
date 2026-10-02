@@ -37,7 +37,7 @@ import {
   notifyUserIfEnabled
 } from '@/modules/notifications/index.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
-import { createCompleteMessage, createNormalizedMessage } from '@/shared/utils.js';
+import { createCompleteMessage, createNormalizedMessage, recordClaudeRateLimitEvent } from '@/shared/utils.js';
 
 const activeSessions = new Map();
 // Outstanding background tasks per live session, keyed like activeSessions. An
@@ -1116,6 +1116,13 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         }
       } else {
         // session_id already captured
+      }
+
+      // Plan-usage windows feed Studio's home-screen quota widget. Fire and
+      // forget: the helper swallows its own errors and never rejects, so a disk
+      // problem cannot reach this chat stream.
+      if (message.type === 'rate_limit_event') {
+        void recordClaudeRateLimitEvent(message.rate_limit_info);
       }
 
       // Transform and normalize message via adapter
