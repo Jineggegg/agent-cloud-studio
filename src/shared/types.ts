@@ -1963,6 +1963,28 @@ export type StudioNetworkInfo = {
   guidance: string[];
 };
 // ── v4 track: orders — types below this line ──
+//----------------- STUDIO TRADING 212 ORDERS ------------
+/** Buy or sell in the Trading 212 order sheet; the server turns a sell into a negative quantity. */
+export type T212OrderSide = 'buy' | 'sell';
+/** A Face ID / Touch ID passkey registered for one Studio domain (its RP ID); a passkey never authorizes another domain. */
+export type T212Passkey = { id: string; rpId: string; label: string | null; createdAt: string; lastUsedAt: string | null };
+/** Server order-safety settings shared by the order sheet and Settings: tradable accounts, the per-order cap and passkeys. */
+export type T212TradingConfig = {
+  // Accounts STUDIO_T212_TRADING allows to trade; empty means trading is off.
+  allowedEnvs: T212Env[];
+  // STUDIO_T212_MAX_ORDER_VALUE, in the account currency.
+  maxOrderValue: number;
+  // Account currency from the last stored balance snapshot; absent before the account was first read.
+  currency?: string;
+  // This user's passkeys on every domain; once there is one, a domain without its own passkey cannot trade.
+  passkeys: T212Passkey[];
+  // Origins allowed to trade and register passkeys.
+  trustedOrigins: string[];
+  // STUDIO_T212_ALLOW_LOCALHOST=1: http://localhost, 127.0.0.1 and [::1] are trusted as well.
+  allowLocalhost: boolean;
+  // STUDIO_T212_REQUIRE_PASSKEY=1: the double confirmation is off, so every domain needs its own passkey.
+  requirePasskey: boolean;
+};
 // ── v4 track: mail — types below this line ──
 //----------------- STUDIO MAIL CONTRACTS ------------
 /** How a Studio mail account is read: Gmail over IMAP (App Password), Outlook over Graph, or a legacy project Gmail OAuth link. */

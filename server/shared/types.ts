@@ -1702,6 +1702,35 @@ export type StudioCloudflareAccessConfig =
   | { status: 'on'; teamDomain: string; issuer: string; certsUrl: string; audience: string[] };
 // ---------------------------
 // ── v4 track: orders — server types below this line ──
+//----------------- STUDIO TRADING 212 ORDERS ------------
+/**
+ * Trading 212 account an order targets. Live and demo use separate key files, and
+ * STUDIO_T212_TRADING decides which of them may trade at all.
+ */
+export type StudioT212Environment = 'live' | 'demo';
+
+/**
+ * An order request after the Studio router validated its transport shape (types, enums,
+ * decimal places). `quantity` is always positive; `side` decides the sign sent to Trading 212.
+ * `limitPrice` is present exactly when `type` is 'limit'. Business checks (holdings, the
+ * per-order cap, allowed environments) are the orders service's job, not the router's.
+ */
+export type StudioT212OrderInput = {
+  env: StudioT212Environment;
+  ticker: string;
+  side: 'buy' | 'sell';
+  type: 'market' | 'limit';
+  quantity: number;
+  limitPrice?: number;
+  timeValidity: 'DAY' | 'GOOD_TILL_CANCEL';
+};
+
+/**
+ * The browser origin a trading or passkey request came from, after the orders service matched
+ * it against the configured origins. `rpId` is its hostname and doubles as the WebAuthn RP ID,
+ * so passkeys registered on one domain never authorize orders on another.
+ */
+export type StudioT212TrustedOrigin = { origin: string; rpId: string };
 // ── v4 track: mail — server types below this line ──
 //----------------- STUDIO MAIL CONTRACTS ------------
 /**
