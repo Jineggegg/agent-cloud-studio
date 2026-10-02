@@ -7,14 +7,10 @@ import { AppError, parseEnvText } from '@/shared/utils.js';
 import type { StudioT212Environment } from '@/shared/types.js';
 
 type Environment = StudioT212Environment;
-// Exactly the body Trading 212 documents for POST /equity/orders/market and /equity/orders/limit;
-// a negative quantity sells.
-type OrderBody =
-  | { ticker: string; quantity: number }
-  | { ticker: string; quantity: number; limitPrice: number; timeValidity: 'DAY' | 'GOOD_TILL_CANCEL' };
 type Dependencies = {
   database: Database.Database;
-  // `.env` files holding TRADING212_API_KEY / TRADING212_API_SECRET, one per environment.
+  // `.env` files holding TRADING212_API_KEY / TRADING212_API_SECRET, one per environment. These are read-only
+  // keys: orders are placed only by the separate order broker with its own key (docs/t212-broker.md).
   envFiles: Partial<Record<Environment, string>>;
   request?: typeof fetch;
   now?: () => number;
@@ -28,15 +24,9 @@ const BASE_URL: Record<Environment, string> = {
 };
 // Response caches stay under Trading 212's per-endpoint rate limits (summary 1/5 s, positions 1/1 s, history 20/min).
 const TTL = { summary: 10_000, positions: 5_000, history: 60_000, transactions: 600_000 };
-// Instrument metadata changes rarely and its endpoint allows one call per 50 s, so the ticker → currency map is
-// kept for a day and survives `invalidate` (placing an order does not change it).
-const INSTRUMENTS_TTL_MS = 24 * 60 * 60_000;
 // One stored snapshot per ten minutes is enough for a daily-resolution curve.
 const SNAPSHOT_GAP_MS = 10 * 60_000;
 const DAY_FORMAT = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' });
-// An order POST that timed out, got 408 or a 5xx may still have been executed; the orders service records it as
-// 'unknown' and holds back an identical order for a while instead of treating it as refused.
-const ORDER_UNKNOWN = 'T212_ORDER_UNKNOWN';
 
 function fail(message: string, statusCode = 502, code = 'TRADING212_ERROR'): never {
   throw new AppError(message, { statusCode, code });
@@ -54,20 +44,10 @@ function obj(value: unknown): Json {
 function londonDay(timestamp: number) {
   return DAY_FORMAT.format(new Date(timestamp));
 }
-// Broker validation text such as "InsufficientFreeForStocksBuy" helps the owner; it is reduced to plain
-// characters and a short length so nothing unexpected from the response body is echoed.
-async function brokerReason(response: Response) {
-  const body = obj(await response.json().catch(() => null));
-  const text = [body.clarification, body.message, body.errorMessage, body.code, body.type]
-    .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
-  const clean = text?.replace(/[^\p{L}\p{N} .,:;()'%_/-]/gu, '').trim().slice(0, 160);
-  return clean ? `：${clean}` : '';
-}
-
 /**
  * Used by studio.module for the Trading 212 dashboard (GET reads with caches and balance snapshots) and by
- * trading212-orders.service, which is the only caller of `placeOrder` and `instrumentCurrency`. Orders are
- * POSTed exactly once and never retried; gating, previews and passkey checks live in the orders service.
+ * trading212-orders.service, which calls `invalidate` after the order broker placed an order and reads
+ * `lastCurrency` for Settings. It only ever GETs: Studio cannot place orders (docs/t212-broker.md).
  */
 export function createTrading212Service(deps: Dependencies) {
   const db = deps.database;
@@ -129,32 +109,6 @@ export function createTrading212Service(deps: Dependencies) {
     inflight.set(cacheKey, task);
     try { return await task; } finally { if (inflight.get(cacheKey) === task) inflight.delete(cacheKey); }
   }
-  // Ticker → quote currency (Trading 212's currencyCode, e.g. USD, EUR or GBX for pence) per account, kept only as
-  // a small map because the full instrument list is several megabytes.
-  const instrumentCurrencies: Partial<Record<Environment, { at: number; byTicker: Map<string, string> }>> = {};
-  const instrumentLoads: Partial<Record<Environment, Promise<Map<string, string>>>> = {};
-  async function instrumentCurrency(env: Environment, ticker: string) {
-    const cached = instrumentCurrencies[env];
-    if (cached && now() - cached.at < INSTRUMENTS_TTL_MS) return cached.byTicker.get(ticker) ?? null;
-    let load = instrumentLoads[env];
-    if (!load) {
-      load = (async () => {
-        const list = await fetchJson<unknown>(env, '/equity/metadata/instruments');
-        const byTicker = new Map<string, string>();
-        for (const item of Array.isArray(list) ? list.map(obj) : []) {
-          const code = typeof item.ticker === 'string' ? item.ticker : '';
-          const currency = typeof item.currencyCode === 'string' ? item.currencyCode.trim() : '';
-          if (code && currency) byTicker.set(code, currency);
-        }
-        instrumentCurrencies[env] = { at: now(), byTicker };
-        return byTicker;
-      })();
-      instrumentLoads[env] = load;
-      // A failed load is not cached, so the next preview simply tries again.
-      void load.catch(() => {}).finally(() => { if (instrumentLoads[env] === load) delete instrumentLoads[env]; });
-    }
-    return (await load).get(ticker) ?? null;
-  }
   function basicAuth(auth: { key: string; secret: string }) {
     return `Basic ${Buffer.from(`${auth.key}:${auth.secret}`).toString('base64')}`;
   }
@@ -164,34 +118,6 @@ export function createTrading212Service(deps: Dependencies) {
     for (const key of [...cache.keys(), ...inflight.keys()]) {
       if (key.startsWith(`${env}:`)) { cache.delete(key); inflight.delete(key); }
     }
-  }
-  // Trading 212's order endpoints are not idempotent, so an order is POSTed exactly once: a timeout, 408 or
-  // 5xx leaves the outcome unknown and is reported with the T212_ORDER_UNKNOWN code instead of being retried.
-  async function placeOrder(env: Environment, type: 'market' | 'limit', body: OrderBody) {
-    const auth = credentials(env);
-    if (!auth) fail(`未配置 Trading 212 ${env === 'live' ? '实盘' : '模拟盘'}密钥文件`, 503);
-    let response: Response;
-    try {
-      response = await request(`${BASE_URL[env]}/equity/orders/${type}`, {
-        method: 'POST',
-        headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: basicAuth(auth) },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(15000), redirect: 'error',
-      });
-    } catch {
-      invalidate(env);
-      fail('Trading 212 没有响应，订单状态未知：请先在 Trading 212 里确认，Studio 不会自动重试', 502, ORDER_UNKNOWN);
-    }
-    invalidate(env);
-    if (response.status === 400) fail(`Trading 212 拒绝了这笔订单${await brokerReason(response)}`, 400);
-    if (response.status === 401) fail('Trading 212 认证失败：请检查 API Key / Secret 与实盘或模拟环境');
-    if (response.status === 403) fail('Trading 212 拒绝下单：API Key 需要开启 orders:execute 权限，或检查 IP 限制');
-    if (response.status === 408) fail('Trading 212 处理超时，订单状态未知：请先在 Trading 212 里确认', 504, ORDER_UNKNOWN);
-    if (response.status === 429) fail('Trading 212 下单过于频繁，请稍后再试', 429);
-    if (response.status >= 500) fail(`Trading 212 返回 ${response.status}，订单状态未知：请先在 Trading 212 里确认`, 502, ORDER_UNKNOWN);
-    // Any other 4xx is a definite refusal: the order was not accepted.
-    if (!response.ok) fail(`Trading 212 拒绝了这笔订单（${response.status}）${await brokerReason(response)}`, 400);
-    return obj(await response.json().catch(() => null));
   }
 
   function record(env: Environment, summary: Json) {
@@ -274,10 +200,9 @@ export function createTrading212Service(deps: Dependencies) {
       }));
     },
     overview,
-    placeOrder,
-    // Quote currency of any instrument (null when Trading 212 does not list the ticker), for valuing unheld tickers.
-    instrumentCurrency,
-    // Account currency from the latest stored snapshot, so settings can show the cap without calling the broker.
+    // Called after the order broker placed (or may have placed) an order, so the next read is fresh.
+    invalidate,
+    // Account currency from the latest stored snapshot, so Settings can show the cap before the broker read it.
     lastCurrency(env: Environment) {
       const row = db.prepare('SELECT currency FROM studio_t212_snapshots WHERE env = ? ORDER BY taken_at DESC LIMIT 1').get(env) as { currency: string } | undefined;
       return row?.currency || null;

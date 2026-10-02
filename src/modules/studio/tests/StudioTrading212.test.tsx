@@ -37,15 +37,21 @@ const OVERVIEW = {
     { ticker: 'MSFT_US_EQ', name: 'Microsoft', currency: 'USD', quantity: 1, averagePrice: 350, currentPrice: 330, value: 334.5, cost: 300, pnl: -5, fx: null, openedAt: '' },
   ],
 };
-const TRADING_OFF = { allowedEnvs: [], maxOrderValue: 500, passkeys: [], trustedOrigins: [], allowLocalhost: true, requirePasskey: false };
-const TRADING_LIVE = { ...TRADING_OFF, allowedEnvs: ['live'], currency: 'GBP' };
+const TAILNET_PASSKEY = { id: 'k-tailnet', rpId: 'desktop.tail1234.ts.net', label: 'Windows', createdAt: '2026-09-01T00:00:00Z', lastUsedAt: null };
+const LOCAL_PASSKEY = { id: 'k-local', rpId: window.location.hostname, label: 'iPad', createdAt: '2026-10-02T00:00:00Z', lastUsedAt: null };
+const TRADING_OFF = {
+  broker: { status: 'ok', keys: { live: true, demo: true } }, allowedEnvs: [], maxOrderValue: 500, maxOrdersPerHour: 10,
+  passkeys: [], trustedOrigins: [], demoConfirm: false,
+};
+// The broker allows live orders and this domain has a passkey, so the order form is available.
+const TRADING_LIVE = { ...TRADING_OFF, allowedEnvs: ['live'], currency: 'GBP', passkeys: [LOCAL_PASSKEY] };
+const AUTHENTICATION = { challenge: 'abc', rpId: 'localhost', allowCredentials: [{ id: 'cred-1', type: 'public-key' }], userVerification: 'required' };
+const ASSERTION = { id: 'cred-1', rawId: 'cred-1', type: 'public-key', response: { signature: 'sig' }, clientExtensionResults: {} };
 const PREVIEW = {
   id: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', env: 'live', ticker: 'AAPL_US_EQ', side: 'buy', type: 'market', quantity: 1,
   estimatedValue: 400, currency: 'GBP', maxOrderValue: 500, warnings: ['实盘账户：这笔订单会用真实资金成交'],
-  expiresAt: '2026-10-02T09:01:00Z', requires: 'confirm',
+  expiresAt: '2026-10-02T09:01:00Z', requires: 'passkey', authentication: AUTHENTICATION,
 };
-const TAILNET_PASSKEY = { id: 'k-tailnet', rpId: 'desktop.tail1234.ts.net', label: 'Windows', createdAt: '2026-09-01T00:00:00Z', lastUsedAt: null };
-const LOCAL_PASSKEY = { id: 'k-local', rpId: window.location.hostname, label: 'iPad', createdAt: '2026-10-02T00:00:00Z', lastUsedAt: null };
 
 // Every call gets a fresh Response because a body can only be read once; failures carry an optional error code.
 const json = (value: unknown, status = 200, code?: string) => async () => Response.json(status === 200 ? value : { error: value, code }, { status });
@@ -70,12 +76,11 @@ async function openOrder(name = '买入 Apple') {
 }
 const openBuyApple = () => openOrder('买入 Apple');
 
-// Fills one share of Apple, reviews it and accepts the second confirmation alert.
+// Fills one share of Apple, reviews it and confirms it with Face ID / Touch ID.
 async function confirmOneApple(sheet: HTMLElement) {
   fireEvent.change(within(sheet).getByLabelText('数量'), { target: { value: '1' } });
   fireEvent.click(within(sheet).getByRole('button', { name: '下一步' }));
-  fireEvent.click(await within(sheet).findByRole('button', { name: '买入下单' }));
-  fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '确认买入' }));
+  fireEvent.click(await within(sheet).findByRole('button', { name: /用面容 ID \/ 触控 ID 买入/ }));
   await waitFor(() => expect(trading.confirm).toHaveBeenCalledTimes(1));
 }
 
@@ -83,6 +88,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   webauthn.browserSupportsWebAuthn.mockReturnValue(true);
   webauthn.platformAuthenticatorIsAvailable.mockResolvedValue(true);
+  webauthn.startAuthentication.mockResolvedValue(ASSERTION);
 });
 afterEach(cleanup);
 
@@ -110,13 +116,25 @@ test('shows balance, signed day change, curve and positions, with no order contr
   expect(await screen.findByText('Apple')).toBeTruthy();
 });
 
-test('with trading off, 交易 explains which server setting enables it', async () => {
+test('with trading off, 交易 explains which broker setting enables it', async () => {
   account(TRADING_OFF);
   render(<StudioTrading212 />);
   fireEvent.click(await screen.findByRole('button', { name: '交易' }));
   const sheet = await screen.findByRole('dialog', { name: /交易/ });
   expect(within(sheet).getByText('实盘下单未开启')).toBeTruthy();
-  expect(within(sheet).getByText('STUDIO_T212_TRADING=live')).toBeTruthy();
+  expect(within(sheet).getByText('/var/lib/studio-trader/config.json')).toBeTruthy();
+  expect(trading.preview).not.toHaveBeenCalled();
+});
+
+test('without the order broker the view stays read-only and 交易 explains why', async () => {
+  account({ ...TRADING_LIVE, broker: { status: 'off', message: 'Studio 没有连接交易代理（STUDIO_T212_BROKER_SOCKET 未设置），下单已关闭。' } });
+  render(<StudioTrading212 />);
+  expect(await screen.findByText(/只读 · 实盘/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '交易' }));
+  const sheet = await screen.findByRole('dialog', { name: /交易/ });
+  expect(within(sheet).getByText('下单已关闭')).toBeTruthy();
+  expect(within(sheet).getByText(/STUDIO_T212_BROKER_SOCKET/)).toBeTruthy();
+  expect(within(sheet).queryByRole('button', { name: '下一步' })).toBeNull();
   expect(trading.preview).not.toHaveBeenCalled();
 });
 
@@ -161,7 +179,7 @@ test('an unheld ticker is not blocked by a cap in the wrong currency; the server
   fireEvent.change(within(sheet).getByLabelText('限价'), { target: { value: '150' } });
   // 15,000 pence would be far above a £500 cap if it were pounds.
   expect(within(sheet).getByText('≈ 15,000')).toBeTruthy();
-  expect(within(sheet).getByText(/预览时服务器换算成账户货币/)).toBeTruthy();
+  expect(within(sheet).getByText(/预览时交易代理换算成账户货币/)).toBeTruthy();
   fireEvent.click(within(sheet).getByRole('button', { name: '下一步' }));
   await waitFor(() => expect(trading.preview).toHaveBeenCalledWith(expect.objectContaining({ ticker: 'VODl_EQ', type: 'limit', quantity: 100, limitPrice: 150 })));
   expect(await within(sheet).findByText('≈ £150.00')).toBeTruthy();
@@ -183,10 +201,10 @@ test('全部 rounds the holding down to 6 decimals and explains the remainder; i
   expect(within(sheet).getByRole('alert').textContent).toBe('数量必须是大于 0 的数字');
 });
 
-test('without a passkey an order needs the review and a second destructive confirmation', async () => {
+test('a live order is reviewed and confirmed with Face ID / Touch ID; there is no double confirmation', async () => {
   account(TRADING_LIVE);
   trading.preview.mockImplementation(json(PREVIEW));
-  trading.confirm.mockImplementation(json({ order: { id: '9001', status: 'NEW', ticker: 'AAPL_US_EQ' }, method: 'confirm' }));
+  trading.confirm.mockImplementation(json({ order: { id: '9002', status: 'NEW', ticker: 'AAPL_US_EQ' }, method: 'passkey' }));
   const sheet = await openBuyApple();
   expect(within(sheet).getByText('实盘')).toBeTruthy();
   fireEvent.change(within(sheet).getByLabelText('数量'), { target: { value: '1' } });
@@ -196,7 +214,43 @@ test('without a passkey an order needs the review and a second destructive confi
   expect(await within(sheet).findByText('买入 1 股')).toBeTruthy();
   expect(trading.preview).toHaveBeenCalledWith({ env: 'live', ticker: 'AAPL_US_EQ', side: 'buy', type: 'market', quantity: 1 });
   expect(within(sheet).getByText('实盘账户：这笔订单会用真实资金成交')).toBeTruthy();
-  expect(within(sheet).getByText('二次确认')).toBeTruthy();
+  expect(within(sheet).queryByRole('button', { name: '买入下单' })).toBeNull();
+  fireEvent.click(within(sheet).getByRole('button', { name: /用面容 ID \/ 触控 ID 买入/ }));
+  await waitFor(() => expect(trading.confirm).toHaveBeenCalledWith(PREVIEW.id, { assertion: ASSERTION }));
+  expect(webauthn.startAuthentication).toHaveBeenCalledWith({ optionsJSON: AUTHENTICATION });
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  await waitFor(() => expect(toast.success).toHaveBeenCalledWith('已提交买入 1 股 AAPL_US_EQ', expect.anything()));
+  await waitFor(() => expect(mocks.overview).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+});
+
+test('a cancelled Face ID prompt places nothing and the same preview can be confirmed again', async () => {
+  account(TRADING_LIVE);
+  trading.preview.mockImplementation(json(PREVIEW));
+  trading.confirm.mockImplementation(json({ order: { id: '9002', status: 'NEW', ticker: 'AAPL_US_EQ' }, method: 'passkey' }));
+  webauthn.startAuthentication.mockRejectedValueOnce(Object.assign(new Error('cancelled'), { name: 'NotAllowedError' }));
+  const sheet = await openBuyApple();
+  fireEvent.change(within(sheet).getByLabelText('数量'), { target: { value: '1' } });
+  fireEvent.click(within(sheet).getByRole('button', { name: '下一步' }));
+  fireEvent.click(await within(sheet).findByRole('button', { name: /用面容 ID \/ 触控 ID 买入/ }));
+  expect((await within(sheet).findByRole('alert')).textContent).toContain('已取消面容 ID / 触控 ID 验证，订单没有提交');
+  expect(trading.confirm).not.toHaveBeenCalled();
+  fireEvent.click(within(sheet).getByRole('button', { name: /用面容 ID \/ 触控 ID 买入/ }));
+  await waitFor(() => expect(trading.confirm).toHaveBeenCalledTimes(1));
+});
+
+test('demo orders use a destructive confirmation only when the broker allows it', async () => {
+  account({ ...TRADING_OFF, allowedEnvs: ['demo'], demoConfirm: true, currency: 'GBP' });
+  mocks.status.mockImplementation(json([{ env: 'live', configured: false, source: null }, { env: 'demo', configured: true, source: 'demo' }]));
+  mocks.overview.mockImplementation(json({ ...OVERVIEW, env: 'demo' }));
+  const demoPreview = { ...PREVIEW, env: 'demo', warnings: [], requires: 'confirm', authentication: undefined };
+  trading.preview.mockImplementation(json(demoPreview));
+  trading.confirm.mockImplementation(json({ order: { id: '9001', status: 'NEW', ticker: 'AAPL_US_EQ' }, method: 'confirm' }));
+  const sheet = await openBuyApple();
+  fireEvent.change(within(sheet).getByLabelText('数量'), { target: { value: '1' } });
+  fireEvent.click(within(sheet).getByRole('button', { name: '下一步' }));
+  expect(await within(sheet).findByText('再确认一次（模拟盘）')).toBeTruthy();
+  expect(within(sheet).getByText(/实盘订单始终需要面容 ID/)).toBeTruthy();
 
   // Cancelling the alert places nothing.
   fireEvent.click(within(sheet).getByRole('button', { name: '买入下单' }));
@@ -208,30 +262,11 @@ test('without a passkey an order needs the review and a second destructive confi
   fireEvent.click(within(sheet).getByRole('button', { name: '买入下单' }));
   alert = await screen.findByRole('alertdialog', { name: '确认买入 1 股 AAPL_US_EQ（约 £400.00）？' });
   fireEvent.click(within(alert).getByRole('button', { name: '确认买入' }));
-  await waitFor(() => expect(trading.confirm).toHaveBeenCalledTimes(1));
-  expect(trading.confirm).toHaveBeenCalledWith(PREVIEW.id, { confirmed: true });
-  await waitFor(() => expect(toast.success).toHaveBeenCalledWith('已提交买入 1 股 AAPL_US_EQ', expect.anything()));
-  await waitFor(() => expect(mocks.overview).toHaveBeenCalledTimes(2));
-  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await waitFor(() => expect(trading.confirm).toHaveBeenCalledWith(PREVIEW.id, { confirmed: true }));
+  expect(webauthn.startAuthentication).not.toHaveBeenCalled();
 });
 
-test('with a passkey for this domain the order is confirmed with Face ID / Touch ID', async () => {
-  account({ ...TRADING_LIVE, passkeys: [LOCAL_PASSKEY] });
-  const authentication = { challenge: 'abc', rpId: 'localhost', allowCredentials: [{ id: 'cred-1', type: 'public-key' }], userVerification: 'required' };
-  const assertion = { id: 'cred-1', rawId: 'cred-1', type: 'public-key', response: { signature: 'sig' }, clientExtensionResults: {} };
-  trading.preview.mockImplementation(json({ ...PREVIEW, requires: 'passkey', authentication }));
-  trading.confirm.mockImplementation(json({ order: { id: '9002', status: 'NEW', ticker: 'AAPL_US_EQ' }, method: 'passkey' }));
-  webauthn.startAuthentication.mockResolvedValue(assertion);
-  const sheet = await openBuyApple();
-  fireEvent.change(within(sheet).getByLabelText('数量'), { target: { value: '1' } });
-  fireEvent.click(within(sheet).getByRole('button', { name: '下一步' }));
-  fireEvent.click(await within(sheet).findByRole('button', { name: /用面容 ID \/ 触控 ID 买入/ }));
-  await waitFor(() => expect(trading.confirm).toHaveBeenCalledWith(PREVIEW.id, { assertion }));
-  expect(webauthn.startAuthentication).toHaveBeenCalledWith({ optionsJSON: authentication });
-  expect(screen.queryByRole('alertdialog')).toBeNull();
-});
-
-test('with Face ID enabled on another domain, the sheet offers to enable it here instead of a double confirmation', async () => {
+test('with Face ID enabled only on another domain, the sheet asks for an enrollment code to enable it here', async () => {
   account({ ...TRADING_LIVE, passkeys: [TAILNET_PASSKEY] });
   trading.config
     .mockImplementationOnce(json({ ...TRADING_LIVE, passkeys: [TAILNET_PASSKEY] }))
@@ -244,28 +279,29 @@ test('with Face ID enabled on another domain, the sheet offers to enable it here
   expect(within(sheet).getByText(`先为 ${window.location.hostname} 启用面容 ID / 触控 ID`)).toBeTruthy();
   expect(within(sheet).getByText(/desktop\.tail1234\.ts\.net/)).toBeTruthy();
   expect(within(sheet).queryByRole('button', { name: '下一步' })).toBeNull();
+  expect(within(sheet).queryByLabelText('登录密码')).toBeNull();
   const enable = within(sheet).getByRole('button', { name: '启用面容 ID / 触控 ID 下单' });
-  await waitFor(() => expect((within(sheet).getByLabelText('登录密码') as HTMLInputElement).disabled).toBe(false));
+  await waitFor(() => expect((within(sheet).getByLabelText('注册码') as HTMLInputElement).disabled).toBe(false));
   expect((enable as HTMLButtonElement).disabled).toBe(true);
-  fireEvent.change(within(sheet).getByLabelText('登录密码'), { target: { value: 'studio-password' } });
+  fireEvent.change(within(sheet).getByLabelText('注册码'), { target: { value: ' ABCDE-FGHJK-MNPQR-STVWX ' } });
   fireEvent.click(enable);
 
   await waitFor(() => expect(trading.registerPasskey).toHaveBeenCalledTimes(1));
-  expect(trading.passkeyOptions).toHaveBeenCalledWith('studio-password');
+  expect(trading.passkeyOptions).toHaveBeenCalledWith('ABCDE-FGHJK-MNPQR-STVWX');
   // The refreshed settings include this domain, so the order form appears.
   expect(await within(sheet).findByRole('button', { name: '下一步' })).toBeTruthy();
   expect(trading.preview).not.toHaveBeenCalled();
 });
 
-test('a server refusal of the double confirmation also leads to enabling Face ID here', async () => {
+test('a broker refusal for a missing passkey also leads to enabling Face ID here', async () => {
   account(TRADING_LIVE);
-  trading.preview.mockImplementation(json('你已在 desktop.tail1234.ts.net 启用面容 ID / 触控 ID，二次确认不再可用', 403, 'T212_PASSKEY_REQUIRED'));
+  trading.preview.mockImplementation(json('先为 localhost 启用通行密钥：交易代理只接受通行密钥确认的订单', 403, 'T212_PASSKEY_REQUIRED'));
   const sheet = await openBuyApple();
   fireEvent.change(within(sheet).getByLabelText('数量'), { target: { value: '1' } });
   fireEvent.click(within(sheet).getByRole('button', { name: '下一步' }));
   expect(await within(sheet).findByText(`先为 ${window.location.hostname} 启用面容 ID / 触控 ID`)).toBeTruthy();
-  expect(within(sheet).getByText(/二次确认不再可用/)).toBeTruthy();
-  expect(within(sheet).getByLabelText('登录密码')).toBeTruthy();
+  expect(within(sheet).getByText(/交易代理只接受通行密钥确认的订单/)).toBeTruthy();
+  expect(within(sheet).getByLabelText('注册码')).toBeTruthy();
 });
 
 test('the sheet cannot be closed while a confirmation is in flight, and an unknown outcome sends the user to Trading 212', async () => {

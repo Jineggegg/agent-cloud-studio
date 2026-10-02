@@ -116,7 +116,7 @@ export function StudioTrading212() {
   const current = overview?.env === env ? overview : null;
   const format = money(current?.currency ?? 'GBP');
   const total = current?.positions.reduce((sum, position) => sum + position.value, 0) || 1;
-  const tradable = Boolean(trading?.allowedEnvs.includes(env));
+  const tradable = Boolean(trading?.broker.status === 'ok' && trading.allowedEnvs.includes(env));
   return <div className="t212 studio-stagger">
     <div className="t212-toolbar">
       {configured.length > 1 && <div className="segmented" role="radiogroup" aria-label="账户">
@@ -202,7 +202,7 @@ export function StudioTrading212() {
         </div>
       </section>}
       <p className="ios-section-footer">数据来自 Trading 212 公共 API（Beta），{new Date(current.fetchedAt).toLocaleTimeString('zh-CN')} 更新。{tradable && trading
-        ? `每笔订单都要经过面容 ID / 触控 ID 或二次确认，单笔上限 ${format(trading.maxOrderValue)}。`
+        ? `订单由交易代理核对并用面容 ID / 触控 ID 确认，单笔上限 ${format(trading.maxOrderValue)}。`
         : '当前账户只读，不会下单或修改账户。'}</p>
     </>}
 

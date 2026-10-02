@@ -95,9 +95,10 @@ function errorCode(reason: unknown) {
 }
 
 /**
- * Used by StudioTrading212 to place one Trading 212 order: form with a live estimate against the cap, a
- * server-checked review, then Face ID / Touch ID (passkey) or, while the user has no passkey anywhere, a second
- * destructive confirmation. Where a passkey is required but missing, it offers to enable one for this domain.
+ * Used by StudioTrading212 to place one Trading 212 order through the order broker: form with a live estimate
+ * against the cap, a broker-checked review, then Face ID / Touch ID (passkey). A second destructive confirmation
+ * replaces the passkey only for demo orders the broker marks as `requires: 'confirm'`. Where a passkey is
+ * required but missing, it offers to enable one for this domain with an enrollment code.
  */
 export function StudioT212OrderSheet({ env, config, positions, format, initialTicker, initialSide, onClose, onPlaced, onTradingChange }: {
   env: T212Env; config: T212TradingConfig; positions: T212Position[]; format: (value: number) => string;
@@ -139,11 +140,12 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
   // Whether the sheet is still mounted, so an outcome that arrives after it was closed is reported with a toast.
   const mounted = useRef(true);
 
-  const enabled = config.allowedEnvs.includes(env);
+  const enabled = config.broker.status === 'ok' && config.allowedEnvs.includes(env);
   const host = window.location.hostname;
   const passkeyHere = config.passkeys.some(item => item.rpId === host);
   const otherDomains = [...new Set(config.passkeys.map(item => item.rpId))].filter(rpId => rpId !== host);
-  const needsPasskey = !passkeyHere && (config.requirePasskey || config.passkeys.length > 0 || passkeyRefused);
+  // The broker accepts only passkey-confirmed orders, except demo orders when the owner allowed a plain confirmation.
+  const needsPasskey = passkeyRefused || (!passkeyHere && !(env === 'demo' && config.demoConfirm));
   const code = ticker.trim();
   const position = positions.find(item => item.ticker === code && item.quantity > 0);
   const orderType: OrderType = position ? type : 'limit';
@@ -274,7 +276,7 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
   const direction = preview ? 1 : -1;
   const estimateText = estimate <= 0 ? '—' : converted ? `≈ ${format(estimate)}` : `≈ ${estimate.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`;
   const estimateNote = !converted && estimate > 0
-    ? `按标的计价货币计算；预览时服务器换算成账户货币，再按单笔上限 ${format(cap)} 检查`
+    ? `按标的计价货币计算；预览时交易代理换算成账户货币，再按单笔上限 ${format(cap)} 检查`
     : overCap ? `超过单笔上限 ${format(cap)}，请减少数量` : `单笔上限 ${format(cap)}`;
 
   const form = <m.form key="form" className="t212-order-step" custom={direction} variants={STEP_VARIANTS} initial="enter" animate="center" exit="exit"
@@ -359,7 +361,7 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
         <div><dt>账户</dt><dd>{preview.env === 'live' ? '实盘 · 真实资金' : '模拟盘'}</dd></div>
         <div><dt>类型</dt><dd>{preview.type === 'market' ? '市价单' : `限价 ${preview.limitPrice} · ${preview.timeValidity === 'GOOD_TILL_CANCEL' ? '撤单前有效' : '当日有效'}`}</dd></div>
         <div><dt>单笔上限</dt><dd>{format(preview.maxOrderValue)}</dd></div>
-        <div><dt>确认方式</dt><dd>{preview.requires === 'passkey' ? '面容 ID / 触控 ID' : '二次确认'}</dd></div>
+        <div><dt>确认方式</dt><dd>{preview.requires === 'passkey' ? '面容 ID / 触控 ID' : '再确认一次（模拟盘）'}</dd></div>
       </dl>
     </section>
     {preview.warnings.length > 0 && <ul className="t212-order-warnings" aria-label="提醒">
@@ -375,11 +377,11 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
         <div>
           <strong>订单状态未知</strong>
           <span>{error}</span>
-          <span>请打开 Trading 212 查看订单记录，确认这笔订单是否已经提交，不要直接重新下单。Studio 不会自动重试；几分钟内再下相同的订单需要你明确确认。</span>
+          <span>请打开 Trading 212 查看订单记录，确认这笔订单是否已经提交，不要直接重新下单。交易代理不会自动重试；几分钟内再下相同的订单需要你明确确认。</span>
         </div>
       </div>
       : error && <p className="studio-feedback error" role="alert">{error}</p>}
-    {preview.requires === 'confirm' && !expired && <p className="t212-order-note">还没有启用面容 ID / 触控 ID，下单前需要再确认一次。可以在「设置 → 交易安全」里启用。</p>}
+    {preview.requires === 'confirm' && !expired && <p className="t212-order-note">模拟盘：交易代理允许不用面容 ID / 触控 ID，下单前需要再确认一次。实盘订单始终需要面容 ID / 触控 ID。</p>}
     <div className="t212-order-actions">
       {unknownOutcome
         ? <button type="button" className="ios-button tinted t212-order-primary" onClick={close}>关闭，去 Trading 212 核对</button>
@@ -401,12 +403,10 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
     <div className="t212-order-off">
       <ScanFace size={32} strokeWidth={1.5} aria-hidden="true" />
       <strong>先为 {host} 启用面容 ID / 触控 ID</strong>
-      <span>{config.requirePasskey
-        ? '服务器要求每笔订单都用面容 ID / 触控 ID 确认（STUDIO_T212_REQUIRE_PASSKEY=1）。'
-        : otherDomains.length
-          ? `你已在 ${otherDomains.join('、')} 启用了面容 ID / 触控 ID。为了不让其他网址绕过它，这里不能再用二次确认下单。`
-          : error || '服务器要求先为这个网址启用面容 ID / 触控 ID。'}</span>
-      <span>启用需要输入 Studio 登录密码，之后这个网址的每笔订单都用面容 ID / 触控 ID 确认。</span>
+      <span>{otherDomains.length
+        ? `你已在 ${otherDomains.join('、')} 启用了面容 ID / 触控 ID；通行密钥按网址区分，这个网址需要自己的一把。`
+        : error || '交易代理只接受用面容 ID / 触控 ID 确认的订单。'}</span>
+      <span>启用需要服务器上生成的一次性注册码，之后这个网址的每笔订单都用面容 ID / 触控 ID 确认。</span>
     </div>
     <StudioT212PasskeyEnroll again={false} onEnrolled={async () => { setPasskeyRefused(false); setError(''); await onTradingChange(); }} />
   </m.div>;
@@ -414,9 +414,17 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
   const off = <m.div key="off" className="t212-order-step" custom={direction} variants={STEP_VARIANTS} initial="enter" animate="center" exit="exit">
     <div className="t212-order-off">
       <ShieldCheck size={32} strokeWidth={1.5} aria-hidden="true" />
-      <strong>{env === 'live' ? '实盘' : '模拟盘'}下单未开启</strong>
-      <span>在服务器的 .env 里设置 <code>STUDIO_T212_TRADING={env}</code>（或 <code>both</code> 同时开启实盘和模拟盘），然后重启 Studio。</span>
-      <span>单笔上限由 <code>STUDIO_T212_MAX_ORDER_VALUE</code> 控制，默认 500（账户货币）。开启后每笔订单都要经过面容 ID / 触控 ID 或二次确认。</span>
+      {config.broker.status === 'ok'
+        ? <>
+          <strong>{env === 'live' ? '实盘' : '模拟盘'}下单未开启</strong>
+          <span>在服务器的 <code>/var/lib/studio-trader/config.json</code> 里把 <code>"{env}"</code> 加入 <code>allowedEnvs</code>，然后重启交易代理。</span>
+          <span>单笔上限和每小时笔数也在那里设置，由交易代理检查；每笔订单都要用面容 ID / 触控 ID 确认。</span>
+        </>
+        : <>
+          <strong>{config.broker.status === 'off' ? '下单已关闭' : '交易代理无法连接'}</strong>
+          <span>{config.broker.message}</span>
+          <span>下单由独立的交易代理完成，Studio 自己不持有下单密钥，见 <code>docs/t212-broker.md</code>。</span>
+        </>}
     </div>
     <div className="t212-order-actions"><button type="button" className="ios-button tinted t212-order-primary" onClick={close}>好</button></div>
   </m.div>;

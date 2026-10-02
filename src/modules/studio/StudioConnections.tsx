@@ -160,7 +160,7 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
         </div>)}
         {t212 === null && <div className="ios-row no-icon"><span className="ios-row-body"><small>正在检查…</small></span></div>}
       </div>
-      <p className="ios-section-footer">密钥只保存在服务器指定的 .env 文件里（STUDIO_T212_ENV_FILE / STUDIO_T212_DEMO_ENV_FILE），下单默认关闭，开启方式和安全设置见下方「交易安全」。</p>
+      <p className="ios-section-footer">这里的密钥只用于读取（STUDIO_T212_ENV_FILE / STUDIO_T212_DEMO_ENV_FILE），不应开启 orders:execute；下单由独立的交易代理用它自己的密钥完成，见下方「交易安全」。</p>
     </section>
 
     <StudioSettingsTrading />

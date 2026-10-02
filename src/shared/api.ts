@@ -205,8 +205,9 @@ export const api = {
       body: JSON.stringify({ code }),
     }),
     // ── v4 track: orders — endpoints below this line ──
-    // Trading 212 order placement (single-use previews confirmed by a passkey or a double confirmation) and passkeys.
-    // Passkey changes are stepped up with the Studio password (or, for a removal, that passkey's assertion).
+    // Trading 212 orders through the separate order broker: single-use previews confirmed with a passkey (a plain
+    // confirmation only for demo orders when the broker allows it). Enrolling a passkey needs an enrollment code
+    // printed on the server; removing one needs a passkey of this domain or such a code.
     t212Trading: {
       config: () => get('/api/studio/trading212/trading'),
       preview: (input: {
@@ -215,10 +216,10 @@ export const api = {
       }) => post('/api/studio/trading212/orders/preview', input),
       confirm: (id: string, proof: { assertion: unknown } | { confirmed: true }) =>
         post(`/api/studio/trading212/orders/${encodeURIComponent(id)}/confirm`, proof),
-      passkeyOptions: (password: string) => post('/api/studio/trading212/passkey/options', { password }),
+      passkeyOptions: (enrollmentCode: string) => post('/api/studio/trading212/passkey/options', { enrollmentCode }),
       registerPasskey: (response: unknown) => post('/api/studio/trading212/passkey', { response }),
       removalOptions: (id: string) => post(`/api/studio/trading212/passkey/${encodeURIComponent(id)}/remove/options`),
-      removePasskey: (id: string, proof: { password: string } | { assertion: unknown }) =>
+      removePasskey: (id: string, proof: { enrollmentCode: string } | { assertion: unknown }) =>
         post(`/api/studio/trading212/passkey/${encodeURIComponent(id)}/remove`, proof),
     },
     // ── v4 track: mail — endpoints below this line ──

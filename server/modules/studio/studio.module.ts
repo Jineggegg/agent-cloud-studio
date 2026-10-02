@@ -1,7 +1,6 @@
 import path from 'node:path';
 import os from 'node:os';
 import { existsSync, realpathSync } from 'node:fs';
-import { createRequire } from 'node:module';
 
 import { getConnection, getDatabasePath, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { createProject } from '@/modules/projects/index.js';
@@ -21,6 +20,7 @@ import { createMailRouter } from './mail/mail.routes.js';
 import { createTrading212Service } from './trading212.service.js';
 import { createTrading212Router } from './trading212.routes.js';
 import { createTrading212OrdersService } from './trading212-orders.service.js';
+import { createTrading212BrokerClient } from './trading212-broker.client.js';
 import { createTrading212OrdersRouter } from './trading212-orders.routes.js';
 import { createLinkChecker } from './link-check.service.js';
 import { createRemoteHostsService } from './remote-hosts.service.js';
@@ -143,25 +143,12 @@ export function createStudioModule() {
   // Both front doors (STUDIO_PUBLIC_ORIGIN, STUDIO_TAILNET_ORIGIN) reach this one backend.
   routes.use('/network', createStudioNetworkRouter(createStudioNetworkService()));
   // ── v4 track: orders — create its service and mount its router below this line ──
-  // Order placement is off unless STUDIO_T212_TRADING allows an account; each order is capped and needs a passkey (or,
-  // only while the user has none, a double confirmation). Only requests from these origins may trade; localhost only
-  // with STUDIO_T212_ALLOW_LOCALHOST=1. Passkey changes are stepped up with the Studio account password.
-  // bcrypt has no TypeScript declarations here, so its compare function is narrowed like in the auth module.
-  const bcrypt = createRequire(import.meta.url)('bcrypt') as { compare(password: string, passwordHash: string): Promise<boolean> };
+  // Studio holds no order-capable key. Orders and passkeys go to the separate order broker (its own OS user, key,
+  // passkeys, cap and origin allowlist) over STUDIO_T212_BROKER_SOCKET; without it ordering is off. docs/t212-broker.md
+  const brokerSocket = process.env.STUDIO_T212_BROKER_SOCKET?.trim();
   const trading212Orders = createTrading212OrdersService({
-    database: getConnection(),
+    broker: brokerSocket ? createTrading212BrokerClient({ socketPath: brokerSocket }) : null,
     trading212,
-    trading: process.env.STUDIO_T212_TRADING,
-    maxOrderValue: process.env.STUDIO_T212_MAX_ORDER_VALUE,
-    requirePasskey: process.env.STUDIO_T212_REQUIRE_PASSKEY,
-    allowLocalhost: process.env.STUDIO_T212_ALLOW_LOCALHOST,
-    origins: [process.env.STUDIO_PUBLIC_ORIGIN, process.env.STUDIO_TAILNET_ORIGIN],
-    async verifyPassword(userId, password) {
-      // getUserById omits the hash, so the active account is re-read by username for the comparison.
-      const account = userDb.getUserById(userId);
-      const row = account ? userDb.getUserByUsername(account.username) : undefined;
-      return row ? bcrypt.compare(password, row.password_hash) : false;
-    },
   });
   routes.use('/trading212', createTrading212OrdersRouter(trading212Orders));
   // ── v4 track: mail — create its service and mount its router below this line ──

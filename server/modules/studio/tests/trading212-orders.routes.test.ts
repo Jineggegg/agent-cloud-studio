@@ -1,46 +1,46 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import http from 'node:http';
+import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import type { AddressInfo } from 'node:net';
 
-import Database from 'better-sqlite3';
 import express from 'express';
 
 import { AppError } from '@/shared/utils.js';
 
-import { createTrading212Service } from '../trading212.service.js';
-import { createTrading212Router } from '../trading212.routes.js';
-import { createTrading212OrdersService } from '../trading212-orders.service.js';
+import { createTrading212BrokerClient } from '../trading212-broker.client.js';
 import { createTrading212OrdersRouter } from '../trading212-orders.routes.js';
+import { createTrading212OrdersService } from '../trading212-orders.service.js';
 
 const ORIGIN = 'https://studio.ajarche.com';
+const PREVIEW_ID = '11111111-2222-3333-4444-555555555555';
 
 type Call = (route: string, init?: { method?: string; body?: unknown; origin?: string | null; user?: number | null }) => Promise<{ status: number; body: any }>;
+type Seen = { url: string; body: any };
 
-async function withApp(run: (call: Call, posts: () => string[], setOrderStatus: (status: number) => void) => Promise<void>) {
+async function withApp(run: (call: Call, seen: Seen[]) => Promise<void>, options: { broker?: boolean } = {}) {
   const directory = mkdtempSync(path.join(os.tmpdir(), 't212-orders-routes-'));
-  const envFile = path.join(directory, '.env');
-  writeFileSync(envFile, 'TRADING212_API_KEY=fake-route-key\nTRADING212_API_SECRET=fake-route-secret\n');
-  const database = new Database(':memory:');
-  const brokerPosts: string[] = [];
-  let orderStatus = 200;
-  const trading212 = createTrading212Service({
-    database, envFiles: { demo: envFile },
-    request: (async (url: string, init: RequestInit) => {
-      if (init.method === 'POST') {
-        brokerPosts.push(String(init.body));
-        return orderStatus === 200 ? Response.json({ id: 1, status: 'NEW' }) : new Response('', { status: orderStatus });
-      }
-      if (String(url).endsWith('/summary')) return Response.json({ currency: 'GBP', totalValue: 100, cash: { availableToTrade: 100 }, investments: {} });
-      if (String(url).includes('/positions')) return Response.json([{ instrument: { ticker: 'AAPL_US_EQ' }, quantity: 1, currentPrice: 200, walletImpact: { currentValue: 160 } }]);
-      return Response.json({ items: [] });
-    }) as unknown as typeof fetch,
+  const socketPath = path.join(directory, 'broker.sock');
+  const seen: Seen[] = [];
+  // The fake broker answers every call with what the request asked for, so the tests can see what Studio relayed.
+  const broker = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : undefined;
+      seen.push({ url: String(req.url), body });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(req.url === '/v1/status'
+        ? { version: 1, allowedEnvs: ['demo'], maxOrderValue: 500, maxOrdersPerHour: 10, origins: [ORIGIN], demoConfirm: false, keys: { live: false, demo: true }, currencies: { demo: 'GBP' }, passkeys: [] }
+        : { relayed: req.url }));
+    });
   });
-  const orders = createTrading212OrdersService({
-    database, trading212, trading: 'demo', origins: [ORIGIN],
-    verifyPassword: async (_userId, password) => password === 'route-password',
+  await new Promise<void>(resolve => broker.listen(socketPath, resolve));
+  const service = createTrading212OrdersService({
+    broker: options.broker === false ? null : createTrading212BrokerClient({ socketPath }),
+    trading212: { lastCurrency: () => null, invalidate: () => {} },
   });
   const app = express();
   app.use(express.json());
@@ -49,124 +49,93 @@ async function withApp(run: (call: Call, posts: () => string[], setOrderStatus: 
     if (id) (req as express.Request & { user?: { id: number } }).user = { id };
     next();
   });
-  // Mounted exactly like studio.module: the read-only router first, then the orders router on the same path.
-  app.use('/trading212', createTrading212Router(trading212));
-  app.use('/trading212', createTrading212OrdersRouter(orders));
+  app.use('/trading212', createTrading212OrdersRouter(service));
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    res.status(error instanceof AppError ? error.statusCode : 500).json({ error: error instanceof Error ? error.message : 'error' });
+    res.status(error instanceof AppError ? error.statusCode : 500).json({ error: error instanceof Error ? error.message : 'error', code: error instanceof AppError ? error.code : undefined });
   });
   const server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
     await run(async (route, init = {}) => {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const headers: Record<string, string> = { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (iPad; CPU OS 18_0)' };
       if (init.user !== null) headers['x-test-user'] = String(init.user ?? 1);
       if (init.origin !== null) headers.Origin = init.origin ?? ORIGIN;
       const response = await fetch(`${base}${route}`, { method: init.method ?? 'GET', headers, body: init.body === undefined ? undefined : JSON.stringify(init.body) });
       return { status: response.status, body: await response.json() };
-    }, () => brokerPosts, status => { orderStatus = status; });
+    }, seen);
   } finally {
     server.close();
-    database.close();
+    broker.close();
     rmSync(directory, { recursive: true, force: true });
   }
 }
 
-test('both routers share /trading212 and the orders routes require a signed-in user and a trusted origin', async () => {
-  await withApp(async (call, posts) => {
-    assert.equal((await call('/trading212/status')).status, 200);
+test('routes need a signed-in user and an exact Origin header before anything reaches the broker', async () => {
+  await withApp(async (call, seen) => {
+    assert.equal((await call('/trading212/trading', { user: null })).status, 401);
+    assert.equal((await call('/trading212/orders/preview', { method: 'POST', body: {}, user: null })).status, 401);
+    for (const origin of [null, 'null', `${ORIGIN}/`, 'not a url']) {
+      const reply = await call('/trading212/orders/preview', { method: 'POST', body: { env: 'demo' }, origin });
+      assert.deepEqual([reply.status, reply.body.code], [403, 'T212_UNTRUSTED_ORIGIN'], String(origin));
+    }
+    assert.equal(seen.length, 0);
     const config = await call('/trading212/trading');
     assert.equal(config.status, 200);
-    assert.deepEqual(config.body.allowedEnvs, ['demo']);
-    assert.equal(config.body.maxOrderValue, 500);
-    assert.equal((await call('/trading212/trading', { user: null })).status, 401);
-
-    const valid = { env: 'demo', ticker: 'AAPL_US_EQ', side: 'buy', type: 'market', quantity: 0.5 };
-    assert.equal((await call('/trading212/orders/preview', { method: 'POST', body: valid, origin: null })).status, 403);
-    assert.equal((await call('/trading212/orders/preview', { method: 'POST', body: valid, origin: 'https://evil.example' })).status, 403);
-    assert.equal(posts().length, 0);
+    assert.deepEqual([config.body.broker.status, config.body.allowedEnvs, config.body.currency], ['ok', ['demo'], 'GBP']);
   });
 });
 
-test('order input is validated before the service runs', async () => {
-  await withApp(async (call) => {
-    const base = { env: 'demo', ticker: 'AAPL_US_EQ', side: 'buy', type: 'market', quantity: 1 };
-    const invalid = [
-      { ...base, env: 'paper' },
-      { ...base, ticker: 'AAPL US' },
-      { ...base, side: 'short' },
-      { ...base, quantity: -1 },
-      { ...base, quantity: '1' },
-      { ...base, quantity: 0.1234567 },
-      { ...base, limitPrice: 10 },
-      { ...base, type: 'limit' },
-      { ...base, type: 'limit', limitPrice: 1.23456 },
-      { ...base, type: 'limit', limitPrice: 10, timeValidity: 'FOREVER' },
-    ];
-    for (const body of invalid) {
-      const response = await call('/trading212/orders/preview', { method: 'POST', body });
-      assert.equal(response.status, 400, JSON.stringify(body));
-    }
+test('only order fields and the origin are relayed; the broker validates the values', async () => {
+  await withApp(async (call, seen) => {
+    const body = { env: 'demo', ticker: 'AAPL_US_EQ', side: 'buy', type: 'limit', quantity: 1, limitPrice: 10, timeValidity: 'DAY', userId: 7, acknowledgeUnknown: 'yes' };
+    assert.equal((await call('/trading212/orders/preview', { method: 'POST', body })).status, 200);
+    assert.deepEqual(seen[0], {
+      url: '/v1/orders/preview',
+      body: { origin: ORIGIN, order: { env: 'demo', ticker: 'AAPL_US_EQ', side: 'buy', type: 'limit', quantity: 1, limitPrice: 10, timeValidity: 'DAY' }, acknowledgeUnknown: false },
+    });
   });
 });
 
-test('preview then confirm over HTTP places one order; malformed confirmations are refused', async () => {
-  await withApp(async (call, posts) => {
-    const preview = await call('/trading212/orders/preview', { method: 'POST', body: { env: 'demo', ticker: 'AAPL_US_EQ', side: 'sell', type: 'market', quantity: 1 } });
-    assert.equal(preview.status, 200);
-    assert.equal(preview.body.requires, 'confirm');
-    assert.equal(preview.body.estimatedValue, 160);
-
-    assert.equal((await call(`/trading212/orders/${preview.body.id}/confirm`, { method: 'POST', body: {} })).status, 400);
-    assert.equal((await call(`/trading212/orders/${preview.body.id}/confirm`, { method: 'POST', body: { assertion: { id: 'x' } } })).status, 400);
+test('confirming relays the passkey assertion and rejects malformed proofs and ids', async () => {
+  await withApp(async (call, seen) => {
+    const assertion = { id: 'cred', rawId: 'cred', type: 'public-key', response: { signature: 'sig' } };
+    assert.equal((await call(`/trading212/orders/${PREVIEW_ID}/confirm`, { method: 'POST', body: { assertion } })).status, 200);
+    assert.deepEqual(seen[0], { url: '/v1/orders/confirm', body: { origin: ORIGIN, id: PREVIEW_ID, assertion } });
+    assert.equal((await call(`/trading212/orders/${PREVIEW_ID}/confirm`, { method: 'POST', body: {} })).status, 400);
+    assert.equal((await call(`/trading212/orders/${PREVIEW_ID}/confirm`, { method: 'POST', body: { assertion: { id: 'x' } } })).status, 400);
     assert.equal((await call('/trading212/orders/not-an-id/confirm', { method: 'POST', body: { confirmed: true } })).status, 404);
-
-    const placed = await call(`/trading212/orders/${preview.body.id}/confirm`, { method: 'POST', body: { confirmed: true } });
-    assert.equal(placed.status, 200);
-    assert.equal(placed.body.order.status, 'NEW');
-    assert.deepEqual(posts(), [JSON.stringify({ ticker: 'AAPL_US_EQ', quantity: -1 })]);
-
-    assert.equal((await call('/trading212/passkey/not-an-id/remove', { method: 'POST', body: { password: 'route-password' } })).status, 404);
-    assert.equal((await call('/trading212/passkey', { method: 'POST', body: { response: { id: 'x' } } })).status, 400);
+    assert.equal(seen.length, 1);
   });
 });
 
-test('passkey changes need a step-up: a password to add, a password or that passkey to remove', async () => {
-  await withApp(async (call) => {
-    const id = '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f';
-    assert.equal((await call('/trading212/passkey/options', { method: 'POST', body: {} })).status, 400);
-    assert.equal((await call('/trading212/passkey/options', { method: 'POST', body: { password: 42 } })).status, 400);
-    assert.equal((await call('/trading212/passkey/options', { method: 'POST', body: { password: 'x'.repeat(1025) } })).status, 400);
-    assert.equal((await call('/trading212/passkey/options', { method: 'POST', body: { password: 'wrong' } })).status, 403);
-    assert.equal((await call('/trading212/passkey/options', { method: 'POST', body: { password: 'route-password' }, origin: 'https://evil.example' })).status, 403);
-    const options = await call('/trading212/passkey/options', { method: 'POST', body: { password: 'route-password' } });
-    assert.equal(options.status, 200);
-    assert.equal(options.body.authenticatorSelection.userVerification, 'required');
+test('passkey enrollment asks for the enrollment code, not the Studio password', async () => {
+  await withApp(async (call, seen) => {
+    const missing = await call('/trading212/passkey/options', { method: 'POST', body: { password: 'studio-password' } });
+    assert.equal(missing.status, 400);
+    assert.match(missing.body.error, /注册码/);
+    assert.equal((await call('/trading212/passkey/options', { method: 'POST', body: { enrollmentCode: 'ABCDE-FGHJK-MNPQR-STVWX' } })).status, 200);
+    assert.deepEqual(seen[0].body, { origin: ORIGIN, enrollmentCode: 'ABCDE-FGHJK-MNPQR-STVWX' });
 
-    // Removal: no proof is malformed; a valid proof for a passkey that does not exist is a 404.
-    assert.equal((await call(`/trading212/passkey/${id}/remove`, { method: 'POST', body: {} })).status, 400);
-    assert.equal((await call(`/trading212/passkey/${id}/remove`, { method: 'POST', body: { assertion: { id: 'x' } } })).status, 400);
-    assert.equal((await call(`/trading212/passkey/${id}/remove`, { method: 'POST', body: { password: 'route-password' } })).status, 404);
-    assert.equal((await call(`/trading212/passkey/${id}/remove/options`, { method: 'POST' })).status, 404);
-    assert.equal((await call(`/trading212/passkey/${id}/remove`, { method: 'POST', body: { password: 'route-password' }, user: null })).status, 401);
+    const response = { id: 'cred', rawId: 'cred', type: 'public-key', response: { attestationObject: 'x' } };
+    assert.equal((await call('/trading212/passkey', { method: 'POST', body: { response } })).status, 201);
+    assert.deepEqual(seen[1].body, { origin: ORIGIN, response, label: 'iPad' });
+
+    assert.equal((await call(`/trading212/passkey/${PREVIEW_ID}/remove/options`, { method: 'POST', body: {} })).status, 200);
+    assert.deepEqual(seen[2].body, { origin: ORIGIN, id: PREVIEW_ID });
+    assert.equal((await call(`/trading212/passkey/${PREVIEW_ID}/remove`, { method: 'POST', body: { password: 'studio-password' } })).status, 400);
+    assert.equal((await call(`/trading212/passkey/${PREVIEW_ID}/remove`, { method: 'POST', body: { enrollmentCode: 'CODE-CODE' } })).status, 200);
+    assert.deepEqual(seen[3].body, { origin: ORIGIN, id: PREVIEW_ID, enrollmentCode: 'CODE-CODE' });
   });
 });
 
-test('an identical order after an unknown outcome needs acknowledgeUnknown to be literally true', async () => {
-  await withApp(async (call, posts, setOrderStatus) => {
-    const order = { env: 'demo', ticker: 'AAPL_US_EQ', side: 'sell', type: 'market', quantity: 1 };
-    setOrderStatus(504);
-    const preview = await call('/trading212/orders/preview', { method: 'POST', body: order });
-    const unknown = await call(`/trading212/orders/${preview.body.id}/confirm`, { method: 'POST', body: { confirmed: true } });
-    assert.equal(unknown.status, 502);
-    assert.match(unknown.body.error, /订单状态未知/);
-    setOrderStatus(200);
-
-    assert.equal((await call('/trading212/orders/preview', { method: 'POST', body: order })).status, 409);
-    assert.equal((await call('/trading212/orders/preview', { method: 'POST', body: { ...order, acknowledgeUnknown: 'true' } })).status, 409);
-    const acknowledged = await call('/trading212/orders/preview', { method: 'POST', body: { ...order, acknowledgeUnknown: true } });
-    assert.equal(acknowledged.status, 200);
-    assert.equal(posts().length, 1);
-  });
+test('without a broker the settings explain it and every order route answers 503', async () => {
+  await withApp(async (call, seen) => {
+    const config = await call('/trading212/trading');
+    assert.deepEqual([config.status, config.body.broker.status, config.body.allowedEnvs], [200, 'off', []]);
+    const preview = await call('/trading212/orders/preview', { method: 'POST', body: { env: 'demo' } });
+    assert.deepEqual([preview.status, preview.body.code], [503, 'T212_BROKER_OFF']);
+    assert.equal((await call('/trading212/passkey/options', { method: 'POST', body: { enrollmentCode: 'X' } })).status, 503);
+    assert.equal(seen.length, 0);
+  }, { broker: false });
 });

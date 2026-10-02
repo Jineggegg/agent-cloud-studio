@@ -1704,16 +1704,17 @@ export type StudioCloudflareAccessConfig =
 // ── v4 track: orders — server types below this line ──
 //----------------- STUDIO TRADING 212 ORDERS ------------
 /**
- * Trading 212 account an order targets. Live and demo use separate key files, and
- * STUDIO_T212_TRADING decides which of them may trade at all.
+ * Trading 212 account an order targets. Live and demo use separate key files; Studio's files
+ * are read-only keys, and the order broker's own config decides which accounts may trade.
  */
 export type StudioT212Environment = 'live' | 'demo';
 
 /**
- * An order request after the Studio router validated its transport shape (types, enums,
- * decimal places). `quantity` is always positive; `side` decides the sign sent to Trading 212.
- * `limitPrice` is present exactly when `type` is 'limit'. Business checks (holdings, the
- * per-order cap, allowed environments) are the orders service's job, not the router's.
+ * An order request after a transport layer validated its shape (types, enums, decimal places).
+ * `quantity` is always positive; `side` decides the sign sent to Trading 212. `limitPrice` is
+ * present exactly when `type` is 'limit'. Studio's router validates it for early feedback, and
+ * the order broker validates it again because it never trusts its caller. Business checks
+ * (holdings, the cap, allowed environments) belong to the broker service.
  */
 export type StudioT212OrderInput = {
   env: StudioT212Environment;
@@ -1724,13 +1725,91 @@ export type StudioT212OrderInput = {
   limitPrice?: number;
   timeValidity: 'DAY' | 'GOOD_TILL_CANCEL';
 };
+// ---------------------------
+//----------------- TRADING 212 ORDER BROKER PROTOCOL ------------
+/**
+ * Error body of every non-2xx broker response (HTTP over the broker's unix socket).
+ * `error` is short user-facing Chinese text without secrets; `code` is machine-readable
+ * (for example T212_PASSKEY_FAILED, T212_ORDER_UNKNOWN). Studio relays both to the browser.
+ */
+export type StudioT212BrokerErrorBody = { error: string; code: string };
 
 /**
- * The browser origin a trading or passkey request came from, after the orders service matched
- * it against the configured origins. `rpId` is its hostname and doubles as the WebAuthn RP ID,
- * so passkeys registered on one domain never authorize orders on another.
+ * A passkey held in the order broker's own database. `rpId` is the WebAuthn RP ID (the
+ * hostname of the Studio origin it was enrolled on); a passkey never authorizes another RP ID.
+ * `label` is a rough device name hint and may be null. Returned by GET /v1/status.
  */
-export type StudioT212TrustedOrigin = { origin: string; rpId: string };
+export type StudioT212BrokerPasskey = {
+  id: string;
+  rpId: string;
+  label: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+};
+
+/**
+ * GET /v1/status: the broker's own configuration and passkeys, read-only. `keys` says which
+ * order key files exist (never their content); `currencies` holds the account currency the
+ * broker last read per account; `demoConfirm` is true only when the owner allowed demo orders
+ * without a passkey. Produced by the broker service and consumed by Studio's broker client.
+ */
+export type StudioT212BrokerStatus = {
+  version: 1;
+  allowedEnvs: StudioT212Environment[];
+  maxOrderValue: number;
+  maxOrdersPerHour: number;
+  origins: string[];
+  demoConfirm: boolean;
+  keys: Record<StudioT212Environment, boolean>;
+  currencies: Partial<Record<StudioT212Environment, string>>;
+  passkeys: StudioT212BrokerPasskey[];
+};
+
+/**
+ * POST /v1/orders/preview result: the broker's own valuation of one order and a single-use
+ * challenge bound to exactly this order, RP ID and expiry (60 s). `requires` is 'passkey'
+ * (with WebAuthn `authentication` request options for the browser) or, for demo orders when the
+ * owner enabled it, 'confirm'. `estimatedValue` is in the account `currency`.
+ */
+export type StudioT212BrokerPreview = {
+  id: string;
+  env: StudioT212Environment;
+  ticker: string;
+  side: 'buy' | 'sell';
+  type: 'market' | 'limit';
+  quantity: number;
+  limitPrice?: number;
+  timeValidity?: 'DAY' | 'GOOD_TILL_CANCEL';
+  estimatedValue: number;
+  currency: string;
+  maxOrderValue: number;
+  warnings: string[];
+  expiresAt: string;
+  requires: 'passkey' | 'confirm';
+  authentication?: Record<string, unknown>;
+};
+
+/**
+ * POST /v1/orders/confirm result after Trading 212 accepted the order. Order fields are copied
+ * from Trading 212's response and may be null when it omitted them.
+ */
+export type StudioT212BrokerOrderResult = {
+  order: {
+    id: string | null;
+    status: string | null;
+    ticker: string;
+    side: string | null;
+    type: string | null;
+    quantity: number | null;
+    filledQuantity: number | null;
+    limitPrice: number | null;
+    createdAt: string | null;
+  };
+  method: 'passkey' | 'confirm';
+  env: StudioT212Environment;
+  estimatedValue: number;
+  currency: string;
+};
 // ── v4 track: mail — server types below this line ──
 //----------------- STUDIO MAIL CONTRACTS ------------
 /**

@@ -23,15 +23,20 @@ vi.mock('sonner', () => ({ toast }));
 const { StudioSettingsTrading } = await import('@/modules/studio/StudioSettingsTrading');
 
 const json = (value: unknown, status = 200, code?: string) => async () => Response.json(status === 200 ? value : { error: value, code }, { status });
+const CODE = 'ABCDE-FGHJK-MNPQR-STVWX';
 const OTHER_DOMAIN = { id: 'k-tailnet', rpId: 'desktop.tail1234.ts.net', label: 'Windows', createdAt: '2026-09-01T00:00:00Z', lastUsedAt: null };
 const THIS_DOMAIN = { id: 'k-local', rpId: window.location.hostname, label: 'iPad', createdAt: '2026-10-02T00:00:00Z', lastUsedAt: null };
-const CONFIG = { allowedEnvs: ['demo'], maxOrderValue: 250, currency: 'GBP', passkeys: [OTHER_DOMAIN], trustedOrigins: [], allowLocalhost: true, requirePasskey: false };
+const THIS_DOMAIN_PHONE = { ...THIS_DOMAIN, id: 'k-local-2', label: 'iPhone' };
+const CONFIG = {
+  broker: { status: 'ok', keys: { live: false, demo: true } }, allowedEnvs: ['demo'], maxOrderValue: 250, maxOrdersPerHour: 10, currency: 'GBP',
+  passkeys: [OTHER_DOMAIN], trustedOrigins: [window.location.origin], demoConfirm: false,
+};
 
 // Works with `screen` and with `within(alert)`, which both expose getByLabelText.
-async function typePassword(scope: { getByLabelText: (text: string) => HTMLElement }, password: string) {
-  const field = scope.getByLabelText('登录密码') as HTMLInputElement;
+async function typeCode(scope: { getByLabelText: (text: string) => HTMLElement }, code: string) {
+  const field = scope.getByLabelText('注册码') as HTMLInputElement;
   await waitFor(() => expect(field.disabled).toBe(false));
-  fireEvent.change(field, { target: { value: password } });
+  fireEvent.change(field, { target: { value: code } });
 }
 
 beforeEach(() => {
@@ -41,84 +46,89 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-test('shows the allowed accounts, the cap and passkeys by domain, then registers one for this domain after the password', async () => {
+test('shows broker status, its accounts, cap and passkeys by domain, then enrols one here with an enrollment code', async () => {
   trading.config.mockImplementationOnce(json(CONFIG)).mockImplementation(json({ ...CONFIG, passkeys: [OTHER_DOMAIN, THIS_DOMAIN] }));
-  trading.passkeyOptions.mockImplementation(json({ challenge: 'reg-1', rp: { id: 'localhost', name: 'Agent Cloud Studio' } }));
+  trading.passkeyOptions.mockImplementation(json({ challenge: 'reg-1', rp: { id: 'localhost', name: 'Agent Cloud Studio 交易代理' } }));
   trading.registerPasskey.mockImplementation(json(THIS_DOMAIN));
   const attestation = { id: 'cred-2', rawId: 'cred-2', type: 'public-key', response: { attestationObject: 'x' } };
   webauthn.startRegistration.mockResolvedValue(attestation);
   render(<StudioSettingsTrading />);
 
-  expect(await screen.findByText('仅模拟盘')).toBeTruthy();
+  expect(await screen.findByText('已连接')).toBeTruthy();
+  expect(screen.getByText('仅模拟盘')).toBeTruthy();
   expect(screen.getByText('£250.00')).toBeTruthy();
-  expect(screen.getByText('desktop.tail1234.ts.net')).toBeTruthy();
-  // Face ID exists on another domain, so this one cannot trade until it has its own.
+  expect(screen.getByText(/每小时最多 10 笔/)).toBeTruthy();
+  expect(screen.getByRole('group', { name: 'desktop.tail1234.ts.net 的通行密钥' })).toBeTruthy();
+  // Face ID exists on another domain only, so this one cannot trade until it has its own.
   expect(screen.getByText('需先启用面容 ID')).toBeTruthy();
-  expect(screen.getByText(/你已在其他网址启用了面容 ID/)).toBeTruthy();
-  expect(screen.getByText(/还没有任何通行密钥时，每笔订单都需要二次确认/)).toBeTruthy();
+  expect(screen.queryByLabelText('登录密码')).toBeNull();
+  expect(screen.getByText(/studio-trader enroll-code/)).toBeTruthy();
 
   const enable = await screen.findByRole('button', { name: '启用面容 ID / 触控 ID 下单' });
-  await typePassword(screen, '');
+  await typeCode(screen, '   ');
   expect((enable as HTMLButtonElement).disabled).toBe(true);
-  await typePassword(screen, 'studio-password');
+  await typeCode(screen, CODE);
   await waitFor(() => expect((enable as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(enable);
   await waitFor(() => expect(trading.registerPasskey).toHaveBeenCalledWith(attestation));
-  expect(trading.passkeyOptions).toHaveBeenCalledWith('studio-password');
-  expect(webauthn.startRegistration).toHaveBeenCalledWith({ optionsJSON: { challenge: 'reg-1', rp: { id: 'localhost', name: 'Agent Cloud Studio' } } });
+  expect(trading.passkeyOptions).toHaveBeenCalledWith(CODE);
+  expect(webauthn.startRegistration).toHaveBeenCalledWith({ optionsJSON: { challenge: 'reg-1', rp: { id: 'localhost', name: 'Agent Cloud Studio 交易代理' } } });
   expect(await screen.findByText('当前')).toBeTruthy();
   expect(toast.success).toHaveBeenCalledWith(`已在 ${window.location.hostname} 启用面容 ID / 触控 ID 下单`);
   expect(screen.getByRole('button', { name: '在这台设备上也启用面容 ID / 触控 ID' })).toBeTruthy();
   expect(screen.getByText('可下单')).toBeTruthy();
 });
 
-test('a wrong password is shown and nothing is registered', async () => {
+test('a wrong enrollment code is shown and nothing is registered', async () => {
   trading.config.mockImplementation(json({ ...CONFIG, passkeys: [] }));
-  trading.passkeyOptions.mockImplementation(json('Studio 密码不正确', 403, 'T212_STEP_UP_FAILED'));
+  trading.passkeyOptions.mockImplementation(json('注册码无效、已用过或已过期：请在服务器上用 studio-trader enroll-code 重新生成', 403, 'T212_ENROLL_CODE_INVALID'));
   render(<StudioSettingsTrading />);
-  expect(await screen.findByText('可下单')).toBeTruthy();
-  await typePassword(screen, 'guess');
+  expect(await screen.findByText('需先启用面容 ID')).toBeTruthy();
+  await typeCode(screen, 'guess');
   fireEvent.click(screen.getByRole('button', { name: '启用面容 ID / 触控 ID 下单' }));
-  expect((await screen.findByRole('alert')).textContent).toBe('Studio 密码不正确');
+  expect((await screen.findByRole('alert')).textContent).toContain('注册码无效');
   expect(webauthn.startRegistration).not.toHaveBeenCalled();
   expect(trading.registerPasskey).not.toHaveBeenCalled();
 });
 
-test('removing another domain’s passkey asks for the password; a wrong one keeps the alert open', async () => {
+test('removing a passkey from a domain without its own passkey needs an enrollment code', async () => {
   trading.config.mockImplementationOnce(json({ ...CONFIG, passkeys: [OTHER_DOMAIN] })).mockImplementation(json({ ...CONFIG, passkeys: [] }));
-  trading.removePasskey.mockImplementationOnce(json('Studio 密码不正确', 403, 'T212_STEP_UP_FAILED')).mockImplementation(json({ removed: true }));
+  trading.removePasskey.mockImplementationOnce(json('注册码无效、已用过或已过期', 403, 'T212_ENROLL_CODE_INVALID')).mockImplementation(json({ removed: true }));
   render(<StudioSettingsTrading />);
 
-  fireEvent.click(await screen.findByRole('button', { name: '移除 desktop.tail1234.ts.net 的通行密钥' }));
+  fireEvent.click(await screen.findByRole('button', { name: '移除 desktop.tail1234.ts.net 的通行密钥（Windows）' }));
   const alert = await screen.findByRole('alertdialog', { name: '移除 desktop.tail1234.ts.net 的通行密钥？' });
-  // Face ID can only authorise the removal on the passkey's own domain.
+  // This domain has no passkey of its own, so Face ID cannot authorise the removal here.
   expect(within(alert).queryByRole('button', { name: /用面容 ID/ })).toBeNull();
   const remove = within(alert).getByRole('button', { name: '移除' }) as HTMLButtonElement;
   expect(remove.disabled).toBe(true);
 
-  await typePassword(within(alert), 'guess');
+  await typeCode(within(alert), 'guess');
   fireEvent.click(remove);
-  expect((await within(alert).findByRole('alert')).textContent).toBe('Studio 密码不正确');
+  expect((await within(alert).findByRole('alert')).textContent).toContain('注册码无效');
   expect(screen.getByRole('alertdialog')).toBeTruthy();
 
-  await typePassword(within(alert), 'studio-password');
+  await typeCode(within(alert), CODE);
   fireEvent.click(within(alert).getByRole('button', { name: '移除' }));
-  await waitFor(() => expect(trading.removePasskey).toHaveBeenLastCalledWith('k-tailnet', { password: 'studio-password' }));
+  await waitFor(() => expect(trading.removePasskey).toHaveBeenLastCalledWith('k-tailnet', { enrollmentCode: CODE }));
   await waitFor(() => expect(screen.queryByText('desktop.tail1234.ts.net')).toBeNull());
   await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
   expect(trading.removalOptions).not.toHaveBeenCalled();
 });
 
-test('this domain’s passkey can authorise its own removal with Face ID; a cancelled registration explains itself', async () => {
-  trading.config.mockImplementationOnce(json({ ...CONFIG, passkeys: [THIS_DOMAIN] })).mockImplementation(json({ ...CONFIG, passkeys: [] }));
-  const options = { challenge: 'rm-1', allowCredentials: [{ id: 'cred-local', type: 'public-key' }], userVerification: 'required' };
-  const assertion = { id: 'cred-local', rawId: 'cred-local', type: 'public-key', response: { signature: 'sig' }, clientExtensionResults: {} };
+test('any passkey of this domain can authorise a removal with Face ID; a cancelled registration explains itself', async () => {
+  trading.config.mockImplementationOnce(json({ ...CONFIG, passkeys: [THIS_DOMAIN, THIS_DOMAIN_PHONE] })).mockImplementation(json({ ...CONFIG, passkeys: [] }));
+  const options = { challenge: 'rm-1', allowCredentials: [{ id: 'cred-local', type: 'public-key' }, { id: 'cred-phone', type: 'public-key' }], userVerification: 'required' };
+  const assertion = { id: 'cred-phone', rawId: 'cred-phone', type: 'public-key', response: { signature: 'sig' }, clientExtensionResults: {} };
   trading.removalOptions.mockImplementation(json(options));
   trading.removePasskey.mockImplementation(json({ removed: true }));
   webauthn.startAuthentication.mockResolvedValue(assertion);
   render(<StudioSettingsTrading />);
 
-  fireEvent.click(await screen.findByRole('button', { name: `移除 ${window.location.hostname} 的通行密钥` }));
+  // Both passkeys of this domain are listed in one group.
+  const group = await screen.findByRole('group', { name: `${window.location.hostname} 的通行密钥` });
+  expect(within(group).getAllByRole('button').length).toBe(2);
+  fireEvent.click(within(group).getByRole('button', { name: `移除 ${window.location.hostname} 的通行密钥（iPad）` }));
   const alert = await screen.findByRole('alertdialog');
   fireEvent.click(within(alert).getByRole('button', { name: '用面容 ID / 触控 ID 验证' }));
   await waitFor(() => expect(trading.removePasskey).toHaveBeenCalledWith('k-local', { assertion }));
@@ -129,26 +139,45 @@ test('this domain’s passkey can authorise its own removal with Face ID; a canc
   trading.passkeyOptions.mockImplementation(json({ challenge: 'reg-2' }));
   webauthn.startRegistration.mockRejectedValue(Object.assign(new Error('The operation either timed out or was not allowed.'), { name: 'NotAllowedError' }));
   const enable = await screen.findByRole('button', { name: '启用面容 ID / 触控 ID 下单' });
-  await typePassword(screen, 'studio-password');
+  await typeCode(screen, CODE);
   fireEvent.click(enable);
   expect((await screen.findByRole('alert')).textContent).toContain('已取消');
   expect(trading.registerPasskey).not.toHaveBeenCalled();
 });
 
-test('an untrusted address cannot enable Face ID and trading-off explains the setting', async () => {
-  trading.config.mockImplementation(json({ ...CONFIG, allowedEnvs: [], allowLocalhost: false, passkeys: [] }));
+test('an address outside the broker’s allowlist cannot enrol, and trading-off and missing keys are explained', async () => {
+  trading.config.mockImplementation(json({ ...CONFIG, allowedEnvs: ['live', 'demo'], trustedOrigins: ['https://studio.ajarche.com'], passkeys: [] }));
+  render(<StudioSettingsTrading />);
+  expect(await screen.findByText('未列入白名单')).toBeTruthy();
+  expect((screen.getByRole('button', { name: '启用面容 ID / 触控 ID 下单' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByLabelText('注册码') as HTMLInputElement).disabled).toBe(true);
+  expect(screen.getByText(/config\.json 的 origins/)).toBeTruthy();
+  expect(screen.getByText(/交易代理还没有实盘下单密钥/)).toBeTruthy();
+  cleanup();
+
+  trading.config.mockImplementation(json({ ...CONFIG, allowedEnvs: [] }));
   render(<StudioSettingsTrading />);
   expect(await screen.findByText('已关闭')).toBeTruthy();
-  expect(screen.getByText('未列入白名单')).toBeTruthy();
-  expect((screen.getByRole('button', { name: '启用面容 ID / 触控 ID 下单' }) as HTMLButtonElement).disabled).toBe(true);
-  expect((screen.getByLabelText('登录密码') as HTMLInputElement).disabled).toBe(true);
-  expect(screen.getByText(/STUDIO_PUBLIC_ORIGIN 或 STUDIO_TAILNET_ORIGIN/)).toBeTruthy();
-  expect(screen.getByText('STUDIO_T212_TRADING=demo')).toBeTruthy();
+  expect(screen.getByText('allowedEnvs')).toBeTruthy();
 });
 
-test('with STUDIO_T212_REQUIRE_PASSKEY the domain needs its own passkey even before any exists', async () => {
-  trading.config.mockImplementation(json({ ...CONFIG, passkeys: [], requirePasskey: true }));
+test('without the broker, Settings says how to install it and offers no enrollment', async () => {
+  trading.config.mockImplementation(json({
+    broker: { status: 'off', message: 'Studio 没有连接交易代理（STUDIO_T212_BROKER_SOCKET 未设置），下单已关闭。' },
+    allowedEnvs: [], maxOrderValue: 0, maxOrdersPerHour: 0, passkeys: [], trustedOrigins: [], demoConfirm: false,
+  }));
   render(<StudioSettingsTrading />);
-  expect(await screen.findByText('需先启用面容 ID')).toBeTruthy();
-  expect(screen.getByText(/STUDIO_T212_REQUIRE_PASSKEY=1/)).toBeTruthy();
+  expect(await screen.findByText('未安装')).toBeTruthy();
+  expect(screen.getByText(/STUDIO_T212_BROKER_SOCKET 未设置/)).toBeTruthy();
+  expect(screen.getByText('docs/t212-broker.md')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /启用面容 ID/ })).toBeNull();
+  cleanup();
+
+  trading.config.mockImplementation(json({
+    broker: { status: 'unreachable', message: '交易代理没有运行：在服务器上检查 systemctl status studio-trader-broker' },
+    allowedEnvs: [], maxOrderValue: 0, maxOrdersPerHour: 0, passkeys: [], trustedOrigins: [], demoConfirm: false,
+  }));
+  render(<StudioSettingsTrading />);
+  expect(await screen.findByText('无法连接')).toBeTruthy();
+  expect(screen.getByText(/systemctl status studio-trader-broker/)).toBeTruthy();
 });
