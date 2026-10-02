@@ -17,7 +17,7 @@ import { createTrading212OrdersRouter } from '../trading212-orders.routes.js';
 
 const ORIGIN = 'https://studio.ajarche.com';
 
-type Call = (route: string, init?: { method?: string; body?: unknown; origin?: string | null; user?: number | null }) => Promise<{ status: number; body: any }>;
+type Call = (route: string, init?: { method?: string; body?: unknown; origin?: string | null; user?: number | null }) => Promise<{ status: number; body: any; headers: Headers }>;
 
 async function withApp(run: (call: Call, posts: () => string[], setOrderStatus: (status: number) => void) => Promise<void>) {
   const directory = mkdtempSync(path.join(os.tmpdir(), 't212-orders-routes-'));
@@ -66,7 +66,7 @@ async function withApp(run: (call: Call, posts: () => string[], setOrderStatus: 
       if (init.user !== null) headers['x-test-user'] = String(init.user ?? 1);
       if (init.origin !== null) headers.Origin = init.origin ?? ORIGIN;
       const response = await fetch(`${base}${route}`, { method: init.method ?? 'GET', headers, body: init.body === undefined ? undefined : JSON.stringify(init.body) });
-      return { status: response.status, body: await response.json() };
+      return { status: response.status, body: await response.json(), headers: response.headers };
     }, () => brokerPosts, status => { orderStatus = status; });
   } finally {
     server.close();
@@ -187,7 +187,36 @@ test('cap edits are validated in the route; lowering works from any page, raisin
     assert.equal((await call('/trading212/caps/challenge', { method: 'POST', body: { env: 'demo', maxOrderValue: 300, dailyLimit: 600 }, origin: 'https://evil.example' })).status, 403);
     assert.equal((await call('/trading212/caps/challenge', { method: 'POST', body: { env: 'demo', maxOrderValue: 300, dailyLimit: 600 } })).status, 403);
     assert.equal((await call('/trading212/caps', { method: 'PUT', body: { env: 'demo', maxOrderValue: 300, dailyLimit: 600 } })).status, 403);
-    assert.equal((await call('/trading212/trading')).body.caps.envs.demo.maxOrderValue, 100);
+    const after = (await call('/trading212/trading')).body;
+    assert.equal(after.caps.envs.demo.maxOrderValue, 100);
+    // Applied changes and refused raises are listed apart.
+    assert.deepEqual(after.capChanges.map((item: { direction: string }) => item.direction), ['lower']);
+    assert.ok(after.capRefusals.length >= 2);
+  });
+});
+
+test('a malformed raise naming a challenge is still audited, and repeated refusals get 429 with Retry-After', async () => {
+  await withApp(async (call) => {
+    const id = '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f';
+    const malformed = await call('/trading212/caps', { method: 'PUT', body: { challengeId: id, env: 'demo', maxOrderValue: 'lots', dailyLimit: 600 } });
+    assert.equal(malformed.status, 400);
+    const [entry] = (await call('/trading212/trading')).body.capRefusals;
+    assert.equal(entry.method, 'passkey');
+    assert.equal(entry.reason, '上限必须是大于 0 的数字，最多 2 位小数');
+    // An assertion without a challenge id is a raise attempt as well.
+    assert.equal((await call('/trading212/caps', { method: 'PUT', body: { env: 'demo', maxOrderValue: 300, dailyLimit: 600, assertion: { id: 'x', rawId: 'x', response: { a: 1 } } } })).status, 400);
+    assert.equal((await call('/trading212/trading')).body.capRefusals.length, 2);
+
+    const raise = { env: 'demo', maxOrderValue: 900, dailyLimit: 2000 };
+    for (let index = 0; index < 8; index += 1) assert.equal((await call('/trading212/caps', { method: 'PUT', body: raise })).status, 403);
+    const limited = await call('/trading212/caps', { method: 'PUT', body: raise });
+    assert.equal(limited.status, 429);
+    assert.match(limited.body.error, /次数过多/);
+    const wait = Number(limited.headers.get('retry-after'));
+    assert.ok(wait > 3500 && wait <= 3600, String(wait));
+    assert.equal((await call('/trading212/trading')).body.capRefusals.length, 10);
+    // Lowering is never rate-limited.
+    assert.equal((await call('/trading212/caps', { method: 'PUT', body: { env: 'demo', maxOrderValue: 100, dailyLimit: 200 } })).status, 200);
   });
 });
 

@@ -2,7 +2,7 @@ import express from 'express';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 import { AppError, asyncHandler } from '@/shared/utils.js';
-import type { StudioRequestClient, StudioT212CapsInput, StudioT212CapsProof, StudioT212OrderInput } from '@/shared/types.js';
+import type { StudioRequestClient, StudioT212CapsInput, StudioT212CapsRequest, StudioT212OrderInput } from '@/shared/types.js';
 
 import type { createTrading212OrdersService } from './trading212-orders.service.js';
 
@@ -92,12 +92,33 @@ function capsInput(body: unknown): StudioT212CapsInput {
   }
   return { env: input.env, maxOrderValue: input.maxOrderValue as number, dailyLimit: input.dailyLimit as number };
 }
-// Raising caps carries the challenge id and its assertion together; lowering carries neither.
-function capsProof(body: unknown): StudioT212CapsProof | undefined {
+// PUT /caps: the challenge id is read first and passed on verbatim, so the service can spend it (and audit the
+// attempt) even when the rest of the body is malformed; that case is reported as `invalid` instead of thrown here.
+// A raise carries the challenge id and its assertion together; a lowering carries neither.
+function capsRequest(body: unknown): StudioT212CapsRequest {
   const input = record(body);
-  if (input.challengeId === undefined && input.assertion === undefined) return undefined;
-  if (typeof input.challengeId !== 'string' || !ID.test(input.challengeId)) invalid('面容 ID 验证编号无效，请重新提交');
-  return { challengeId: input.challengeId, assertion: credentialJson(input.assertion) as unknown as AuthenticationResponseJSON };
+  const named = input.challengeId !== undefined || input.assertion !== undefined;
+  const challengeId = typeof input.challengeId === 'string' ? input.challengeId.slice(0, 64) : named ? '' : undefined;
+  const spend = challengeId === undefined ? {} : { challengeId };
+  try {
+    const caps = capsInput(input);
+    if (challengeId === undefined) return { input: caps };
+    if (!ID.test(challengeId)) invalid('面容 ID 验证编号无效，请重新提交');
+    return { ...spend, input: caps, assertion: credentialJson(input.assertion) as unknown as AuthenticationResponseJSON };
+  } catch (error) {
+    if (error instanceof AppError) return { ...spend, invalid: error.message };
+    throw error;
+  }
+}
+// A 429 from the caps service carries its wait, which also goes out as Retry-After.
+async function withRetryAfter<T>(res: express.Response, work: () => Promise<T>) {
+  try {
+    return await work();
+  } catch (error) {
+    const wait = error instanceof AppError && error.statusCode === 429 ? (error.details as { retryAfterSeconds?: unknown } | undefined)?.retryAfterSeconds : undefined;
+    if (typeof wait === 'number') res.setHeader('Retry-After', String(wait));
+    throw error;
+  }
 }
 function passkeyId(value: unknown) {
   const id = String(value);
@@ -162,13 +183,15 @@ export function createTrading212OrdersRouter(
   router.post('/caps/challenge', asyncHandler(async (req, res) => {
     const userId = user(req);
     const origin = service.trustedOrigin(req.get('origin'));
-    res.json(await service.capsChallenge(userId, origin, capsInput(req.body)));
+    const input = capsInput(req.body);
+    res.json(await withRetryAfter(res, () => service.capsChallenge(userId, origin, input)));
   }));
   router.put('/caps', asyncHandler(async (req, res) => {
     const userId = user(req);
     // Lowering works from any signed-in page; raising is refused by the service unless the origin is trusted.
     const origin = service.optionalTrustedOrigin(req.get('origin'));
-    res.json(await service.updateCaps(userId, origin, capsInput(req.body), capsProof(req.body)));
+    const request = capsRequest(req.body);
+    res.json(await withRetryAfter(res, () => service.updateCaps(userId, origin, request)));
   }));
   return router;
 }

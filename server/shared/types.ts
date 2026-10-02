@@ -1766,12 +1766,17 @@ export type StudioT212TrustedOrigin = { origin: string; rpId: string };
 export type StudioT212CapsInput = { env: StudioT212Environment; maxOrderValue: number; dailyLimit: number };
 
 /**
- * Face ID / Touch ID proof for raising order caps: the id of the single-use challenge the caps service issued
- * for exactly these values, and the browser's WebAuthn assertion over it (verified cryptographically by the
- * service against the stored passkey). Used by trading212-orders.routes, trading212-orders.service and
- * trading212-caps.service.
+ * A PUT /caps request as the Studio router read it. `challengeId` is the string the body named for a raise (cut to
+ * 64 characters; '' when it was not a string or an assertion came without one) and is absent for a plain lowering.
+ * It is read before anything else so the caps service can spend that challenge and audit the attempt even when the
+ * rest of the body is malformed: then the request carries `invalid` (why) instead of the parsed caps. A raise carries
+ * the browser's WebAuthn assertion, verified cryptographically by the service against the stored passkey.
+ * Used by trading212-orders.routes, trading212-orders.service and trading212-caps.service.
  */
-export type StudioT212CapsProof = { challengeId: string; assertion: AuthenticationResponseJSON };
+export type StudioT212CapsRequest = { challengeId?: string } & (
+  | { input: StudioT212CapsInput; assertion?: AuthenticationResponseJSON }
+  | { invalid: string }
+);
 // ── v4 track: mail — server types below this line ──
 //----------------- STUDIO MAIL CONTRACTS ------------
 /**
