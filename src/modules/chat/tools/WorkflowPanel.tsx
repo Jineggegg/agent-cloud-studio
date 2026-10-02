@@ -368,7 +368,7 @@ const WorkflowAgentRowView = memo(({ agent, timelineAddress, onFileOpen, createD
 WorkflowAgentRowView.displayName = 'WorkflowAgentRowView';
 
 /**
- * Rendered by chat's MessageComponent for a `Workflow` tool call: the run's
+ * Rendered by chat's MessageComponent and the workbench chat column (via the chat barrel) for a `Workflow` tool call: the run's
  * name and status in the header, and — opened on demand — its phases, the
  * agents it spawned with what each is doing, live usage, its result and the
  * script it ran.

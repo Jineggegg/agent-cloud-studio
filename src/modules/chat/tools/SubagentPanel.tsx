@@ -65,7 +65,7 @@ const STATUS_STYLES: Record<SubagentInfo['status'], string> = {
 };
 
 /**
- * Rendered by chat's MessageComponent for any tool call that spawned a
+ * Rendered by chat's MessageComponent and the workbench chat column (via the chat barrel) for any tool call that spawned a
  * subagent — Claude's `Agent`/`Task` and Codex's `spawn_agent` both normalize
  * to the same shape, so both render through this one panel.
  *

@@ -2057,6 +2057,30 @@ export type WorkbenchChatProps = {
 };
 // ── v6 track: shell — types below this line ──
 // ── v6 track: chat — types below this line ──
+/**
+ * Answers one or more pending tool-permission prompts of the workbench chat: allow or deny, optionally
+ * remembering an allow rule for the run or replacing the tool input (AskUserQuestion answers). Called by its
+ * permission sheet, question sheet and plan card; the engine forwards it as `chat.permission-response`.
+ */
+export type WorkbenchPermissionDecision = (
+  requestIds: string | string[],
+  decision: { allow?: boolean; message?: string; rememberEntry?: string | null; updatedInput?: unknown },
+) => void;
+/** One step of an agent's running checklist (Claude TodoWrite, Codex update_plan) as the workbench chat's run island and tool cards draw it. */
+export type WorkbenchTodoItem = { content: string; activeForm?: string; status: 'pending' | 'in_progress' | 'completed' };
+/**
+ * A tool call reduced to the workbench chat's compact card: `kind` picks the icon, `verb` and `target` are the
+ * one-line description, `status` drives the spinner, tick or cross. `idle` is a call with no result in a session
+ * that is no longer running (interrupted), so it neither spins nor claims success.
+ */
+export type WorkbenchToolSummary = {
+  kind: 'command' | 'read' | 'edit' | 'write' | 'search' | 'web' | 'todo' | 'agent' | 'plan' | 'question' | 'think' | 'other';
+  verb: string;
+  target: string;
+  // The file the call touched, when it touched one; tapping it opens the shell's file panel.
+  filePath?: string;
+  status: 'running' | 'done' | 'error' | 'denied' | 'idle';
+};
 // ── v6 track: github — types below this line ──
 // ── v6 track: builder — types below this line ──
 // ── v6 track: memory — types below this line ──
