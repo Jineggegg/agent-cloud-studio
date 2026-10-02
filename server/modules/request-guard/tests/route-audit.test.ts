@@ -239,3 +239,23 @@ test('every WebSocket path refuses an upgrade without a token', async () => {
     assert.equal(status, 401, wsPath);
   }
 });
+
+test('five wrong passwords from different public clients lock password sign-in with Retry-After', async () => {
+  const attempt = (index: number) => fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'cf-ray': `lock${index}-HKG`,
+      'cf-connecting-ip': `203.0.113.${index}`,
+      'cdn-loop': 'cloudflare; loops=1',
+    },
+    body: JSON.stringify({ username: 'andrew', password: `guess-${index}` }),
+  });
+  for (let index = 1; index <= 5; index += 1) {
+    assert.equal((await attempt(index)).status, 401);
+  }
+  const locked = await attempt(6);
+  assert.equal(locked.status, 429);
+  assert.equal(locked.headers.get('retry-after'), '900');
+  assert.equal(((await locked.json()) as { error: { code: string } }).error.code, 'AUTH_ACCOUNT_LOCKED');
+});

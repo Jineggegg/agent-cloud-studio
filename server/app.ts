@@ -272,6 +272,11 @@ export function createStudioServer(): { app: express.Express; server: http.Serve
     // global error middleware must be last
     app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
       if (err instanceof AppError) {
+        // A refusal that knows when to come back (the password lock) says so the standard way too.
+        const retryAfterSeconds = (err.details as { retryAfterSeconds?: unknown } | undefined)?.retryAfterSeconds;
+        if (err.statusCode === 429 && typeof retryAfterSeconds === 'number') {
+            res.setHeader('Retry-After', String(retryAfterSeconds));
+        }
         return res.status(err.statusCode).json({
           success: false,
           error: {
