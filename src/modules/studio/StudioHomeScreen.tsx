@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { createPortal } from 'react-dom';
-import { Check, LayoutGrid, LogOut, Minus, Moon, Plus, RefreshCw, SlidersHorizontal, Sun } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, LayoutGrid, LogOut, Minus, Moon, Plus, RefreshCw, SlidersHorizontal, Sun } from 'lucide-react';
 import { DndContext } from '@dnd-kit/core';
 import { SortableContext } from '@dnd-kit/sortable';
 
@@ -74,10 +74,13 @@ function orderTiles(tiles: StudioHomeTile[], order: string[] | undefined) {
 const preventContextMenu = (event: MouseEvent) => event.preventDefault();
 
 /** One sortable app icon; the slot moves (with its hide badge), the tile itself is what is pressed and dragged. */
-function SortableTile({ tile, index, editing, labels, iconSize, onActivate, onHide }: {
+function SortableTile({ tile, index, last, editing, labels, iconSize, onActivate, onHide, onMove }: {
   tile: StudioHomeTile; index: number; editing: boolean; labels: boolean; iconSize: number;
+  // Whether the icon is the last visible one, where its 后移 button has nowhere to go.
+  last: boolean;
   onActivate: (tile: StudioHomeTile, event: MouseEvent<HTMLElement>) => void;
   onHide: () => void;
+  onMove: (step: -1 | 1) => void;
 }) {
   const { attributes, isDragging, itemAttributes, listeners, setActivatorNodeRef, setNodeRef, style } = useHomeSortableItem(tile.id);
   const label = `${tile.name}${tile.status ? `，${tile.status}` : ''}`;
@@ -99,12 +102,22 @@ function SortableTile({ tile, index, editing, labels, iconSize, onActivate, onHi
       ? <Link to={tile.href} {...shared} onClick={event => onActivate(tile, event)}>{body}</Link>
       : <button type="button" {...shared} onClick={event => onActivate(tile, event)}>{body}</button>}
     {editing && <button type="button" className="home-remove" aria-label={`从主屏幕隐藏 ${tile.name}`} onClick={onHide}><Minus size={14} strokeWidth={3} aria-hidden="true" /></button>}
+    {/* VoiceOver and Switch Control cannot drag, so edit mode also offers move buttons. They stay out of sight
+        (the grid keeps its clean iPadOS look) until focused, when they appear under the icon. aria-disabled,
+        not disabled, keeps a button focused when its icon reaches an end. */}
+    {editing && <span className="home-move" role="group" aria-label={`调整 ${tile.name} 的位置`}>
+      <button type="button" aria-label={`前移 ${tile.name}`} aria-disabled={index === 0} onClick={() => { if (index > 0) onMove(-1); }}>
+        <ChevronLeft size={16} aria-hidden="true" /></button>
+      <button type="button" aria-label={`后移 ${tile.name}`} aria-disabled={last} onClick={() => { if (!last) onMove(1); }}>
+        <ChevronRight size={16} aria-hidden="true" /></button>
+    </span>}
   </div>;
 }
 
 /**
  * Used by StudioPage as the launcher: one large icon per project or app, plus + to create a project. A long press
- * on any icon or widget enters edit mode (jiggling, drag to rearrange, hide), like the iPadOS home screen.
+ * on any icon or widget enters edit mode (jiggling, drag to rearrange, hide), like the iPadOS home screen; move
+ * buttons give VoiceOver and Switch Control the same rearranging.
  */
 export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreate, onRefresh, onSignOut, refreshing }: {
   tiles: StudioHomeTile[]; loading: boolean;
@@ -141,7 +154,7 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreat
     const placed = new Set(ids);
     return { ...previous, order: [...ids, ...orderTiles(tiles, previous.order).map(tile => tile.id).filter(id => !placed.has(id))] };
   }), [tiles]);
-  const { containerRef, glide, dndProps, sortableProps } = useHomeSortableList({ ids: visibleIds, editing, onEnterEdit: enterEdit, onReorder: reorder, labelOf });
+  const { containerRef, glide, move, moveMessage, dndProps, sortableProps } = useHomeSortableList({ ids: visibleIds, editing, onEnterEdit: enterEdit, onReorder: reorder, labelOf });
 
   const activate = (tile: StudioHomeTile, event: MouseEvent<HTMLElement>) => {
     // In edit mode a tap never opens an app (the click that ends a long press is swallowed before it gets here).
@@ -194,8 +207,9 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreat
     <DndContext {...dndProps}>
       <nav ref={containerRef} className="home-grid" aria-label="应用" aria-busy={loading}>
         <SortableContext {...sortableProps}>
-          {visible.map((tile, index) => <SortableTile key={tile.id} tile={tile} index={index} editing={editing} labels={layout.labels} iconSize={iconSize}
-            onActivate={activate} onHide={() => glide(() => update({ hidden: [...layout.hidden, tile.id] }))} />)}
+          {visible.map((tile, index) => <SortableTile key={tile.id} tile={tile} index={index} last={index === visible.length - 1} editing={editing}
+            labels={layout.labels} iconSize={iconSize} onActivate={activate} onHide={() => glide(() => update({ hidden: [...layout.hidden, tile.id] }))}
+            onMove={step => move(tile.id, step)} />)}
         </SortableContext>
         {loading && !visible.length && [0, 1, 2].map(index => <div className="home-tile-slot" key={`placeholder-${index}`} aria-hidden="true"><span className="home-tile placeholder"><span className="home-icon tone-ghost" /></span></div>)}
         <div className="home-tile-slot">
@@ -205,6 +219,7 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreat
           </button>
         </div>
       </nav>
+      <p className="studio-visually-hidden" aria-live="polite">{moveMessage}</p>
     </DndContext>
 
     {libraryOpen && createPortal(<div className="studio-layer" onKeyDown={event => { if (event.key === 'Escape') setLibraryOpen(false); }}>

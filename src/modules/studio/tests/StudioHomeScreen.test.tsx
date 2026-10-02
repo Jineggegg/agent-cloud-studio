@@ -98,6 +98,61 @@ test('the click that ends a long press on a link tile does not navigate', () => 
   expect(screen.getByRole('button', { name: '完成' })).toBeTruthy();
 });
 
+test('the next press after a drag is a new gesture, so its click is never swallowed by the drag\'s click guard', () => {
+  vi.useFakeTimers();
+  renderHome();
+  const tile = screen.getByRole('button', { name: 'SNR 3.0，在线' });
+  // A long press that ends with no click, as a touch drag does (the browser synthesises none after it).
+  fireEvent.pointerDown(tile, { button: 0, isPrimary: true, pointerType: 'mouse' });
+  act(() => { vi.advanceTimersByTime(500); });
+  fireEvent.pointerUp(tile);
+  // Well inside the guard's 400 ms window, the user taps 完成.
+  act(() => { vi.advanceTimersByTime(100); });
+  const done = screen.getByRole('button', { name: '完成' });
+  fireEvent.pointerDown(done, { button: 0, isPrimary: true, pointerType: 'mouse' });
+  fireEvent.pointerUp(done);
+  const click = createEvent.click(done);
+  fireEvent(done, click);
+  expect(click.defaultPrevented).toBe(false);
+  expect(screen.queryByRole('button', { name: '完成' })).toBeNull();
+});
+
+test('an Apple Pencil press is left to the touch sensor (the pointer path is cancelled by Safari as soon as the pen moves)', () => {
+  vi.useFakeTimers();
+  renderHome();
+  const tile = screen.getByRole('button', { name: '超级教授' });
+  fireEvent.pointerDown(tile, { button: 0, isPrimary: true, pointerType: 'pen' });
+  act(() => { vi.advanceTimersByTime(800); });
+  fireEvent.pointerUp(tile);
+  expect(screen.queryByRole('button', { name: '完成' })).toBeNull();
+  // The same pen's touch events lift the icon once held for the long press.
+  fireEvent.touchStart(tile, { touches: [{ clientX: 40, clientY: 40 }] });
+  act(() => { vi.advanceTimersByTime(500); });
+  expect(screen.getByRole('button', { name: '完成' })).toBeTruthy();
+  fireEvent.touchEnd(tile, { touches: [], changedTouches: [{ clientX: 40, clientY: 40 }] });
+});
+
+test('in edit mode 前移/后移 move an icon for VoiceOver and Switch Control users; the order is remembered', () => {
+  renderHome();
+  expect(screen.queryByRole('button', { name: /前移|后移/ })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
+  // At either end the button stays focusable but says it has nowhere to go.
+  expect(screen.getByRole('button', { name: '前移 SNR 3.0' }).getAttribute('aria-disabled')).toBe('true');
+  expect(screen.getByRole('button', { name: '后移 开发工具' }).getAttribute('aria-disabled')).toBe('true');
+
+  const later = screen.getByRole('button', { name: '后移 SNR 3.0' });
+  later.focus();
+  fireEvent.click(later);
+  expect(shownOrder()).toEqual(['project:prof', 'project:snr', 'deepseek', 'workspace']);
+  expect(JSON.parse(localStorage.getItem('studio-home-layout-v1') ?? '{}').order).toEqual(['project:prof', 'project:snr', 'deepseek', 'workspace']);
+  expect(document.activeElement).toBe(later);
+  expect(screen.getByText('「SNR 3.0」已移到第 2 个，共 4 个。')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '前移 SNR 3.0' }));
+  expect(shownOrder()).toEqual(['project:snr', 'project:prof', 'deepseek', 'workspace']);
+  // A move button is not empty space: edit mode stays on.
+  expect(screen.getByRole('button', { name: '完成' })).toBeTruthy();
+});
+
 test('a quick tap still opens the app', () => {
   vi.useFakeTimers();
   const props = renderHome();

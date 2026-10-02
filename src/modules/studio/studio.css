@@ -829,7 +829,8 @@ html.theme-revealing::view-transition-new(root) { z-index: 2; }
 /* ---------- Home widgets ---------- */
 .widget-grid {
   --widget-unit: 158px;
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--widget-unit), 1fr)); grid-auto-rows: var(--widget-unit); grid-auto-flow: dense;
+  /* No dense packing: cards sit in their saved order, so a drag preview and its drop always match (studio-home.css). */
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--widget-unit), 1fr)); grid-auto-rows: var(--widget-unit);
   gap: 18px; max-width: 1040px; margin: 36px auto 0;
 }
 .widget {
