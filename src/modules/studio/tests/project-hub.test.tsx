@@ -22,8 +22,10 @@ vi.mock('@/shared/api', () => ({
 }));
 vi.mock('@/shared/selectedProvider', () => ({ writeSelectedProvider: mocks.writeSelectedProvider }));
 // The real terminal needs xterm and a websocket; the test only checks what it is asked to run.
-vi.mock('@/modules/studio/StudioRemoteTerminal', () => ({
-  default: ({ launch, hostLabel }: { launch: { command: string; title: string }; hostLabel: string }) => <div role="dialog" aria-label={launch.title}>{hostLabel}: {launch.command}</div>,
+vi.mock('@/modules/studio/StudioTerminalCover', () => ({
+  default: (props: { mode: 'remote'; launch: { command: string; title: string }; hostLabel: string; onClose: () => void } | { mode: 'local'; project: { name: string; workspacePath: string }; onClose: () => void }) => props.mode === 'remote'
+    ? <div role="dialog" aria-label={props.launch.title}>{props.hostLabel}: {props.launch.command}</div>
+    : <div role="dialog" aria-label={`${props.project.name} 终端`}>shell in {props.project.workspacePath}<button type="button" onClick={props.onClose}>完成</button></div>,
 }));
 
 const project: HubProject = {
@@ -62,6 +64,22 @@ describe('Studio projects', () => {
     render(<MemoryRouter><StudioProjectAgents project={{ ...project, workspacePath: '' }} onOpenChat={vi.fn()} /></MemoryRouter>);
     expect((await screen.findByRole('button', { name: /Claude Code/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/填写项目目录/)).toBeTruthy();
+    // Without a directory there is nowhere to open a shell either.
+    expect(screen.queryByRole('button', { name: /终端/ })).toBeNull();
+  });
+
+  it('opens a full-screen shell on this computer in the project directory', async () => {
+    render(<MemoryRouter><StudioProjectAgents project={project} onOpenChat={vi.fn()} /></MemoryRouter>);
+    await screen.findByText('课程大纲');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /终端/ }));
+    const terminal = await screen.findByRole('dialog', { name: '超级教授 终端' });
+    expect(terminal.textContent).toContain('shell in /home/me/projects/professor');
+    // A local shell is not an agent launch and not a remote session.
+    expect(mocks.api.launch).not.toHaveBeenCalled();
+    expect(mocks.api.launchRemote).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '完成' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('persists modules, models and icon only when explicitly saved', async () => {

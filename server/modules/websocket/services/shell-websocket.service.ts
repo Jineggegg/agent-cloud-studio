@@ -234,16 +234,41 @@ function buildShellCommand(
  * are keyed by a hash of the FULL command: commands that only share a prefix
  * (every remote `ssh -tt ...` launch does) must never reattach to each other's
  * PTY, which a truncated encoding of the command's first bytes allowed.
+ * An interactive login shell (plain shell, no command) gets its own suffix so
+ * it never reattaches to a sessionless agent PTY in the same directory.
  */
 function buildPtySessionKey(
   projectPath: string,
   sessionId: string | null,
-  plainShellCommand: string
+  plainShellCommand: string,
+  interactiveShell: boolean
 ): string {
   const commandSuffix = plainShellCommand
     ? `_cmd_${createHash('sha256').update(plainShellCommand).digest('hex').slice(0, 16)}`
-    : '';
+    : interactiveShell
+      ? '_login-shell'
+      : '';
   return `${projectPath}_${sessionId ?? 'default'}${commandSuffix}`;
+}
+
+/**
+ * Picks the program and arguments for a new PTY. A command runs through
+ * `bash -c` (PowerShell `-Command` on Windows); a plain shell without a command
+ * is the owner's own terminal, so it starts an interactive login shell in the
+ * project directory instead of a `bash -c ''` that would exit immediately.
+ */
+function buildShellSpawn(
+  shellCommand: string,
+  interactiveShell: boolean
+): { shell: string; args: string[] } {
+  if (os.platform() === 'win32') {
+    return interactiveShell
+      ? { shell: 'powershell.exe', args: ['-NoLogo'] }
+      : { shell: 'powershell.exe', args: ['-Command', shellCommand] };
+  }
+  return interactiveShell
+    ? { shell: 'bash', args: ['-l'] }
+    : { shell: 'bash', args: ['-c', shellCommand] };
 }
 
 function readEnvValue(env: NodeJS.ProcessEnv, key: string): string | undefined {
@@ -335,6 +360,8 @@ export function handleShellConnection(
           readBoolean(data.isPlainShell) ||
           (!!initialCommand && !hasSession) ||
           provider === 'plain-shell';
+        // A plain shell with no command: the owner's interactive terminal (sudo prompts and all).
+        const isInteractiveShell = isPlainShell && !initialCommand.trim();
 
         urlDetectionBuffer = '';
         announcedAuthUrls.clear();
@@ -349,6 +376,7 @@ export function handleShellConnection(
           projectPath,
           sessionId,
           isPlainShell ? initialCommand : '',
+          isInteractiveShell,
         );
 
         if (isLoginCommand || forceRestart) {
@@ -412,9 +440,7 @@ export function handleShellConnection(
 
         const shellCommand = buildShellCommand(data, dependencies);
         const resumeSessionId = resolveResumeSessionId(data, dependencies);
-        const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
-        const shellArgs =
-          os.platform() === 'win32' ? ['-Command', shellCommand] : ['-c', shellCommand];
+        const { shell, args: shellArgs } = buildShellSpawn(shellCommand, isInteractiveShell);
         const termCols = readNumber(data.cols, 80);
         const termRows = readNumber(data.rows, 24);
         const prioritizedPath = prioritizeUserNpmGlobalBin(process.env);
