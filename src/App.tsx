@@ -1,10 +1,10 @@
 import { Suspense, lazy } from 'react';
-import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
+import { BrowserRouter as Router, Navigate, Route, Routes } from 'react-router-dom';
 import { I18nextProvider } from 'react-i18next';
 
 import { ThemeProvider } from '@/shared/context/ThemeContext';
 import { UiPreferencesProvider } from '@/shared/context/UiPreferencesContext';
-import { LaunchScreen, LaunchSplashRelease } from '@/shared/ui/LaunchScreen';
+import { LaunchErrorBoundary, LaunchScreen, LaunchSplashRelease } from '@/shared/ui/LaunchScreen';
 import { AuthProvider, ProtectedRoute } from '@/modules/auth';
 import { i18n } from '@/modules/i18n';
 import { StudioPage } from '@/modules/studio';
@@ -112,7 +112,9 @@ function detectRouterBasename() {
  * Rendered by main.tsx; mounts the shared providers, the auth gate and the routes. Every route
  * renders LaunchSplashRelease beside its screen so the index.html splash crossfades away only once
  * that screen has painted; the IDE's sits inside its Suspense boundary, so a cold start on
- * /workspace keeps the splash (not a spinner) up until the IDE itself is ready.
+ * /workspace keeps the splash (not a spinner) up until the IDE itself is ready. An unknown path
+ * goes to the Studio home, and a screen that throws (or a chunk that fails to download) shows
+ * LaunchErrorBoundary's error screen, so the splash can never be left up with nothing behind it.
  */
 export default function App() {
   const routerBasename = detectRouterBasename();
@@ -126,6 +128,7 @@ export default function App() {
   );
 
   return (
+    <LaunchErrorBoundary homeHref={`${routerBasename}/`}>
     <I18nextProvider i18n={i18n}>
       <ThemeProvider>
         <UiPreferencesProvider>
@@ -140,6 +143,8 @@ export default function App() {
                   <Route path="/apps/:app" element={studioScreen} />
                   <Route path="/workspace" element={workspaceScreen} />
                   <Route path="/session/:sessionId" element={workspaceScreen} />
+                  {/* Old bookmarks and mistyped links land on the home screen instead of an empty page. */}
+                  <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
               </Router>
             </ProtectedRoute>
@@ -148,5 +153,6 @@ export default function App() {
         </UiPreferencesProvider>
       </ThemeProvider>
     </I18nextProvider>
+    </LaunchErrorBoundary>
   );
 }

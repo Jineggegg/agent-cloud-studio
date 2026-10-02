@@ -57,11 +57,13 @@
       })();
     </script>
 
-    <!-- Launch screen. Pure CSS/SVG so it paints before any script runs. It mirrors the Studio home
-         wallpaper (same paper background and blurred mineral colour fields), so the crossfade into
-         the home screen reads as the wallpaper staying put while the icons arrive. React removes it
-         (LaunchSplashRelease in src/shared/ui/LaunchScreen.tsx) once the first real screen has
-         painted; LaunchScreen in the same file reuses these `.acs-launch` styles for in-app loading. -->
+    <!-- Launch screen. Pure inline CSS/SVG so it paints before any script runs and before the app
+         stylesheet arrives (the build loads that without blocking: vite.config.js). It mirrors the
+         Studio home wallpaper (same paper background and blurred mineral colour fields), so the
+         crossfade into the home screen reads as the wallpaper staying put while the icons arrive.
+         React removes it (LaunchSplashRelease in src/shared/ui/LaunchScreen.tsx) once the first real
+         screen has painted with the app stylesheet applied; LaunchScreen and the error screen in the
+         same file reuse these `.acs-launch` styles. -->
     <style>
       .acs-launch {
         --launch-bg: #efede8;
@@ -210,12 +212,53 @@
       @keyframes acs-launch-reveal { to { opacity: 1; visibility: visible; } }
       @keyframes acs-launch-pulse { from { opacity: .35; } to { opacity: .9; } }
 
+      /* Error screen (LaunchErrorBoundary in src/shared/ui/LaunchScreen.tsx): the same backdrop with the
+         mark held still, an honest message and two ways out. Styled here so it works without the app CSS. */
+      .acs-launch-error {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+        text-align: center;
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      .acs-launch-error .acs-launch-mark { flex: none; width: 72px; height: 72px; margin-bottom: 10px; }
+      .acs-launch-error h1 { margin: 0; color: var(--launch-ink); font-size: 17px; font-weight: 600; letter-spacing: 0; }
+      .acs-launch-error p { max-width: 340px; margin: 0; }
+      .acs-launch-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 14px; }
+      .acs-launch-actions :is(a, button) {
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
+        padding: 0 20px;
+        border: 0;
+        border-radius: 22px;
+        background: var(--launch-glass-top);
+        box-shadow: inset 0 0 0 .5px var(--launch-edge), 0 8px 20px -14px rgba(40, 35, 25, .4);
+        color: var(--launch-ink);
+        font: inherit;
+        font-weight: 600;
+        text-decoration: none;
+        cursor: pointer;
+      }
+
       /* Leaving: the splash fades while the emblem drifts forward and the app settles from 0.985 to 1. */
       #launch-splash {
         z-index: 2147483000;
         transition: opacity 420ms cubic-bezier(.4, 0, .2, 1), visibility 0s linear 420ms;
       }
       #launch-splash[data-state="leaving"] { opacity: 0; visibility: hidden; pointer-events: none; }
+      /* While the app stylesheet still downloads (the build preloads it and turns it into a stylesheet on
+         load), React may already have rendered: keep that unstyled tree (and any portal) out of layout so it
+         cannot add scrollbars or reflow behind the splash. Screens drawn with these inline `.acs-launch`
+         styles stay, so the error screen shows even when the stylesheet never arrives. The splash itself
+         waits for the styles before leaving (LaunchSplashRelease). */
+      html:has(link[data-acs-entry-style][rel="preload"]) :is(#root > :not(.acs-launch), body > :not(#root, #launch-splash)) {
+        display: none;
+      }
       #launch-splash[data-state="leaving"] .acs-launch-emblem { transform: scale(1.08); transition: transform 420ms var(--launch-ease); }
       /* #root sits outside .acs-launch, so its easing is spelled out; it matches the fade so the settle
          stays visible while the splash dissolves instead of finishing underneath it. */
@@ -247,21 +290,8 @@
       <div class="acs-launch-line" aria-hidden="true"></div>
       <p class="acs-launch-hint">网络较慢，仍在加载…<a href="">重新加载</a></p>
     </div>
+    <!-- src/main.tsx also registers the service worker, as soon as it runs. (A second registration
+         here waited for window `load`, which a blocked Google Fonts request can hold back for long.) -->
     <script type="module" src="/src/main.tsx"></script>
-
-    <!-- Service Worker Registration -->
-    <script>
-      if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js')
-            .then(registration => {
-              console.log('SW registered: ', registration);
-            })
-            .catch(registrationError => {
-              console.log('SW registration failed: ', registrationError);
-            });
-        });
-      }
-    </script>
   </body>
 </html>

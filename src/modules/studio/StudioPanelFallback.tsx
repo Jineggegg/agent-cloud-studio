@@ -43,12 +43,19 @@ export function StudioPanelPlaceholder({ variant }: { variant: 'list' | 'form' |
 
 type StudioPanelBoundaryState = { failed: boolean };
 
+type StudioPanelBoundaryProps = {
+  // Remounts the sub-app (lazyStudioPanel re-keys the boundary), downloading its chunk again if needed.
+  onRetry: () => void;
+  children: ReactNode;
+};
+
 /**
  * Used by lazyStudioPanel (studio module) around every sub-app: a chunk that cannot load (offline, or
  * the app was redeployed under new file names) or a sub-app that throws must not blank the whole
- * Studio; the home screen and navigation stay usable and the panel offers a reload.
+ * Studio; the home screen and navigation stay usable and the panel offers 重试, which tries the sub-app
+ * again in place, and a full reload as the last resort.
  */
-export class StudioPanelBoundary extends Component<{ children: ReactNode }, StudioPanelBoundaryState> {
+export class StudioPanelBoundary extends Component<StudioPanelBoundaryProps, StudioPanelBoundaryState> {
   // Whether this sub-app failed; switches the panel to a recoverable message.
   state: StudioPanelBoundaryState = { failed: false };
 
@@ -64,7 +71,8 @@ export class StudioPanelBoundary extends Component<{ children: ReactNode }, Stud
     if (!this.state.failed) return this.props.children;
     return <div className="ios-empty" role="alert">
       <span>这个页面没能打开，可能是网络中断或 Studio 刚刚更新。</span>
-      <button type="button" className="ios-button tinted" onClick={() => window.location.reload()}>重新加载</button>
+      <button type="button" className="ios-button tinted" onClick={this.props.onRetry}>重试</button>
+      <button type="button" className="ios-button" onClick={() => window.location.reload()}>重新加载</button>
     </div>;
   }
 }

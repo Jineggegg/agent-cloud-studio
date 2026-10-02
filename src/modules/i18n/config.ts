@@ -3,7 +3,7 @@
  *
  * Configures i18next for internationalization support.
  * Features:
- * - English (the fallback) is bundled; every other language loads on demand as one chunk
+ * - English (the fallback) is bundled; every other language loads on demand, namespace by namespace
  * - Language detection from localStorage
  * - Fallback to English for missing translations
  * - Development mode warnings for missing keys
@@ -13,7 +13,7 @@ import i18n from 'i18next';
 import type { BackendModule } from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
-// English is the fallback language and the default, so it ships with the app.
+// English, bundled (see englishResources below).
 import enCommon from '@/modules/i18n/locales/en/common.json';
 import enSettings from '@/modules/i18n/locales/en/settings.json';
 import enAuth from '@/modules/i18n/locales/en/auth.json';
@@ -33,8 +33,9 @@ import {
   writeUserPreference,
 } from '@/shared/userSettings';
 
-// Every other language's JSON, loaded only when that language is in use. vite.config.js groups
-// each language's namespaces into one chunk (locale-<code>), so switching costs one request.
+// Every other language's JSON, loaded only when that language is in use. vite.config.js puts each
+// language's `auth` namespace in a tiny chunk (locale-<code>-auth, needed on every route) and the
+// rest in one chunk (locale-<code>, only the IDE reads it), so the IDE costs a single request.
 // These files used to be bundled eagerly and made up over half of the app's entry script.
 const lazyLocaleFiles = import.meta.glob<Record<string, unknown>>(
   ['@/modules/i18n/locales/*/*.json', '!@/modules/i18n/locales/en/*.json'],
@@ -44,6 +45,30 @@ const lazyLocaleLoaders = new Map<string, () => Promise<Record<string, unknown>>
 for (const [path, load] of Object.entries(lazyLocaleFiles)) {
   const match = path.match(/locales\/([^/]+)\/([^/]+)\.json$/);
   if (match) lazyLocaleLoaders.set(`${match[1]}/${match[2]}`, load);
+}
+
+// English is the fallback language and the default, so it ships with the app.
+const englishResources = {
+  common: enCommon,
+  settings: enSettings,
+  auth: enAuth,
+  sidebar: enSidebar,
+  chat: enChat,
+  codeEditor: enCodeEditor,
+  tasks: enTasks,
+  git: enGit,
+};
+
+// Every namespace but `auth`: only IDE screens read them, and each language ships them in one chunk.
+const IDE_NAMESPACES = Object.keys(englishResources).filter(namespace => namespace !== 'auth');
+
+// All of a language's IDE namespaces at once (one chunk, so one request). A namespace the language
+// does not ship (git, mostly) comes back empty; the English fallback fills those keys.
+function loadIdeNamespaces(language: string) {
+  return Promise.all(IDE_NAMESPACES.map(async (namespace) => {
+    const load = lazyLocaleLoaders.get(`${language}/${namespace}`);
+    return [namespace, load ? await load() : {}] as const;
+  }));
 }
 
 const lazyLocaleBackend: BackendModule = {
@@ -57,10 +82,22 @@ const lazyLocaleBackend: BackendModule = {
       callback(null, {});
       return;
     }
-    load().then(
-      (resources) => callback(null, resources),
-      (error: unknown) => callback(error instanceof Error ? error : String(error), false),
-    );
+    const fail = (error: unknown) => callback(error instanceof Error ? error : String(error), false);
+    if (namespace === 'auth') {
+      load().then((resources) => callback(null, resources), fail);
+      return;
+    }
+    // The first IDE namespace brings the whole chunk, so store its siblings too: a screen that mounts
+    // later (a settings dialog, the git panel) then finds its strings ready instead of suspending,
+    // which would swap the whole IDE for its loading screen for a moment.
+    loadIdeNamespaces(language).then((bundles) => {
+      for (const [sibling, resources] of bundles) {
+        if (sibling !== namespace && !i18n.hasResourceBundle(language, sibling)) {
+          i18n.addResourceBundle(language, sibling, resources);
+        }
+      }
+      callback(null, bundles.find(([loaded]) => loaded === namespace)?.[1] ?? {});
+    }, fail);
   },
 };
 
@@ -83,16 +120,7 @@ i18n
   .init({
     // Only English is bundled; the backend above supplies the active language when it is not English.
     resources: {
-      en: {
-        common: enCommon,
-        settings: enSettings,
-        auth: enAuth,
-        sidebar: enSidebar,
-        chat: enChat,
-        codeEditor: enCodeEditor,
-        tasks: enTasks,
-        git: enGit,
-      },
+      en: englishResources,
     },
     partialBundledLanguages: true,
 
@@ -105,8 +133,13 @@ i18n
     // Enable debug mode in development (logs missing keys to console)
     debug: false,
 
-    // Namespaces - load only what's needed
-    ns: ['common', 'settings', 'auth', 'sidebar', 'chat', 'codeEditor', 'tasks', 'git'],
+    // Namespaces fetched at startup for a non-English language. Only `auth`: the auth provider is
+    // mounted on every route and the sign-in screens read nothing else, while the Studio home reads
+    // no strings at all. Every other namespace loads when a component first asks for it (the IDE's
+    // screens suspend meanwhile), from one chunk per language (vite.config.js). The list must not be
+    // empty: with nothing loaded for the active language i18next resolves it to English and would
+    // then treat every namespace as ready, so later screens would never fetch their translations.
+    ns: ['auth'],
     defaultNS: 'common',
 
     // Key separator for nested keys (default: '.')
@@ -132,6 +165,19 @@ i18n
       bindI18nStore: false, // Don't re-render on resource changes
     },
   });
+
+// A language switch fetches the new language's strings before it takes effect, but only for the
+// namespaces listed in `ns`, which starts as just `auth`. Screens that read English (bundled, so
+// never fetched and never listed) would otherwise suspend for their strings right after the switch
+// and flash a loading screen; listing every namespace a component has used (react-i18next records
+// them) lets the switch fetch them first and change the whole screen in one step.
+i18n.on('languageChanging', () => {
+  const startupNamespaces = i18n.options.ns;
+  if (!Array.isArray(startupNamespaces)) return;
+  for (const namespace of i18n.reportNamespaces?.getUsedNamespaces() ?? []) {
+    if (!startupNamespaces.includes(namespace)) startupNamespaces.push(namespace);
+  }
+});
 
 // Save language preference when it changes
 i18n.on('languageChanged', (lng: string) => {
