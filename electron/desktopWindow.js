@@ -714,7 +714,8 @@ export class DesktopWindowManager {
       minWidth: 1024,
       minHeight: 720,
       show: false,
-      backgroundColor: '#0f172a',
+      // The Studio's paper (light) or ink (dark) background, so the window never shows a foreign colour while loading.
+      backgroundColor: nativeTheme.shouldUseDarkColors ? '#121315' : '#efede8',
       title: this.appName,
       icon: this.getWindowIconPath(),
       titleBarStyle: 'hidden',

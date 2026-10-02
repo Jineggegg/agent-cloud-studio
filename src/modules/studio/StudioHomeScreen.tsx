@@ -170,7 +170,7 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreat
   const iconSize = layout.large ? 52 : 40;
 
   return <div className={`home-screen ${layout.large ? 'large-icons' : ''} ${layout.labels ? '' : 'no-labels'} ${editing ? 'editing' : ''}`} onClick={leaveEditOnEmptyTap}>
-    <StudioFluidBackground paused={covered} />
+    <StudioFluidBackground />
     <header className="home-top">
       <div className="home-date">
         <span className="home-weekday">{new Intl.DateTimeFormat('zh-CN', { weekday: 'long', timeZone: 'Europe/London' }).format(today)}</span>

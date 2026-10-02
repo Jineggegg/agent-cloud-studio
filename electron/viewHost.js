@@ -1,4 +1,4 @@
-import { BrowserView, dialog } from 'electron';
+import { BrowserView, dialog, nativeTheme } from 'electron';
 
 const TARGET_LOAD_TIMEOUT_MS = 20000;
 
@@ -231,6 +231,8 @@ export class ViewHost {
         preload: this.getPreloadPath(),
       },
     });
+    // Paint the Studio's own paper/ink colour until the page draws, so a tab never flashes white or navy.
+    view.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#121315' : '#efede8');
     this.configureChildWebContents(view.webContents);
     this.tabViews.set(tabId, view);
     return view;
