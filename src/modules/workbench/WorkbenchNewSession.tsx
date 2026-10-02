@@ -1,23 +1,28 @@
 import { useState } from 'react';
 import { SquarePen } from 'lucide-react';
 
-import type { WorkbenchNewProvider } from '@/shared/types';
+import type { WorkbenchNewChatChoice, WorkbenchNewProvider } from '@/shared/types';
 import { WorkbenchPopover } from '@/modules/workbench/WorkbenchPopover';
 import { WorkbenchProviderMark } from '@/modules/workbench/WorkbenchProviderMark';
+import { providerMeta } from '@/modules/workbench/utils/workbenchRoutes';
 
-// The three ways a workbench chat can start, in the order the owner reaches for them.
-const OPTIONS: { provider: WorkbenchNewProvider; name: string; caption: string }[] = [
-  { provider: 'claude', name: 'Claude Code', caption: 'Claude 订阅 · 在项目目录运行' },
-  { provider: 'codex', name: 'Codex', caption: 'ChatGPT 订阅 · 在项目目录运行' },
-  { provider: 'deepseek', name: 'DeepSeek', caption: 'API · 项目对话' },
-];
+// What each agent runs on, under its name in the menu.
+const CAPTIONS: Record<WorkbenchNewProvider, string> = {
+  claude: 'Claude 订阅 · 在项目目录运行',
+  codex: 'ChatGPT 订阅 · 在项目目录运行',
+  cursor: 'Cursor Agent · 在项目目录运行',
+  opencode: 'OpenCode · 在项目目录运行',
+  deepseek: 'API · 项目对话',
+};
 
 /**
- * Used by the workbench sidebar for "+ 新会话": opens a menu of Claude Code, Codex and DeepSeek, marking the one
- * used last. DeepSeek needs a Studio hub project for its conversation space, so it is disabled without one.
+ * Used by the workbench sidebar for "+ 新会话": opens a menu of the agents a new chat can start with (Claude Code,
+ * Codex and DeepSeek, plus Cursor / OpenCode where the Studio project enables them), marking the one used last.
+ * The choices come from the shared new-chat rule, so an agent unavailable here (DeepSeek without a Studio project)
+ * is disabled with the same reason the chat header gives.
  */
-export function WorkbenchNewSession({ lastProvider, deepseekAvailable, shortcut, onStart }: {
-  lastProvider: WorkbenchNewProvider; deepseekAvailable: boolean; shortcut: string | null; onStart: (provider: WorkbenchNewProvider) => void;
+export function WorkbenchNewSession({ choices, lastProvider, shortcut, onStart }: {
+  choices: WorkbenchNewChatChoice[]; lastProvider: WorkbenchNewProvider; shortcut: string | null; onStart: (provider: WorkbenchNewProvider) => void;
 }) {
   // The trigger, anchoring the menu.
   const [trigger, setTrigger] = useState<HTMLButtonElement | null>(null);
@@ -31,14 +36,14 @@ export function WorkbenchNewSession({ lastProvider, deepseekAvailable, shortcut,
       {shortcut && <kbd aria-hidden="true">{shortcut}</kbd>}
     </button>
     <WorkbenchPopover open={open} anchor={trigger} onClose={() => setOpen(false)} label="选择助手" width={300}>
-      {OPTIONS.map(option => {
-        const disabled = option.provider === 'deepseek' && !deepseekAvailable;
-        return <button type="button" role="menuitem" key={option.provider} className="wb-popover-item" aria-disabled={disabled || undefined}
-          onClick={() => { if (disabled) return; setOpen(false); onStart(option.provider); }}>
-          <WorkbenchProviderMark provider={option.provider} size="menu" />
+      {choices.map(({ provider, unavailableReason }) => {
+        const disabled = Boolean(unavailableReason);
+        return <button type="button" role="menuitem" key={provider} className="wb-popover-item" aria-disabled={disabled || undefined}
+          onClick={() => { if (disabled) return; setOpen(false); onStart(provider); }}>
+          <WorkbenchProviderMark provider={provider} size={34} />
           <span className="wb-popover-item-text">
-            <strong>{option.name}{option.provider === lastProvider && <em className="wb-badge">上次使用</em>}</strong>
-            <small>{disabled ? '需先在 Studio 中建立此项目' : option.caption}</small>
+            <strong>{providerMeta(provider).name}{provider === lastProvider && <em className="wb-badge">上次使用</em>}</strong>
+            <small>{unavailableReason ?? CAPTIONS[provider]}</small>
           </span>
         </button>;
       })}

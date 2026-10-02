@@ -7,7 +7,7 @@ import { writeSelectedProvider } from '@/shared/selectedProvider';
 import type { LLMProvider } from '@/shared/types';
 import { parseNewProvider, resolveLegacySessionPath, workbenchPath } from '@/modules/workbench/utils/workbenchRoutes';
 
-// Agents the old /workspace deep link could name; the workbench starts new chats with Claude Code or Codex.
+// Agents the old /workspace deep link could name; the workbench starts a new chat with any of them.
 const LEGACY_AGENTS: readonly string[] = ['claude', 'codex', 'cursor', 'opencode'];
 
 /**

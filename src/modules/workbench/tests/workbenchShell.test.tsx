@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 // Type-only, so it is erased before vi.mock's hoisted factory runs.
 import type * as SharedApi from '@/shared/api';
-import type { ServerEvent, WorkbenchChatProps } from '@/shared/types';
+import type { ServerEvent, WorkbenchChatChrome, WorkbenchChatProps } from '@/shared/types';
 
 // Fakes for every external service: the workbench only talks to these through @/shared/api and the websocket.
 const NOW = Date.now();
@@ -14,7 +14,10 @@ const PROJECTS = [
   { projectId: 'p1', displayName: 'professor-app', fullPath: '/home/me/projects/professor', path: '/home/me/projects/professor', isStarred: false, sessions: [] },
   { projectId: 'p2', displayName: 'snr3-lab', fullPath: '/home/me/projects/snr3-lab', path: '/home/me/projects/snr3-lab', isStarred: false, sessions: [] },
 ];
-const HUBS = [{ id: 'professor', name: '超级教授', tone: 'clay', glyph: 'graduation', workspacePath: '/home/me/projects/professor', remoteHost: '' }];
+const HUBS = [{
+  id: 'professor', name: '超级教授', tone: 'clay', glyph: 'graduation', workspacePath: '/home/me/projects/professor', remoteHost: '',
+  providers: ['claude', 'codex', 'cursor', 'deepseek'],
+}];
 const mocks = vi.hoisted(() => ({
   projectSessions: vi.fn(),
   sessionDetails: vi.fn(),
@@ -26,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   listeners: [] as ((event: ServerEvent) => void)[],
   busy: new Set<string>(),
   chatMounts: 0,
+  toastError: vi.fn(),
 }));
 const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }));
 
@@ -54,6 +58,7 @@ vi.mock('@/shared/context/WebSocketContext', () => ({
 }));
 vi.mock('@/shared/context/SessionProtectionContext', () => ({ useBusySessionIdSet: () => mocks.busy }));
 vi.mock('@/modules/command-palette', () => ({ usePaletteOpsRegister: () => {} }));
+vi.mock('sonner', () => ({ toast: Object.assign(() => undefined, { error: (...args: unknown[]) => mocks.toastError(...args) }) }));
 vi.mock('@/modules/code-editor', () => ({
   useEditorSidebar: () => ({ editingFile: null, handleFileOpen: vi.fn(), handleCloseEditor: vi.fn(), handleUnsavedChangesChange: vi.fn() }),
   CodeEditor: () => null,
@@ -75,15 +80,18 @@ vi.mock('@/modules/studio', () => ({
   StudioConfirmSheet: ({ title, confirmLabel, onConfirm, onCancel }: { title: string; confirmLabel: string; onConfirm: () => void; onCancel: () => void }) =>
     <div role="alertdialog" aria-label={title}><button type="button" onClick={onCancel}>取消</button><button type="button" onClick={onConfirm}>{confirmLabel}</button></div>,
 }));
-// The chat column belongs to another track; this stand-in shows what the shell hands it.
+// The chat column has its own tests; this stand-in shows what the shell hands it, including the title-bar chrome
+// it renders in its header (the shell's controls, the project name and the provider callback).
 vi.mock('@/modules/workbench/chat/WorkbenchChat', async () => {
   const { useEffect } = await import('react');
   return {
-    WorkbenchChat: (props: WorkbenchChatProps) => {
+    WorkbenchChat: (props: WorkbenchChatProps & { chrome?: WorkbenchChatChrome }) => {
       useEffect(() => { mocks.chatMounts += 1; }, []);
       return <section aria-label="chat">
+        <header data-testid="chat-header">{props.chrome?.leading}<span>{props.chrome?.projectName}</span>{props.chrome?.trailing}</header>
         <span data-testid="chat-state">{`${props.project.projectId}|${props.session ? `${props.session.kind}:${props.session.id}:${props.session.title}` : 'new'}|${props.provider}|${props.hubProjectId}`}</span>
         <button type="button" onClick={() => props.onSessionCreated({ id: 'created-1', kind: 'agent', provider: 'codex', title: '新建的会话', updatedAt: new Date().toISOString() })}>create session</button>
+        <button type="button" onClick={() => props.chrome?.onProviderChange?.('codex')}>switch to codex</button>
       </section>;
     },
   };
@@ -117,6 +125,7 @@ beforeEach(() => {
   mocks.listeners = [];
   mocks.busy = new Set();
   mocks.chatMounts = 0;
+  mocks.toastError.mockClear();
   mocks.projectSessions.mockImplementation((projectId: string) => json(projectId === 'p1' ? {
     projectId,
     sessions: [
@@ -321,4 +330,104 @@ test('an unknown project shows a recoverable state', async () => {
   expect(await screen.findByRole('heading', { name: '找不到这个项目' })).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: '打开最近的项目' }));
   await waitFor(() => expect(location()).toBe('/work/p1'));
+});
+
+test('the chat header is the only title bar: it carries the shell controls, and the shell bar returns without a chat', async () => {
+  renderShell('/work/p1/s/s1');
+  await waitFor(() => expect(chatState()).toContain('agent:s1'));
+  expect(document.querySelector('.wb-bar')).toBeNull();
+  const header = screen.getByTestId('chat-header');
+  expect(within(header).getByText('超级教授')).toBeTruthy();
+  expect(screen.getAllByRole('button', { name: '终端' })).toHaveLength(1);
+  expect(within(header).getByRole('button', { name: '终端' })).toBeTruthy();
+  // With the sidebar hidden, its toggle and the way home move into the same bar.
+  fireEvent.keyDown(window, { key: '\\', ctrlKey: true });
+  await waitFor(() => expect(within(header).getByRole('button', { name: '显示会话列表' })).toBeTruthy());
+  expect(within(header).getByRole('button', { name: '返回 Studio 主屏幕' })).toBeTruthy();
+  cleanup();
+  // No chat (a session that is gone): the shell's own bar is back with the same controls.
+  renderShell('/work/p1/s/ghost');
+  expect(await screen.findByRole('heading', { name: '这个会话已不存在' })).toBeTruthy();
+  expect(document.querySelector('.wb-bar')).not.toBeNull();
+  expect(screen.getAllByRole('button', { name: '终端' })).toHaveLength(1);
+});
+
+test('Cursor and OpenCode launches open a chat with that agent, and the menu offers what the project enables', async () => {
+  renderShell('/work/p1?new=cursor');
+  await waitFor(() => expect(chatState()).toBe('p1|new|cursor|professor'));
+  fireEvent.click(screen.getByRole('button', { name: '新会话' }));
+  const menu = await screen.findByRole('menu', { name: '选择助手' });
+  expect(within(menu).getAllByRole('menuitem').map(item => item.querySelector('strong')?.firstChild?.textContent)).toEqual(['Claude Code', 'Codex', 'DeepSeek', 'Cursor']);
+  cleanup();
+  renderShell('/work/p2?new=opencode');
+  await waitFor(() => expect(chatState()).toBe('p2|new|opencode|null'));
+});
+
+test('DeepSeek is offered but disabled in a directory without a Studio project, with the reason', async () => {
+  renderShell('/work/p2');
+  await waitFor(() => expect(chatState()).toBe('p2|new|claude|null'));
+  fireEvent.click(screen.getByRole('button', { name: '新会话' }));
+  const deepseek = await screen.findByRole('menuitem', { name: /DeepSeek/ });
+  expect(deepseek.getAttribute('aria-disabled')).toBe('true');
+  expect(within(deepseek).getByText('需先在 Studio 中建立此项目')).toBeTruthy();
+  fireEvent.click(deepseek);
+  expect(location()).toBe('/work/p2');
+});
+
+test('a provider switched in the chat header is remembered and kept in the URL without remounting the chat', async () => {
+  renderShell('/work/p1?new=claude');
+  await waitFor(() => expect(chatState()).toBe('p1|new|claude|professor'));
+  fireEvent.click(screen.getByRole('button', { name: 'switch to codex' }));
+  await waitFor(() => expect(location()).toBe('/work/p1?new=codex'));
+  expect(chatState()).toBe('p1|new|codex|professor');
+  expect(localStorage.getItem('acs-workbench-last-provider')).toBe('codex');
+  expect(mocks.chatMounts).toBe(1);
+});
+
+test('a session link naming the wrong project moves to the right one and opens there', async () => {
+  // "outside" belongs to p1 and is not in its first history page.
+  renderShell('/work/p2/s/outside');
+  await waitFor(() => expect(location()).toBe('/work/p1/s/outside'));
+  await waitFor(() => expect(chatState()).toBe('p1|agent:outside:早期会话|codex|professor'));
+  expect(screen.queryByRole('heading', { name: '这个会话已不存在' })).toBeNull();
+});
+
+test('an older page that fails to load says so and keeps the button for a retry', async () => {
+  mocks.projectSessions.mockImplementation((projectId: string, page: { offset: number }) => (page.offset === 0
+    ? json({ projectId, sessions: [{ id: 's1', provider: 'claude', summary: '修复登录', lastActivity: iso(60_000) }], sessionMeta: { hasMore: true } })
+    : json({ error: 'boom' }, 500)));
+  renderShell('/work/p1');
+  fireEvent.click(await screen.findByRole('button', { name: '显示更早的会话' }));
+  await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('更早的会话加载失败（500）'));
+  expect(await screen.findByRole('button', { name: '显示更早的会话' })).toBeTruthy();
+});
+
+test('the workbench follows the iOS soft keyboard through the visual viewport', async () => {
+  const viewport = Object.assign(new EventTarget(), { height: window.innerHeight, offsetTop: 0, scale: 1 });
+  Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport });
+  try {
+    renderShell('/work/p1');
+    await waitFor(() => expect(chatState()).toBe('p1|new|claude|professor'));
+    const root = document.documentElement.style;
+    expect(root.getPropertyValue('--keyboard-height')).toBe('0px');
+    // The keyboard takes 320px and Safari pans the page up by 40px to reveal the composer.
+    act(() => {
+      viewport.height = window.innerHeight - 320;
+      viewport.offsetTop = 40;
+      viewport.dispatchEvent(new Event('resize'));
+    });
+    expect(root.getPropertyValue('--keyboard-height')).toBe('280px');
+    expect(root.getPropertyValue('--viewport-offset-top')).toBe('40px');
+    cleanup();
+    expect(root.getPropertyValue('--keyboard-height')).toBe('');
+  } finally {
+    Reflect.deleteProperty(window, 'visualViewport');
+  }
+});
+
+test('leaving the workbench gives the tab back the app title', async () => {
+  renderShell('/work/p1/s/s1');
+  await waitFor(() => expect(document.title).toBe('修复登录 · 超级教授'));
+  cleanup();
+  expect(document.title).toBe('Agent Cloud Studio');
 });

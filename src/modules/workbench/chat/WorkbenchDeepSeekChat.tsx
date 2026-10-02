@@ -4,15 +4,17 @@ import { AnimatePresence, m } from 'motion/react';
 import { Activity, AlertTriangle, KeyRound, X } from 'lucide-react';
 
 import { LazyMessageRow, useLazyRowObserver } from '@/modules/chat';
-import type { ChatMessage, Project, ProviderModelOption, StudioConversation, WorkbenchChatProps, WorkbenchSessionItem } from '@/shared/types';
+import type {
+  ChatMessage, Project, ProviderModelOption, StudioConversation, WorkbenchChatChrome, WorkbenchNewChatChoice, WorkbenchNewProvider,
+  WorkbenchSessionItem,
+} from '@/shared/types';
 import { useDeepSeekConversation } from '@/modules/workbench/chat/hooks/useDeepSeekConversation';
 import { WorkbenchChatHeader } from '@/modules/workbench/chat/WorkbenchChatHeader';
 import { WorkbenchAssistantMessage, WorkbenchTurnLabel, WorkbenchUserMessage } from '@/modules/workbench/chat/WorkbenchMessageRow';
-import { WorkbenchProviderMark } from '@/modules/workbench/chat/WorkbenchProviderMark';
+import { WorkbenchProviderMark } from '@/modules/workbench/WorkbenchProviderMark';
 import { WorkbenchSendButton } from '@/modules/workbench/chat/WorkbenchSendButton';
 import { WorkbenchSpinner } from '@/modules/workbench/chat/WorkbenchSpinner';
 
-const NEW_CHAT_PROVIDERS: WorkbenchChatProps['provider'][] = ['claude', 'codex', 'deepseek'];
 // Used until the connector reports its models, matching the Studio DeepSeek app.
 const FALLBACK_MODELS = ['deepseek-flash', 'deepseek-v4-pro'];
 // The field grows with its text up to this height, then scrolls.
@@ -26,9 +28,12 @@ type WorkbenchDeepSeekChatProps = {
   conversationId: string | null;
   title: string | null;
   hubProjectId: string | null;
-  allowProviderSwitch: boolean;
-  onSelectProvider: (provider: WorkbenchChatProps['provider']) => void;
+  // Agents a new chat may switch to before its first send; null once the shell has a conversation open.
+  providerChoices: WorkbenchNewChatChoice[] | null;
+  onSelectProvider: (provider: WorkbenchNewProvider) => void;
   onSessionCreated: (item: WorkbenchSessionItem) => void;
+  // The shell's controls and project name for the title bar.
+  chrome?: WorkbenchChatChrome;
 };
 
 function ThinkingRow({ since }: { since: number | null }) {
@@ -68,9 +73,10 @@ export function WorkbenchDeepSeekChat({
   conversationId,
   title,
   hubProjectId,
-  allowProviderSwitch,
+  providerChoices,
   onSelectProvider,
   onSessionCreated,
+  chrome,
 }: WorkbenchDeepSeekChatProps) {
   const space = hubProjectId ? `project:${hubProjectId}` as const : 'deepseek' as const;
   const handleCreated = useCallback((created: StudioConversation, firstMessage: string) => {
@@ -167,11 +173,12 @@ export function WorkbenchDeepSeekChat({
         provider="deepseek"
         modelLabel={activeModel}
         title={title}
-        providerChoices={allowProviderSwitch && !started ? NEW_CHAT_PROVIDERS : null}
+        providerChoices={started ? null : providerChoices}
         onSelectProvider={onSelectProvider}
         models={modelOptions}
         currentModel={activeModel}
         onSelectModel={started ? undefined : setDraftModel}
+        chrome={chrome}
       />
 
       <div ref={scrollRef} className="wbc-scroll" aria-busy={chat.loading || chat.sending}>

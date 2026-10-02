@@ -207,3 +207,19 @@ export const PROVIDER_PERMISSION_PREFERENCE_KEYS: Record<LLMProvider, UserPrefer
   codex: 'codexPermissions',
   opencode: 'opencodePermissions',
 };
+
+// ---------------------------
+
+//----------------- WORKBENCH PANEL MOTION ------------
+
+/**
+ * How the workbench's floating panels (the phone's history sheet, the tablet and phone inspector) slide in: the
+ * Studio spring. They move by transform over the chat, so a long, soft settle costs nothing.
+ */
+export const WORKBENCH_PANEL_SPRING = { type: 'spring', stiffness: 260, damping: 32 } as const;
+
+/**
+ * How the workbench's docked columns (desktop sidebar and inspector) open and close. They change the chat's width,
+ * and every frame re-wraps the visible transcript, so a short ease replaces the half-second spring.
+ */
+export const WORKBENCH_DOCK_TWEEN = { type: 'tween', duration: 0.24, ease: [0.32, 0.72, 0, 1] } as const;

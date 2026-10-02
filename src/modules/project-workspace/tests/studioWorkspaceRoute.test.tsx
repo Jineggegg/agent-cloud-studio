@@ -12,7 +12,7 @@ vi.mock('@/shared/context/SessionProtectionContext', () => ({
 }));
 vi.mock('@/shared/context/WebSocketContext', () => ({ useWebSocket: () => ({ ws: null, sendMessage: vi.fn(), subscribe: vi.fn() }) }));
 vi.mock('@/shared/hooks/useDeviceSettings', () => ({ useDeviceSettings: () => ({ isMobile: false }) }));
-vi.mock('@/modules/project-workspace/hooks/useVisualViewportKeyboardOffset', () => ({ useVisualViewportKeyboardOffset: () => {} }));
+vi.mock('@/shared/hooks/useVisualViewportKeyboardOffset', () => ({ useVisualViewportKeyboardOffset: () => {} }));
 vi.mock('@/modules/project-workspace/controllers/WorkspaceProjectIntent', () => ({ WorkspaceProjectIntent: () => null }));
 // The IDE-wide providers (websocket, plugins, TaskMaster) moved from App into this lazily loaded route.
 vi.mock('@/shared/ui/WorkspaceProviders', () => ({

@@ -9,10 +9,15 @@ import type { LucideProps } from 'lucide-react';
 import { usePaletteOpsRegister } from '@/modules/command-palette';
 import { useEditorSidebar } from '@/modules/code-editor';
 import { StudioConfirmSheet } from '@/modules/studio';
+import { WORKBENCH_DOCK_TWEEN, WORKBENCH_PANEL_SPRING } from '@/shared/constants';
 import { useBusySessionIdSet } from '@/shared/context/SessionProtectionContext';
 import { useFileOpenResolver } from '@/shared/hooks/useFileOpenResolver';
+import { useVisualViewportKeyboardOffset } from '@/shared/hooks/useVisualViewportKeyboardOffset';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
-import type { DirectoryRevealRequest, FileOpenHandler, Project, WorkbenchInspectorTab, WorkbenchNewProvider, WorkbenchSessionItem } from '@/shared/types';
+import type {
+  DirectoryRevealRequest, FileOpenHandler, Project, WorkbenchChatChrome, WorkbenchInspectorTab, WorkbenchNewProvider, WorkbenchSessionItem,
+} from '@/shared/types';
+import { getPageTitle } from '@/shared/utils';
 import { WorkbenchChat } from '@/modules/workbench/chat/WorkbenchChat';
 import { WorkbenchChatBoundary } from '@/modules/workbench/WorkbenchChatBoundary';
 import { WorkbenchInspector } from '@/modules/workbench/WorkbenchInspector';
@@ -25,14 +30,14 @@ import { useWorkbenchSessions } from '@/modules/workbench/hooks/useWorkbenchSess
 import { useWorkbenchShortcuts } from '@/modules/workbench/hooks/useWorkbenchShortcuts';
 import { useWorkbenchViewport } from '@/modules/workbench/hooks/useWorkbenchViewport';
 import {
-  fetchAgentSession, fetchDeepSeekConversation, parseNewProvider, providerMeta, resolveLegacySessionPath, workbenchPath,
+  fetchAgentSession, fetchDeepSeekConversation, newChatChoices, parseNewProvider, providerMeta, resolveLegacySessionPath,
+  resolveNewChatProvider, workbenchPath,
 } from '@/modules/workbench/utils/workbenchRoutes';
 
 // Remembered on this device: the project /work opens and the agent a new chat starts with.
 const LAST_PROJECT_KEY = 'acs-workbench-last-project';
 const LAST_PROVIDER_KEY = 'acs-workbench-last-provider';
 const SIDEBAR_WIDTH = 288;
-const PANEL_SPRING = { type: 'spring', stiffness: 260, damping: 32 } as const;
 const TOOL_ICONS: { id: WorkbenchInspectorTab; label: string; icon: ComponentType<LucideProps> }[] = [
   { id: 'files', label: '文件', icon: FileCode2 },
   { id: 'terminal', label: '终端', icon: SquareTerminal },
@@ -79,6 +84,8 @@ export function WorkbenchShell() {
   const busy = useBusySessionIdSet();
   const searchRef = useRef<HTMLInputElement>(null);
   const modifier = useMemo(() => shortcutModifier(), []);
+  // iOS Safari keeps the layout viewport under the soft keyboard; the root follows the visible area instead.
+  useVisualViewportKeyboardOffset();
 
   const projectId = params.projectId ?? null;
   const target = params.sessionId ? { kind: 'agent' as const, id: params.sessionId }
@@ -115,36 +122,43 @@ export function WorkbenchShell() {
   const listed = target && historyItems ? historyItems.find(item => item.kind === target.kind && item.id === target.id) ?? null : null;
   const historyLoaded = historyItems !== null;
 
-  // A URL session outside the loaded history is looked up once; a provider-native id is corrected to the app id.
+  // A URL session outside the loaded history is looked up once per project; a provider-native id is corrected to
+  // the app id. The project is part of the key: a session found in another project is looked up again there.
   const targetKind = target?.kind ?? null;
   const targetId = target?.id ?? null;
+  const fetchKey = target && project ? `${project.projectId}|${targetKey}` : '';
   const isListed = Boolean(listed);
   useEffect(() => {
-    if (!targetKind || !targetId || isListed || !historyLoaded || !project || fetched?.key === targetKey) return undefined;
+    if (!targetKind || !targetId || isListed || !historyLoaded || !project || fetched?.key === fetchKey) return undefined;
     let alive = true;
-    const lookup = targetKind === 'agent'
+    const lookup: Promise<WorkbenchSessionItem | null | 'moved'> = targetKind === 'agent'
       ? fetchAgentSession(targetId).then(resolved => {
         if (!resolved) return null;
         if (resolved.projectId && resolved.projectId !== project.projectId) {
           navigate(workbenchPath(resolved.projectId, resolved.item), { replace: true });
-          return null;
+          return 'moved' as const;
         }
         if (resolved.item.id !== targetId) navigate(workbenchPath(project.projectId, resolved.item), { replace: true });
         return resolved.item;
       })
       : fetchDeepSeekConversation(targetId);
-    void lookup.then(item => { if (alive) setFetched({ key: targetKey, item }); });
+    // A session that lives in another project is not "missing" here: the route moves and that project resolves it.
+    void lookup.then(item => { if (alive && item !== 'moved') setFetched({ key: fetchKey, item }); });
     return () => { alive = false; };
-  }, [targetKind, targetId, targetKey, isListed, historyLoaded, project, fetched?.key, navigate]);
+  }, [targetKind, targetId, fetchKey, isListed, historyLoaded, project, fetched?.key, navigate]);
 
   const resolved: WorkbenchSessionItem | 'loading' | 'missing' | null = !target ? null
-    : listed ?? (fetched?.key === targetKey ? fetched.item ?? 'missing' : 'loading');
+    : listed ?? (fetched?.key === fetchKey ? fetched.item ?? 'missing' : 'loading');
   const session = resolved && typeof resolved === 'object' ? { ...resolved, running: busy.has(resolved.id) || undefined } : null;
   const newProvider = parseNewProvider(searchParams.get('new'));
-  // DeepSeek talks in the hub project's space; a directory without one starts Claude Code instead.
+  // DeepSeek talks in the hub project's space; a directory without one starts Claude Code instead (the chat column
+  // and the new-session menu apply the same rule from workbenchRoutes).
   const requestedProvider = newProvider ?? lastProvider;
   const chatProvider: WorkbenchNewProvider = session ? parseNewProvider(session.provider) ?? lastProvider
-    : requestedProvider === 'deepseek' && !hubProjectId ? 'claude' : requestedProvider;
+    : resolveNewChatProvider(requestedProvider, hubProjectId);
+  // What "+ 新会话" offers here: the shared rule, with Cursor / OpenCode where the Studio project enables them.
+  const hubProviders = current?.hub?.providers;
+  const newChoices = useMemo(() => newChatChoices(hubProjectId, hubProviders ?? []), [hubProjectId, hubProviders]);
   const chatKey = project ? `${project.projectId}:${session && session.id !== adoptedId ? `${session.kind}:${session.id}` : `new:${chatEpoch}`}` : '';
 
   useEffect(() => { if (project) writeStored(LAST_PROJECT_KEY, project.projectId); }, [project]);
@@ -154,6 +168,8 @@ export function WorkbenchShell() {
     const title = session?.title ?? (targetKey ? '会话' : '新会话');
     document.title = projectName ? `${title} · ${projectName}` : '工作台 · Agent Cloud Studio';
   }, [current?.hub?.name, project?.displayName, session?.title, targetKey]);
+  // Leaving the workbench gives the tab back the app's own title; the Studio home does not set one itself.
+  useEffect(() => () => { document.title = getPageTitle(null, null); }, []);
 
   // A notification tapped while the workbench is open names a session; open it here.
   useEffect(() => {
@@ -195,6 +211,14 @@ export function WorkbenchShell() {
     navigate(workbenchPath(project.projectId, null, chosen));
   }, [project, lastProvider, navigate]);
 
+  // A new chat switched agent in its header: remember it like a menu pick, and let the URL follow so a reload
+  // reopens the new chat with the agent now chosen (the chat stays mounted; only ?new= changes).
+  const rememberProvider = useCallback((provider: WorkbenchNewProvider) => {
+    setLastProvider(provider);
+    writeStored(LAST_PROVIDER_KEY, provider);
+    if (project) navigate(workbenchPath(project.projectId, null, provider), { replace: true });
+  }, [project, navigate]);
+
   const onSessionCreated = useCallback((item: WorkbenchSessionItem) => {
     if (!project) return;
     upsert(item);
@@ -224,6 +248,10 @@ export function WorkbenchShell() {
       toast(`已删除「${item.title}」`);
     } catch (failure) { toast.error(failure instanceof Error ? failure.message : '删除失败'); }
   };
+  // An older page that fails says so; the button stays, so another tap retries.
+  const loadOlderSessions = async () => {
+    try { await loadMore(); } catch (failure) { toast.error(failure instanceof Error ? failure.message : '更早的会话加载失败'); }
+  };
 
   const sidebarDocked = viewport !== 'phone';
   const sidebarVisible = sidebarDocked ? !layout.sidebarCollapsed : sheetOpen;
@@ -252,12 +280,12 @@ export function WorkbenchShell() {
   }
 
   const sidebar = <WorkbenchSidebar
-    viewport={viewport} modifier={modifier} entries={entries} current={current} lastProvider={lastProvider}
+    viewport={viewport} modifier={modifier} entries={entries} current={current} newChatChoices={newChoices} lastProvider={lastProvider}
     query={query} searchRef={searchRef} quota={quota}
     list={project ? {
       projectId: project.projectId, items: historyItems, activeId: session?.id ?? null, error: sessions.error,
       hasMore: sessions.hasMore, loadingMore: sessions.loadingMore,
-      onRetry: () => void reloadSessions(), onLoadMore: () => void loadMore(), onNavigate: () => setSheetOpen(false),
+      onRetry: () => void reloadSessions(), onLoadMore: () => void loadOlderSessions(), onNavigate: () => setSheetOpen(false),
       onRename: renameSession, onArchive: item => void archiveSession(item), onDelete: setPendingDelete,
     } : null}
     onQueryChange={setQuery}
@@ -270,6 +298,43 @@ export function WorkbenchShell() {
 
   const projectName = current?.hub?.name ?? project?.displayName ?? '';
   const barProvider = session?.provider ?? chatProvider;
+  // The chat column is on screen (not a skeleton or an empty state): its glass header is then the only title bar,
+  // carrying these same controls, so the shell's own bar steps aside.
+  const showsChat = entries !== null && Boolean(projectId) && Boolean(project) && resolved !== 'loading' && resolved !== 'missing';
+
+  const barLeading = sidebarVisible ? null : <>
+    <button type="button" className="icon-button plain" onClick={showSidebar} aria-label="显示会话列表"
+      title={`显示会话列表${modifier ? `（${modifier}\\）` : ''}`}><PanelLeft size={19} aria-hidden="true" /></button>
+    {sidebarDocked && <button type="button" className="icon-button plain" onClick={() => navigate('/')} aria-label="返回 Studio 主屏幕">
+      <LayoutGrid size={18} aria-hidden="true" /></button>}
+  </>;
+  const barTrailing = !project ? null : viewport === 'phone'
+    ? <button type="button" className="icon-button plain" onClick={() => showInspectorTab(layout.inspectorTab)} aria-label="打开文件、终端、Git 与预览">
+      <PanelRight size={19} aria-hidden="true" /></button>
+    : <div className="wb-toolbar" role="group" aria-label="检查器">
+      {TOOL_ICONS.map(tool => {
+        const Icon = tool.icon;
+        const pressed = layout.inspectorOpen && layout.inspectorTab === tool.id;
+        return <button type="button" key={tool.id} className="wb-tool" aria-pressed={pressed} aria-label={tool.label}
+          title={`${tool.label}${modifier ? `（${modifier}J 切换检查器）` : ''}`} onClick={() => showInspectorTab(tool.id, { toggle: true })}>
+          <Icon size={17} aria-hidden="true" />
+        </button>;
+      })}
+    </div>;
+  // The bar of the states without a chat (loading, empty, missing, a crashed column).
+  const shellBar = <header className="wb-bar">
+    <div className="wb-bar-leading">{barLeading}</div>
+    {project && <div className="wb-bar-title">
+      <WorkbenchProviderMark provider={barProvider} running={Boolean(session?.running)} />
+      <span className="wb-bar-text">
+        <strong>{session?.title ?? (resolved === 'loading' ? '…' : '新会话')}</strong>
+        <small>{providerMeta(barProvider).name}{session?.running ? ' · 运行中' : ''} · {projectName}</small>
+      </span>
+    </div>}
+    <div className="wb-bar-trailing">{barTrailing}</div>
+  </header>;
+  const chatChrome: WorkbenchChatChrome = { leading: barLeading, trailing: barTrailing, projectName, onProviderChange: rememberProvider };
+
   const centre = (() => {
     if (entries === null) return <ChatSkeleton />;
     if (!projectId) {
@@ -302,58 +367,29 @@ export function WorkbenchShell() {
         <div className="wb-stage-actions"><button type="button" className="ios-button tinted" onClick={() => startNewChat()}>开始新会话</button></div>
       </div>;
     }
-    return <WorkbenchChatBoundary key={chatKey} onNewChat={() => startNewChat()}>
+    return <WorkbenchChatBoundary key={chatKey} header={shellBar} onNewChat={() => startNewChat()}>
       <WorkbenchChat project={project} session={session} provider={chatProvider} hubProjectId={hubProjectId}
-        onSessionCreated={onSessionCreated} onOpenFile={onOpenFile} />
+        onSessionCreated={onSessionCreated} onOpenFile={onOpenFile} chrome={chatChrome} />
     </WorkbenchChatBoundary>;
   })();
 
   return <div className="studio workbench" data-viewport={viewport}>
     {sidebarDocked
-      ? <m.div ref={dock} className="wb-sidebar-dock" initial={false} animate={{ width: sidebarVisible ? SIDEBAR_WIDTH : 0 }} transition={PANEL_SPRING}
+      ? <m.div ref={dock} className="wb-sidebar-dock" initial={false} animate={{ width: sidebarVisible ? SIDEBAR_WIDTH : 0 }} transition={WORKBENCH_DOCK_TWEEN}
         aria-hidden={!sidebarVisible || undefined}>
         <div className="wb-sidebar-frame" style={{ width: SIDEBAR_WIDTH }}>{sidebar}</div>
       </m.div>
       : <AnimatePresence>
         {sheetOpen && <m.div key="scrim" className="wb-scrim" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setSheetOpen(false)} />}
         {sheetOpen && <m.div key="sheet" className="wb-sidebar-sheet" role="dialog" aria-modal="true" aria-label="会话列表"
-          initial={{ x: '-100%' }} animate={{ x: 0 }} exit={{ x: '-100%' }} transition={PANEL_SPRING}
+          initial={{ x: '-100%' }} animate={{ x: 0 }} exit={{ x: '-100%' }} transition={WORKBENCH_PANEL_SPRING}
           onKeyDown={event => { if (event.key === 'Escape') setSheetOpen(false); }}>
           {sidebar}
         </m.div>}
       </AnimatePresence>}
 
     <main className="wb-main">
-      <header className="wb-bar">
-        <div className="wb-bar-leading">
-          {!sidebarVisible && <button type="button" className="icon-button plain" onClick={showSidebar} aria-label="显示会话列表"
-            title={`显示会话列表${modifier ? `（${modifier}\\）` : ''}`}><PanelLeft size={19} aria-hidden="true" /></button>}
-          {!sidebarVisible && sidebarDocked && <button type="button" className="icon-button plain" onClick={() => navigate('/')} aria-label="返回 Studio 主屏幕">
-            <LayoutGrid size={18} aria-hidden="true" /></button>}
-        </div>
-        {project && <div className="wb-bar-title">
-          <WorkbenchProviderMark provider={barProvider} running={Boolean(session?.running)} />
-          <span className="wb-bar-text">
-            <strong>{session?.title ?? (resolved === 'loading' ? '…' : '新会话')}</strong>
-            <small>{providerMeta(barProvider).name}{session?.running ? ' · 运行中' : ''} · {projectName}</small>
-          </span>
-        </div>}
-        <div className="wb-bar-trailing">
-          {project && (viewport === 'phone'
-            ? <button type="button" className="icon-button plain" onClick={() => showInspectorTab(layout.inspectorTab)} aria-label="打开文件、终端、Git 与预览">
-              <PanelRight size={19} aria-hidden="true" /></button>
-            : <div className="wb-toolbar" role="group" aria-label="检查器">
-              {TOOL_ICONS.map(tool => {
-                const Icon = tool.icon;
-                const pressed = layout.inspectorOpen && layout.inspectorTab === tool.id;
-                return <button type="button" key={tool.id} className="wb-tool" aria-pressed={pressed} aria-label={tool.label}
-                  title={`${tool.label}${modifier ? `（${modifier}J 切换检查器）` : ''}`} onClick={() => showInspectorTab(tool.id, { toggle: true })}>
-                  <Icon size={17} aria-hidden="true" />
-                </button>;
-              })}
-            </div>)}
-        </div>
-      </header>
+      {!showsChat && shellBar}
       <div className="wb-stage">{centre}</div>
     </main>
 

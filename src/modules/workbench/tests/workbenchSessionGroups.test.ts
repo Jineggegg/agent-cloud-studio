@@ -2,7 +2,7 @@ import { expect, test } from 'vitest';
 
 import type { WorkbenchSessionItem } from '@/shared/types';
 import { filterSessions, formatSessionTime, groupSessionsByDay, sortSessionsByRecency } from '@/modules/workbench/utils/workbenchSessionGroups';
-import { parseNewProvider, toAgentItem, workbenchPath } from '@/modules/workbench/utils/workbenchRoutes';
+import { newChatChoices, parseNewProvider, resolveNewChatProvider, toAgentItem, workbenchPath } from '@/modules/workbench/utils/workbenchRoutes';
 
 // Friday 2 October 2026, 15:30 local time.
 const NOW = new Date(2026, 9, 2, 15, 30);
@@ -63,7 +63,24 @@ test('route helpers build workbench URLs and accept only workbench providers', (
   expect(workbenchPath('p1', { kind: 'agent', id: 's1' })).toBe('/work/p1/s/s1');
   expect(workbenchPath('p1', { kind: 'deepseek', id: 'c1' })).toBe('/work/p1/d/c1');
   expect(parseNewProvider('deepseek')).toBe('deepseek');
-  expect(parseNewProvider('cursor')).toBeNull();
+  // The Studio project app launches Cursor and OpenCode as well; the engine runs both.
+  expect(parseNewProvider('cursor')).toBe('cursor');
+  expect(parseNewProvider('opencode')).toBe('opencode');
+  expect(parseNewProvider('rm -rf')).toBeNull();
   expect(parseNewProvider(null)).toBeNull();
   expect(toAgentItem({ id: 's', provider: 'mystery', summary: '  ' })).toEqual({ id: 's', kind: 'agent', provider: 'claude', title: '新会话', updatedAt: null });
+});
+
+test('one new-chat rule for the sidebar menu and the chat header: DeepSeek needs a hub project', () => {
+  expect(newChatChoices('hub1')).toEqual([
+    { provider: 'claude', unavailableReason: null },
+    { provider: 'codex', unavailableReason: null },
+    { provider: 'deepseek', unavailableReason: null },
+  ]);
+  expect(newChatChoices(null).find(choice => choice.provider === 'deepseek')?.unavailableReason).toBe('需先在 Studio 中建立此项目');
+  // Cursor and OpenCode join only when asked for (enabled by the hub project, or the chat already runs one).
+  expect(newChatChoices('hub1', ['claude', 'opencode', 'deepseek']).map(choice => choice.provider)).toEqual(['claude', 'codex', 'deepseek', 'opencode']);
+  expect(resolveNewChatProvider('deepseek', null)).toBe('claude');
+  expect(resolveNewChatProvider('deepseek', 'hub1')).toBe('deepseek');
+  expect(resolveNewChatProvider('cursor', null)).toBe('cursor');
 });

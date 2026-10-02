@@ -6,20 +6,39 @@ import type { PendingPermissionRequest, Question, WorkbenchPermissionDecision } 
 import { providerLabel } from '@/modules/workbench/chat/utils/workbenchChatCopy';
 
 const SHEET_SPRING = { type: 'spring', stiffness: 420, damping: 34, mass: 0.8 } as const;
-const NO_QUESTIONS: Question[] = [];
+// The Claude runtime matches this wording to mark the call as denied rather than failed.
+const DENY_MESSAGE = 'User denied tool use';
+
+/**
+ * The questions of an AskUserQuestion input that can actually be shown: each needs its text, and its options are
+ * kept only when labelled. A model can send an empty or malformed list; that must not leave the owner stuck.
+ */
+function readQuestions(input: Record<string, unknown>): Question[] {
+  if (!Array.isArray(input.questions)) return [];
+  return input.questions.flatMap((item: unknown) => {
+    if (!item || typeof item !== 'object') return [];
+    const question = item as Partial<Question>;
+    if (typeof question.question !== 'string' || !question.question.trim()) return [];
+    const options = Array.isArray(question.options)
+      ? question.options.filter((option) => Boolean(option) && typeof option.label === 'string' && option.label.trim() !== '')
+      : [];
+    return [{ ...question, question: question.question, options }];
+  });
+}
 
 /**
  * Used by WorkbenchAgentChat in place of the composer while the agent waits on an AskUserQuestion: one question at
  * a time as an iOS list of choices (radio or multi-select), an 其他 field for a free answer, and 跳过 / 下一题 / 提交.
- * Answers travel back as the tool's updated input, the shape the runtime expects.
+ * Answers travel back as the tool's updated input, the shape the runtime expects. A prompt with nothing to show
+ * still gets a sheet (拒绝 / 跳过), since the composer stays hidden until the prompt is answered.
  */
 export function WorkbenchQuestionSheet({ request, provider, onDecision }: {
   request: PendingPermissionRequest;
   provider: string;
   onDecision: WorkbenchPermissionDecision;
 }) {
-  const input = (request.input && typeof request.input === 'object' ? request.input : {}) as { questions?: Question[] };
-  const questions = Array.isArray(input.questions) ? input.questions : NO_QUESTIONS;
+  const input = (request.input && typeof request.input === 'object' ? request.input : {}) as Record<string, unknown>;
+  const questions = readQuestions(input);
   // Which question is showing.
   const [step, setStep] = useState(0);
   // Chosen option labels per question index.
@@ -63,7 +82,32 @@ export function WorkbenchQuestionSheet({ request, provider, onDecision }: {
   const submit = () => onDecision(request.requestId, { allow: true, updatedInput: { ...input, answers: buildAnswers() } });
   const skip = () => onDecision(request.requestId, { allow: true, updatedInput: { ...input, answers: {} } });
 
-  if (!question) return null;
+  if (!question) {
+    return (
+      <m.section
+        className="wbc-sheet is-question"
+        aria-label={`${providerLabel(provider)} 想问你`}
+        initial={{ opacity: 0, y: 28, scale: 0.97 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 16, transition: { duration: 0.16 } }}
+        transition={SHEET_SPRING}
+      >
+        <div className="wbc-sheet-body">
+          <div className="wbc-sheet-head">
+            <span className="wbc-question-icon" aria-hidden="true"><MessageCircleQuestion size={16} strokeWidth={2.2} /></span>
+            <h3 className="wbc-sheet-title">{providerLabel(provider)} 想问你一个问题</h3>
+          </div>
+          <p className="wbc-sheet-note">问题的内容没有传过来。跳过让它自己决定，或拒绝让它换个做法。</p>
+        </div>
+        <div className="wbc-sheet-actions is-two">
+          <button type="button" className="wbc-sheet-action is-destructive" onClick={() => onDecision(request.requestId, { allow: false, message: DENY_MESSAGE })}>
+            拒绝
+          </button>
+          <button type="button" className="wbc-sheet-action is-primary" onClick={skip}>跳过</button>
+        </div>
+      </m.section>
+    );
+  }
   const chosen = selections[step] ?? [];
   const otherActive = otherAnswers[step] !== undefined;
   const answered = chosen.length > 0 || Boolean(otherAnswers[step]?.trim());

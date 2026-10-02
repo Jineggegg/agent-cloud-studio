@@ -11,6 +11,11 @@ const MIN_ROOM_BELOW = 260;
 
 type Placement = { top?: number; bottom?: number; left: number; width: number; maxHeight: number; origin: string };
 
+// A mouse or trackpad is present (a keyboard usually is too); without matchMedia (tests, old engines) assume so.
+function hasPreciseInput(): boolean {
+  return typeof window.matchMedia !== 'function' || window.matchMedia('(any-pointer: fine)').matches;
+}
+
 function place(anchor: DOMRect, width: number, align: 'start' | 'end'): Placement {
   const viewportWidth = window.innerWidth;
   const viewportHeight = window.innerHeight;
@@ -49,10 +54,13 @@ export function WorkbenchPopover({ open, anchor, onClose, label, role = 'menu', 
 
   useEffect(() => {
     if (!open || !placement) return undefined;
-    // Focus starts inside the panel (a search field or the first item) and goes back to the trigger afterwards.
+    // Focus starts inside the panel (a search field or the first item) and goes back to the trigger afterwards. A
+    // touch-only device skips the search field: focusing it would raise the soft keyboard over the list on every tap.
     const frame = window.requestAnimationFrame(() => {
-      const first = panel.current?.querySelector<HTMLElement>('[data-autofocus], [role="menuitem"], button, input, a[href]');
-      first?.focus();
+      const target = hasPreciseInput()
+        ? panel.current?.querySelector<HTMLElement>('[data-autofocus], [role="menuitem"], button, input, a[href]')
+        : panel.current?.querySelector<HTMLElement>('[role="menuitem"], [role="option"], button, a[href]') ?? panel.current;
+      target?.focus();
     });
     return () => window.cancelAnimationFrame(frame);
   }, [open, placement]);
@@ -75,7 +83,7 @@ export function WorkbenchPopover({ open, anchor, onClose, label, role = 'menu', 
   return createPortal(<AnimatePresence>
     {open && placement && <div className="studio-layer wb-popover-layer" key="layer" onPointerDown={event => { if (event.target === event.currentTarget) close(); }}
       onKeyDown={onKeyDown}>
-      <m.div ref={panel} className="wb-popover" role={role} aria-label={label}
+      <m.div ref={panel} className="wb-popover" role={role} aria-label={label} tabIndex={-1}
         style={{ top: placement.top, bottom: placement.bottom, left: placement.left, width: placement.width, maxHeight: placement.maxHeight, transformOrigin: placement.origin }}
         initial={{ opacity: 0, scale: 0.94, filter: 'blur(4px)' }}
         animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}

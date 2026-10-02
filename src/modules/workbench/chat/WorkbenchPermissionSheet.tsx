@@ -3,7 +3,7 @@ import { m } from 'motion/react';
 
 import { buildClaudeToolPermissionEntry, formatToolInputForDisplay, getClaudeSettings } from '@/modules/chat';
 import type { DiffCalculator, PendingPermissionRequest, WorkbenchPermissionDecision } from '@/shared/types';
-import { WorkbenchProviderMark } from '@/modules/workbench/chat/WorkbenchProviderMark';
+import { WorkbenchProviderMark } from '@/modules/workbench/WorkbenchProviderMark';
 import { providerLabel } from '@/modules/workbench/chat/utils/workbenchChatCopy';
 import { describeToolCall, readToolInput } from '@/modules/workbench/chat/utils/workbenchToolSummary';
 

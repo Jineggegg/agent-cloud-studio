@@ -68,7 +68,9 @@ export function useDeepSeekConversation({ conversationId, space, onCreated }: Us
 
   const send = useCallback(async (text: string, model: string, includeSnr: boolean): Promise<boolean> => {
     if (controllerRef.current || !text.trim()) return false;
-    if (!status?.deepseek.configured) {
+    // Only a status that says so blocks the send: an unread status (still loading, or the request failed) lets the
+    // server answer with the real reason instead of a misleading "no key" here.
+    if (status?.deepseek.configured === false) {
       setError('DeepSeek 还没有 API 密钥：到 Studio 主屏的「连接」里添加后再试');
       return false;
     }

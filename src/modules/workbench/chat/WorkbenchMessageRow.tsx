@@ -4,7 +4,7 @@ import { AlertTriangle, Check, Copy, Paperclip, PencilLine, Scissors } from 'luc
 import { ChatMessageImages, Markdown, StreamingMarkdown, SubagentPanel, WorkflowPanel, stripProposedPlanEnvelope } from '@/modules/chat';
 import type { ChatMessage, DiffCalculator, Project } from '@/shared/types';
 import { copyTextToClipboard } from '@/shared/utils';
-import { WorkbenchProviderMark } from '@/modules/workbench/chat/WorkbenchProviderMark';
+import { WorkbenchProviderMark } from '@/modules/workbench/WorkbenchProviderMark';
 import { modelDisplayName, providerLabel } from '@/modules/workbench/chat/utils/workbenchChatCopy';
 import { readToolInput } from '@/modules/workbench/chat/utils/workbenchToolSummary';
 
@@ -90,7 +90,7 @@ export const WorkbenchUserMessage = memo(function WorkbenchUserMessage({ message
 export function WorkbenchTurnLabel({ provider, model }: { provider: string; model?: string | null }) {
   return (
     <div className="wbc-turn-label">
-      <WorkbenchProviderMark provider={provider} size={18} />
+      <WorkbenchProviderMark provider={provider} size={20} />
       <span>{providerLabel(provider)}</span>
       {model && <span className="wbc-turn-model" title={model}>{modelDisplayName(model)}</span>}
     </div>

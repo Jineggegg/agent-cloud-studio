@@ -4,6 +4,7 @@ import { m } from 'motion/react';
 import { FileCode2, GitBranch, Globe, SquareTerminal, X } from 'lucide-react';
 import type { LucideProps } from 'lucide-react';
 
+import { WORKBENCH_DOCK_TWEEN, WORKBENCH_PANEL_SPRING } from '@/shared/constants';
 import type { CodeEditorFile, DirectoryRevealRequest, FileOpenHandler, Project, WorkbenchInspectorTab, WorkbenchViewport } from '@/shared/types';
 import { GitPanel } from '@/modules/git-panel';
 import { StandaloneShell } from '@/modules/standalone-shell';
@@ -19,7 +20,6 @@ const TABS: { id: WorkbenchInspectorTab; label: string; icon: ComponentType<Luci
 ];
 // The chat keeps at least this much room beside a docked inspector.
 const MIN_CHAT_WIDTH = 360;
-const PANEL_SPRING = { type: 'spring', stiffness: 260, damping: 32 } as const;
 // Detected addresses kept for the preview chips.
 const MAX_DETECTED = 8;
 const PRIVATE_HOST = /^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[::1\]|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)$/;
@@ -165,7 +165,8 @@ export function WorkbenchInspector({
     : open
       ? { width: panelWidth, x: 0, visibility: 'visible' as const }
       : { width: panelWidth, x: '104%', transitionEnd: { visibility: 'hidden' as const } };
-  const transition = dragWidth !== null ? { default: PANEL_SPRING, width: { duration: 0 } } : PANEL_SPRING;
+  const settle = docked ? WORKBENCH_DOCK_TWEEN : WORKBENCH_PANEL_SPRING;
+  const transition = dragWidth !== null ? { default: settle, width: { duration: 0 } } : settle;
 
   return <m.aside ref={panel} className={`wb-inspector is-${variant}`} data-open={open || undefined} aria-label="检查器" aria-hidden={!open || undefined}
     initial={false} animate={animate} transition={transition}>

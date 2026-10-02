@@ -1,5 +1,5 @@
 import type { TFunction } from 'i18next';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
 
 //----------------- LLM PROVIDER MODEL CATALOG ------------
@@ -2031,8 +2031,8 @@ export type WorkbenchChatProps = {
   project: Project;
   // The open session, or null for a new chat.
   session: WorkbenchSessionItem | null;
-  // Provider preselected for a new chat.
-  provider: 'claude' | 'codex' | 'deepseek';
+  // Provider preselected for a new chat. Cursor and OpenCode come from the Studio project app's launch cards.
+  provider: 'claude' | 'codex' | 'cursor' | 'opencode' | 'deepseek';
   // The Studio hub project with this path, if any (DeepSeek project space, memory scope, icon).
   hubProjectId: string | null;
   // Called once a new chat has a real session id, so the shell can list and route to it.
@@ -2055,6 +2055,23 @@ export type WorkbenchProjectEntry = { project: Project; hub: HubProject | null }
 export type WorkbenchViewport = 'phone' | 'tablet' | 'desktop';
 /** A local hub project and the IDE project registered for its directory (null until the first launch registers one). */
 export type WorkbenchHubLink = { hubId: string; projectId: string | null };
+/**
+ * One agent a new workbench chat can start with, as the sidebar's new-session menu and the chat header's provider
+ * menu list it. `unavailableReason` (short Chinese) is set when the agent cannot run here, e.g. DeepSeek in a
+ * directory without a Studio project; both menus show it disabled with that reason.
+ */
+export type WorkbenchNewChatChoice = { provider: WorkbenchNewProvider; unavailableReason: string | null };
+/**
+ * What the workbench shell lends its chat column so the column's glass header is the workbench's only title bar:
+ * the shell's controls on either side (sidebar and Studio buttons, the inspector toolbar), the project's display
+ * name under the title, and a callback when a new chat switches provider in the header so the shell remembers it.
+ */
+export type WorkbenchChatChrome = {
+  leading?: ReactNode;
+  trailing?: ReactNode;
+  projectName?: string;
+  onProviderChange?: (provider: WorkbenchNewProvider) => void;
+};
 // ── v6 track: chat — types below this line ──
 /**
  * Answers one or more pending tool-permission prompts of the workbench chat: allow or deny, optionally

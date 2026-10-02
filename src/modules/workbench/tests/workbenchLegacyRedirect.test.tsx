@@ -48,18 +48,21 @@ test('/workspace with a project and provider opens a new workbench chat with tha
   expect(mocks.writeSelectedProvider).toHaveBeenCalledWith('codex');
 });
 
-test('/workspace alone opens the workbench, and agents the workbench cannot preselect are dropped from the URL', async () => {
+test('/workspace alone opens the workbench; Cursor and OpenCode links keep their agent, anything else is dropped', async () => {
   renderAt('/workspace');
   await waitFor(() => expect(location()).toBe('/work'));
   cleanup();
   renderAt('/workspace?projectId=p1&provider=cursor');
-  await waitFor(() => expect(location()).toBe('/work/p1'));
-  // The shared preference still follows the old link, so the inherited chat engine starts Cursor if asked.
+  await waitFor(() => expect(location()).toBe('/work/p1?new=cursor'));
   expect(mocks.writeSelectedProvider).toHaveBeenCalledWith('cursor');
   cleanup();
+  renderAt('/workspace?projectId=p1&provider=opencode');
+  await waitFor(() => expect(location()).toBe('/work/p1?new=opencode'));
+  cleanup();
+  mocks.writeSelectedProvider.mockClear();
   renderAt('/workspace?projectId=p1&provider=rm%20-rf');
   await waitFor(() => expect(location()).toBe('/work/p1'));
-  expect(mocks.writeSelectedProvider).toHaveBeenCalledTimes(1);
+  expect(mocks.writeSelectedProvider).not.toHaveBeenCalled();
 });
 
 test('/session/:id resolves the session to its project, preferring the canonical app id', async () => {

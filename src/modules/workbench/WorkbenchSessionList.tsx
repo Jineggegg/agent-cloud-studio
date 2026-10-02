@@ -86,8 +86,16 @@ export function WorkbenchSessionList({
   const [menuOpen, setMenuOpen] = useState(false);
   // The row whose title is being edited in place.
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  // Whether the rows rise in one after another when the list mounts: on when a project's rows first replace the
+  // skeleton, off once the list has given way to a no-match or empty state, so clearing a search does not replay it.
+  // Adjusted during render, so the very render that mounts the list (and its AnimatePresence) already sees it.
+  const [entrance, setEntrance] = useState<{ projectId: string; play: boolean } | null>(null);
   const filtered = useMemo(() => (items ? filterSessions(items, query) : null), [items, query]);
   const groups = useMemo(() => (filtered ? groupSessionsByDay(filtered) : []), [filtered]);
+  const listShown = Boolean(filtered?.length);
+  if (listShown && entrance?.projectId !== projectId) setEntrance({ projectId, play: true });
+  else if (!listShown && items !== null && entrance?.projectId === projectId && entrance.play) setEntrance({ projectId, play: false });
+  const playEntrance = entrance?.projectId !== projectId || entrance.play;
   const now = new Date();
 
   if (items === null) {
@@ -124,7 +132,7 @@ export function WorkbenchSessionList({
     {groups.map(group => <section key={group.id} className="wb-group" aria-labelledby={`wb-group-${group.id}`}>
       <h3 id={`wb-group-${group.id}`} className="wb-group-title">{group.label}</h3>
       <ul role="list">
-        <AnimatePresence initial={false}>
+        <AnimatePresence initial={playEntrance}>
           {group.items.map(item => {
             const active = item.id === activeId;
             const index = rowIndex++;

@@ -10,14 +10,15 @@ import {
   PermissionContext,
   TranscriptSessionContext,
 } from '@/modules/chat';
-import { PaletteOpsProvider, usePaletteOpsRegister } from '@/modules/command-palette';
 import type {
   ChatMessage,
   LLMProvider,
   PendingPermissionRequest,
   Project,
   ProjectSession,
-  WorkbenchChatProps,
+  WorkbenchChatChrome,
+  WorkbenchNewChatChoice,
+  WorkbenchNewProvider,
   WorkbenchSessionItem,
   WorkbenchTodoItem,
 } from '@/shared/types';
@@ -26,7 +27,7 @@ import { WorkbenchChatHeader } from '@/modules/workbench/chat/WorkbenchChatHeade
 import { WorkbenchComposer } from '@/modules/workbench/chat/WorkbenchComposer';
 import { WorkbenchPermissionSheet } from '@/modules/workbench/chat/WorkbenchPermissionSheet';
 import { WorkbenchPlanCard } from '@/modules/workbench/chat/WorkbenchPlanCard';
-import { WorkbenchProviderMark } from '@/modules/workbench/chat/WorkbenchProviderMark';
+import { WorkbenchProviderMark } from '@/modules/workbench/WorkbenchProviderMark';
 import { WorkbenchQuestionSheet } from '@/modules/workbench/chat/WorkbenchQuestionSheet';
 import { WorkbenchRunIsland } from '@/modules/workbench/chat/WorkbenchRunIsland';
 import { WorkbenchTokenRing } from '@/modules/workbench/chat/WorkbenchTokenRing';
@@ -40,9 +41,6 @@ import {
   readTodos,
   readToolInput,
 } from '@/modules/workbench/chat/utils/workbenchToolSummary';
-
-// Every provider a new chat can start with, in the order the header menu lists them.
-const NEW_CHAT_PROVIDERS: WorkbenchChatProps['provider'][] = ['claude', 'codex', 'deepseek'];
 
 /** What the run is blocked on, worded for the run island: `等你允许运行 npm test`. */
 function describeWaiting(request: PendingPermissionRequest): string {
@@ -64,13 +62,6 @@ function currentTurnTodos(messages: ChatMessage[]): WorkbenchTodoItem[] | null {
   return null;
 }
 
-/** Routes the transcript's in-chat file links (markdown `[src/a.ts](src/a.ts)`) to the shell's file panel. */
-function OpenFileBridge({ onOpenFile }: { onOpenFile: (path: string) => void }) {
-  const openFileInEditor = useCallback((path: string) => onOpenFile(path), [onOpenFile]);
-  usePaletteOpsRegister({ openFileInEditor, openDirectory: openFileInEditor });
-  return null;
-}
-
 type WorkbenchAgentChatProps = {
   // Identity of the conversation on screen (kept when a new chat receives its id), for the transcript's entrances.
   conversationKey: string;
@@ -79,15 +70,17 @@ type WorkbenchAgentChatProps = {
   // Provider a new chat sends under.
   draftProvider: LLMProvider;
   newSessionTrigger: number;
-  // False once the shell has a session open: its provider is fixed.
-  allowProviderSwitch: boolean;
-  onSelectProvider: (provider: WorkbenchChatProps['provider']) => void;
+  // Agents a new chat may switch to before its first send; null once the shell has a session open.
+  providerChoices: WorkbenchNewChatChoice[] | null;
+  onSelectProvider: (provider: WorkbenchNewProvider) => void;
   onSessionCreated: (item: WorkbenchSessionItem) => void;
   onOpenFile: (path: string) => void;
+  // The shell's controls and project name for the title bar.
+  chrome?: WorkbenchChatChrome;
 };
 
 /**
- * Used by WorkbenchChat for Claude Code, Codex (and opened Cursor/OpenCode) sessions: the inherited chat engine
+ * Used by WorkbenchChat for Claude Code, Codex, Cursor and OpenCode chats: the inherited chat engine
  * under a new presentation — header pill, run island, transcript with tool stacks, inline permission and question
  * sheets, and the composer dock.
  */
@@ -97,10 +90,11 @@ export function WorkbenchAgentChat({
   session,
   draftProvider,
   newSessionTrigger,
-  allowProviderSwitch,
+  providerChoices: newChatProviderChoices,
   onSelectProvider,
   onSessionCreated,
   onOpenFile,
+  chrome,
 }: WorkbenchAgentChatProps) {
   const { projectId, displayName, fullPath } = project;
   const projectPath = project.path;
@@ -131,7 +125,7 @@ export function WorkbenchAgentChat({
   const isProcessing = sessionState.isProcessing;
 
   const started = Boolean(engine.sessionId) || messages.length > 0;
-  const providerChoices = allowProviderSwitch && !started ? NEW_CHAT_PROVIDERS : null;
+  const providerChoices = started ? null : newChatProviderChoices;
   const modelName = modelShortLabel(providerState.currentProviderModel, providerState.currentProviderModelOptions);
 
   const planRequest = pending.find((request) => PLAN_TOOL_NAMES.has(request.toolName)) ?? null;
@@ -197,6 +191,7 @@ export function WorkbenchAgentChat({
           currentModel={providerState.currentProviderModel}
           onSelectModel={handleSelectModel}
           end={<WorkbenchTokenRing usage={sessionState.tokenBudget} onOpen={composer.showCostModal} />}
+          chrome={chrome}
         />
 
         <WorkbenchRunIsland
@@ -211,32 +206,31 @@ export function WorkbenchAgentChat({
 
         <MarkdownWorkspaceContext.Provider value={markdownWorkspaceValue}>
           <TranscriptSessionContext.Provider value={transcriptSessionValue}>
-            <PaletteOpsProvider>
-              <OpenFileBridge onOpenFile={onOpenFile} />
-              <WorkbenchTranscript
-                sessionKey={conversationKey}
-                isNewChat={!session}
-                messages={sessionState.visibleMessages}
-                provider={provider}
-                project={engineProject}
-                scrollRef={sessionState.scrollContainerRef}
-                onScrollIntent={sessionState.handleScroll}
-                isLoading={sessionState.isLoadingSessionMessages}
-                runActive={isProcessing}
-                showTyping={showTyping}
-                hiddenCount={Math.max(0, messages.length - sessionState.visibleMessages.length)}
-                onShowEarlier={sessionState.loadEarlierMessages}
-                hasMoreHistory={sessionState.hasMoreMessages && !sessionState.allMessagesLoaded}
-                isLoadingHistory={sessionState.isLoadingMoreMessages || sessionState.isLoadingAllMessages}
-                onLoadAllHistory={sessionState.loadAllMessages}
-                createDiff={sessionState.createDiff}
-                onOpenFile={onOpenFile}
-                pendingPlanRequest={planRequest}
-                onDecision={composer.handlePermissionDecision}
-                onEditMessage={providerState.supportsMessageEditing && !isProcessing ? composer.beginEditMessage : undefined}
-                emptyState={emptyState}
-              />
-            </PaletteOpsProvider>
+            {/* In-chat file links (Markdown) call the palette ops the shell registers, which keep the line number and
+                reveal folders in the file tree; a PaletteOpsProvider nested here would shadow them. */}
+            <WorkbenchTranscript
+              sessionKey={conversationKey}
+              isNewChat={!session}
+              messages={sessionState.visibleMessages}
+              provider={provider}
+              project={engineProject}
+              scrollRef={sessionState.scrollContainerRef}
+              onScrollIntent={sessionState.handleScroll}
+              isLoading={sessionState.isLoadingSessionMessages}
+              runActive={isProcessing}
+              showTyping={showTyping}
+              hiddenCount={Math.max(0, messages.length - sessionState.visibleMessages.length)}
+              onShowEarlier={sessionState.loadEarlierMessages}
+              hasMoreHistory={sessionState.hasMoreMessages && !sessionState.allMessagesLoaded}
+              isLoadingHistory={sessionState.isLoadingMoreMessages || sessionState.isLoadingAllMessages}
+              onLoadAllHistory={sessionState.loadAllMessages}
+              createDiff={sessionState.createDiff}
+              onOpenFile={onOpenFile}
+              pendingPlanRequest={planRequest}
+              onDecision={composer.handlePermissionDecision}
+              onEditMessage={providerState.supportsMessageEditing && !isProcessing ? composer.beginEditMessage : undefined}
+              emptyState={emptyState}
+            />
           </TranscriptSessionContext.Provider>
         </MarkdownWorkspaceContext.Provider>
 

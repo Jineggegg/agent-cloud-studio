@@ -14,8 +14,13 @@
   --wb-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   /* Paper: the home wallpaper's film grain, barely there, with its strength baked in so any surface can layer it. */
   --wb-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .045 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  /* Fixed to what the owner can see. iOS Safari keeps the layout viewport (and 100dvh) under the soft keyboard and
+     pans the page to the field instead; the shell publishes that pan and the keyboard's height
+     (useVisualViewportKeyboardOffset), so the bars stay on screen and the composer sits on the keyboard. */
+  position: fixed;
+  inset: var(--viewport-offset-top, 0px) 0 var(--keyboard-height, 0px);
+  height: auto;
   display: flex;
-  height: 100dvh;
   overflow: hidden;
   background: var(--wb-stage-bg);
 }
@@ -24,6 +29,8 @@
   /* At night the grain lifts instead of darkening: white specks. */
   --wb-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .032 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
+/* The home indicator inset, dropped while the soft keyboard covers it (it would float content above the keys). */
+.studio.workbench { --wb-safe-bottom: max(0px, env(safe-area-inset-bottom, 0px) - var(--keyboard-height, 0px)); }
 .studio.workbench ::selection { background: color-mix(in srgb, var(--ios-tint) 26%, transparent); }
 .studio.workbench.is-redirect { align-items: center; justify-content: center; }
 body.wb-resizing { cursor: col-resize; -webkit-user-select: none; user-select: none; }
@@ -140,12 +147,18 @@ body.wb-resizing iframe { pointer-events: none; }
 .wb-list-empty strong { font-size: 15px; font-weight: 600; color: var(--ios-label); }
 .wb-list-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 4px; }
 
-/* Provider stones: the Studio's mineral app icons, shrunk to a badge. */
+/* Provider stones: the Studio's mineral app icons, shrunk to a badge. The component sets --icon; radius and letter
+   scale with it, so one mark serves the 20px turn label, the 34px menu row and the 60px empty state alike. */
 .studio .wb-mark.home-icon {
-  --icon: 24px; flex-shrink: 0; border-radius: 7px; font-size: 11px; font-weight: 700; letter-spacing: -.02em; color: rgba(255, 255, 255, .95);
+  --icon: 24px; flex-shrink: 0; border-radius: calc(var(--icon) * .29);
+  font-size: calc(var(--icon) * .45); font-weight: 700; line-height: 1; letter-spacing: -.02em; color: rgba(255, 255, 255, .95);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .3), 0 1px 2px rgba(30, 25, 15, .14);
 }
-.studio .wb-mark.is-menu { --icon: 34px; border-radius: 10px; font-size: 14px; }
+/* At icon size it is the home screen's app icon: squircle radius and its soft, offset drop shadow. */
+.studio .wb-mark.is-large {
+  border-radius: 23%; font-size: calc(var(--icon) * .4);
+  box-shadow: 0 1px 1px rgba(30, 25, 15, .06), 0 14px 28px -12px rgba(30, 25, 15, .38), inset 0 1px 0 rgba(255, 255, 255, .32);
+}
 .wb-row[data-active] .wb-mark { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .3), 0 0 0 1.5px color-mix(in srgb, var(--ios-on-tint) 55%, transparent); }
 .wb-mark[data-running] { animation: wb-breathe 2.4s ease-in-out infinite; }
 @keyframes wb-breathe {
@@ -155,7 +168,7 @@ body.wb-resizing iframe { pointer-events: none; }
 
 /* Quota gauges */
 .wb-quota {
-  display: grid; gap: 8px; width: 100%; padding: 10px 16px calc(12px + env(safe-area-inset-bottom));
+  display: grid; gap: 8px; width: 100%; padding: 10px 16px calc(12px + var(--wb-safe-bottom));
   border-top: .5px solid var(--ios-separator); text-align: left; color: var(--ios-label);
   background: color-mix(in srgb, var(--wb-sidebar-bg) 60%, var(--ios-surface)); transition: background-color 200ms ease;
 }
@@ -182,7 +195,7 @@ body.wb-resizing iframe { pointer-events: none; }
 /* Phone: the sidebar slides in as a sheet. */
 .wb-scrim { position: fixed; inset: 0; z-index: 30; background: var(--ios-scrim); }
 .wb-sidebar-sheet {
-  position: fixed; top: 0; bottom: 0; left: 0; z-index: 31; width: min(88vw, 340px);
+  position: fixed; top: var(--viewport-offset-top, 0px); bottom: var(--keyboard-height, 0px); left: 0; z-index: 31; width: min(88vw, 340px);
   background: var(--wb-sidebar-bg); box-shadow: 18px 0 48px -12px rgba(0, 0, 0, .32);
 }
 
@@ -215,6 +228,9 @@ body.wb-resizing iframe { pointer-events: none; }
   text-align: center; color: var(--ios-label-2); animation: studio-rise var(--dur-slow) var(--ease-out) backwards;
 }
 .wb-stage-empty svg { color: var(--ios-label-3); }
+/* A crashed chat column: the shell's bar returns above the recovery message. */
+.wb-chat-fallback { display: flex; flex-direction: column; min-height: 0; }
+.wb-chat-fallback > .wb-stage-empty { flex: 1; min-height: 0; }
 .wb-stage-empty h2 { font-family: var(--serif); font-size: 26px; font-weight: 400; color: var(--ios-label); }
 .wb-stage-empty p { max-width: 32em; font-size: 15px; line-height: 1.6; }
 .wb-stage-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 6px; }
@@ -233,7 +249,8 @@ body.wb-resizing iframe { pointer-events: none; }
   border-left: .5px solid var(--ios-separator); box-shadow: -18px 0 48px -16px rgba(30, 25, 15, .3);
 }
 .dark .wb-inspector.is-float { box-shadow: -18px 0 48px -16px rgba(0, 0, 0, .7); }
-.wb-inspector.is-sheet { position: fixed; inset: 0; z-index: 40; }
+/* Full screen on phones, over the same visible area as the root: the terminal's prompt stays above the keyboard. */
+.wb-inspector.is-sheet { position: fixed; inset: var(--viewport-offset-top, 0px) 0 var(--keyboard-height, 0px); z-index: 40; }
 .wb-inspector-inner { position: relative; display: flex; flex-direction: column; height: 100%; max-width: 100%; container-type: inline-size; }
 .wb-inspector.is-sheet .wb-inspector-inner { width: 100% !important; }
 .wb-resize-handle { position: absolute; top: 0; bottom: 0; left: 0; z-index: 6; width: 10px; cursor: col-resize; touch-action: none; }
@@ -255,10 +272,10 @@ body.wb-resizing iframe { pointer-events: none; }
 .wb-segment-dot { position: absolute; top: 7px; right: 9px; width: 6px; height: 6px; border-radius: 50%; background: var(--ios-tint); animation: studio-pop var(--dur-base) var(--ease-spring); }
 @container (max-width: 380px) { .wb-segment span { display: none; } }
 .wb-inspector-body { position: relative; flex: 1; min-height: 0; }
-.wb-panel { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; padding-bottom: env(safe-area-inset-bottom); }
+.wb-panel { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; padding-bottom: var(--wb-safe-bottom); }
 .wb-panel[hidden] { display: none; }
 /* The terminal's own colour (xterm's #1e1e1e) runs edge to edge, including the rows xterm leaves unfilled. */
-.wb-panel.is-terminal { padding: 6px 4px calc(4px + env(safe-area-inset-bottom)); background: #1e1e1e; }
+.wb-panel.is-terminal { padding: 6px 4px calc(4px + var(--wb-safe-bottom)); background: #1e1e1e; }
 .wb-panel.is-terminal .bg-gray-900 { background-color: #1e1e1e; }
 
 /* Reused panels (file tree, code editor, Git) are Tailwind/shadcn components: re-tint their variables. */
@@ -332,6 +349,8 @@ body.wb-resizing iframe { pointer-events: none; }
   background: var(--ios-glass-strong); -webkit-backdrop-filter: saturate(170%) blur(28px); backdrop-filter: saturate(170%) blur(28px);
   box-shadow: var(--ios-shadow-float), 0 0 0 .5px var(--ios-separator);
 }
+/* The panel only takes focus as a fallback target (touch devices skip the search field); its items show the ring. */
+.wb-popover:focus { outline: none; }
 .wb-popover-list { min-height: 0; overflow-y: auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; overscroll-behavior: contain; }
 .wb-popover-item {
   display: flex; align-items: center; gap: 10px; width: 100%; min-height: 50px; padding: 7px 10px; border-radius: 11px;
