@@ -56,6 +56,7 @@ import { browserUseService } from './modules/browser-use/browser-use.service.js'
 import { initializeDatabase, sessionsDb } from './modules/database/index.js';
 import { configureWebPush } from './modules/notifications/index.js';
 import { createStudioModule } from './modules/studio/index.js';
+import { createWebClientModule } from './modules/web-client/index.js';
 
 const __dirname = getModuleDirectory(import.meta.url);
 // The server source runs from /server, while the compiled output runs from /dist-server/server.
@@ -211,21 +212,11 @@ app.use('/api/voice', authenticateToken, voiceRoutes);
 // Serve public files (like api-docs.html)
 app.use(express.static(path.join(APP_ROOT, 'public')));
 
-// Static files served after API routes
-// Add cache control: HTML files should not be cached, but assets can be cached
-app.use(express.static(path.join(APP_ROOT, 'dist'), {
-    setHeaders: (res, filePath) => {
-        if (filePath.endsWith('.html')) {
-            // Prevent HTML caching to avoid service worker issues after builds
-            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-            res.setHeader('Pragma', 'no-cache');
-            res.setHeader('Expires', '0');
-        } else if (filePath.match(/\.(js|css|woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico)$/)) {
-            // Cache static assets for 1 year (they have hashed names)
-            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-        }
-    }
-}));
+// Static files served after API routes. Hashed bundles go out brotli/gzip-compressed and cached for a
+// year; index.html (sent by the catch-all below, hence index: false) is revalidated on every launch.
+const webClient = createWebClientModule({ distDir: path.join(APP_ROOT, 'dist') });
+app.use(webClient.compressedAssets);
+app.use(express.static(path.join(APP_ROOT, 'dist'), { index: false, setHeaders: webClient.staticCacheHeaders }));
 
 // API Routes (protected)
 // /api/config endpoint removed - no longer needed
@@ -235,7 +226,7 @@ app.use(express.static(path.join(APP_ROOT, 'dist'), {
 // images and general files in the global ~/.cloudcli/assets folder.
 
 // Serve React app for all other routes (excluding static files)
-app.get('*', (req, res) => {
+app.get('*', (req, res, next) => {
     // Skip requests for static assets (files with extensions)
     if (path.extname(req.path)) {
         return res.status(404).send('Not found');
@@ -247,11 +238,8 @@ app.get('*', (req, res) => {
 
     // Check if dist/index.html exists (production build available)
     if (fs.existsSync(indexPath)) {
-        // Set no-cache headers for HTML to prevent service worker issues
-        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-        res.setHeader('Pragma', 'no-cache');
-        res.setHeader('Expires', '0');
-        res.sendFile(indexPath);
+        // Compressed when accepted, and no-cache so neither the browser nor the service worker keeps an old build.
+        webClient.sendIndexHtml(req, res, next);
     } else {
         // In development, redirect to Vite dev server only if dist doesn't exist
         const redirectHost = getConnectableHost(req.hostname);
