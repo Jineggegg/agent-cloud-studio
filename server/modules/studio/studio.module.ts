@@ -29,6 +29,8 @@ import { createStudioNetworkService } from './network.service.js';
 import { createStudioNetworkRouter } from './network.routes.js';
 import { createQuotaService } from './quota/quota.service.js';
 import { createQuotaRouter } from './quota/quota.routes.js';
+import { createWorkbenchService } from './workbench.service.js';
+import { createWorkbenchRouter } from './workbench.routes.js';
 
 const linkChecker = createLinkChecker();
 
@@ -188,6 +190,16 @@ export function createStudioModule() {
   });
   routes.use('/mail', createMailRouter(mailAccounts));
   // ── v6 track: shell — create its service and mount its router below this line ──
+  // The workbench (/work) asks which IDE project each local hub project lives in; looking it up never registers one.
+  const workbench = createWorkbenchService({
+    listHubProjects: userId => hub.list(userId),
+    findProjectId(directory) {
+      if (!existsSync(directory)) return null;
+      const row = projectsDb.getProjectPath(realpathSync(directory));
+      return row && !row.isArchived ? row.project_id : null;
+    },
+  });
+  routes.use('/workbench', createWorkbenchRouter(workbench));
   // ── v6 track: chat — create its service and mount its router below this line ──
   // ── v6 track: github — create its service and mount its router below this line ──
   // ── v6 track: builder — create its service and mount its router below this line ──

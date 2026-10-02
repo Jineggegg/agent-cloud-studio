@@ -18,6 +18,7 @@ type UseShellRuntimeOptions = {
   isRestarting: boolean;
   onProcessComplete?: ((exitCode: number) => void) | null;
   onOutputRef?: MutableRefObject<(() => void) | null>;
+  onUrlDetectedRef?: MutableRefObject<((url: string) => void) | null>;
 };
 
 type UseShellRuntimeResult = {
@@ -42,6 +43,7 @@ export function useShellRuntime({
   isRestarting,
   onProcessComplete,
   onOutputRef,
+  onUrlDetectedRef,
 }: UseShellRuntimeOptions): UseShellRuntimeResult {
   const terminalContainerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -108,6 +110,7 @@ export function useShellRuntime({
     closeSocket,
     clearTerminalScreen,
     onOutputRef,
+    onUrlDetectedRef,
   });
 
   useEffect(() => {

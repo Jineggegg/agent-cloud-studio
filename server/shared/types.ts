@@ -1771,6 +1771,14 @@ export type StudioMailRawMessage = {
 export type StudioOutlookTokens = { accessToken: string; refreshToken: string; expiresAt: number };
 
 // ── v6 track: shell — server types below this line ──
+/**
+ * Links one Studio hub project to the IDE project registered for its directory, so the workbench
+ * (/work/:projectId) can show the hub project's icon and DeepSeek space and the project app can link
+ * existing sessions straight to /work/:projectId/s/:sessionId. `projectId` is null while the directory has
+ * no IDE project yet (one is registered on the first launch) or no longer exists: the lookup never creates
+ * a project. Remote projects (agents on an SSH host) have no local directory and are never listed.
+ */
+export type StudioWorkbenchHubLink = { hubId: string; projectId: string | null };
 // ── v6 track: chat — server types below this line ──
 // ── v6 track: github — server types below this line ──
 // ── v6 track: builder — server types below this line ──

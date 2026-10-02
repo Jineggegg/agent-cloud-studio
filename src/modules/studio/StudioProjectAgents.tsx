@@ -4,7 +4,7 @@ import { ChevronRight, LoaderCircle, MessagesSquare, RefreshCw, Server, SquareTe
 
 import { api, readApiJson } from '@/shared/api';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
-import type { HubAgentProvider, HubProject, HubSession, StudioRemoteHost, StudioRemoteLaunch, StudioRemoteStatus } from '@/shared/types';
+import type { HubAgentProvider, HubProject, HubSession, StudioRemoteHost, StudioRemoteLaunch, StudioRemoteStatus, WorkbenchHubLink } from '@/shared/types';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 
 // The terminal (xterm) loads only when a remote session or the local shell is opened.
@@ -114,6 +114,19 @@ function LocalAgents({ project, onOpenChat }: { project: HubProject; onOpenChat:
   const [launching, setLaunching] = useState<HubAgentProvider | null>(null);
   // The full-screen shell on this computer, opened from the 终端 card.
   const [terminalOpen, setTerminalOpen] = useState(false);
+  // The IDE project of this directory, so session rows open straight in the workbench; null until known (or never launched).
+  const [workbenchProjectId, setWorkbenchProjectId] = useState<string | null>(null);
+  useEffect(() => {
+    let current = true;
+    void api.studio.workbench.hubLinks().then(readApiJson<WorkbenchHubLink[]>)
+      .then(links => { if (current) setWorkbenchProjectId(links.find(link => link.hubId === project.id)?.projectId ?? null); })
+      .catch(() => { if (current) setWorkbenchProjectId(null); });
+    return () => { current = false; };
+  }, [project.id]);
+  // Without a known IDE project the old /session link still works: the workbench resolves it to its project.
+  const sessionHref = (id: string) => workbenchProjectId
+    ? `/work/${encodeURIComponent(workbenchProjectId)}/s/${encodeURIComponent(id)}`
+    : `/session/${encodeURIComponent(id)}`;
   const load = useCallback(async () => {
     try { setSessions(await readApiJson<HubSession[]>(await api.studio.projects.sessions(project.id))); setError(''); }
     catch (reason) { setError(reason instanceof Error ? reason.message : '会话加载失败'); }
@@ -124,10 +137,10 @@ function LocalAgents({ project, onOpenChat }: { project: HubProject; onOpenChat:
     setLaunching(provider); setError('');
     try {
       const result = await readApiJson<{ url: string }>(await api.studio.projects.launch(project.id, provider));
-      // The IDE reads the provider once when its chat mounts, so it must be chosen before navigating.
+      // The workbench chat reads the provider once when it mounts, so it must be chosen before navigating.
       writeSelectedProvider(provider);
       navigate(result.url);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : '工作区打开失败'); }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '工作台打开失败'); }
     finally { setLaunching(null); }
   }
   const agents = AGENTS.filter(agent => project.providers.includes(agent.id));
@@ -159,7 +172,7 @@ function LocalAgents({ project, onOpenChat }: { project: HubProject; onOpenChat:
       <div className="ios-section-header"><h2>项目会话</h2>
         <button type="button" className="icon-button" title="刷新会话" aria-label="刷新会话" onClick={() => void load()}><RefreshCw size={18} aria-hidden="true" /></button></div>
       <div className="ios-list">
-        {sessions.map(session => <Link className="ios-row" key={session.id} to={`/session/${encodeURIComponent(session.id)}`}>
+        {sessions.map(session => <Link className="ios-row" key={session.id} to={sessionHref(session.id)}>
           <span className={`home-icon small tone-${AGENTS.find(agent => agent.id === session.provider)?.tone ?? 'stone'}`} aria-hidden="true">{AGENTS.find(agent => agent.id === session.provider)?.mark ?? '·'}</span>
           <span className="ios-row-body"><strong>{session.title}</strong><small>{nameOf(session.provider)}</small></span>
           <ChevronRight size={18} className="chevron" aria-hidden="true" />

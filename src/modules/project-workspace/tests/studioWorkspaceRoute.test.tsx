@@ -15,31 +15,36 @@ vi.mock('@/shared/hooks/useDeviceSettings', () => ({ useDeviceSettings: () => ({
 vi.mock('@/modules/project-workspace/hooks/useVisualViewportKeyboardOffset', () => ({ useVisualViewportKeyboardOffset: () => {} }));
 vi.mock('@/modules/project-workspace/controllers/WorkspaceProjectIntent', () => ({ WorkspaceProjectIntent: () => null }));
 // The IDE-wide providers (websocket, plugins, TaskMaster) moved from App into this lazily loaded route.
-vi.mock('@/modules/project-workspace/WorkspaceProviders', () => ({
+vi.mock('@/shared/ui/WorkspaceProviders', () => ({
   WorkspaceProviders: ({ children }: { children: ReactNode }) => <section aria-label="IDE providers">{children}</section>,
 }));
 vi.mock('@/modules/project-workspace/ProjectWorkspaceShell', () => ({
-  default: ({ navigate }: { navigate: NavigateFunction }) => <div>IDE<button onClick={() => navigate('/')}>Clear session</button></div>,
+  default: ({ navigate }: { navigate: NavigateFunction }) => <div>IDE<button onClick={() => navigate('/')}>Clear session</button>
+    <button onClick={() => navigate('/session/other')}>Open session</button></div>,
 }));
 const { default: ProjectWorkspaceRoute } = await import('@/modules/project-workspace/ProjectWorkspaceRoute');
 afterEach(cleanup);
 
-for (const initial of ['/workspace', '/session/example']) {
-  test(`clearing a session from ${initial} stays inside the inherited IDE`, () => {
+for (const initial of ['/legacy/workspace', '/legacy/session/example']) {
+  test(`clearing or opening a session from ${initial} stays inside the hidden legacy IDE`, () => {
     render(<MemoryRouter initialEntries={[initial]}><Routes>
       <Route path="/" element={<div>Studio home</div>} />
-      <Route path="/workspace" element={<ProjectWorkspaceRoute />} />
-      <Route path="/session/:sessionId" element={<ProjectWorkspaceRoute />} />
+      <Route path="/session/:sessionId" element={<div>Workbench redirect</div>} />
+      <Route path="/legacy/workspace" element={<ProjectWorkspaceRoute />} />
+      <Route path="/legacy/session/:sessionId" element={<ProjectWorkspaceRoute />} />
     </Routes></MemoryRouter>);
     fireEvent.click(screen.getByRole('button', { name: 'Clear session' }));
     expect(screen.queryByText('Studio home')).toBeNull();
+    expect(screen.getByText('IDE')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Open session' }));
+    expect(screen.queryByText('Workbench redirect')).toBeNull();
     expect(screen.getByText('IDE')).toBeTruthy();
   });
 }
 
 test('the IDE renders inside its own websocket, plugin and TaskMaster providers', () => {
-  render(<MemoryRouter initialEntries={['/workspace']}><Routes>
-    <Route path="/workspace" element={<ProjectWorkspaceRoute />} />
+  render(<MemoryRouter initialEntries={['/legacy/workspace']}><Routes>
+    <Route path="/legacy/workspace" element={<ProjectWorkspaceRoute />} />
   </Routes></MemoryRouter>);
   expect(within(screen.getByRole('region', { name: 'IDE providers' })).getByText('IDE')).toBeTruthy();
 });

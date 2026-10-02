@@ -166,7 +166,8 @@ export function createProjectHubService(deps: Dependencies) {
       if (!project.modules.includes('agents') || !project.providers.includes(provider as StudioAgentProvider)) fail('该项目未启用此助手');
       if (!project.workspacePath) fail('请先在设置中填写项目工作目录');
       const workspace = await deps.resolveWorkspace(project.workspacePath);
-      return { url: `/workspace?projectId=${encodeURIComponent(workspace.projectId)}&provider=${encodeURIComponent(provider)}` };
+      // The workbench opens a new chat in the project with this agent preselected.
+      return { url: `/work/${encodeURIComponent(workspace.projectId)}?new=${encodeURIComponent(provider)}` };
     },
     // The server, never the browser, decides the remote command from the project's validated config.
     launchRemote(userId: number, id: string, agent: string) {
