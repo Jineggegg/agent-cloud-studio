@@ -1393,6 +1393,22 @@ export function findServerRoot(startDirectory: string): string {
  * Resolves the application root from a source or `dist-server/server` path so
  * package-level resources work identically before and after compilation.
  */
+/**
+ * Parses `.env` text into key/value pairs (optional `export`, surrounding quotes stripped, comments ignored).
+ * Used by Studio services that read credentials from owner-provided key files per request; never log the result.
+ */
+export function parseEnvText(text: string): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.trim().match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!match) continue;
+    let value = match[2].trim();
+    if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) value = value.slice(1, -1);
+    values[match[1]] = value;
+  }
+  return values;
+}
+
 export function findApplicationRoot(startDirectory: string): string {
   const serverRoot = findServerRoot(startDirectory);
   const parentDirectory = path.dirname(serverRoot);

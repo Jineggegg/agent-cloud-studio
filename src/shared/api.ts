@@ -191,6 +191,9 @@ export const api = {
       history: (env: T212Env, days: number) => get(`/api/studio/trading212/history${query({ env, days: String(days) })}`),
       activity: (env: T212Env) => get(`/api/studio/trading212/activity${query({ env })}`),
     },
+    // ── v4 track: network — endpoints below this line ──
+    // ── v4 track: orders — endpoints below this line ──
+    // ── v4 track: mail — endpoints below this line ──
     status: () => get('/api/studio/status'),
     snr: () => get('/api/studio/snr'),
     snrAccess: () => post('/api/studio/snr/access'),

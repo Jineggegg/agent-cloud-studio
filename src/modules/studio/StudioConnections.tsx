@@ -6,6 +6,9 @@ import { api, readApiJson } from '@/shared/api';
 import { useTheme } from '@/shared/context/ThemeContext';
 import type { StudioRemoteHost, StudioRemoteStatus, StudioStatus, T212Status, ThemeMode } from '@/shared/types';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
+import { StudioSettingsMail } from '@/modules/studio/StudioSettingsMail';
+import { StudioSettingsNetwork } from '@/modules/studio/StudioSettingsNetwork';
+import { StudioSettingsTrading } from '@/modules/studio/StudioSettingsTrading';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 
 const THEMES: [ThemeMode, string][] = [['light', '浅色'], ['dark', '深色'], ['system', '跟随系统']];
@@ -80,6 +83,8 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
       </div>
     </section>
 
+    <StudioSettingsNetwork />
+
     <section className="ios-section" aria-labelledby="studio-remote-heading">
       <div className="ios-section-header"><h2 id="studio-remote-heading">远程主机</h2><span className="caption">Tailscale + SSH</span></div>
       <div className="ios-list">
@@ -90,12 +95,14 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
       <p className="ios-section-footer">在「新建」或项目「设置 → 运行位置」里选择主机后，项目里的 Claude Code / Codex / 终端会在那台主机上运行。</p>
     </section>
 
+    <StudioSettingsMail />
+
     <section className="ios-section" aria-labelledby="studio-deepseek-heading">
       <div className="ios-section-header"><h2 id="studio-deepseek-heading">DeepSeek API</h2><span className="caption">本地密钥库</span></div>
       <div className="ios-list">
         <div className="ios-row">
           <span className="home-icon small tone-slate" aria-hidden="true"><MessagesSquare size={22} /></span>
-          <span className="ios-row-body"><strong>DeepSeek</strong><small>{status?.deepseek.baseUrl ?? 'https://api.deepseek.com'}</small></span>
+          <span className="ios-row-body"><strong>DeepSeek</strong><small>{status?.deepseek.source === 'file' ? '来自服务器密钥文件（STUDIO_DEEPSEEK_ENV_FILE）' : status?.deepseek.baseUrl ?? 'https://api.deepseek.com'}</small></span>
           <span className={`status-badge ${configured ? 'good' : 'warn'}`}>{configured ? '已配置' : '未配置'}</span>
         </div>
         <form className="ios-row-group" onSubmit={event => { event.preventDefault(); void act('save', async () => { await api.studio.saveKey(key).then(readApiJson); setKey(''); setResult('密钥已保存'); }); }}>
@@ -112,7 +119,7 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
           onClick={() => void act('test', async () => { await api.studio.testKey().then(readApiJson); setResult('连接验证通过'); })}>
           {busy === 'test' && <LoaderCircle size={18} className="spin" aria-hidden="true" />}验证连接
         </button>
-        <button type="button" className="ios-row action left destructive no-icon" disabled={busy !== null || !configured} onClick={() => setConfirmRemove(true)}>
+        <button type="button" className="ios-row action left destructive no-icon" disabled={busy !== null || status?.deepseek.source !== 'vault'} onClick={() => setConfirmRemove(true)}>
           {busy === 'remove' && <LoaderCircle size={18} className="spin" aria-hidden="true" />}移除密钥
         </button>
       </div>
@@ -155,6 +162,8 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
       </div>
       <p className="ios-section-footer">密钥只保存在服务器指定的 .env 文件里（STUDIO_T212_ENV_FILE / STUDIO_T212_DEMO_ENV_FILE），Studio 只发送读取请求，不会下单。</p>
     </section>
+
+    <StudioSettingsTrading />
 
     <section className="ios-section" aria-labelledby="studio-about-heading">
       <div className="ios-section-header"><h2 id="studio-about-heading">关于</h2></div>

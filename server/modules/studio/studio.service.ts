@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import type Database from 'better-sqlite3';
 
-import { AppError, readSnrBasicAuthorization } from '@/shared/utils.js';
+import { AppError, parseEnvText, readSnrBasicAuthorization } from '@/shared/utils.js';
 
 type Dependencies = {
   database: Database.Database;
@@ -14,6 +14,8 @@ type Dependencies = {
   // SNR's optional Basic credential for status reads (STUDIO_SNR_USER + STUDIO_SNR_PASSWORD_FILE by default).
   snrAuthorization?: () => string | null;
   agentWorkbenchUrl?: string;
+  // Optional owner key file (STUDIO_DEEPSEEK_ENV_FILE) holding DEEPSEEK_API_KEY; used when the user saved no key in the vault.
+  deepseekKeyFile?: string;
   // Looks up a user-owned project so its chat space and persona can be scoped to it.
   project?: (userId: number, id: string) => { name: string; description: string } | null;
 };
@@ -144,13 +146,29 @@ export function createStudioService(deps: Dependencies) {
     if (key.length !== 32) fail('本地密钥库不可用', 500);
     return key;
   }
-  function secret(userId: number): string | null {
+  // Read per call so a rotated key needs no restart; the value never leaves the server.
+  function fileKey(): string | null {
+    if (!deps.deepseekKeyFile || !existsSync(deps.deepseekKeyFile)) return null;
+    try {
+      const key = parseEnvText(readFileSync(deps.deepseekKeyFile, 'utf8')).DEEPSEEK_API_KEY?.trim();
+      return key && key.length >= 12 && !/\s/.test(key) ? key : null;
+    } catch { return null; }
+  }
+  function vaultKey(userId: number): string | null {
     const row = db.prepare('SELECT encrypted_key FROM studio_secrets WHERE user_id = ?').get(userId) as { encrypted_key: string } | undefined;
     if (!row) return null;
     const [iv, tag, ciphertext] = row.encrypted_key.split('.').map(value => Buffer.from(value, 'base64'));
     const decipher = createDecipheriv('aes-256-gcm', masterKey(), iv);
     decipher.setAuthTag(tag);
     return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+  }
+  // A key saved in Studio wins; otherwise the owner key file is used.
+  function secret(userId: number): string | null {
+    return vaultKey(userId) ?? fileKey();
+  }
+  function keySource(userId: number): 'vault' | 'file' | null {
+    if (db.prepare('SELECT 1 FROM studio_secrets WHERE user_id = ?').get(userId)) return 'vault';
+    return fileKey() ? 'file' : null;
   }
   function owned(userId: number, id: string) {
     const row = db.prepare(`SELECT ${COLUMNS} FROM studio_conversations WHERE user_id = ? AND id = ?`).get(userId, id) as Conversation | undefined;
@@ -209,7 +227,7 @@ export function createStudioService(deps: Dependencies) {
   return {
     status(userId: number) {
       return {
-        deepseek: { configured: Boolean(db.prepare('SELECT 1 FROM studio_secrets WHERE user_id = ?').get(userId)), models: MODELS, baseUrl: API_BASE },
+        deepseek: { configured: keySource(userId) !== null, source: keySource(userId), models: MODELS, baseUrl: API_BASE },
         agentWorkbenchUrl: deps.agentWorkbenchUrl || null,
         snrRemoteUrl: process.env.STUDIO_SNR_REMOTE_URL || null,
       };

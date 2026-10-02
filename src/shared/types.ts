@@ -1825,7 +1825,8 @@ type TaskPriority = 'high' | 'medium' | 'low' | string;
 //----------------- STUDIO CONTRACTS ------------
 /** Studio's server-confirmed connector state; never includes an API secret. */
 export type StudioStatus = {
-  deepseek: { configured: boolean; models: string[]; baseUrl: string };
+  // `source`: saved in Studio's vault, read from the owner key file (STUDIO_DEEPSEEK_ENV_FILE), or none.
+  deepseek: { configured: boolean; source: 'vault' | 'file' | null; models: string[]; baseUrl: string };
   agentWorkbenchUrl: string | null;
   snrRemoteUrl: string | null;
 };
@@ -1942,4 +1943,7 @@ export type T212Activity = {
   id: string; kind: 'buy' | 'sell' | 'dividend'; ticker: string; name: string; quantity: number;
   price: number | null; value: number | null; realized: number | null; currency: string; at: string; status: string;
 };
+// ── v4 track: network — types below this line ──
+// ── v4 track: orders — types below this line ──
+// ── v4 track: mail — types below this line ──
 // ---------------------------

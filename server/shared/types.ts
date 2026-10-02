@@ -1643,3 +1643,8 @@ export type StudioProjectRecord = StudioProjectInput & { id: string; updatedAt: 
 
 /** An automation draft passed from the Studio router to its service. Saving does not execute or schedule a task. */
 export type StudioTaskInput = { title: string; prompt: string; provider: StudioAgentProvider };
+
+// ── v4 track: network — server types below this line ──
+// ── v4 track: orders — server types below this line ──
+// ── v4 track: mail — server types below this line ──
+

@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import type Database from 'better-sqlite3';
 
-import { AppError } from '@/shared/utils.js';
+import { AppError, parseEnvText } from '@/shared/utils.js';
 
 type Environment = 'live' | 'demo';
 type Dependencies = {
@@ -39,17 +39,6 @@ function maybe(value: unknown) {
 function obj(value: unknown): Json {
   return value && typeof value === 'object' ? value as Json : {};
 }
-function parseEnv(text: string) {
-  const values: Record<string, string> = {};
-  for (const line of text.split(/\r?\n/)) {
-    const match = line.trim().match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
-    if (!match) continue;
-    let value = match[2].trim();
-    if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) value = value.slice(1, -1);
-    values[match[1]] = value;
-  }
-  return values;
-}
 function londonDay(timestamp: number) {
   return DAY_FORMAT.format(new Date(timestamp));
 }
@@ -73,7 +62,7 @@ export function createTrading212Service(deps: Dependencies) {
   function credentials(env: Environment) {
     const file = deps.envFiles[env];
     if (!file || !existsSync(file)) return null;
-    const values = parseEnv(readFileSync(file, 'utf8'));
+    const values = parseEnvText(readFileSync(file, 'utf8'));
     const key = values.TRADING212_API_KEY?.trim();
     const secret = values.TRADING212_API_SECRET;
     return key && secret ? { key, secret } : null;

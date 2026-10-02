@@ -104,6 +104,7 @@ export function createStudioModule() {
     vaultDirectory,
     snrBaseUrl: process.env.STUDIO_SNR_BASE_URL,
     agentWorkbenchUrl: process.env.STUDIO_AGENT_WORKBENCH_URL,
+    deepseekKeyFile: process.env.STUDIO_DEEPSEEK_ENV_FILE || undefined,
     project(userId, id) {
       try { return hub.get(userId, id); } catch { return null; }
     },
@@ -130,5 +131,8 @@ export function createStudioModule() {
   routes.use('/trading212', createTrading212Router(trading212));
   routes.use('/remote', createRemoteHostsRouter(remote));
   routes.use('/quota', createQuotaRouter(quota));
+  // ── v4 track: network — create its service and mount its router below this line ──
+  // ── v4 track: orders — create its service and mount its router below this line ──
+  // ── v4 track: mail — create its service and mount its router below this line ──
   return { routes, snrRoutes: createSnrGatewayRouter(gateway), mailCallbackRoutes: createProjectMailCallbackRouter(mail) };
 }
