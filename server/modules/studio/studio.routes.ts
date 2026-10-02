@@ -36,8 +36,12 @@ export function createStudioRouter(service: ReturnType<typeof createStudioServic
     res.clearCookie('studio-snr-access', { path: '/api/studio/snr-site', httpOnly: true, sameSite: 'strict' });
     res.json({ closed: true });
   }));
-  router.get('/conversations', asyncHandler(async (req, res) => { res.json(service.listConversations(user(req))); }));
-  router.post('/conversations', asyncHandler(async (req, res) => { res.status(201).json(service.createConversation(user(req), text(req.body?.model))); }));
+  // `space` selects which home-screen chat app owns the history; it defaults to the DeepSeek app.
+  const space = (value: unknown) => value === undefined ? undefined : text(value);
+  router.get('/conversations', asyncHandler(async (req, res) => { res.json(service.listConversations(user(req), space(req.query.space))); }));
+  router.post('/conversations', asyncHandler(async (req, res) => {
+    res.status(201).json(service.createConversation(user(req), text(req.body?.model), space(req.body?.space)));
+  }));
   router.get('/conversations/:id', asyncHandler(async (req, res) => { res.json(service.conversation(user(req), String(req.params.id))); }));
   router.delete('/conversations/:id', asyncHandler(async (req, res) => { res.json(service.removeConversation(user(req), String(req.params.id))); }));
   router.post('/conversations/:id/messages', asyncHandler(async (req, res) => {

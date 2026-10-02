@@ -1829,9 +1829,13 @@ export type StudioStatus = {
   agentWorkbenchUrl: string | null;
   snrRemoteUrl: string | null;
 };
+/** A Studio home-screen app; `workspace` routes to the inherited IDE instead of opening inside Studio. */
+export type StudioAppId = 'snr' | 'professor' | 'deepseek' | 'workspace' | 'connections';
+/** A home-screen chat app whose conversations are stored and listed separately from every other app. */
+export type StudioChatSpace = 'deepseek' | 'super-professor';
 /** A persisted Studio conversation summary shared by its history and chat views. */
 export type StudioConversation = {
-  id: string; title: string; model: string; updated_at: string;
+  id: string; title: string; model: string; updated_at: string; space?: StudioChatSpace;
   messages?: { id: number; role: 'user' | 'assistant'; content: string; status: string }[];
 };
 /** A bounded read-only SNR health snapshot, not a strategy approval or training result. */

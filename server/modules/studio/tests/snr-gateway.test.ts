@@ -30,6 +30,23 @@ test('proxy does not allow arbitrary destinations or application endpoints', asy
   await assert.rejects(gateway.proxy('/static/../../secret', 'GET', undefined, undefined, signal), /不可用/);
 });
 
+test('annotation edits use PUT on API paths, while non-API writes and unknown verbs stay blocked', async () => {
+  const calls: { url: string; method?: string; origin?: string }[] = [];
+  const gateway = createSnrGateway({
+    baseUrl: 'http://127.0.0.1:8768', validUser: () => true,
+    request: (async (input: URL, init: RequestInit) => {
+      calls.push({ url: String(input), method: init.method, origin: (init.headers as Record<string, string>).Origin });
+      return new Response('{"ok":true}', { headers: { 'Content-Type': 'application/json' } });
+    }) as unknown as typeof fetch,
+  });
+  const signal = new AbortController().signal;
+  const result = await gateway.proxy('/api/sessions/s1/levels/7', 'PUT', '{"price":1}', 'application/json', signal);
+  assert.equal(result.status, 200);
+  assert.deepEqual(calls, [{ url: 'http://127.0.0.1:8768/api/sessions/s1/levels/7', method: 'PUT', origin: 'http://127.0.0.1:8768' }]);
+  await assert.rejects(gateway.proxy('/replay', 'PUT', '{}', 'application/json', signal), /不允许/);
+  await assert.rejects(gateway.proxy('/api/sessions/s1', 'TRACE', undefined, undefined, signal), /不允许/);
+});
+
 test('HTML keeps lab assets and API traffic inside the protected gateway', async () => {
   const gateway = createSnrGateway({
     baseUrl: 'http://127.0.0.1:8768', validUser: () => true,

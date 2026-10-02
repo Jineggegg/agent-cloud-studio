@@ -70,7 +70,8 @@ export function createSnrGateway({ baseUrl, validUser, request = fetch }: {
       if (target.origin !== base.origin || !/^(\/replay|\/static\/[a-zA-Z0-9_./-]+|\/api\/(?:health|detector|speech|datasets|sessions)(?:\/[^?#]*)?)$/.test(target.pathname)) {
         throw new AppError('研究入口路径不可用', { statusCode: 404 });
       }
-      if (!['GET', 'HEAD', 'POST', 'PATCH', 'DELETE'].includes(method) || (method !== 'GET' && method !== 'HEAD' && !target.pathname.startsWith('/api/'))) {
+      // SNR edits levels, HPA and AOI annotations with PUT, so it must pass alongside the other write verbs.
+      if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method) ||(method !== 'GET' && method !== 'HEAD' && !target.pathname.startsWith('/api/'))) {
         throw new AppError('研究入口不允许此操作', { statusCode: 405 });
       }
       const headers: Record<string, string> = {};

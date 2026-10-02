@@ -43,6 +43,33 @@ test('conversation access and deletion cannot cross users', () => {
   } finally { f.close(); }
 });
 
+test('each home-screen chat app keeps an isolated history and rejects unknown spaces', () => {
+  const f = fixture();
+  try {
+    const general = f.service.createConversation(1, 'deepseek-flash');
+    const professor = f.service.createConversation(1, 'deepseek-v4-pro', 'super-professor');
+    assert.equal(general.space, 'deepseek');
+    assert.equal(professor.space, 'super-professor');
+    assert.deepEqual(f.service.listConversations(1).map(row => (row as { id: string }).id), [general.id]);
+    assert.deepEqual(f.service.listConversations(1, 'super-professor').map(row => (row as { id: string }).id), [professor.id]);
+    assert.throws(() => f.service.listConversations(1, 'snr-trading'), /未知的对话空间/);
+    assert.throws(() => f.service.createConversation(1, 'deepseek-flash', '__proto__'), /未知的对话空间/);
+  } finally { f.close(); }
+});
+
+test('conversations created before spaces existed migrate into the DeepSeek app', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'studio-test-'));
+  const database = new Database(':memory:');
+  try {
+    database.exec('CREATE TABLE studio_conversations (id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, title TEXT NOT NULL, model TEXT NOT NULL, updated_at TEXT NOT NULL)');
+    database.prepare('INSERT INTO studio_conversations VALUES (?, ?, ?, ?, ?)').run('old', 1, '旧对话', 'deepseek-flash', new Date().toISOString());
+    const service = createStudioService({ database, vaultDirectory: directory });
+    assert.equal(service.conversation(1, 'old').space, 'deepseek');
+    assert.equal(service.listConversations(1, 'super-professor').length, 0);
+    createStudioService({ database, vaultDirectory: directory });
+  } finally { database.close(); rmSync(directory, { recursive: true }); }
+});
+
 test('an unconfigured provider never calls a model or stores a submitted message', async () => {
   let calls = 0;
   const f = fixture((async () => { calls++; throw Error('must not run'); }) as typeof fetch);

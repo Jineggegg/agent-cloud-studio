@@ -3,6 +3,7 @@ import {
   getStoredAuthToken,
   storeAuthToken,
 } from '@/shared/authToken';
+import type { StudioChatSpace } from '@/shared/types';
 import { IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
 
@@ -165,8 +166,8 @@ export const api = {
     saveKey: (apiKey: string) => put('/api/studio/deepseek/key', { apiKey }),
     removeKey: () => del('/api/studio/deepseek/key'),
     testKey: () => post('/api/studio/deepseek/test'),
-    conversations: () => get('/api/studio/conversations'),
-    createConversation: (model: string) => post('/api/studio/conversations', { model }),
+    conversations: (space: StudioChatSpace) => get(`/api/studio/conversations?space=${encodeURIComponent(space)}`),
+    createConversation: (model: string, space: StudioChatSpace) => post('/api/studio/conversations', { model, space }),
     conversation: (id: string) => get(`/api/studio/conversations/${encodeURIComponent(id)}`),
     removeConversation: (id: string) => del(`/api/studio/conversations/${encodeURIComponent(id)}`),
     send: (id: string, text: string, includeSnr: boolean, signal: AbortSignal) =>
