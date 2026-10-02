@@ -8,12 +8,14 @@ import { DndContext, DragOverlay, useDndContext } from '@dnd-kit/core';
 import { SortableContext } from '@dnd-kit/sortable';
 
 import { api, readApiJson } from '@/shared/api';
-import type { StudioQuotaSnapshot, StudioQuotaWindow, StudioSnr, T212Overview, T212Point } from '@/shared/types';
+import { readableErrorMessage } from '@/shared/utils';
+import type { StudioGitHubInbox, StudioQuotaSnapshot, StudioQuotaWindow, StudioSnr, T212Overview, T212Point } from '@/shared/types';
 import { StudioTileIcon } from '@/modules/studio/StudioTileIcon';
 import { useHomeSortableItem, useHomeSortableList } from '@/modules/studio/hooks/useHomeSortable';
 import '@/modules/studio/studio-home.css';
+import '@/modules/studio/studio-github.css';
 
-type WidgetType = 'claude' | 'codex' | 'deepseek' | 'trading212' | 'snr';
+type WidgetType = 'claude' | 'codex' | 'deepseek' | 'trading212' | 'snr' | 'github';
 type WidgetSize = 'small' | 'medium';
 type WidgetConfig = { id: string; type: WidgetType; size: WidgetSize };
 
@@ -31,9 +33,12 @@ const CATALOG: { type: WidgetType; name: string; caption: string; tone: string; 
   { type: 'deepseek', name: 'DeepSeek 余额', caption: 'API 账户余额', tone: 'slate', glyph: 'sparkles' },
   { type: 'trading212', name: 'Trading 212', caption: '总资产、今日盈亏与走势', tone: 'moss', glyph: 'candles' },
   { type: 'snr', name: 'SNR 实验室', caption: '在线状态与研究阶段', tone: 'sage', glyph: 'activity' },
+  { type: 'github', name: 'GitHub', caption: '开放的 PR 与 CI 状态', tone: 'graphite', glyph: 'pull-request' },
 ];
 const QUOTA_REFRESH_MS = 60_000;
 const T212_REFRESH_MS = 5 * 60_000;
+// The server caches the inbox for 45 s, so a two-minute poll costs GitHub at most one search per poll.
+const GITHUB_REFRESH_MS = 2 * 60_000;
 // Enter and exit of a whole widget (added from the gallery or removed in edit mode).
 const PRESENCE_SPRING = { type: 'spring', stiffness: 260, damping: 26 } as const;
 
@@ -188,6 +193,71 @@ function TradingWidget({ size, reading: { overview, points }, still }: { size: W
   </>;
 }
 
+// The PR inbox (null until it first loads) and why the latest read failed (gh signed out, GitHub unreachable).
+type GitHubReading = { inbox: StudioGitHubInbox | null; problem: string };
+
+/**
+ * Loads the GitHub inbox once for the whole grid while a GitHub widget is placed. Polling stops while an app covers
+ * the home screen or the tab is hidden; coming back reads again (a merge made in the app has already cleared the
+ * server cache, so the widget catches up at once).
+ */
+function useGitHubReading(enabled: boolean, paused: boolean): GitHubReading {
+  // The latest reading; a failed poll keeps the last inbox and only adds the problem.
+  const [reading, setReading] = useState<GitHubReading>({ inbox: null, problem: '' });
+  useEffect(() => {
+    if (!enabled || paused) return;
+    let active = true;
+    const load = async () => {
+      if (document.hidden) return;
+      try {
+        const inbox = await api.studio.github.pulls().then(readApiJson<StudioGitHubInbox>);
+        if (active) setReading({ inbox, problem: '' });
+      } catch (failure) {
+        if (active) setReading(previous => ({ inbox: previous.inbox, problem: readableErrorMessage(failure, 'GitHub 暂时读不到') }));
+      }
+    };
+    const tick = () => { void load(); };
+    tick();
+    const timer = window.setInterval(tick, GITHUB_REFRESH_MS);
+    document.addEventListener('visibilitychange', tick);
+    return () => { active = false; window.clearInterval(timer); document.removeEventListener('visibilitychange', tick); };
+  }, [enabled, paused]);
+  return reading;
+}
+
+const CI_LABEL: Record<StudioGitHubInbox['pulls'][number]['checks']['state'], string> = { passing: '检查通过', failing: '检查失败', pending: '检查中', none: '没有检查' };
+
+function GitHubWidget({ size, reading: { inbox, problem }, still }: { size: WidgetSize; reading: GitHubReading; still: boolean }) {
+  const pulls = inbox?.pulls ?? [];
+  const failing = pulls.filter(pull => pull.checks.state === 'failing').length;
+  const pending = pulls.filter(pull => pull.checks.state === 'pending').length;
+  const checked = pulls.filter(pull => pull.checks.state !== 'none').length;
+  const review = pulls.filter(pull => pull.reasons.includes('review')).length;
+  const ci = failing ? { tone: 'failing', text: `${failing} 个 PR 检查失败` }
+    : pending ? { tone: 'pending', text: `${pending} 个 PR 检查中` }
+      : checked ? { tone: 'passing', text: '检查都已通过' }
+        : { tone: 'none', text: pulls.length ? '没有 CI 检查' : '没有待处理的 PR' };
+  return <>
+    <header className="widget-head">
+      <StudioTileIcon tone="graphite" glyph="pull-request" size={14} variant="small" /><span>GitHub</span>
+      {inbox && problem ? <span className="widget-source is-stale" title={problem}>可能过期</span>
+        : size === 'medium' && pulls.length ? <span className="widget-source">共 {pulls.length} 个</span>
+          : review > 0 && <span className="widget-source">{review} 个待审</span>}
+    </header>
+    {!inbox ? (problem ? <p className="widget-note" title={problem}>{problem}</p> : <div className="widget-loading" aria-label="读取中"><span /><span /></div>)
+      : size === 'medium' && pulls.length ? <ul className="gh-widget-list">
+        {pulls.slice(0, 3).map(pull => <li key={pull.id}>
+          <span className={`gh-dot ci-${pull.checks.state}`} role="img" aria-label={CI_LABEL[pull.checks.state]} />
+          <span className="gh-widget-pull"><strong>{pull.title}</strong><small>{pull.repo} #{pull.number}{pull.isDraft ? ' · 草稿' : ''}</small></span>
+        </li>)}
+      </ul>
+        : <div className="widget-figure">
+          <strong><NumberFlow value={pulls.length} animated={!still} /><span className="gh-widget-unit">个 PR</span></strong>
+          <small className="gh-widget-ci"><span className={`gh-dot ci-${ci.tone}`} aria-hidden="true" />{ci.text}</small>
+        </div>}
+  </>;
+}
+
 function SnrWidget({ snr }: { snr: StudioSnr | null }) {
   const online = Boolean(snr?.connected);
   return <>
@@ -284,6 +354,7 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, galle
   }, [widgets]);
   const needsQuota = widgets.some(widget => widget.type === 'claude' || widget.type === 'codex' || widget.type === 'deepseek');
   const trading = useTradingReading(widgets.some(widget => widget.type === 'trading212'));
+  const github = useGitHubReading(widgets.some(widget => widget.type === 'github'), paused);
   const loadQuota = useCallback(async () => {
     const next = await api.studio.quota().then(readApiJson<StudioQuotaSnapshot[]>).catch(() => null);
     // A failed poll keeps the last reading (the per-snapshot "stale" flag still ages it); only a first failure shows the fallback.
@@ -325,6 +396,7 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, galle
     {widget.type === 'deepseek' && <DeepSeekWidget snapshot={find('deepseek')} still={still} />}
     {widget.type === 'trading212' && <TradingWidget size={widget.size} reading={trading} still={still} />}
     {widget.type === 'snr' && <SnrWidget snr={snr} />}
+    {widget.type === 'github' && <GitHubWidget size={widget.size} reading={github} still={still} />}
   </>;
   const add = (type: WidgetType, size: WidgetSize) => {
     setWidgets(previous => [...previous, { id: newWidgetId(type), type, size }]);

@@ -19,6 +19,7 @@ import '@/modules/studio/studio.css';
 // Sub-apps stay out of the home screen's first load (and are warmed once it is idle); same props as the originals.
 const StudioChatPane = lazyStudioPanel(() => import('@/modules/studio/StudioChatPane').then(module => module.StudioChatPane), 'chat');
 const StudioConnections = lazyStudioPanel(() => import('@/modules/studio/StudioConnections').then(module => module.StudioConnections), 'list');
+const StudioGitHub = lazyStudioPanel(() => import('@/modules/studio/StudioGitHub').then(module => module.StudioGitHub), 'list');
 const StudioProjectAgents = lazyStudioPanel(() => import('@/modules/studio/StudioProjectAgents').then(module => module.StudioProjectAgents), 'list');
 const StudioProjectEditor = lazyStudioPanel(() => import('@/modules/studio/StudioProjectEditor').then(module => module.StudioProjectEditor), 'form');
 const StudioProjectMail = lazyStudioPanel(() => import('@/modules/studio/StudioProjectMail').then(module => module.StudioProjectMail), 'list');
@@ -150,6 +151,7 @@ export function StudioPage() {
         : item.modules.includes('trading212') && t212Ready === false ? '未接入' : undefined,
     })),
     // ── v6 track: github — home tile below this line ──
+    { id: 'github', name: 'GitHub', tone: 'graphite', glyph: 'pull-request' },
     // ── v6 track: memory — home tile below this line ──
     { id: 'deepseek', name: 'DeepSeek', tone: 'slate', glyph: 'sparkles', status: studio.loading || configured ? undefined : '待配置' },
     { id: 'workspace', name: '开发工具', tone: 'graphite', glyph: 'terminal', href: '/workspace' },
@@ -221,6 +223,7 @@ export function StudioPage() {
               {!tabs.length && <div className="studio-large-title"><h1>{title}</h1></div>}
               {target.kind === 'app' && target.id === 'connections' && <StudioConnections status={studio.status} onChange={studio.refresh} />}
               {/* ── v6 track: github — app content below this line ── */}
+              {target.kind === 'app' && target.id === 'github' && <StudioGitHub refreshing={refreshing} />}
               {/* ── v6 track: memory — app content below this line ── */}
               {target.kind === 'project' && !project && (projects === null
                 ? <div className="studio-skeleton" role="status" aria-label="正在加载项目"><div className="skeleton-block" style={{ height: 160 }} /></div>

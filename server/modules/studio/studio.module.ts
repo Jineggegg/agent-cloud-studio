@@ -29,6 +29,9 @@ import { createStudioNetworkService } from './network.service.js';
 import { createStudioNetworkRouter } from './network.routes.js';
 import { createQuotaService } from './quota/quota.service.js';
 import { createQuotaRouter } from './quota/quota.routes.js';
+import { createGhRunner, resolveGhPath } from './github/github-cli.adapter.js';
+import { createGitHubService } from './github/github.service.js';
+import { createGitHubRouter } from './github/github.routes.js';
 
 const linkChecker = createLinkChecker();
 
@@ -190,6 +193,13 @@ export function createStudioModule() {
   // ── v6 track: shell — create its service and mount its router below this line ──
   // ── v6 track: chat — create its service and mount its router below this line ──
   // ── v6 track: github — create its service and mount its router below this line ──
+  // The owner's GitHub through the gh CLI already signed in on this machine (gh keeps the token; Studio never reads
+  // it). STUDIO_GH_PATH points at gh when it is not in ~/.local/bin, /usr/local/bin, /usr/bin or on PATH.
+  const github = createGitHubService({
+    database: getConnection(),
+    run: createGhRunner({ ghPath: resolveGhPath(process.env.STUDIO_GH_PATH) }),
+  });
+  routes.use('/github', createGitHubRouter(github));
   // ── v6 track: builder — create its service and mount its router below this line ──
   // ── v6 track: memory — create its service and mount its router below this line ──
   return { routes, snrRoutes: createSnrGatewayRouter(gateway), mailCallbackRoutes: createProjectMailCallbackRouter(mail) };

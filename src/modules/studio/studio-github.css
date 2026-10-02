@@ -1,0 +1,373 @@
+/*
+ * GitHub system app (v6 "github" track): PR inbox, detail and merge sheet, home widget.
+ * Uses the --ios-* tokens from studio.css; the sheet is portaled into a .studio-layer so the
+ * tokens, the dark theme and reduced motion all apply there too.
+ *
+ * studio.css loads after this file and resets elements with `.studio :where(...)`, so every rule
+ * here is scoped with :is(.studio, .studio-layer) to outrank that reset.
+ */
+
+/* ---------- Account line, filter ---------- */
+:is(.studio, .studio-layer) .gh-account {
+  display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 6px 14px;
+  font-size: 15px; color: var(--ios-label-2);
+}
+:is(.studio, .studio-layer) .gh-account-name { font-weight: 600; color: var(--ios-label); }
+:is(.studio, .studio-layer) .gh-account-sync { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ios-label-3); font-variant-numeric: tabular-nums; }
+:is(.studio, .studio-layer) .gh-account .gh-badge { margin-left: auto; }
+
+:is(.studio, .studio-layer) .gh-filter { display: flex; width: 100%; max-width: 520px; padding: 2px; border-radius: 12px; }
+:is(.studio, .studio-layer) .gh-filter button {
+  position: relative; flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 40px; padding: 4px 8px; border-radius: 10px; font-size: 14px;
+}
+/* The 40px segment keeps a 44px hit area. */
+:is(.studio, .studio-layer) .gh-filter button::before { content: ""; position: absolute; inset: -2px 0; }
+:is(.studio, .studio-layer) .gh-filter-count { font-size: 12px; font-weight: 600; color: var(--ios-label-3); font-variant-numeric: tabular-nums; }
+:is(.studio, .studio-layer) .gh-filter button[aria-checked="true"] .gh-filter-count { color: var(--ios-label-2); }
+
+/* ---------- Repository groups and rows ---------- */
+:is(.studio, .studio-layer) .gh-repo { margin-top: 24px; }
+:is(.studio, .studio-layer) .gh-repo-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 0 6px 8px; }
+:is(.studio, .studio-layer) .gh-repo-head h2 {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 17px; font-weight: 600; letter-spacing: -.01em;
+}
+:is(.studio, .studio-layer) .gh-repo-owner { font-weight: 400; color: var(--ios-label-2); }
+:is(.studio, .studio-layer) .gh-repo-head .caption { flex-shrink: 0; font-size: 13px; color: var(--ios-label-2); font-variant-numeric: tabular-nums; }
+
+:is(.studio, .studio-layer) :is(.gh-list, .gh-log ul, .gh-checks, .gh-files, .gh-facts, .gh-widget-list) { margin: 0; padding: 0; list-style: none; }
+/* Rows fold away when a merged PR leaves the inbox, so each item clips its own content. */
+:is(.studio, .studio-layer) .gh-list > li { position: relative; overflow: hidden; }
+:is(.studio, .studio-layer) .gh-list > li + li::before {
+  content: ""; position: absolute; z-index: 1; top: 0; right: 0; left: 66px; height: .5px; background: var(--ios-separator);
+}
+:is(.studio, .studio-layer) .gh-row {
+  display: flex; align-items: flex-start; gap: 14px; width: 100%; padding: 14px 14px 14px 16px;
+  text-align: left; color: var(--ios-label); transition: background-color 420ms ease;
+}
+:is(.studio, .studio-layer) .gh-row:active { background-color: var(--ios-fill-pressed); transition-duration: 0s; }
+@media (hover: hover) { :is(.studio, .studio-layer) .gh-row:hover { background-color: color-mix(in srgb, var(--ios-fill) 60%, transparent); } }
+
+:is(.studio, .studio-layer) .gh-mark {
+  display: grid; place-items: center; flex-shrink: 0; width: 36px; height: 36px; margin-top: 1px; border-radius: 10px;
+  background: var(--ios-fill); color: var(--ios-label-2);
+  transition: background-color var(--dur-base) ease, color var(--dur-base) ease;
+}
+:is(.studio, .studio-layer) .gh-mark.ci-passing { background: var(--ios-green-soft); color: var(--ios-green); }
+:is(.studio, .studio-layer) .gh-mark.ci-failing { background: var(--ios-red-soft); color: var(--ios-red); }
+:is(.studio, .studio-layer) .gh-mark.ci-pending { background: color-mix(in srgb, var(--ios-orange) 13%, transparent); color: var(--ios-orange); }
+/* A draft is not ready whatever its CI says; its beads still carry the CI outcome. */
+:is(.studio, .studio-layer) .gh-mark.is-draft { background: var(--ios-fill); color: var(--ios-label-3); }
+
+:is(.studio, .studio-layer) .gh-row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+:is(.studio, .studio-layer) .gh-row-title { display: flex; align-items: flex-start; gap: 8px; }
+:is(.studio, .studio-layer) .gh-row-title strong {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere;
+  font-size: 16px; font-weight: 600; line-height: 1.3; letter-spacing: -.005em;
+}
+:is(.studio, .studio-layer) .gh-row-title .gh-badge { margin-top: 1px; }
+:is(.studio, .studio-layer) .gh-row-meta { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; color: var(--ios-label-2); white-space: nowrap; }
+:is(.studio, .studio-layer) .gh-row-meta > span { flex-shrink: 0; }
+:is(.studio, .studio-layer) .gh-row-meta > span + span::before { content: "·"; margin-right: 6px; color: var(--ios-label-3); }
+:is(.studio, .studio-layer) .gh-row-meta .gh-row-branch { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ios-label-3); }
+:is(.studio, .studio-layer) .gh-row-stats { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 3px; font-size: 13px; color: var(--ios-label-2); }
+:is(.studio, .studio-layer) .gh-row-files { font-variant-numeric: tabular-nums; }
+:is(.studio, .studio-layer) .gh-row-trail { display: flex; align-items: center; gap: 2px; flex-shrink: 0; padding-top: 1px; font-size: 13px; color: var(--ios-label-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+:is(.studio, .studio-layer) .gh-row-trail .chevron { color: var(--ios-label-3); }
+
+/* ---------- Marks shared by rows and the sheet ---------- */
+:is(.studio, .studio-layer) .gh-beads { display: inline-flex; align-items: center; gap: 7px; font-weight: 500; }
+:is(.studio, .studio-layer) .gh-bead-run { display: inline-flex; align-items: center; gap: 3px; }
+:is(.studio, .studio-layer) .gh-bead { display: block; width: 7px; height: 7px; border-radius: 50%; background: var(--ios-label-3); }
+:is(.studio, .studio-layer) .gh-bead.passing { background: var(--ios-green); }
+:is(.studio, .studio-layer) .gh-bead.failing { background: var(--ios-red); }
+:is(.studio, .studio-layer) .gh-bead.pending { background: var(--ios-orange); animation: gh-breathe 1.8s ease-in-out infinite; }
+:is(.studio, .studio-layer) .gh-bead.none { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ios-label-3); }
+:is(.studio, .studio-layer) .gh-beads.is-failing .gh-beads-label { color: var(--ios-red); }
+:is(.studio, .studio-layer) .gh-beads.is-pending .gh-beads-label { color: var(--ios-orange); }
+:is(.studio, .studio-layer) .gh-beads.is-none .gh-beads-label { color: var(--ios-label-3); }
+@keyframes gh-breathe { 50% { opacity: .35; } }
+
+:is(.studio, .studio-layer) .gh-diff { display: inline-flex; gap: 6px; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+:is(.studio, .studio-layer) .gh-diff ins { text-decoration: none; color: var(--ios-green); }
+:is(.studio, .studio-layer) .gh-diff del { text-decoration: none; color: var(--ios-red); }
+:is(.studio, .studio-layer) .gh-badge {
+  display: inline-flex; align-items: center; flex-shrink: 0; min-height: 20px; padding: 1px 8px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; line-height: 1.4; white-space: nowrap; background: var(--ios-fill); color: var(--ios-label-2);
+}
+:is(.studio, .studio-layer) .gh-badge.good { background: var(--ios-green-soft); color: var(--ios-green); }
+:is(.studio, .studio-layer) .gh-badge.bad { background: var(--ios-red-soft); color: var(--ios-red); }
+:is(.studio, .studio-layer) .gh-badge.warn { background: color-mix(in srgb, var(--ios-orange) 13%, transparent); color: var(--ios-orange); }
+:is(.studio, .studio-layer) .gh-dot { display: inline-block; flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; background: var(--ios-label-3); }
+:is(.studio, .studio-layer) .gh-dot.ci-passing { background: var(--ios-green); }
+:is(.studio, .studio-layer) .gh-dot.ci-failing { background: var(--ios-red); }
+:is(.studio, .studio-layer) .gh-dot.ci-pending { background: var(--ios-orange); }
+:is(.studio, .studio-layer) .gh-dot.ci-none { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ios-label-3); }
+
+/* ---------- Callouts, setup, empty, loading ---------- */
+:is(.studio, .studio-layer) .gh-callout {
+  display: flex; align-items: flex-start; gap: 10px; margin-bottom: 14px; padding: 12px 14px; border-radius: 16px;
+  font-size: 14px; line-height: 1.5; animation: studio-rise var(--dur-base) var(--ease-out) backwards;
+}
+:is(.studio, .studio-layer) .gh-callout > svg { margin-top: 1px; }
+:is(.studio, .studio-layer) .gh-callout > span { flex: 1; min-width: 0; align-self: center; overflow-wrap: anywhere; }
+:is(.studio, .studio-layer) .gh-callout > div { flex: 1; min-width: 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
+:is(.studio, .studio-layer) .gh-callout strong { font-size: 15px; font-weight: 600; }
+:is(.studio, .studio-layer) .gh-callout > div > span { color: var(--ios-label-2); }
+:is(.studio, .studio-layer) .gh-callout .ios-button { justify-self: start; align-self: center; flex-shrink: 0; min-height: 36px; padding: 6px 14px; }
+:is(.studio, .studio-layer) .gh-callout.bad { background: color-mix(in srgb, var(--ios-red) 10%, transparent); }
+:is(.studio, .studio-layer) .gh-callout.bad > svg, :is(.studio, .studio-layer) .gh-callout.bad strong { color: var(--ios-red); }
+:is(.studio, .studio-layer) .gh-callout.warn { background: color-mix(in srgb, var(--ios-orange) 11%, transparent); }
+:is(.studio, .studio-layer) .gh-callout.warn > svg { color: var(--ios-orange); }
+
+:is(.studio, .studio-layer) .gh-setup {
+  display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 40px 22px 32px;
+  border-radius: var(--radius-card); background: var(--ios-surface); text-align: center;
+}
+:is(.studio, .studio-layer) .gh-setup-mark {
+  display: grid; place-items: center; width: 64px; height: 64px; border-radius: 18px; color: rgba(255, 255, 255, .94);
+  background: linear-gradient(160deg, #77787e, #34353a);
+  box-shadow: 0 14px 28px -12px rgba(30, 25, 15, .38), inset 0 1px 0 rgba(255, 255, 255, .28);
+}
+:is(.studio, .studio-layer) .gh-setup h2 { margin-top: 6px; font-family: var(--serif); font-size: 26px; font-weight: 400; line-height: 1.2; }
+:is(.studio, .studio-layer) .gh-setup p { max-width: 34em; font-size: 15px; line-height: 1.55; color: var(--ios-label-2); }
+:is(.studio, .studio-layer) .gh-setup .gh-setup-hint { font-size: 13px; }
+:is(.studio, .studio-layer) .gh-command {
+  padding: 10px 18px; border-radius: 12px; background: var(--ios-surface-2); color: var(--ios-label);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 15px;
+  -webkit-user-select: all; user-select: all;
+}
+:is(.studio, .studio-layer) .gh-setup .ios-button { margin-top: 6px; }
+
+:is(.studio, .studio-layer) .gh-empty { margin-top: 18px; padding: 44px 20px; border-radius: var(--radius-card); background: var(--ios-surface); }
+:is(.studio, .studio-layer) .gh-empty strong { font-size: 17px; font-weight: 600; color: var(--ios-label); }
+:is(.studio, .studio-layer) .gh-empty span { max-width: 28em; line-height: 1.5; }
+
+:is(.studio, .studio-layer) .gh-skeleton { display: grid; gap: 24px; margin-top: 6px; }
+:is(.studio, .studio-layer) .gh-skeleton-group { display: grid; gap: 10px; }
+:is(.studio, .studio-layer) .gh-skeleton-head { width: 180px; height: 18px; margin-left: 6px; border-radius: 6px; background: var(--ios-fill); }
+:is(.studio, .studio-layer) .gh-skeleton-row { display: flex; gap: 14px; padding: 16px; }
+:is(.studio, .studio-layer) .gh-skeleton-row + .gh-skeleton-row { border-top: .5px solid var(--ios-separator); }
+:is(.studio, .studio-layer) .gh-skeleton-mark { width: 36px; height: 36px; flex-shrink: 0; border-radius: 10px; background: var(--ios-fill); }
+:is(.studio, .studio-layer) .gh-skeleton-lines { flex: 1; display: grid; gap: 8px; }
+:is(.studio, .studio-layer) .gh-skeleton-lines .skeleton-block { height: 12px; border-radius: 6px; background: var(--ios-fill); }
+:is(.studio, .studio-layer) .gh-skeleton-lines .skeleton-block:first-child { width: 72%; height: 16px; }
+:is(.studio, .studio-layer) .gh-skeleton-lines .skeleton-block:nth-child(2) { width: 48%; }
+:is(.studio, .studio-layer) .gh-skeleton-lines .skeleton-block:last-child { width: 34%; }
+
+/* ---------- Merge history ---------- */
+:is(.studio, .studio-layer) .gh-log { margin-top: 34px; }
+:is(.studio, .studio-layer) .gh-log-row { position: relative; display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 10px 16px; }
+:is(.studio, .studio-layer) .gh-log-row + .gh-log-row::before { content: ""; position: absolute; top: 0; right: 0; left: 16px; height: .5px; background: var(--ios-separator); }
+:is(.studio, .studio-layer) .gh-log-body { flex: 1; min-width: 0; }
+:is(.studio, .studio-layer) .gh-log-body strong { display: block; font-size: 15px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:is(.studio, .studio-layer) .gh-log-body small { display: block; margin-top: 2px; font-size: 13px; color: var(--ios-label-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:is(.studio, .studio-layer) .gh-log-row time { flex-shrink: 0; font-size: 12px; color: var(--ios-label-3); }
+
+/* ---------- Detail sheet ---------- */
+:is(.studio, .studio-layer) .gh-sheet {
+  position: absolute; left: 50%; top: 50%; display: flex; flex-direction: column;
+  /* A fixed height, like an iPad page sheet, so moving between screens never resizes and re-centres it. */
+  width: min(600px, calc(100% - 32px)); height: min(780px, calc(100dvh - 48px)); overflow: hidden;
+  transform: translate(-50%, -50%); border-radius: 28px; background: var(--ios-bg); box-shadow: var(--ios-shadow-float); outline: none;
+  animation: gh-sheet-in var(--dur-slow) var(--ease-out) backwards;
+}
+/* The sheet itself only takes focus so Tab starts inside it; like an iOS sheet it shows no ring for that. */
+:is(.studio, .studio-layer) .gh-sheet:focus-visible { outline: none; }
+:is(.studio, .studio-layer).closing .gh-sheet { animation: gh-sheet-out var(--dur-fast) ease forwards; }
+@keyframes gh-sheet-in { from { opacity: 0; transform: translate(-50%, -46%) scale(.97); } }
+@keyframes gh-sheet-out { to { opacity: 0; transform: translate(-50%, -48%) scale(.98); } }
+@keyframes gh-sheet-up { from { transform: translate(-50%, 100%); } }
+@keyframes gh-sheet-down { to { transform: translate(-50%, 100%); } }
+:is(.studio, .studio-layer) .gh-sheet-grabber { display: none; }
+:is(.studio, .studio-layer) .gh-sheet-header {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 8px;
+  min-height: 56px; padding: 6px 8px 6px 12px; border-bottom: .5px solid var(--ios-separator);
+}
+:is(.studio, .studio-layer) .gh-sheet-header h2 { font-size: 17px; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; }
+:is(.studio, .studio-layer) .gh-sheet-nav { justify-self: start; display: inline-flex; align-items: center; gap: 2px; min-height: 44px; padding: 0 6px; font-size: 17px; color: var(--ios-tint); }
+:is(.studio, .studio-layer) .gh-sheet-link { justify-self: end; }
+:is(.studio, .studio-layer) .gh-sheet-body {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 18px 18px 22px;
+  /* A thin scrollbar in the sheet's own greys instead of the browser's default gutter. */
+  scrollbar-width: thin; scrollbar-color: var(--ios-fill-pressed) transparent;
+}
+:is(.studio, .studio-layer) .gh-sheet-step { display: flex; flex-direction: column; gap: 16px; }
+:is(.studio, .studio-layer) .gh-sheet-step .gh-callout { margin-bottom: 0; }
+:is(.studio, .studio-layer) .gh-sheet-step.is-done { min-height: 100%; justify-content: center; padding-bottom: 24px; }
+
+:is(.studio, .studio-layer) .gh-sheet-intro { display: flex; align-items: flex-start; gap: 14px; }
+:is(.studio, .studio-layer) .gh-sheet-intro .gh-mark { width: 44px; height: 44px; border-radius: 12px; }
+:is(.studio, .studio-layer) .gh-sheet-intro > div { min-width: 0; }
+:is(.studio, .studio-layer) .gh-sheet-repo { font-size: 13px; font-weight: 500; color: var(--ios-label-2); }
+:is(.studio, .studio-layer) .gh-sheet-intro h3 {
+  margin: 3px 0 0; font-family: var(--serif); font-size: 24px; font-weight: 400; line-height: 1.22;
+  overflow-wrap: anywhere; text-wrap: pretty;
+}
+:is(.studio, .studio-layer) .gh-sheet-byline { margin-top: 6px; font-size: 13px; color: var(--ios-label-2); }
+:is(.studio, .studio-layer) .gh-branches { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--ios-label-3); }
+:is(.studio, .studio-layer) .gh-branches code {
+  max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 9px; border-radius: 8px;
+  background: var(--ios-fill); color: var(--ios-label); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px;
+}
+:is(.studio, .studio-layer) .gh-sha { margin-left: auto; color: var(--ios-label-2); font-size: 12.5px; }
+
+:is(.studio, .studio-layer) .gh-facts li { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; padding: 8px 16px; font-size: 15px; }
+:is(.studio, .studio-layer) .gh-facts li + li::before { content: ""; position: absolute; top: 0; right: 0; left: 16px; height: .5px; background: var(--ios-separator); }
+:is(.studio, .studio-layer) .gh-facts li > span:first-child { flex-shrink: 0; color: var(--ios-label-2); }
+:is(.studio, .studio-layer) .gh-fact-value { display: inline-flex; align-items: center; gap: 10px; min-width: 0; text-align: right; font-weight: 500; font-variant-numeric: tabular-nums; }
+:is(.studio, .studio-layer) .gh-fact-value.ci-failing { color: var(--ios-red); }
+:is(.studio, .studio-layer) .gh-fact-value.ci-pending { color: var(--ios-orange); }
+:is(.studio, .studio-layer) .gh-fact-value.ci-passing { color: var(--ios-green); }
+:is(.studio, .studio-layer) .gh-diff-blocks { display: inline-flex; gap: 2px; }
+:is(.studio, .studio-layer) .gh-diff-blocks i { width: 8px; height: 8px; border-radius: 2px; background: var(--ios-fill-pressed); }
+:is(.studio, .studio-layer) .gh-diff-blocks i.add { background: var(--ios-green); }
+:is(.studio, .studio-layer) .gh-diff-blocks i.del { background: var(--ios-red); }
+
+:is(.studio, .studio-layer) .gh-sheet-section h4 {
+  display: flex; align-items: baseline; gap: 8px; margin: 4px 6px 8px;
+  font-size: 13px; font-weight: 600; letter-spacing: .04em; color: var(--ios-label-2);
+}
+:is(.studio, .studio-layer) .gh-sheet-section h4 span { font-weight: 500; letter-spacing: 0; color: var(--ios-label-3); }
+:is(.studio, .studio-layer) .gh-check { position: relative; display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 6px 6px 6px 16px; }
+:is(.studio, .studio-layer) .gh-check + .gh-check::before { content: ""; position: absolute; top: 0; right: 0; left: 46px; height: .5px; background: var(--ios-separator); }
+:is(.studio, .studio-layer) .gh-check:not(:has(.gh-check-link)) { padding-right: 16px; }
+:is(.studio, .studio-layer) .gh-check-icon.failing { color: var(--ios-red); }
+:is(.studio, .studio-layer) .gh-check-icon.passing { color: var(--ios-green); }
+:is(.studio, .studio-layer) .gh-check-icon.skipped { color: var(--ios-label-3); }
+:is(.studio, .studio-layer) .gh-check-icon.pending { color: var(--ios-orange); animation: studio-spin 3s linear infinite; }
+:is(.studio, .studio-layer) .gh-check-body { flex: 1; min-width: 0; }
+:is(.studio, .studio-layer) .gh-check-body strong { display: block; font-size: 15px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:is(.studio, .studio-layer) .gh-check-body small { display: block; margin-top: 1px; font-size: 12px; color: var(--ios-label-2); }
+:is(.studio, .studio-layer) .gh-file { position: relative; display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 16px; }
+:is(.studio, .studio-layer) .gh-file + .gh-file::before { content: ""; position: absolute; top: 0; right: 0; left: 46px; height: .5px; background: var(--ios-separator); }
+:is(.studio, .studio-layer) .gh-file-change {
+  display: grid; place-items: center; flex-shrink: 0; width: 20px; height: 20px; border-radius: 6px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11px; font-weight: 700;
+  background: var(--ios-fill); color: var(--ios-label-2);
+}
+:is(.studio, .studio-layer) .gh-file-change.added { background: var(--ios-green-soft); color: var(--ios-green); }
+:is(.studio, .studio-layer) .gh-file-change.deleted { background: var(--ios-red-soft); color: var(--ios-red); }
+:is(.studio, .studio-layer) .gh-file-change:is(.renamed, .copied) { background: var(--ios-tint-soft); color: var(--ios-tint); }
+:is(.studio, .studio-layer) .gh-file-path { flex: 1; min-width: 0; display: flex; font-size: 13px; }
+:is(.studio, .studio-layer) .gh-file-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ios-label-3); }
+:is(.studio, .studio-layer) .gh-file-name { flex-shrink: 0; max-width: 78%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ios-label); }
+:is(.studio, .studio-layer) .gh-more { display: inline-flex; align-items: center; gap: 4px; min-height: 44px; padding: 0 6px; font-size: 15px; color: var(--ios-tint); }
+:is(.studio, .studio-layer) .gh-more svg { transition: transform var(--dur-base) var(--ease-out); }
+:is(.studio, .studio-layer) .gh-more[aria-expanded="true"] svg { transform: rotate(180deg); }
+:is(.studio, .studio-layer) .gh-body {
+  position: relative; max-height: calc(6 * 1.6em + 28px); overflow: hidden; padding: 14px 16px;
+  border-radius: var(--radius-card); background: var(--ios-surface);
+}
+:is(.studio, .studio-layer) .gh-body.is-open { max-height: none; }
+:is(.studio, .studio-layer) .gh-body:not(.is-open)::after {
+  content: ""; position: absolute; right: 0; bottom: 0; left: 0; height: 3em;
+  background: linear-gradient(transparent, var(--ios-surface)); pointer-events: none;
+}
+:is(.studio, .studio-layer) .gh-body p { font-size: 15px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ---------- Merge step: the confluence drawing ---------- */
+:is(.studio, .studio-layer) .gh-confluence { margin: 0; padding: 10px 14px; border-radius: var(--radius-card); background: var(--ios-surface); }
+:is(.studio, .studio-layer) .gh-confluence-art { position: relative; width: 100%; max-width: 440px; margin: 0 auto; aspect-ratio: 320 / 108; }
+:is(.studio, .studio-layer) .gh-confluence svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+:is(.studio, .studio-layer) .gh-lane { fill: none; stroke-width: 2.5; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+:is(.studio, .studio-layer) .gh-lane.base { stroke: var(--ios-label-3); opacity: .7; }
+:is(.studio, .studio-layer) .gh-lane.head { stroke: var(--ios-tint); }
+/* While GitHub merges, light runs down the head lane towards the merge point. */
+:is(.studio, .studio-layer) .gh-lane.flow { stroke: var(--ios-surface); stroke-width: 3; stroke-dasharray: 2 12; animation: gh-flow .8s linear infinite; }
+:is(.studio, .studio-layer) .gh-lane.landed { stroke: var(--ios-green); stroke-width: 3; }
+@keyframes gh-flow { to { stroke-dashoffset: -14; } }
+:is(.studio, .studio-layer) .gh-node.past { fill: var(--ios-label-3); }
+:is(.studio, .studio-layer) .gh-node.tip { fill: var(--ios-tint); stroke: var(--ios-surface); stroke-width: 3; }
+:is(.studio, .studio-layer) .gh-node.target circle {
+  fill: var(--ios-surface); stroke: var(--ios-label-3); stroke-width: 2; stroke-dasharray: 3 3;
+  transition: fill var(--dur-base) ease, stroke var(--dur-base) ease;
+}
+:is(.studio, .studio-layer) .is-merging .gh-node.target circle { stroke: var(--ios-tint); stroke-dasharray: none; animation: gh-breathe 1.2s ease-in-out infinite; }
+:is(.studio, .studio-layer) .is-merged .gh-node.target circle { fill: var(--ios-green); stroke: var(--ios-green); stroke-dasharray: none; }
+:is(.studio, .studio-layer) .is-queued .gh-node.target circle { fill: var(--ios-orange); stroke: var(--ios-orange); stroke-dasharray: none; }
+:is(.studio, .studio-layer) .gh-target-mark { fill: none; stroke: var(--ios-surface); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+:is(.studio, .studio-layer) .gh-confluence figcaption code {
+  position: absolute; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; line-height: 16px;
+}
+:is(.studio, .studio-layer) .gh-confluence-head { left: 6.9%; top: calc(25.9% - 26px); max-width: 56%; font-weight: 600; color: var(--ios-tint); }
+:is(.studio, .studio-layer) .gh-confluence-sha {
+  left: 46.9%; top: calc(25.9% + 13px); transform: translateX(-50%); padding: 0 7px; border-radius: 999px;
+  background: var(--ios-tint-soft); color: var(--ios-tint); font-size: 11px;
+}
+:is(.studio, .studio-layer) .gh-confluence-base { right: 2.5%; top: calc(64.8% + 10px); max-width: 60%; text-align: right; color: var(--ios-label-2); }
+:is(.studio, .studio-layer) .is-merged .gh-confluence-base { color: var(--ios-green); font-weight: 600; }
+
+/* ---------- Merge step: options and facts ---------- */
+:is(.studio, .studio-layer) .gh-merge-row { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 56px; padding: 8px 16px; font-size: 16px; }
+:is(.studio, .studio-layer) .gh-segmented { display: flex; flex: 1; max-width: 340px; }
+:is(.studio, .studio-layer) .gh-segmented button { position: relative; flex: 1; min-height: 40px; padding: 4px 8px; font-size: 14px; }
+:is(.studio, .studio-layer) .gh-segmented button::before { content: ""; position: absolute; inset: -2px 0; }
+:is(.studio, .studio-layer) .gh-merge-hint { margin-top: -4px; padding: 0 16px 12px; font-size: 13px; line-height: 1.45; color: var(--ios-label-2); }
+:is(.studio, .studio-layer) .gh-switch-row { cursor: pointer; }
+:is(.studio, .studio-layer) .gh-switch-row::before { content: ""; position: absolute; top: 0; right: 0; left: 16px; height: .5px; background: var(--ios-separator); }
+:is(.studio, .studio-layer) .gh-switch-row > span { min-width: 0; overflow-wrap: anywhere; }
+:is(.studio, .studio-layer) .gh-switch-row code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; color: var(--ios-label-2); }
+:is(.studio, .studio-layer) .gh-acknowledge { display: inline-flex; align-items: center; gap: 10px; min-height: 44px; margin-top: 2px; font-size: 15px; font-weight: 500; color: var(--ios-label); cursor: pointer; }
+:is(.studio, .studio-layer) .gh-note { padding: 0 6px; font-size: 13px; line-height: 1.5; color: var(--ios-label-2); }
+:is(.studio, .studio-layer) .gh-merge-facts {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5px; margin: 0; overflow: hidden;
+  border-radius: var(--radius-card); background: var(--ios-separator);
+}
+:is(.studio, .studio-layer) .gh-merge-facts div { min-width: 0; padding: 12px 16px; background: var(--ios-surface); }
+:is(.studio, .studio-layer) .gh-merge-facts dt { font-size: 12px; color: var(--ios-label-2); }
+:is(.studio, .studio-layer) .gh-merge-facts dd { margin: 2px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 500; }
+:is(.studio, .studio-layer) .gh-done { display: grid; justify-items: center; gap: 6px; padding: 8px 12px; text-align: center; animation: studio-rise var(--dur-slow) var(--ease-out) .5s backwards; }
+:is(.studio, .studio-layer) .gh-done h3 { margin: 0; font-family: var(--serif); font-size: 26px; font-weight: 400; }
+:is(.studio, .studio-layer) .gh-done p { font-size: 15px; line-height: 1.5; color: var(--ios-label-2); }
+:is(.studio, .studio-layer) .gh-done-sha { font-size: 13px; }
+
+/* ---------- Sheet footer ---------- */
+:is(.studio, .studio-layer) .gh-sheet-footer {
+  flex-shrink: 0; display: grid; gap: 8px; padding: 12px 18px calc(14px + env(safe-area-inset-bottom));
+  border-top: .5px solid var(--ios-separator); background: var(--ios-glass);
+  -webkit-backdrop-filter: saturate(160%) blur(20px); backdrop-filter: saturate(160%) blur(20px);
+}
+:is(.studio, .studio-layer) .ios-button.gh-primary { width: 100%; min-height: 50px; border-radius: 14px; font-size: 17px; }
+:is(.studio, .studio-layer) .ios-button.gh-danger { background: var(--ios-red); color: var(--ios-on-tint); }
+:is(.studio, .studio-layer) .ios-button.gh-primary:disabled { opacity: 1; background: var(--ios-fill-pressed); color: var(--ios-label-3); }
+:is(.studio, .studio-layer) .ios-button.gh-primary .studio-spinner { color: inherit; }
+:is(.studio, .studio-layer) .gh-blocker { font-size: 13px; line-height: 1.45; text-align: center; color: var(--ios-label-2); }
+
+/* ---------- Home widget ---------- */
+:is(.studio, .studio-layer) .gh-widget-list { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: 7px; min-height: 0; }
+:is(.studio, .studio-layer) .gh-widget-list li { display: flex; align-items: center; gap: 9px; min-width: 0; }
+:is(.studio, .studio-layer) .gh-widget-pull { display: flex; flex-direction: column; min-width: 0; }
+:is(.studio, .studio-layer) .gh-widget-pull strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; line-height: 1.2; }
+:is(.studio, .studio-layer) .gh-widget-pull small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 1.3; color: var(--ios-label-2); }
+:is(.studio, .studio-layer) .gh-widget-unit { margin-left: 4px; font-size: 13px; font-weight: 500; letter-spacing: 0; color: var(--ios-label-2); }
+:is(.studio, .studio-layer) .widget-figure .gh-widget-ci { gap: 6px; }
+
+/* ---------- Phone ---------- */
+@media (max-width: 699px) {
+  :is(.studio, .studio-layer) .gh-filter { max-width: none; }
+  :is(.studio, .studio-layer) .gh-filter button { font-size: 13px; padding: 4px 4px; gap: 4px; }
+  :is(.studio, .studio-layer) .gh-repo-head { padding: 0 4px 8px; }
+  :is(.studio, .studio-layer) .gh-row { gap: 12px; padding: 12px 12px 12px 14px; }
+  :is(.studio, .studio-layer) .gh-list > li + li::before { left: 62px; }
+  :is(.studio, .studio-layer) .gh-row-trail .chevron { display: none; }
+  :is(.studio, .studio-layer) .gh-sheet {
+    top: auto; bottom: 0; width: 100%; height: 92dvh; max-height: none; transform: translateX(-50%);
+    border-radius: 28px 28px 0 0; animation-name: gh-sheet-up;
+  }
+  :is(.studio, .studio-layer).closing .gh-sheet { animation: gh-sheet-down var(--dur-base) var(--ease-out) forwards; }
+  :is(.studio, .studio-layer) .gh-sheet-grabber { display: block; width: 36px; height: 5px; margin: 8px auto 0; border-radius: 3px; background: var(--ios-fill-pressed); }
+  :is(.studio, .studio-layer) .gh-sheet-header { min-height: 50px; padding-top: 2px; }
+  :is(.studio, .studio-layer) .gh-sheet-body { padding: 16px 16px 20px; }
+  :is(.studio, .studio-layer) .gh-sheet-intro h3 { font-size: 21px; }
+  :is(.studio, .studio-layer) .gh-sheet-footer { padding-left: 16px; padding-right: 16px; }
+  :is(.studio, .studio-layer) .gh-merge-row:has(.gh-segmented) { flex-wrap: wrap; }
+  :is(.studio, .studio-layer) .gh-segmented { max-width: none; flex-basis: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :is(.studio, .studio-layer) .gh-lane.flow, :is(.studio, .studio-layer) .gh-bead.pending,
+  :is(.studio, .studio-layer) .gh-check-icon.pending, :is(.studio, .studio-layer) .is-merging .gh-node.target circle { animation: none !important; }
+}

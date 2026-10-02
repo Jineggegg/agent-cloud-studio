@@ -1773,5 +1773,44 @@ export type StudioOutlookTokens = { accessToken: string; refreshToken: string; e
 // ── v6 track: shell — server types below this line ──
 // ── v6 track: chat — server types below this line ──
 // ── v6 track: github — server types below this line ──
+//----------------- STUDIO GITHUB (gh CLI) ------------
+/**
+ * The subset of `node:child_process` execFile that the Studio GitHub module uses to run `gh`.
+ *
+ * Used by the gh runner (studio/github/github-cli.adapter) and injected through its dependencies, so tests pass
+ * a fake that records the exact argv and never spawns a process. `file` is the gh binary and `args` the
+ * complete argv: nothing is ever handed to a shell, so no argument is parsed for shell syntax. The error is
+ * the structural part of Node's ExecFileException the runner reads (ENOENT, exit code, timeout kill).
+ */
+export type StudioGhExecFile = (
+  file: string,
+  args: string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number; windowsHide: boolean; encoding: 'utf8' },
+  callback: (
+    error: (Error & { code?: string | number | null; killed?: boolean; signal?: NodeJS.Signals | null }) | null,
+    stdout: string,
+    stderr: string,
+  ) => void,
+) => unknown;
+
+/**
+ * The outcome of one `gh` invocation, as the gh runner reports it (it never rejects).
+ *
+ * `missing`: the binary was not found (ENOENT). `timeout`: killed after its time limit, so a write such as a
+ * merge may or may not have happened. `busy`: the runner's queue was full and the command never started.
+ * `failed`: gh ran and exited non-zero; `stderr` (and `stdout`, which `gh api` fills with the JSON error body)
+ * are raw and may contain anything gh printed, so callers must redact and shorten them before showing them.
+ */
+export type StudioGhResult =
+  | { ok: true; stdout: string }
+  | { ok: false; reason: 'missing' | 'timeout' | 'busy' | 'failed'; stdout: string; stderr: string; exitCode: number | null };
+
+/**
+ * Runs gh with an exact argv under the runner's concurrency limit; created by createGhRunner and consumed by the
+ * GitHub service. `timeoutMs` kills the process when exceeded; `maxBuffer` caps stdout/stderr (default 8 MiB).
+ * Arguments must already be validated: the runner does not inspect them.
+ */
+export type StudioGhRun = (args: string[], options: { timeoutMs: number; maxBuffer?: number }) => Promise<StudioGhResult>;
+// ---------------------------
 // ── v6 track: builder — server types below this line ──
 // ── v6 track: memory — server types below this line ──

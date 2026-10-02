@@ -1836,7 +1836,7 @@ export type StudioSystemApp = 'deepseek' | 'workspace' | 'connections' | 'github
 export type StudioGlyph = 'activity' | 'graduation' | 'candles' | 'mail' | 'folder' | 'terminal' | 'sparkles' | 'book' | 'chart' | 'globe';
 /** One icon on the Studio home screen: a project (`project:<id>`) or a system app. */
 export type StudioHomeTile = {
-  id: string; name: string; tone: string; glyph: StudioGlyph | 'settings' | 'plug';
+  id: string; name: string; tone: string; glyph: StudioGlyph | 'settings' | 'plug' | 'pull-request';
   // Short live state under the label, such as 在线 or 待配置.
   status?: string;
   // Tiles with an href navigate away (the IDE) instead of zooming open inside Studio.
@@ -2058,6 +2058,61 @@ export type WorkbenchChatProps = {
 // ── v6 track: shell — types below this line ──
 // ── v6 track: chat — types below this line ──
 // ── v6 track: github — types below this line ──
+/** How a pull request is merged: squashed into one commit, with a merge commit, or as rebased commits. */
+export type StudioGitHubMergeMethod = 'squash' | 'merge' | 'rebase';
+/**
+ * GET /api/studio/github/status: the gh account signed in on the server (never its token). `canMerge` is false when
+ * the OAuth token lacks the `repo` scope; `message` is short Chinese guidance when something needs the owner.
+ */
+export type StudioGitHubStatus = {
+  installed: boolean; authenticated: boolean; login: string | null; scopes: string[]; canMerge: boolean;
+  message: string | null; checkedAt: string;
+};
+/** CI checks of a head commit counted by outcome; `state` is the worst outcome present ('none' without checks). */
+export type StudioGitHubChecks = { state: 'passing' | 'failing' | 'pending' | 'none'; passing: number; failing: number; pending: number; total: number };
+/**
+ * One open pull request in the GitHub inbox. `id` is "owner/repo#number"; `headSha` is the full head commit a merge
+ * must match; `reasons` says why it is listed (opened by the account, awaiting its review, in a repository it owns).
+ */
+export type StudioGitHubPull = {
+  id: string; owner: string; repo: string; number: number; title: string; author: string; url: string; isDraft: boolean;
+  headRef: string; baseRef: string; headSha: string; additions: number; deletions: number; changedFiles: number;
+  mergeable: 'mergeable' | 'conflicting' | 'unknown';
+  // GitHub's mergeStateStatus in lower case: clean, unstable, blocked, behind, dirty, draft, has_hooks or unknown.
+  mergeState: string;
+  reviewDecision: 'approved' | 'changes_requested' | 'review_required' | null;
+  checks: StudioGitHubChecks; updatedAt: string; reasons: ('authored' | 'review' | 'owned')[];
+};
+/** GET /api/studio/github/prs: the inbox, newest activity first; `truncated` when a search had more than 50 results. */
+export type StudioGitHubInbox = { login: string; pulls: StudioGitHubPull[]; fetchedAt: string; truncated: boolean };
+/** One CI check of a pull request's head commit; `url` is https or null, and failing checks come first. */
+export type StudioGitHubCheck = { name: string; workflow: string | null; state: 'passing' | 'failing' | 'pending' | 'skipped'; required: boolean; url: string | null };
+/** One changed file; `change` is added, modified, deleted, renamed, copied or changed. */
+export type StudioGitHubFile = { path: string; additions: number; deletions: number; change: string };
+/**
+ * GET /api/studio/github/prs/:owner/:repo/:number: a pull request with its checks, up to 100 files, a plain-text
+ * description excerpt (render as text, never as HTML), the merge methods the repository allows and the server's
+ * blockers, which the merge endpoint enforces whatever the sheet shows.
+ */
+export type StudioGitHubPullDetail = StudioGitHubPull & {
+  state: 'open' | 'closed' | 'merged'; body: string; bodyTruncated: boolean; createdAt: string;
+  checkItems: StudioGitHubCheck[]; checksTruncated: boolean; files: StudioGitHubFile[]; filesTotal: number;
+  mergeMethods: StudioGitHubMergeMethod[]; deleteBranchOnMerge: boolean; isCrossRepository: boolean; viewerCanMerge: boolean;
+  blockers: { code: string; message: string }[]; mergeCommitSha: string | null;
+};
+/**
+ * POST …/merge body. `expectedHeadSha` is the head the user reviewed (GitHub refuses a moved head);
+ * `acknowledgeFailing` confirms merging despite failing checks that branch protection does not require.
+ */
+export type StudioGitHubMergeInput = { method: StudioGitHubMergeMethod; expectedHeadSha: string; deleteBranch: boolean; acknowledgeFailing: boolean };
+/** POST …/merge result: merged, or accepted into a merge queue. */
+export type StudioGitHubMergeResult = { outcome: 'merged' | 'queued'; mergeCommitSha: string | null; message: string };
+/** GET /api/studio/github/merges: one audited merge attempt of the signed-in Studio user, newest first. */
+export type StudioGitHubMergeRecord = {
+  id: number; owner: string; repo: string; number: number; method: StudioGitHubMergeMethod; headSha: string; deleteBranch: boolean;
+  outcome: 'pending' | 'merged' | 'queued' | 'refused' | 'failed' | 'unknown'; code: string | null; message: string | null;
+  createdAt: string; finishedAt: string | null;
+};
 // ── v6 track: builder — types below this line ──
 // ── v6 track: memory — types below this line ──
 // ---------------------------

@@ -1,17 +1,17 @@
 import type { ComponentType } from 'react';
 import {
-  Activity, BookOpen, CandlestickChart, ChartLine, Folder, Globe, GraduationCap, Mail, Plug, Settings, Sparkles, SquareTerminal,
+  Activity, BookOpen, CandlestickChart, ChartLine, Folder, GitPullRequest, Globe, GraduationCap, Mail, Plug, Settings, Sparkles, SquareTerminal,
 } from 'lucide-react';
 import type { LucideProps } from 'lucide-react';
 
-import type { StudioGlyph } from '@/shared/types';
+import type { StudioHomeTile } from '@/shared/types';
 
-// System apps may use glyphs that projects cannot pick (settings, plug).
-type Glyph = StudioGlyph | 'settings' | 'plug';
+// System apps may use glyphs that projects cannot pick (settings, plug, pull-request for GitHub).
+type Glyph = StudioHomeTile['glyph'];
 const ICONS: Record<Glyph, ComponentType<LucideProps>> = {
   activity: Activity, graduation: GraduationCap, candles: CandlestickChart, mail: Mail, folder: Folder,
   terminal: SquareTerminal, sparkles: Sparkles, book: BookOpen, chart: ChartLine, globe: Globe,
-  settings: Settings, plug: Plug,
+  settings: Settings, plug: Plug, 'pull-request': GitPullRequest,
 };
 
 /** Used across the studio module (home screen, project app, editor, chat list) to draw one muted app icon. */

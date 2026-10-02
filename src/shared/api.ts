@@ -5,7 +5,7 @@ import {
 } from '@/shared/authToken';
 import { IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
-import type { HubAgentProvider, HubProjectInput, HubTaskInput, StudioChatSpace, StudioIngressId, T212Env } from '@/shared/types';
+import type { HubAgentProvider, HubProjectInput, HubTaskInput, StudioChatSpace, StudioGitHubMergeInput, StudioIngressId, T212Env } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -236,6 +236,17 @@ export const api = {
     // ── v6 track: shell — endpoints below this line ──
     // ── v6 track: chat — endpoints below this line ──
     // ── v6 track: github — endpoints below this line ──
+    // The owner's GitHub through the server's gh CLI: account, PR inbox, one PR, merging (audited) and merge history.
+    // `refresh` bypasses the server's 45-second cache (it still reuses a fetch from the last few seconds).
+    github: {
+      status: (refresh = false) => get(`/api/studio/github/status${query({ refresh })}`),
+      pulls: (refresh = false) => get(`/api/studio/github/prs${query({ refresh })}`),
+      pull: (owner: string, repo: string, number: number, refresh = false) =>
+        get(`/api/studio/github/prs/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}${query({ refresh })}`),
+      merge: (owner: string, repo: string, number: number, input: StudioGitHubMergeInput) =>
+        post(`/api/studio/github/prs/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}/merge`, input),
+      merges: () => get('/api/studio/github/merges'),
+    },
     // ── v6 track: builder — endpoints below this line ──
     // ── v6 track: memory — endpoints below this line ──
     status: () => get('/api/studio/status'),
