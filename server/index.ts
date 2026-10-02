@@ -4,281 +4,32 @@ import './load-env.js';
 import fs, { promises as fsPromises } from 'fs';
 import path from 'path';
 import os from 'os';
-import http from 'http';
 
-import express, { type NextFunction, type Request, type Response } from 'express';
-import cors from 'cors';
-
-import { AppError, findApplicationRoot, getModuleDirectory, IS_PLATFORM, terminalTextStyles } from '@/shared/utils.js';
+import { terminalTextStyles } from '@/shared/utils.js';
 import {
     closeSessionsWatcher,
     initializeSessionsWatcher,
     providerRuntimeService,
 } from '@/modules/providers/index.js';
-import { initializeTaskRecovery, taskRecoveryRouter } from '@/modules/task-recovery/index.js';
-import { chatRunRegistry, createWebSocketServer } from '@/modules/websocket/index.js';
+import { initializeTaskRecovery } from '@/modules/task-recovery/index.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
 
-import { createGitModule } from './modules/git/index.js';
-import {
-    admitCloudflareAccessUpgrade,
-    authenticateToken,
-    authenticateWebSocket,
-    authRoutes,
-    requireCloudflareAccess,
-    validateApiKey,
-} from './modules/auth/index.js';
-import { taskmasterRoutes } from './modules/taskmaster/index.js';
-import { commandsRoutes } from './modules/commands/index.js';
-import { settingsRoutes } from './modules/settings/index.js';
-import { createSystemModule } from './modules/system/index.js';
-import { createAgentModule } from './modules/agent/index.js';
-import projectModuleRoutes from './modules/projects/projects.routes.js';
-import notificationRoutes from './modules/notifications/notifications.routes.js';
-import { userRoutes } from './modules/user/index.js';
-import {
-    getPluginPort,
-    pluginsRoutes,
-    startEnabledPluginServers,
-    stopAllPlugins,
-} from './modules/plugins/index.js';
-import providerRoutes from './modules/providers/provider.routes.js';
-import { voiceRoutes } from './modules/voice/index.js';
+import { createStudioServer } from './app.js';
+import { startEnabledPluginServers, stopAllPlugins } from './modules/plugins/index.js';
 import {
     closeScheduledMessageDispatcher,
     initializeScheduledMessageDispatcher,
-    scheduledMessagesRoutes,
 } from './modules/scheduled-messages/index.js';
-import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
-import { assetsRoutes } from './modules/assets/index.js';
-import { fileTreeRoutes } from './modules/file-tree/index.js';
-import { worktreesRoutes } from './modules/worktrees/index.js';
-import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
-import { initializeDatabase, sessionsDb } from './modules/database/index.js';
+import { initializeDatabase } from './modules/database/index.js';
 import { configureWebPush } from './modules/notifications/index.js';
-import { createStudioModule } from './modules/studio/index.js';
-import { createWebClientModule } from './modules/web-client/index.js';
 
-const __dirname = getModuleDirectory(import.meta.url);
-// The server source runs from /server, while the compiled output runs from /dist-server/server.
-// Resolving the app root once keeps every repo-level lookup below aligned across both layouts.
-const APP_ROOT = findApplicationRoot(__dirname);
-const installMode = fs.existsSync(path.join(APP_ROOT, '.git')) ? 'git' : 'npm';
-// Version of the code that is actually running, captured once at process
-// startup. This intentionally does NOT re-read package.json per request: after
-// an update replaces the files on disk, package.json reflects the NEW version
-// while this long-lived process still runs the OLD code. The frontend bundle is
-// rebuilt on update, so a mismatch between this value and the frontend's
-// build-time version means the server was updated but not restarted.
-const RUNNING_VERSION = (() => {
-    try {
-        return JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')).version || null;
-    } catch {
-        return null;
-    }
-})();
-const systemRoutes = createSystemModule({
-    appRoot: APP_ROOT,
-    installMode,
-    isPlatform: IS_PLATFORM,
-});
 console.log('SERVER_PORT from env:', process.env.SERVER_PORT);
 
-const app = express();
-const server = http.createServer(app);
-const queryClaude = providerRuntimeService.getRunner('claude');
-const queryCursor = providerRuntimeService.getRunner('cursor');
-const queryCodex = providerRuntimeService.getRunner('codex');
-const queryOpenCode = providerRuntimeService.getRunner('opencode');
-const gitRoutes = createGitModule({
-    queryClaude,
-    queryCursor,
-});
-const agentRoutes = createAgentModule({
-    queryClaude,
-    queryCursor,
-    queryCodex,
-    queryOpenCode,
-});
-
-// Single WebSocket server that handles chat, shell, and plugin proxy paths.
-// A completed run stays subscribable while its session's background work
-// (agents, workflows, backgrounded commands) is still reporting through it.
-chatRunRegistry.setRetentionGuard((sessionId) => providerRuntimeService.hasBackgroundWork(sessionId));
-
-createWebSocketServer(server, {
-    verifyClient: {
-        isPlatform: IS_PLATFORM,
-        authenticateWebSocket,
-        // Optional Cloudflare Access check for upgrades through the public door (docs/network.md).
-        admitEdgeRequest: admitCloudflareAccessUpgrade,
-    },
-    chat: {
-        runtime: providerRuntimeService,
-    },
-    shell: {
-        resolveProviderSessionId: (sessionId, provider) => {
-            const dbSession = sessionsDb.getSessionById(sessionId);
-            if (dbSession) {
-                return dbSession.provider_session_id ?? null;
-            }
-
-            return null;
-        },
-    },
-    getPluginPort,
-});
-
-app.use(cors({ exposedHeaders: ['X-Refreshed-Token', 'X-Auth-Error'] }));
-// With STUDIO_CF_ACCESS_TEAM_DOMAIN and STUDIO_CF_ACCESS_AUD set, every request through the public
-// tunnel door needs a valid Cloudflare Access assertion (docs/network.md); others pass untouched.
-app.use(requireCloudflareAccess);
-app.use(express.json({
-    limit: '50mb',
-    type: (req) => {
-        // Skip multipart/form-data requests (for file uploads like images)
-        const contentType = req.headers['content-type'] || '';
-        if (contentType.includes('multipart/form-data')) {
-            return false;
-        }
-        return contentType.includes('json');
-    }
-}));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
-
-// Public health check endpoint (no authentication required)
-app.get('/health', (req, res) => {
-    res.json({
-        status: 'ok',
-        timestamp: new Date().toISOString(),
-        installMode,
-        version: RUNNING_VERSION
-    });
-});
-
-// Optional API key validation (if configured)
-app.use('/api', validateApiKey);
-
-// Authentication routes (public)
-app.use('/api/auth', authRoutes);
-const studioModule = createStudioModule();
-app.use('/api/studio/snr-site', studioModule.snrRoutes);
-app.use('/api/studio/gmail/callback', studioModule.mailCallbackRoutes);
-app.use('/api/studio', authenticateToken, studioModule.routes);
-
-// File Tree API Routes (protected)
-app.use('/api/file-tree', authenticateToken, fileTreeRoutes);
-
-// Projects API Routes (protected)
-app.use('/api/projects', authenticateToken, projectModuleRoutes);
-
-// Chat attachment upload/serving (global ~/.cloudcli/assets store, protected)
-app.use('/api/assets', authenticateToken, assetsRoutes);
-
-// Git API Routes (protected)
-app.use('/api/git', authenticateToken, gitRoutes);
-
-// Git worktree management (protected)
-app.use('/api/worktrees', authenticateToken, worktreesRoutes);
-
-// TaskMaster API Routes (protected)
-app.use('/api/taskmaster', authenticateToken, taskmasterRoutes);
-
-// Commands API Routes (protected)
-app.use('/api/commands', authenticateToken, commandsRoutes);
-
-// Settings API Routes (protected)
-app.use('/api/settings', authenticateToken, settingsRoutes);
-
-app.use('/api/system', authenticateToken, systemRoutes);
-
-app.use('/api/notifications', authenticateToken, notificationRoutes);
-
-// User API Routes (protected)
-app.use('/api/user', authenticateToken, userRoutes);
-
-// Plugins API Routes (protected)
-app.use('/api/plugins', authenticateToken, pluginsRoutes);
-
-// Browser MCP bridge API (local token protected)
-app.use('/api/browser-use-mcp', browserUseMcpRoutes);
-
-// Browser API Routes (protected)
-app.use('/api/browser-use', authenticateToken, browserUseRoutes);
-
-// Unified provider MCP routes (protected)
-app.use('/api/providers', authenticateToken, providerRoutes);
-app.use('/api/scheduled-messages', authenticateToken, scheduledMessagesRoutes);
-app.use('/api/task-recovery', authenticateToken, taskRecoveryRouter);
-
-// Agent API Routes (uses API key authentication)
-app.use('/api/agent', agentRoutes);
-
-app.use('/api/voice', authenticateToken, voiceRoutes);
-
-// Serve public files (like api-docs.html)
-app.use(express.static(path.join(APP_ROOT, 'public')));
-
-// Static files served after API routes. Hashed bundles go out brotli/gzip-compressed and cached for a
-// year; index.html (sent by the catch-all below, hence index: false) is revalidated on every launch.
-const webClient = createWebClientModule({ distDir: path.join(APP_ROOT, 'dist') });
-app.use(webClient.compressedAssets);
-app.use(express.static(path.join(APP_ROOT, 'dist'), { index: false, setHeaders: webClient.staticCacheHeaders }));
-
-// API Routes (protected)
-// /api/config endpoint removed - no longer needed
-// Frontend now uses window.location for WebSocket URLs
-
-// Chat uploads live under /api/assets (server/modules/assets), which stores
-// images and general files in the global ~/.cloudcli/assets folder.
-
-// Serve React app for all other routes (excluding static files)
-app.get('*', (req, res, next) => {
-    // Skip requests for static assets (files with extensions)
-    if (path.extname(req.path)) {
-        return res.status(404).send('Not found');
-    }
-
-    // Only serve index.html for HTML routes, not for static assets
-    // Static assets should already be handled by express.static middleware above
-    const indexPath = path.join(APP_ROOT, 'dist', 'index.html');
-
-    // Check if dist/index.html exists (production build available)
-    if (fs.existsSync(indexPath)) {
-        // Compressed when accepted, and no-cache so neither the browser nor the service worker keeps an old build.
-        webClient.sendIndexHtml(req, res, next);
-    } else {
-        // In development, redirect to Vite dev server only if dist doesn't exist
-        const redirectHost = getConnectableHost(req.hostname);
-        res.redirect(`${req.protocol}://${redirectHost}:${VITE_PORT}`);
-    }
-});
-
-// global error middleware must be last
-app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
-  if (err instanceof AppError) {
-    return res.status(err.statusCode).json({
-      success: false,
-      error: {
-        code: err.code,
-        message: err.message,
-        details: err.details,
-      },
-    });
-  }
-
-  console.error(err);
-
-  return res.status(500).json({
-    success: false,
-    error: {
-      code: 'INTERNAL_ERROR',
-      message: 'Internal server error',
-    },
-  });
-});
+// Every route, the WebSocket gateway and the server's DoS limits (server/app.ts).
+const { server, appRoot: APP_ROOT } = createStudioServer();
+const installMode = fs.existsSync(path.join(APP_ROOT, '.git')) ? 'git' : 'npm';
 
 const SERVER_PORT = Number.parseInt(process.env.SERVER_PORT || '3001', 10);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -354,7 +105,7 @@ async function startServer() {
         }
 
         console.log(`${terminalTextStyles.info('[INFO]')} To run in development mode with hot-module replacement, go to http://${DISPLAY_HOST}:${VITE_PORT}`);
-   
+
         server.listen(SERVER_PORT, HOST, async () => {
             const appInstallPath = APP_ROOT;
             await writeLocalServerMarker().catch((error) => {

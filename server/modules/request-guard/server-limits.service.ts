@@ -1,0 +1,90 @@
+import type { Server } from 'node:http';
+
+import express from 'express';
+import type { RequestHandler } from 'express';
+
+/**
+ * Timeouts and caps of the HTTP server (see applyHttpServerLimits). keepAliveTimeout stays above
+ * the idle time proxies keep a connection for reuse, and headersTimeout above keepAliveTimeout,
+ * as Node recommends behind cloudflared and Tailscale Serve; both proxies deliver complete
+ * headers quickly, so only a direct slow client ever waits that long.
+ * Used by applyHttpServerLimits and its tests.
+ */
+export const HTTP_SERVER_LIMITS = {
+  /** Whole request (headers and body) must arrive within this; covers a 50 MB upload on a slow link. */
+  requestTimeoutMs: 180_000,
+  /** Headers must be complete within this (slowloris). */
+  headersTimeoutMs: 66_000,
+  /** An idle keep-alive connection is closed after this. */
+  keepAliveTimeoutMs: 65_000,
+  /** Requests served on one connection before it is closed, so one socket cannot be pinned forever. */
+  maxRequestsPerSocket: 1000,
+  /** Open connections (WebSockets included); beyond it new connections are dropped at once. */
+  maxConnections: 1024,
+};
+
+/**
+ * Body size limits per kind of route (see createBodyParsers):
+ * - `public`: /api/auth/* and other endpoints reachable without a session; a login or a
+ *   passkey assertion is well under 16 kB;
+ * - `gateway`: routes that check their own credential inside the router (API key, Browser MCP
+ *   token, SNR cookie), so their bodies are read before that check;
+ * - `authenticated`: routes behind authenticateToken, whose bodies are only read after the
+ *   token was verified (file saves, long prompts).
+ * Used by the server entrypoint and the request-guard tests.
+ */
+export const BODY_LIMITS = {
+  public: '32kb',
+  gateway: '10mb',
+  authenticated: '50mb',
+} as const;
+
+/**
+ * Largest WebSocket message accepted (ws closes the socket with 1009 beyond it). Chat prompts and
+ * terminal input are text; images travel over HTTP uploads, never over the socket.
+ * Used by the websocket module through the server entrypoint.
+ */
+export const WEBSOCKET_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Applies HTTP_SERVER_LIMITS (or overrides) to the server before it listens.
+ * Used by the server entrypoint.
+ */
+export function applyHttpServerLimits(server: Server, limits: typeof HTTP_SERVER_LIMITS = HTTP_SERVER_LIMITS): void {
+  server.requestTimeout = limits.requestTimeoutMs;
+  server.headersTimeout = limits.headersTimeoutMs;
+  server.keepAliveTimeout = limits.keepAliveTimeoutMs;
+  server.maxRequestsPerSocket = limits.maxRequestsPerSocket;
+  server.maxConnections = limits.maxConnections;
+}
+
+/**
+ * The JSON and URL-encoded body parsers with one size limit. Mounted per route group by the
+ * server entrypoint instead of globally, so an unauthenticated request can never make the server
+ * read more than BODY_LIMITS.public (or .gateway) bytes, and the large limit only applies after
+ * authenticateToken. Multipart uploads are left to the routes' own multer limits.
+ */
+export function createBodyParsers(limit: string): RequestHandler[] {
+  return [
+    express.json({
+      limit,
+      type: (req) => {
+        const contentType = String(req.headers['content-type'] ?? '');
+        return !contentType.includes('multipart/form-data') && contentType.includes('json');
+      },
+    }),
+    express.urlencoded({ limit, extended: true, parameterLimit: 1000 }),
+  ];
+}
+
+/**
+ * For the server's error handler: the status of a client error raised by middleware such as the
+ * body parsers (413 too large, 400 malformed JSON, 415 unsupported charset), or null for anything
+ * else. Lets the handler answer those with a short message instead of logging a 500.
+ */
+export function clientErrorStatus(error: unknown): number | null {
+  if (typeof error !== 'object' || error === null) return null;
+  const candidate = error as { status?: unknown; statusCode?: unknown; expose?: unknown };
+  const status = typeof candidate.status === 'number' ? candidate.status : candidate.statusCode;
+  return typeof status === 'number' && status >= 400 && status < 500 && candidate.expose !== false ? status : null;
+}
