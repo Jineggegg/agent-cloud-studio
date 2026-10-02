@@ -5,6 +5,7 @@ import { Writable } from 'node:stream';
 import Database from 'better-sqlite3';
 
 import { BrokerError } from './broker-error.js';
+import { inspectIsolation } from './broker-isolation.js';
 import { brokerKeyFile, loadBrokerConfig } from './broker.config.js';
 import { createBrokerRepository } from './broker.repository.js';
 import { createBrokerSocketServer } from './broker.server.js';
@@ -114,7 +115,13 @@ export async function runBrokerCommand(argv: string[], io: Io = { stdout: proces
         try {
           const rows = service.passkeys();
           if (!rows.length) io.stdout.write('还没有登记任何通行密钥。\n');
-          for (const row of rows) io.stdout.write(`${row.id}  ${row.rpId}  ${row.label ?? '-'}  登记 ${row.createdAt}  最近使用 ${row.lastUsedAt ?? '-'}\n`);
+          else io.stdout.write('核对这些是不是你自己的设备。名称（label）由 Studio 传来，被入侵的 Studio 可以伪造，不能作为依据；\n'
+            + '要看的是 AAGUID（认证器型号）、凭据 ID 前缀、是否可同步，以及精确到秒的登记时间。\n');
+          for (const row of rows) {
+            io.stdout.write(`${row.id}  ${row.rpId}\n`
+              + `    AAGUID ${row.aaguid || '未知'}  凭据 ${row.credentialIdPrefix}…  ${row.multiDevice ? '可同步(多设备)' : '单设备'}${row.backedUp ? ' 已备份' : ''}\n`
+              + `    登记 ${row.createdAt}  最近使用 ${row.lastUsedAt ?? '-'}  名称(不可信) ${row.label ?? '-'}\n`);
+          }
         } finally { db.close(); }
         return 0;
       }
@@ -155,8 +162,15 @@ export async function runBrokerCommand(argv: string[], io: Io = { stdout: proces
         const { config, db, trading212, service } = openService(stateDir);
         try {
           io.stdout.write(`配置：允许 ${config.allowedEnvs.join(', ') || '（无，下单关闭）'}；单笔上限 ${config.maxOrderValue}；每小时最多 ${config.maxOrdersPerHour} 笔；`
+            + `每日累计上限 ${config.maxDailyOrderValue || '未设置'}；实盘冷却 ${config.liveOrderCooldownSeconds ? `${config.liveOrderCooldownSeconds} 秒` : '关'}；`
             + `模拟盘免通行密钥 ${config.demoConfirm ? '开' : '关'}\n来源：${config.origins.join(', ') || '（无）'}\n`
             + `实盘密钥 ${trading212.keyConfigured('live') ? '有' : '无'}；模拟盘密钥 ${trading212.keyConfigured('demo') ? '有' : '无'}；通行密钥 ${service.passkeys().length} 把\n`);
+          // The broker protects nothing if the Studio user can reach root or Windows; report the live isolation state.
+          const guard = inspectIsolation();
+          io.stdout.write(`隔离：${guard.ok ? '有效' : '!! 无效 !!'}（互操作 ${guard.interopActive ? '开（危险）' : '关'}`
+            + `${guard.windowsDrives.length ? `；Windows 盘可访问 ${guard.windowsDrives.join('、')}` : ''}）\n`);
+          for (const note of guard.notes) io.stderr.write(`隔离警告：${note}\n`);
+          if (!guard.ok) io.stderr.write('隔离无效：交易代理保护不了下单密钥，先在 Windows 一侧修好互操作和 Windows 盘访问（安装脚本默认会因此拒绝安装）。\n');
           const missing = config.allowedEnvs.filter(env => !trading212.keyConfigured(env));
           if (missing.length) { io.stderr.write(`缺少下单密钥：${missing.join(', ')}（studio-trader set-key <env>）\n`); return 1; }
           if (!config.origins.length) { io.stderr.write('config.json 没有 origins：任何网址都不能下单\n'); return 1; }

@@ -12,8 +12,12 @@ const DEFAULT_MAX_ORDERS_PER_HOUR = 10;
 // Upper bounds keep a typo (an extra zero or three) from silently becoming the limit.
 const MAX_ORDER_VALUE_LIMIT = 100_000;
 const MAX_ORDERS_PER_HOUR_LIMIT = 100;
+const MAX_DAILY_ORDER_VALUE_LIMIT = 1_000_000;
+const MAX_LIVE_COOLDOWN_SECONDS = 24 * 60 * 60;
 const MAX_ORIGINS = 8;
-const KNOWN_FIELDS = new Set(['allowedEnvs', 'maxOrderValue', 'maxOrdersPerHour', 'origins', 'demoConfirmWithoutPasskey']);
+const KNOWN_FIELDS = new Set([
+  'allowedEnvs', 'maxOrderValue', 'maxOrdersPerHour', 'maxDailyOrderValue', 'liveOrderCooldownSeconds', 'origins', 'demoConfirmWithoutPasskey',
+]);
 // WebAuthn only works on HTTPS, except on these loopback hosts during development.
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 
@@ -33,6 +37,12 @@ function environments(value: unknown): Environment[] {
 function positive(value: unknown, fallback: number, limit: number, field: string) {
   if (value === undefined) return fallback;
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > limit) invalid(`${field} 必须是 0 到 ${limit} 之间的数字`);
+  return value;
+}
+// A non-negative setting where 0 (the default) means "off": no daily cap, no cooldown.
+function nonNegative(value: unknown, limit: number, field: string) {
+  if (value === undefined) return 0;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > limit) invalid(`${field} 必须是 0 到 ${limit} 之间的数字（0 表示不启用）`);
   return value;
 }
 function origins(value: unknown) {
@@ -74,6 +84,10 @@ export function parseBrokerConfig(text: string, stateDir: string) {
     allowedEnvs: environments(input.allowedEnvs),
     maxOrderValue: positive(input.maxOrderValue, DEFAULT_MAX_ORDER_VALUE, MAX_ORDER_VALUE_LIMIT, 'maxOrderValue'),
     maxOrdersPerHour: Math.floor(positive(input.maxOrdersPerHour, DEFAULT_MAX_ORDERS_PER_HOUR, MAX_ORDERS_PER_HOUR_LIMIT, 'maxOrdersPerHour')),
+    // Cumulative value of orders that reached Trading 212 in the last rolling 24 h; 0 means no daily cap.
+    maxDailyOrderValue: nonNegative(input.maxDailyOrderValue, MAX_DAILY_ORDER_VALUE_LIMIT, 'maxDailyOrderValue'),
+    // Minimum seconds between two live orders that reach Trading 212; 0 means no live cooldown.
+    liveOrderCooldownSeconds: Math.floor(nonNegative(input.liveOrderCooldownSeconds, MAX_LIVE_COOLDOWN_SECONDS, 'liveOrderCooldownSeconds')),
     origins: origins(input.origins),
     // Demo money only: lets demo orders be confirmed without a passkey. Live orders always need one.
     demoConfirm: input.demoConfirmWithoutPasskey === true,

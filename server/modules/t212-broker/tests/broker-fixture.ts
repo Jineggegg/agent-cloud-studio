@@ -43,12 +43,16 @@ function decode(value: string) {
   return JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as { challenge: string; origin: string };
 }
 
-/** A registration response as a browser would send it; `rpId` stands in for the signed RP ID hash. */
-export function attestation(options: { challenge: string; origin: string; rpId?: string; id?: string }) {
+/** A registration response as a browser would send it; `rpId` stands in for the signed RP ID hash. The
+ * aaguid / deviceType / backedUp fields stand in for what the authenticator attests and the broker records. */
+export function attestation(options: { challenge: string; origin: string; rpId?: string; id?: string; aaguid?: string; deviceType?: 'singleDevice' | 'multiDevice'; backedUp?: boolean }) {
   const id = options.id ?? 'cred-1';
   return {
     id, rawId: id, type: 'public-key',
-    response: { clientDataJSON: clientData('webauthn.create', options.challenge, options.origin), attestationObject: 'fake', rpId: options.rpId ?? new URL(options.origin).hostname },
+    response: {
+      clientDataJSON: clientData('webauthn.create', options.challenge, options.origin), attestationObject: 'fake', rpId: options.rpId ?? new URL(options.origin).hostname,
+      aaguid: options.aaguid ?? '00000000-0000-0000-0000-000000000000', deviceType: options.deviceType ?? 'singleDevice', backedUp: options.backedUp ?? false,
+    },
     clientExtensionResults: {},
   } as any;
 }
@@ -76,10 +80,18 @@ function fakeWebAuthn() {
     },
     async verifyRegistrationResponse(options: any) {
       calls.verifyRegistration.push(options);
-      const data = decode(options.response.response.clientDataJSON);
-      if (data.challenge !== options.expectedChallenge || data.origin !== options.expectedOrigin || options.response.response.rpId !== options.expectedRPID
+      const envelope = options.response.response;
+      const data = decode(envelope.clientDataJSON);
+      if (data.challenge !== options.expectedChallenge || data.origin !== options.expectedOrigin || envelope.rpId !== options.expectedRPID
         || options.requireUserVerification !== true) throw new Error('registration mismatch');
-      return { verified: true, registrationInfo: { credential: { id: options.response.id, publicKey: new Uint8Array([1, 2, 3]), counter: 0, transports: ['internal'] } } };
+      return {
+        verified: true,
+        registrationInfo: {
+          credential: { id: options.response.id, publicKey: new Uint8Array([1, 2, 3]), counter: 0, transports: ['internal'] },
+          aaguid: envelope.aaguid ?? '00000000-0000-0000-0000-000000000000',
+          credentialDeviceType: envelope.deviceType ?? 'singleDevice', credentialBackedUp: envelope.backedUp ?? false,
+        },
+      };
     },
     async generateAuthenticationOptions(options: any) {
       calls.authentication.push(options);
@@ -97,7 +109,13 @@ function fakeWebAuthn() {
   return { webauthn, calls };
 }
 
-export type FixtureOptions = { config?: Record<string, unknown>; summary?: Record<string, unknown>; positions?: unknown[]; keys?: boolean };
+// A healthy machine by default; a test can pass its own to exercise the "isolation invalid" path.
+const HEALTHY_ISOLATION = { ok: true, interopActive: false, interopBinfmt: false, interopSocket: false, windowsDrives: [] as string[], notes: [] as string[] };
+
+export type FixtureOptions = {
+  config?: Record<string, unknown>; summary?: Record<string, unknown>; positions?: unknown[]; keys?: boolean;
+  isolation?: typeof HEALTHY_ISOLATION;
+};
 
 /** Builds a broker service over fakes; `close` removes its temporary state directory. */
 export function fixture(options: FixtureOptions = {}) {
@@ -126,7 +144,10 @@ export function fixture(options: FixtureOptions = {}) {
   });
   const { webauthn, calls: webauthnCalls } = fakeWebAuthn();
   const logs: string[] = [];
-  const service = createBrokerService({ config, repository, trading212, webauthn, now: () => clock, log: line => logs.push(line) });
+  const service = createBrokerService({
+    config, repository, trading212, webauthn, now: () => clock, log: line => logs.push(line),
+    isolation: () => options.isolation ?? HEALTHY_ISOLATION,
+  });
   return {
     service, database, calls, webauthnCalls, logs, directory,
     posts: () => calls.filter(call => call.method === 'POST'),

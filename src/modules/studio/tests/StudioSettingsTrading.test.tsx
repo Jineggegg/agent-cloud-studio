@@ -24,12 +24,15 @@ const { StudioSettingsTrading } = await import('@/modules/studio/StudioSettingsT
 
 const json = (value: unknown, status = 200, code?: string) => async () => Response.json(status === 200 ? value : { error: value, code }, { status });
 const CODE = 'ABCDE-FGHJK-MNPQR-STVWX';
-const OTHER_DOMAIN = { id: 'k-tailnet', rpId: 'desktop.tail1234.ts.net', label: 'Windows', createdAt: '2026-09-01T00:00:00Z', lastUsedAt: null };
-const THIS_DOMAIN = { id: 'k-local', rpId: window.location.hostname, label: 'iPad', createdAt: '2026-10-02T00:00:00Z', lastUsedAt: null };
+const PROVENANCE = { aaguid: '00000000-0000-0000-0000-000000000000', credentialIdPrefix: 'Y3JlZC10YWlsbmV0', backedUp: false, multiDevice: false };
+const OTHER_DOMAIN = { id: 'k-tailnet', rpId: 'desktop.tail1234.ts.net', label: 'Windows', createdAt: '2026-09-01T00:00:00Z', lastUsedAt: null, ...PROVENANCE };
+const THIS_DOMAIN = { id: 'k-local', rpId: window.location.hostname, label: 'iPad', createdAt: '2026-10-02T00:00:00Z', lastUsedAt: null, ...PROVENANCE };
 const THIS_DOMAIN_PHONE = { ...THIS_DOMAIN, id: 'k-local-2', label: 'iPhone' };
+const HEALTHY_ISOLATION = { ok: true, interopActive: false, interopBinfmt: false, interopSocket: false, windowsDrives: [], notes: [] };
 const CONFIG = {
-  broker: { status: 'ok', keys: { live: false, demo: true } }, allowedEnvs: ['demo'], maxOrderValue: 250, maxOrdersPerHour: 10, currency: 'GBP',
-  passkeys: [OTHER_DOMAIN], trustedOrigins: [window.location.origin], demoConfirm: false,
+  broker: { status: 'ok', keys: { live: false, demo: true } }, allowedEnvs: ['demo'], maxOrderValue: 250, maxOrdersPerHour: 10,
+  maxDailyOrderValue: 0, liveOrderCooldownSeconds: 0, currency: 'GBP',
+  passkeys: [OTHER_DOMAIN], trustedOrigins: [window.location.origin], demoConfirm: false, isolation: HEALTHY_ISOLATION,
 };
 
 // Works with `screen` and with `within(alert)`, which both expose getByLabelText.
@@ -159,6 +162,18 @@ test('an address outside the broker’s allowlist cannot enrol, and trading-off 
   render(<StudioSettingsTrading />);
   expect(await screen.findByText('已关闭')).toBeTruthy();
   expect(screen.getByText('allowedEnvs')).toBeTruthy();
+});
+
+test('an invalid isolation state is surfaced as a warning on the settings page', async () => {
+  trading.config.mockImplementation(json({
+    ...CONFIG,
+    isolation: { ok: false, interopActive: true, interopBinfmt: true, interopSocket: true, windowsDrives: ['/mnt/c'], notes: ['WSL 互操作仍然开着：可以运行 wsl.exe -u root 读出下单密钥。'] },
+  }));
+  render(<StudioSettingsTrading />);
+  const badges = await screen.findAllByText('隔离无效');
+  // Both the row heading and its status badge read 隔离无效; the note explains why.
+  expect(badges.length).toBeGreaterThanOrEqual(1);
+  expect(screen.getByText(/wsl\.exe -u root/)).toBeTruthy();
 });
 
 test('without the broker, Settings says how to install it and offers no enrollment', async () => {

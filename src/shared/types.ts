@@ -1966,8 +1966,21 @@ export type StudioNetworkInfo = {
 //----------------- STUDIO TRADING 212 ORDERS ------------
 /** Buy or sell in the Trading 212 order sheet; the server turns a sell into a negative quantity. */
 export type T212OrderSide = 'buy' | 'sell';
-/** A Face ID / Touch ID passkey held by the order broker for one Studio domain (its RP ID); it never authorizes another domain. */
-export type T212Passkey = { id: string; rpId: string; label: string | null; createdAt: string; lastUsedAt: string | null };
+/**
+ * A Face ID / Touch ID passkey held by the order broker for one Studio domain (its RP ID); it never authorizes
+ * another domain. `label` is a browser-derived hint that a compromised Studio can forge; `aaguid`,
+ * `credentialIdPrefix`, `backedUp` and `multiDevice` are recorded by the broker from the attestation and are the
+ * fields the owner should check against their own device. Managing it is best done with the server-side CLI.
+ */
+export type T212Passkey = {
+  id: string; rpId: string; label: string | null;
+  aaguid: string; credentialIdPrefix: string; backedUp: boolean; multiDevice: boolean;
+  createdAt: string; lastUsedAt: string | null;
+};
+/** The WSL isolation the order broker depends on; when `ok` is false its key protection does not hold. From the broker's GET /v1/status. */
+export type T212BrokerIsolation = {
+  ok: boolean; interopActive: boolean; interopBinfmt: boolean; interopSocket: boolean; windowsDrives: string[]; notes: string[];
+};
 /**
  * Order-safety settings shared by the order sheet and Settings. Everything except `broker` comes from the separate
  * order broker (docs/t212-broker.md), which places every order; while it is off or unreachable the lists are empty.
@@ -1981,6 +1994,9 @@ export type T212TradingConfig = {
   maxOrderValue: number;
   // The broker's limit on orders submitted per rolling hour.
   maxOrdersPerHour: number;
+  // The broker's rolling-24h cumulative value cap, and the minimum seconds between live orders; 0 means off.
+  maxDailyOrderValue: number;
+  liveOrderCooldownSeconds: number;
   // Account currency from the broker's or Studio's last read; absent before the account was first read.
   currency?: string;
   // Passkeys on every domain; each domain trades only with its own.
@@ -1989,6 +2005,8 @@ export type T212TradingConfig = {
   trustedOrigins: string[];
   // The owner let demo orders be confirmed without a passkey (never live ones).
   demoConfirm: boolean;
+  // The broker's live WSL isolation check; null while the broker is off or unreachable.
+  isolation: T212BrokerIsolation | null;
 };
 // ── v4 track: mail — types below this line ──
 //----------------- STUDIO MAIL CONTRACTS ------------

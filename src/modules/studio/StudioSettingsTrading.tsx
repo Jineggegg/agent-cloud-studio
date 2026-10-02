@@ -72,13 +72,17 @@ export function StudioSettingsTrading() {
           <span className="ios-row-body"><strong>交易代理</strong><small>{config.broker.status === 'ok' ? '独立系统用户 studio-trader · 下单密钥只在代理里' : config.broker.message}</small></span>
           <span className={`status-badge ${tone}`}>{badge}</span>
         </div>
+        {connected && config.isolation && !config.isolation.ok && <div className="ios-row no-icon">
+          <span className="ios-row-body"><strong>隔离无效</strong><small>{config.isolation.notes.join(' ') || 'Studio 的系统用户可能绕过交易代理读出下单密钥，交易代理暂时保护不了下单。'}</small></span>
+          <span className="status-badge warn">隔离无效</span>
+        </div>}
         {connected && <>
           <div className="ios-row no-icon">
             <span className="ios-row-body"><strong>允许下单的账户</strong><small>交易代理 config.json · allowedEnvs</small></span>
             <span className={`status-badge ${config.allowedEnvs.includes('live') ? 'warn' : config.allowedEnvs.length ? 'good' : ''}`}>{environments(config.allowedEnvs)}</span>
           </div>
           <div className="ios-row no-icon">
-            <span className="ios-row-body"><strong>单笔上限</strong><small>超过的订单由交易代理拒绝 · 每小时最多 {config.maxOrdersPerHour} 笔</small></span>
+            <span className="ios-row-body"><strong>单笔上限</strong><small>超过的订单由交易代理拒绝 · 每小时最多 {config.maxOrdersPerHour} 笔{config.maxDailyOrderValue ? ` · 每日累计上限 ${money(config.maxDailyOrderValue, config.currency)}` : ''}{config.liveOrderCooldownSeconds ? ` · 实盘冷却 ${config.liveOrderCooldownSeconds} 秒` : ''}</small></span>
             <span className="t212-settings-value">{money(config.maxOrderValue, config.currency)}</span>
           </div>
           <div className="ios-row no-icon">
@@ -97,7 +101,7 @@ export function StudioSettingsTrading() {
         <span className="home-icon small tone-slate" aria-hidden="true">{rpId === host ? <ScanFace size={18} strokeWidth={1.6} /> : <Globe size={18} strokeWidth={1.6} />}</span>
         <span className="ios-row-body">
           <strong>{rpId}{rpId === host && <span className="t212-passkey-current">当前</span>}</strong>
-          <small>{passkey.label ?? '设备'} · {day(passkey.createdAt)} 启用{passkey.lastUsedAt ? ` · ${day(passkey.lastUsedAt)} 用过` : ''}</small>
+          <small>{passkey.credentialIdPrefix}… · {passkey.multiDevice ? '可同步' : '单设备'} · {day(passkey.createdAt)} 启用{passkey.lastUsedAt ? ` · ${day(passkey.lastUsedAt)} 用过` : ''}</small>
         </span>
         <button type="button" className="icon-button danger" aria-label={`移除 ${rpId} 的通行密钥（${passkey.label ?? '设备'}）`} onClick={() => setRemoving(passkey)}>
           <Trash2 size={18} aria-hidden="true" />
@@ -107,6 +111,7 @@ export function StudioSettingsTrading() {
     <p className="ios-section-footer t212-settings-note">
       下单由独立的交易代理完成：Studio 不持有下单密钥，交易代理只接受用这个网址的面容 ID / 触控 ID 确认的订单，自己核对金额和上限。
       通行密钥按网址区分，studio.ajarche.com 和 Tailscale 地址需要分别启用。启用需要服务器上生成的一次性注册码；移除需要这个网址的通行密钥或新的注册码。
+      这里显示的设备名由浏览器提供，被入侵的 Studio 可以伪造，不能作为依据；要核对一把通行密钥确实是你自己的设备，请在服务器上运行 <code>studio-trader passkeys</code>，比对 AAGUID、凭据 ID 和登记时间。
       {config?.broker.status === 'off' && <> 安装方法见 <code>docs/t212-broker.md</code>，装好后在 Studio 的 .env 设置 <code>STUDIO_T212_BROKER_SOCKET=/run/studio-trader/broker.sock</code> 并重启 Studio。</>}
       {connected && !config.allowedEnvs.length && <> 下单目前关闭：在交易代理的 config.json 里设置 <code>allowedEnvs</code>（例如 <code>["demo"]</code>），然后重启交易代理。</>}
     </p>

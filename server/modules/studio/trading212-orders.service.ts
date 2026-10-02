@@ -40,7 +40,10 @@ export function createTrading212OrdersService(deps: Dependencies) {
     if (!deps.broker) throw new AppError(OFF_MESSAGE, { statusCode: 503, code: 'T212_BROKER_OFF' });
     return deps.broker;
   }
-  const closed = { allowedEnvs: [] as StudioT212Environment[], maxOrderValue: 0, maxOrdersPerHour: 0, passkeys: [], trustedOrigins: [] as string[], demoConfirm: false };
+  const closed = {
+    allowedEnvs: [] as StudioT212Environment[], maxOrderValue: 0, maxOrdersPerHour: 0, maxDailyOrderValue: 0, liveOrderCooldownSeconds: 0,
+    passkeys: [], trustedOrigins: [] as string[], demoConfirm: false, isolation: null,
+  };
 
   return {
     // Broker reachability and settings for the order sheet and Settings; never throws, so read-only views still load.
@@ -52,8 +55,9 @@ export function createTrading212OrdersService(deps: Dependencies) {
         return {
           broker: { status: 'ok' as const, keys: status.keys },
           allowedEnvs: status.allowedEnvs, maxOrderValue: status.maxOrderValue, maxOrdersPerHour: status.maxOrdersPerHour,
+          maxDailyOrderValue: status.maxDailyOrderValue, liveOrderCooldownSeconds: status.liveOrderCooldownSeconds,
           ...(currency ? { currency } : {}),
-          passkeys: status.passkeys, trustedOrigins: status.origins, demoConfirm: status.demoConfirm,
+          passkeys: status.passkeys, trustedOrigins: status.origins, demoConfirm: status.demoConfirm, isolation: status.isolation,
         };
       } catch (error) {
         return { broker: { status: 'unreachable' as const, message: error instanceof Error ? error.message : '交易代理不可用' }, ...closed };

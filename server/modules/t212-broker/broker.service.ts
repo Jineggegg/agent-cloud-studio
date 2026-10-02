@@ -18,6 +18,7 @@ import type {
 } from '@/shared/types.js';
 
 import { BrokerError } from './broker-error.js';
+import { inspectIsolation } from './broker-isolation.js';
 import type { loadBrokerConfig } from './broker.config.js';
 import type { createBrokerRepository } from './broker.repository.js';
 import type { createBrokerTrading212Client } from './broker-trading212.client.js';
@@ -38,6 +39,8 @@ type Dependencies = {
   trading212: Trading212;
   // SimpleWebAuthn functions; injectable so tests never need a real authenticator.
   webauthn?: WebAuthn;
+  // WSL isolation inspector; injectable so tests can describe a machine instead of reading the real /proc.
+  isolation?: typeof inspectIsolation;
   now?: () => number;
   // One line per security-relevant event (journal). Never receives secrets, codes or request bodies.
   log?: (line: string) => void;
@@ -65,6 +68,8 @@ const MAX_FAILURES = 10;
 // Unanswered challenges anyone on the socket can create; beyond this new ones are refused until some expire.
 const MAX_ACTIVE_CHALLENGES = 50;
 const HOUR_MS = 60 * 60_000;
+// Window for the cumulative daily value cap.
+const DAY_MS = 24 * HOUR_MS;
 // Crockford base32 without I, L, O, U: 20 symbols carry 100 bits and are easy to type on an iPad.
 const CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const CODE_LENGTH = 20;
@@ -115,7 +120,12 @@ function transports(row: PasskeyRow) {
   } catch { return []; }
 }
 function summary(row: PasskeyRow): StudioT212BrokerPasskey {
-  return { id: row.id, rpId: row.rp_id, label: row.label, createdAt: row.created_at, lastUsedAt: row.last_used_at };
+  return {
+    id: row.id, rpId: row.rp_id, label: row.label,
+    // Recorded by the broker from the verified attestation, not from anything Studio sent.
+    aaguid: row.aaguid, credentialIdPrefix: row.credential_id.slice(0, 16), backedUp: row.backed_up === 1, multiDevice: row.multi_device === 1,
+    createdAt: row.created_at, lastUsedAt: row.last_used_at,
+  };
 }
 
 /**
@@ -130,6 +140,7 @@ export function createBrokerService(deps: Dependencies) {
   const { config, repository: repo, trading212 } = deps;
   const now = deps.now ?? Date.now;
   const webauthn = deps.webauthn ?? DEFAULT_WEBAUTHN;
+  const isolation = deps.isolation ?? inspectIsolation;
   const log = deps.log ?? ((line: string) => console.log(`[t212-broker] ${line}`));
   const iso = () => new Date(now()).toISOString();
 
@@ -159,6 +170,23 @@ export function createBrokerService(deps: Dependencies) {
   function hourlyRefusal() {
     const count = repo.submittedSince(now() - HOUR_MS);
     return count >= config.maxOrdersPerHour ? `一小时内已经提交了 ${count} 笔订单，达到交易代理的上限（maxOrdersPerHour = ${config.maxOrdersPerHour}）` : null;
+  }
+  // A minimum gap between live orders, so a burst of prompts cannot drain the account quickly. Off when 0.
+  function cooldownRefusal(env: Environment) {
+    if (env !== 'live' || config.liveOrderCooldownSeconds <= 0) return null;
+    const cooldownMs = config.liveOrderCooldownSeconds * 1000;
+    const last = repo.lastSubmittedAt('live', now() - cooldownMs);
+    if (last === null) return null;
+    const waitSeconds = Math.max(1, Math.ceil((last + cooldownMs - now()) / 1000));
+    return `实盘冷却中：距离上一笔实盘订单不足 ${config.liveOrderCooldownSeconds} 秒，请约 ${waitSeconds} 秒后再试`;
+  }
+  // A rolling-24h ceiling on the total value submitted; counts reserved and placed orders, so it bounds the
+  // damage from repeatedly coaxed confirmations even within the hourly limit. Needs the valued amount. Off when 0.
+  function dailyRefusal(estimatedValue: number, currency: string) {
+    if (config.maxDailyOrderValue <= 0) return null;
+    const soFar = repo.submittedValueSince(now() - DAY_MS);
+    if (soFar + estimatedValue <= config.maxDailyOrderValue) return null;
+    return `24 小时内已累计下单约 ${money(soFar, currency)}，再加这笔会超过每日累计上限 ${money(config.maxDailyOrderValue, currency)}（maxDailyOrderValue）`;
   }
   function unknownRefusal(order: StudioT212OrderInput) {
     const at = repo.unknownSince(order, now() - UNKNOWN_HOLD_MS);
@@ -265,9 +293,10 @@ export function createBrokerService(deps: Dependencies) {
       }
       return {
         version: 1, allowedEnvs: config.allowedEnvs, maxOrderValue: config.maxOrderValue, maxOrdersPerHour: config.maxOrdersPerHour,
+        maxDailyOrderValue: config.maxDailyOrderValue, liveOrderCooldownSeconds: config.liveOrderCooldownSeconds,
         origins: config.origins, demoConfirm: config.demoConfirm,
         keys: { live: trading212.keyConfigured('live'), demo: trading212.keyConfigured('demo') },
-        currencies, passkeys: repo.passkeys().map(summary),
+        currencies, passkeys: repo.passkeys().map(summary), isolation: isolation(),
       };
     },
 
@@ -278,6 +307,8 @@ export function createBrokerService(deps: Dependencies) {
       prune();
       const hourly = hourlyRefusal();
       if (hourly) fail(hourly, 429, 'T212_HOURLY_LIMIT');
+      const cooldown = cooldownRefusal(order.env);
+      if (cooldown) fail(cooldown, 429, 'T212_LIVE_COOLDOWN');
       const keys = repo.passkeys(origin.rpId);
       // Live orders always need a passkey; demo orders may use a plain confirmation only if the owner allowed it.
       const requires = keys.length ? 'passkey' : order.env === 'demo' && config.demoConfirm ? 'confirm' : null;
@@ -288,6 +319,8 @@ export function createBrokerService(deps: Dependencies) {
 
       const overview = await trading212.overview(order.env);
       const { estimatedValue, warnings } = await valuation(order, overview);
+      const daily = dailyRefusal(estimatedValue, overview.currency);
+      if (daily) fail(daily, 429, 'T212_DAILY_LIMIT');
       if (input.acknowledgeUnknown) warnings.push('你已确认之前状态未知的相同订单没有成交');
       const authentication = requires === 'passkey' ? await webauthn.generateAuthenticationOptions({
         rpID: origin.rpId, userVerification: 'required', timeout: PREVIEW_TTL_MS,
@@ -335,24 +368,44 @@ export function createBrokerService(deps: Dependencies) {
       if (!config.allowedEnvs.includes(order.env)) refuse(`${ENV_LABEL[order.env]}下单未开启`, 403, 'T212_TRADING_DISABLED');
       const hourly = hourlyRefusal();
       if (hourly) refuse(hourly, 429, 'T212_HOURLY_LIMIT');
+      const cooldown = cooldownRefusal(order.env);
+      if (cooldown) refuse(cooldown, 429, 'T212_LIVE_COOLDOWN');
+      const daily = dailyRefusal(pending.estimatedValue, pending.currency);
+      if (daily) refuse(daily, 429, 'T212_DAILY_LIMIT');
       // A parallel preview of the same order must not slip through after the first one ended unknown.
       const unknown = pending.acknowledgedUnknown ? null : unknownRefusal(order);
       if (unknown) refuse(unknown, 409, 'T212_ORDER_UNKNOWN_PENDING');
+      // Proof shape is a client error, checked before a slot is reserved so a malformed confirm wastes none.
+      if (pending.requires === 'passkey' && !('assertion' in input.proof)) refuse('请用通行密钥确认这笔订单', 400, 'T212_PASSKEY_REQUIRED');
+      if (pending.requires !== 'passkey') {
+        // Without a passkey only demo orders, and only while the owner still allows it.
+        if (order.env !== 'demo' || !config.demoConfirm) refuse('这笔订单需要通行密钥确认', 403, 'T212_PASSKEY_REQUIRED');
+        if (!('confirmed' in input.proof) || input.proof.confirmed !== true) refuse('请先确认这笔订单', 400, 'T212_CONFIRM_REQUIRED');
+      }
+
+      // Reserve the hourly/daily/cooldown slot synchronously, before the first await below. better-sqlite3 is
+      // synchronous, so the checks above and this insert run in one event-loop turn and are atomic against other
+      // confirmations: concurrent callers each see the others' 'pending' rows in the limit counts. The reservation
+      // is finalized to the real outcome (placed / rejected / unknown / refused) before this method returns.
+      const reserved = repo.recordPendingAudit({
+        previewId: row.id, env: order.env, ticker: order.ticker, side: order.side, type: order.type, quantity: order.quantity,
+        limitPrice: order.limitPrice ?? null, estimatedValue: pending.estimatedValue, currency: pending.currency, method, rpId: row.rp_id, passkeyId: null,
+      }, now());
+      // Settle the reserved row; a refusal after reservation never leaves a 'pending' row counting against limits.
+      function refuseReserved(message: string, statusCode: number, code: string): never {
+        repo.finalizeAudit(reserved, 'refused', { error: message });
+        fail(message, statusCode, code);
+      }
 
       if (pending.requires === 'passkey') {
-        const proof = input.proof;
-        if (!('assertion' in proof)) refuse('请用通行密钥确认这笔订单', 400, 'T212_PASSKEY_REQUIRED');
+        const proof = input.proof as { assertion: AuthenticationResponseJSON };
         const key = repo.passkeys(row.rp_id).find(item => item.credential_id === proof.assertion.id);
         if (!key || !await verifyAssertion(key, proof.assertion, row)) {
           repo.recordFailure('assertion', now());
           log(`refused an order confirmation: passkey verification failed (rpId ${row.rp_id})`);
-          refuse('通行密钥验证失败，订单没有提交', 403, 'T212_PASSKEY_FAILED');
+          refuseReserved('通行密钥验证失败，订单没有提交', 403, 'T212_PASSKEY_FAILED');
         }
         passkeyId = key.id;
-      } else {
-        // Without a passkey only demo orders, and only while the owner still allows it.
-        if (order.env !== 'demo' || !config.demoConfirm) refuse('这笔订单需要通行密钥确认', 403, 'T212_PASSKEY_REQUIRED');
-        if (!('confirmed' in input.proof) || input.proof.confirmed !== true) refuse('请先确认这笔订单', 400, 'T212_CONFIRM_REQUIRED');
       }
 
       const quantity = order.side === 'sell' ? -order.quantity : order.quantity;
@@ -364,11 +417,11 @@ export function createBrokerService(deps: Dependencies) {
         result = await trading212.placeOrder(order.env, order.type, body);
       } catch (error) {
         // Only a missing key throws here, before anything was sent.
-        refuse(error instanceof Error ? error.message : '下单失败', 503, 'TRADING212_ERROR');
+        refuseReserved(error instanceof Error ? error.message : '下单失败', 503, 'TRADING212_ERROR');
       }
       const label = `${order.env} ${order.side} ${order.quantity} ${order.ticker}`;
       if (result.status !== 'placed') {
-        audit(result.status, { error: result.message });
+        repo.finalizeAudit(reserved, result.status, { passkeyId, error: result.message });
         log(`order ${result.status}: ${label}`);
         if (result.status === 'unknown') fail(result.message, 502, 'T212_ORDER_UNKNOWN');
         fail(result.message, 400, 'TRADING212_REJECTED');
@@ -379,7 +432,7 @@ export function createBrokerService(deps: Dependencies) {
         side: text(placed.side), type: text(placed.type), quantity: numberOrNull(placed.quantity),
         filledQuantity: numberOrNull(placed.filledQuantity), limitPrice: numberOrNull(placed.limitPrice), createdAt: text(placed.createdAt),
       };
-      audit('placed', { brokerOrderId: brokerOrder.id, brokerStatus: brokerOrder.status });
+      repo.finalizeAudit(reserved, 'placed', { passkeyId, brokerOrderId: brokerOrder.id, brokerStatus: brokerOrder.status });
       log(`order placed: ${label} (Trading 212 order ${brokerOrder.id ?? '?'}, ${method})`);
       return { order: brokerOrder, method, env: order.env, estimatedValue: pending.estimatedValue, currency: pending.currency };
     },
@@ -418,7 +471,7 @@ export function createBrokerService(deps: Dependencies) {
         });
       } catch { verified = null; }
       if (!verified?.verified) fail('通行密钥注册失败：设备没有通过验证', 400, 'T212_PASSKEY_FAILED');
-      const { credential } = verified.registrationInfo;
+      const { credential, aaguid, credentialDeviceType, credentialBackedUp } = verified.registrationInfo;
       if (repo.credentialExists(credential.id)) fail('这把通行密钥已经登记过了', 409, 'T212_PASSKEY_EXISTS');
       // The code is consumed only now, so a cancelled Face ID prompt does not waste it; it enrols one passkey.
       const { codeHash } = JSON.parse(row.payload) as { codeHash: string };
@@ -426,10 +479,13 @@ export function createBrokerService(deps: Dependencies) {
       const passkey: PasskeyRow = {
         id: randomUUID(), rp_id: row.rp_id, credential_id: credential.id, public_key: Buffer.from(credential.publicKey),
         counter: credential.counter, transports: JSON.stringify(credential.transports ?? []), label: input.label,
+        // Recorded from the verified attestation, not from Studio: the owner checks these in the CLI, not the label.
+        aaguid: typeof aaguid === 'string' ? aaguid : '', backed_up: credentialBackedUp ? 1 : 0, multi_device: credentialDeviceType === 'multiDevice' ? 1 : 0,
         created_at: iso(), last_used_at: null,
       };
       repo.insertPasskey(passkey);
-      log(`passkey ${passkey.id} enrolled for ${passkey.rp_id}${passkey.label ? ` (${passkey.label})` : ''}`);
+      log(`passkey ${passkey.id} enrolled for ${passkey.rp_id} (aaguid ${passkey.aaguid || 'unknown'}, cred ${passkey.credential_id.slice(0, 16)}, `
+        + `${passkey.multi_device ? 'multi-device' : 'single-device'}${passkey.backed_up ? ', backed up' : ''})`);
       return summary(passkey);
     },
 

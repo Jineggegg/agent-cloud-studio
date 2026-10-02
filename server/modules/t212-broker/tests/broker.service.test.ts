@@ -3,6 +3,8 @@ import { test } from 'node:test';
 
 import { assertion, attestation, coded, enroll, fixture, ORDER, order, signedOrder, STUDIO, SUMMARY, TAILNET } from './broker-fixture.js';
 
+const HEALTHY_ISOLATION = { ok: true, interopActive: false, interopBinfmt: false, interopSocket: false, windowsDrives: [] as string[], notes: [] as string[] };
+
 test('without allowed accounts, a trusted origin or a passkey nothing is previewed and Trading 212 is not called', async () => {
   const off = fixture({ config: { allowedEnvs: [] } });
   const f = fixture();
@@ -351,4 +353,89 @@ test('status reports configuration and passkeys but never key material', async (
     assert.ok(!JSON.stringify(status).includes('fake-'));
     assert.deepEqual(keyless.service.status().keys, { live: false, demo: false });
   } finally { f.close(); keyless.close(); }
+});
+
+test('status carries the broker-recorded passkey provenance and the live isolation state', async () => {
+  // A software authenticator the attacker enrolled would attest as multi-device and backed up, and would
+  // likely show a different AAGUID than the owner's platform passkey — the CLI/Settings show these, not the label.
+  const f = fixture({ isolation: { ...HEALTHY_ISOLATION, ok: false, interopActive: true, interopBinfmt: true, windowsDrives: ['/mnt/c'], notes: ['note'] } });
+  try {
+    const code = f.service.createEnrollmentCode().code;
+    const options = await f.service.registrationOptions({ origin: STUDIO, enrollmentCode: code });
+    await f.service.register({
+      origin: STUDIO, label: 'iPad',
+      response: attestation({ challenge: options.challenge, origin: STUDIO, aaguid: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', deviceType: 'multiDevice', backedUp: true }),
+    });
+    const passkey = f.service.status().passkeys[0];
+    assert.equal(passkey.aaguid, 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    assert.equal(passkey.multiDevice, true);
+    assert.equal(passkey.backedUp, true);
+    assert.equal(passkey.label, 'iPad');
+    assert.ok(passkey.credentialIdPrefix.length > 0 && passkey.credentialIdPrefix.length <= 16);
+    // The enrollment log records the provenance, not just the Studio-supplied label.
+    assert.ok(f.logs.some(line => line.includes('aaaaaaaa-bbbb') && line.includes('multi-device')));
+
+    const status = f.service.status();
+    assert.equal(status.isolation.ok, false);
+    assert.equal(status.isolation.interopActive, true);
+    assert.deepEqual(status.isolation.windowsDrives, ['/mnt/c']);
+  } finally { f.close(); }
+});
+
+test('a daily cumulative value cap holds back further orders until the 24h window rolls', async () => {
+  const f = fixture({ config: { maxDailyOrderValue: 300 } });
+  try {
+    await enroll(f);
+    // One AAPL share is valued at £160 by the broker; the first order fits under the £300 daily cap.
+    const first = await signedOrder(f, { quantity: 1 });
+    await f.service.confirm({ origin: STUDIO, id: first.preview.id, proof: { assertion: first.assertion } });
+    // 160 + 160 would exceed 300, so the next preview is refused before any passkey prompt.
+    await assert.rejects(f.service.preview({ origin: STUDIO, order: order({ quantity: 1 }), acknowledgeUnknown: false }), coded('T212_DAILY_LIMIT', /每日累计上限/));
+    assert.equal(f.posts().length, 1);
+    // After 24 hours the window clears and trading resumes.
+    f.advance(24 * 60 * 60_000 + 1);
+    const later = await signedOrder(f, { quantity: 1 });
+    await f.service.confirm({ origin: STUDIO, id: later.preview.id, proof: { assertion: later.assertion } });
+    assert.equal(f.posts().length, 2);
+  } finally { f.close(); }
+});
+
+test('a live cooldown spaces out live orders but leaves demo orders alone', async () => {
+  const f = fixture({ config: { liveOrderCooldownSeconds: 60, demoConfirmWithoutPasskey: true } });
+  try {
+    await enroll(f);
+    const first = await signedOrder(f, { env: 'live', quantity: 1 });
+    await f.service.confirm({ origin: STUDIO, id: first.preview.id, proof: { assertion: first.assertion } });
+    // A second live order within the cooldown is refused, at preview and (for a preview made earlier) at confirm.
+    await assert.rejects(f.service.preview({ origin: STUDIO, order: order({ env: 'live' }), acknowledgeUnknown: false }), coded('T212_LIVE_COOLDOWN', /实盘冷却/));
+    // Demo orders are not subject to the live cooldown.
+    const demo = await f.service.preview({ origin: STUDIO, order: order({ env: 'demo' }), acknowledgeUnknown: false });
+    assert.equal(demo.requires, 'passkey');
+    f.advance(60_000 + 1);
+    const third = await signedOrder(f, { env: 'live', quantity: 0.5 });
+    await f.service.confirm({ origin: STUDIO, id: third.preview.id, proof: { assertion: third.assertion } });
+    assert.equal(f.posts().filter(call => call.url.includes('live.trading212')).length, 2);
+  } finally { f.close(); }
+});
+
+test('concurrent confirmations cannot exceed the hourly limit (the slot is reserved before any await)', async () => {
+  const f = fixture({ config: { maxOrdersPerHour: 10 } });
+  try {
+    await enroll(f);
+    // Build more signed orders than the limit, each with its own single-use challenge.
+    const signed = [];
+    for (let index = 0; index < 15; index += 1) signed.push(await signedOrder(f, { quantity: 1 }));
+    // Confirm them all at once: each confirm reserves its slot synchronously before it awaits the signature
+    // check, so the ones past the limit see the reservations and are refused instead of all placing.
+    const results = await Promise.allSettled(signed.map(item => f.service.confirm({ origin: STUDIO, id: item.preview.id, proof: { assertion: item.assertion } })));
+    const placed = results.filter(result => result.status === 'fulfilled');
+    const refused = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+    assert.equal(placed.length, 10, 'exactly the hourly limit is placed');
+    assert.equal(f.posts().length, 10, 'no more orders reached Trading 212 than the limit');
+    assert.ok(refused.every(result => (result.reason as { code?: string }).code === 'T212_HOURLY_LIMIT'));
+    // The audit has ten placed rows and nothing left pending.
+    const audit = f.audit();
+    assert.equal(audit.filter(row => row.status === 'placed').length, 10);
+    assert.equal(audit.filter(row => row.status === 'pending').length, 0);
+  } finally { f.close(); }
 });

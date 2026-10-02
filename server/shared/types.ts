@@ -1737,14 +1737,44 @@ export type StudioT212BrokerErrorBody = { error: string; code: string };
 /**
  * A passkey held in the order broker's own database. `rpId` is the WebAuthn RP ID (the
  * hostname of the Studio origin it was enrolled on); a passkey never authorizes another RP ID.
- * `label` is a rough device name hint and may be null. Returned by GET /v1/status.
+ *
+ * `label` is a rough device name hint that Studio sends from the browser's User-Agent; because a
+ * compromised Studio controls it, it is never proof of which device a passkey belongs to. The
+ * fields the broker records itself — `aaguid` (authenticator model), `credentialIdPrefix`,
+ * `backedUp`/`multiDevice` (BE/BS flags) and the second-precision `createdAt` — are what the CLI
+ * shows so the owner can tell an unexpected enrollment from their own device. Returned by GET /v1/status.
  */
 export type StudioT212BrokerPasskey = {
   id: string;
   rpId: string;
   label: string | null;
+  // Authenticator Attestation GUID: the authenticator model (all-zero for platform passkeys that hide it).
+  aaguid: string;
+  // First 16 characters of the base64url credential ID, enough to tell two credentials apart in the CLI.
+  credentialIdPrefix: string;
+  // WebAuthn BE flag: the credential may be backed up / synced (e.g. an iCloud/Google passkey).
+  backedUp: boolean;
+  // WebAuthn BS-derived flag: a multi-device (syncable) credential rather than a single hardware device.
+  multiDevice: boolean;
   createdAt: string;
   lastUsedAt: string | null;
+};
+
+/**
+ * The isolation the order broker depends on, inspected from the running WSL instance. When `ok` is
+ * false the Studio OS user can escape to root or to Windows and read the order key, so the broker's
+ * protection does not hold. `interopActive` is true while Linux can still launch Windows programs
+ * (the binfmt WSLInterop handler is enabled or an /run/WSL interop socket exists); `windowsDrives`
+ * lists Windows drives automounted so the Studio user can read or write them. `notes` is short
+ * Chinese text for the owner. Part of GET /v1/status; the Settings page shows "隔离无效" when not ok.
+ */
+export type StudioT212BrokerIsolation = {
+  ok: boolean;
+  interopActive: boolean;
+  interopBinfmt: boolean;
+  interopSocket: boolean;
+  windowsDrives: string[];
+  notes: string[];
 };
 
 /**
@@ -1758,11 +1788,16 @@ export type StudioT212BrokerStatus = {
   allowedEnvs: StudioT212Environment[];
   maxOrderValue: number;
   maxOrdersPerHour: number;
+  // Cumulative value cap over a rolling 24 h, and the minimum seconds between live orders; 0 means off.
+  maxDailyOrderValue: number;
+  liveOrderCooldownSeconds: number;
   origins: string[];
   demoConfirm: boolean;
   keys: Record<StudioT212Environment, boolean>;
   currencies: Partial<Record<StudioT212Environment, string>>;
   passkeys: StudioT212BrokerPasskey[];
+  // The WSL isolation the broker depends on; when not ok its key protection does not hold.
+  isolation: StudioT212BrokerIsolation;
 };
 
 /**

@@ -5,10 +5,14 @@ import type { StudioT212Environment } from '@/shared/types.js';
 type ChallengeKind = 'order' | 'register' | 'remove';
 type PasskeyRow = {
   id: string; rp_id: string; credential_id: string; public_key: Buffer; counter: number;
-  transports: string; label: string | null; created_at: string; last_used_at: string | null;
+  transports: string; label: string | null; aaguid: string; backed_up: number; multi_device: number;
+  created_at: string; last_used_at: string | null;
 };
 type ChallengeRow = { id: string; kind: ChallengeKind; challenge: string; rp_id: string; origin: string; payload: string; expires_at: number };
-type AuditStatus = 'placed' | 'rejected' | 'unknown' | 'refused';
+// 'pending' is reserved synchronously the moment an order passes its limit checks, before any await, so a
+// burst of concurrent confirmations cannot slip past the hourly, daily or cooldown limits; it is then
+// updated to the real outcome. All limit queries count 'pending' alongside 'placed' and 'unknown'.
+type AuditStatus = 'pending' | 'placed' | 'rejected' | 'unknown' | 'refused';
 type AuditEntry = {
   previewId: string; env: StudioT212Environment; ticker: string; side: string; type: string; quantity: number;
   limitPrice: number | null; estimatedValue: number; currency: string; method: string; rpId: string;
@@ -28,6 +32,7 @@ export function createBrokerRepository(db: Database.Database) {
     CREATE TABLE IF NOT EXISTS passkeys (
       id TEXT PRIMARY KEY, rp_id TEXT NOT NULL, credential_id TEXT NOT NULL UNIQUE, public_key BLOB NOT NULL,
       counter INTEGER NOT NULL DEFAULT 0, transports TEXT NOT NULL DEFAULT '[]', label TEXT,
+      aaguid TEXT NOT NULL DEFAULT '', backed_up INTEGER NOT NULL DEFAULT 0, multi_device INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL, last_used_at TEXT
     );
     CREATE INDEX IF NOT EXISTS passkeys_rp ON passkeys (rp_id);
@@ -47,6 +52,13 @@ export function createBrokerRepository(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS order_audit_time ON order_audit (created_at);
   `);
 
+  // Databases created before the passkey-provenance columns existed are upgraded in place; a missing
+  // column is added with the same default as the CREATE above, so older passkeys simply read as unknown.
+  const passkeyColumns = new Set((db.prepare('PRAGMA table_info(passkeys)').all() as { name: string }[]).map(column => column.name));
+  for (const [name, definition] of [['aaguid', "aaguid TEXT NOT NULL DEFAULT ''"], ['backed_up', 'backed_up INTEGER NOT NULL DEFAULT 0'], ['multi_device', 'multi_device INTEGER NOT NULL DEFAULT 0']] as const) {
+    if (!passkeyColumns.has(name)) db.exec(`ALTER TABLE passkeys ADD COLUMN ${definition}`);
+  }
+
   return {
     passkeys(rpId?: string) {
       return (rpId
@@ -60,8 +72,9 @@ export function createBrokerRepository(db: Database.Database) {
       return Boolean(db.prepare('SELECT 1 FROM passkeys WHERE credential_id = ?').get(credentialId));
     },
     insertPasskey(row: PasskeyRow) {
-      db.prepare(`INSERT INTO passkeys (id, rp_id, credential_id, public_key, counter, transports, label, created_at, last_used_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(row.id, row.rp_id, row.credential_id, row.public_key, row.counter, row.transports, row.label, row.created_at, row.last_used_at);
+      db.prepare(`INSERT INTO passkeys (id, rp_id, credential_id, public_key, counter, transports, label, aaguid, backed_up, multi_device, created_at, last_used_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(row.id, row.rp_id, row.credential_id, row.public_key, row.counter, row.transports, row.label,
+        row.aaguid, row.backed_up, row.multi_device, row.created_at, row.last_used_at);
     },
     // Only moves the counter forwards; the service has already refused a counter that did not increase.
     recordPasskeyUse(id: string, counter: number, at: string) {
@@ -123,9 +136,33 @@ export function createBrokerRepository(db: Database.Database) {
         entry.brokerStatus ?? null, entry.error?.slice(0, 300) ?? null, at,
       );
     },
-    // Orders that reached Trading 212 (placed, or possibly placed) since a time, for the hourly limit.
+    // Reserves a limit slot synchronously (status 'pending') and returns its row id; finalizeAudit sets the
+    // real outcome later. Because this runs before the service awaits anything, concurrent confirmations see
+    // each other's reservation in the limit counts and cannot all pass a check at once.
+    recordPendingAudit(entry: Omit<AuditEntry, 'status' | 'brokerOrderId' | 'brokerStatus' | 'error'>, at: number) {
+      return Number(db.prepare(`INSERT INTO order_audit (preview_id, env, ticker, side, type, quantity, limit_price, estimated_value, currency, method,
+        rp_id, passkey_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`).run(
+        entry.previewId, entry.env, entry.ticker, entry.side, entry.type, entry.quantity, entry.limitPrice, entry.estimatedValue,
+        entry.currency, entry.method, entry.rpId, entry.passkeyId, at,
+      ).lastInsertRowid);
+    },
+    finalizeAudit(rowId: number, status: AuditStatus, extra: { passkeyId?: string | null; brokerOrderId?: string | null; brokerStatus?: string | null; error?: string } = {}) {
+      db.prepare(`UPDATE order_audit SET status = ?, passkey_id = COALESCE(?, passkey_id), broker_order_id = ?, broker_status = ?, error = ? WHERE row_id = ?`).run(
+        status, extra.passkeyId ?? null, extra.brokerOrderId ?? null, extra.brokerStatus ?? null, extra.error?.slice(0, 300) ?? null, rowId,
+      );
+    },
+    // Orders that reached Trading 212 (placed or possibly placed) or are reserved since a time: the hourly limit.
     submittedSince(since: number) {
-      return (db.prepare("SELECT COUNT(*) AS count FROM order_audit WHERE status IN ('placed', 'unknown') AND created_at > ?").get(since) as { count: number }).count;
+      return (db.prepare("SELECT COUNT(*) AS count FROM order_audit WHERE status IN ('placed', 'unknown', 'pending') AND created_at > ?").get(since) as { count: number }).count;
+    },
+    // Cumulative estimated value of those same orders since a time, for the rolling daily value cap.
+    submittedValueSince(since: number) {
+      return (db.prepare("SELECT COALESCE(SUM(estimated_value), 0) AS total FROM order_audit WHERE status IN ('placed', 'unknown', 'pending') AND created_at > ?").get(since) as { total: number }).total;
+    },
+    // Most recent time an order for one account reached Trading 212 or was reserved, for the live cooldown; null if none.
+    lastSubmittedAt(env: StudioT212Environment, since: number) {
+      const row = db.prepare("SELECT MAX(created_at) AS at FROM order_audit WHERE env = ? AND status IN ('placed', 'unknown', 'pending') AND created_at > ?").get(env, since) as { at: number | null };
+      return row.at;
     },
     // Latest identical order whose outcome was unknown, since a time.
     unknownSince(order: { env: string; ticker: string; side: string; quantity: number }, since: number) {

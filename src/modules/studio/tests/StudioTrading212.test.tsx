@@ -37,11 +37,13 @@ const OVERVIEW = {
     { ticker: 'MSFT_US_EQ', name: 'Microsoft', currency: 'USD', quantity: 1, averagePrice: 350, currentPrice: 330, value: 334.5, cost: 300, pnl: -5, fx: null, openedAt: '' },
   ],
 };
-const TAILNET_PASSKEY = { id: 'k-tailnet', rpId: 'desktop.tail1234.ts.net', label: 'Windows', createdAt: '2026-09-01T00:00:00Z', lastUsedAt: null };
-const LOCAL_PASSKEY = { id: 'k-local', rpId: window.location.hostname, label: 'iPad', createdAt: '2026-10-02T00:00:00Z', lastUsedAt: null };
+const PROVENANCE = { aaguid: '00000000-0000-0000-0000-000000000000', credentialIdPrefix: 'Y3JlZC0x', backedUp: false, multiDevice: false };
+const TAILNET_PASSKEY = { id: 'k-tailnet', rpId: 'desktop.tail1234.ts.net', label: 'Windows', createdAt: '2026-09-01T00:00:00Z', lastUsedAt: null, ...PROVENANCE };
+const LOCAL_PASSKEY = { id: 'k-local', rpId: window.location.hostname, label: 'iPad', createdAt: '2026-10-02T00:00:00Z', lastUsedAt: null, ...PROVENANCE };
+const HEALTHY_ISOLATION = { ok: true, interopActive: false, interopBinfmt: false, interopSocket: false, windowsDrives: [], notes: [] };
 const TRADING_OFF = {
   broker: { status: 'ok', keys: { live: true, demo: true } }, allowedEnvs: [], maxOrderValue: 500, maxOrdersPerHour: 10,
-  passkeys: [], trustedOrigins: [], demoConfirm: false,
+  maxDailyOrderValue: 0, liveOrderCooldownSeconds: 0, passkeys: [], trustedOrigins: [], demoConfirm: false, isolation: HEALTHY_ISOLATION,
 };
 // The broker allows live orders and this domain has a passkey, so the order form is available.
 const TRADING_LIVE = { ...TRADING_OFF, allowedEnvs: ['live'], currency: 'GBP', passkeys: [LOCAL_PASSKEY] };
