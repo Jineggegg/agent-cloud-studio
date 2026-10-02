@@ -31,9 +31,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+const onOpen = vi.fn();
 function renderWidgets(editing: boolean) {
   const onEnterEdit = vi.fn();
-  render(<StudioWidgets editing={editing} snr={SNR} onEnterEdit={onEnterEdit} galleryOpen={false} onGalleryClose={vi.fn()} />);
+  onOpen.mockReset();
+  render(<StudioWidgets editing={editing} snr={SNR} onEnterEdit={onEnterEdit} onOpen={onOpen} galleryOpen={false} onGalleryClose={vi.fn()} />);
   return onEnterEdit;
 }
 
@@ -272,4 +274,43 @@ test('edit mode removes widgets, and the layout is remembered', () => {
   renderWidgets(true);
   fireEvent.click(screen.getAllByRole('button', { name: '移除 SNR 实验室' })[1]);
   expect(savedOrder()).toEqual(['w-a', 'w-c']);
+});
+
+test('a tap on a widget opens its app with the card as the zoom origin; edit mode has no open button', () => {
+  renderWidgets(false);
+  const first = card('w-a');
+  vi.spyOn(first, 'getBoundingClientRect').mockReturnValue({ x: 10, y: 20, left: 10, top: 20, right: 110, bottom: 120, width: 100, height: 100, toJSON: () => ({}) } as DOMRect);
+  fireEvent.click(screen.getAllByRole('button', { name: '打开 SNR 实验室' })[0]);
+  expect(onOpen).toHaveBeenCalledWith('snr', expect.objectContaining({ left: 10, width: 100 }));
+  cleanup();
+  renderWidgets(true);
+  expect(screen.queryByRole('button', { name: /打开/ })).toBeNull();
+});
+
+test('the eye on the Trading 212 widget hides every amount, is remembered on this device and does not open the app', async () => {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify([{ id: 'w-t', type: 'trading212', size: 'large' }]));
+  localStorage.removeItem('studio-widgets-hide-amounts');
+  const overview = {
+    env: 'live', currency: 'GBP', totalValue: 10071.22, fetchedAt: '2026-10-02T10:00:00Z',
+    cash: { available: 5789, reserved: 0, inPies: 0 }, investments: { value: 3483, cost: 3400, unrealized: 39, realized: 0 },
+    changes: { today: { amount: 12.5, percent: 0.12, since: '2026-10-02T00:00:00Z', flowAdjusted: false }, yesterday: null },
+    recordedSince: null,
+    positions: [{ ticker: 'VUSA', name: 'Vanguard S&P 500', currency: 'GBP', quantity: 1, averagePrice: 1, currentPrice: 1, value: 2000, cost: 1980, pnl: 18.99, fx: null, openedAt: '2026-01-01' }],
+  };
+  mocks.trading212.status.mockImplementation(async () => Response.json([{ env: 'live', configured: true, source: 'file' }]));
+  mocks.trading212.overview.mockImplementation(async () => Response.json(overview));
+  mocks.trading212.history.mockImplementation(async () => Response.json([]));
+  renderWidgets(false);
+  const eye = await screen.findByRole('button', { name: '隐藏金额' });
+  const tradingCard = card('w-t');
+  expect(tradingCard.textContent).toContain('5,789');
+  fireEvent.click(eye);
+  expect(onOpen).not.toHaveBeenCalled();
+  expect(screen.getByRole('button', { name: '显示金额' }).getAttribute('aria-pressed')).toBe('true');
+  expect(tradingCard.textContent).toContain('金额已隐藏');
+  expect(tradingCard.textContent).not.toMatch(/5,789|3,483|18\.99|10,071|12\.50/);
+  expect(localStorage.getItem('studio-widgets-hide-amounts')).toBe('1');
+  cleanup();
+  renderWidgets(false);
+  expect(await screen.findByRole('button', { name: '显示金额' })).toBeTruthy();
 });

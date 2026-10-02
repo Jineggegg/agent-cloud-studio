@@ -44,6 +44,8 @@ function taskInput(body: Record<string, unknown>): StudioTaskInput {
 export function createProjectHubRouter(hub: ReturnType<typeof createProjectHubService>, mail: ReturnType<typeof createProjectMailService>) {
   const router = express.Router();
   router.use((_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+  // Before the /:id routes, which would otherwise read "workbench" as a project id.
+  router.post('/workbench/launch', asyncHandler(async (req, res) => { user(req); res.json(await hub.launchWorkbench(text(req.body?.provider))); }));
   router.get('/', asyncHandler(async (req, res) => { res.json(hub.list(user(req))); }));
   router.post('/', asyncHandler(async (req, res) => { res.status(201).json(hub.create(user(req), projectInput(req.body ?? {}))); }));
   router.get('/:id', asyncHandler(async (req, res) => { res.json(hub.get(user(req), String(req.params.id))); }));

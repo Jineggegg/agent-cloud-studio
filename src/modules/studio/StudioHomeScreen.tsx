@@ -11,6 +11,7 @@ import type { StudioHomeTile, StudioSnr } from '@/shared/types';
 import { StudioFluidBackground } from '@/modules/studio/StudioFluidBackground';
 import { StudioTileIcon } from '@/modules/studio/StudioTileIcon';
 import { StudioWidgets } from '@/modules/studio/StudioWidgets';
+import type { WidgetType } from '@/modules/studio/StudioWidgets';
 import { useHomeSortableItem, useHomeSortableList } from '@/modules/studio/hooks/useHomeSortable';
 import '@/modules/studio/studio-home.css';
 
@@ -119,12 +120,14 @@ function SortableTile({ tile, index, last, editing, labels, iconSize, onActivate
  * on any icon or widget enters edit mode (jiggling, drag to rearrange, hide), like the iPadOS home screen; move
  * buttons give VoiceOver and Switch Control the same rearranging.
  */
-export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreate, onRefresh, onSignOut, refreshing }: {
+export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenWidget, onCreate, onRefresh, onSignOut, refreshing }: {
   tiles: StudioHomeTile[]; loading: boolean;
-  // True while an app fully covers the home screen; the wallpaper animation pauses to save battery.
+  // True while an app fully covers the home screen; widget polling pauses to save battery.
   covered: boolean;
   snr: StudioSnr | null;
   onOpen: (tile: StudioHomeTile, icon: DOMRect | null) => void;
+  // A tapped widget opens its app (Claude and Codex open a new session in the workbench).
+  onOpenWidget: (type: WidgetType, card: DOMRect) => void;
   onCreate: () => void; onRefresh: () => void; onSignOut: () => void; refreshing: boolean;
 }) {
   const { isDarkMode, setThemeMode } = useTheme();
@@ -201,7 +204,7 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreat
       </label>
     </div>}
 
-    <StudioWidgets editing={editing} snr={snr} paused={covered} onEnterEdit={enterEdit}
+    <StudioWidgets editing={editing} snr={snr} paused={covered} onEnterEdit={enterEdit} onOpen={onOpenWidget}
       galleryOpen={widgetGalleryOpen} onGalleryClose={() => setWidgetGalleryOpen(false)} />
 
     <DndContext {...dndProps}>

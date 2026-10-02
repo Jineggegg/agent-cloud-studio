@@ -444,6 +444,13 @@
 .ios-field label { flex-shrink: 0; width: 76px; font-size: 17px; }
 .ios-field input { flex: 1; min-width: 0; min-height: 44px; border: 0; background: transparent; color: var(--ios-label); font-size: 17px; outline: none; }
 .ios-field input::placeholder, .ios-search input::placeholder { color: var(--ios-label-3); }
+.ios-field select { flex: 1; min-width: 0; min-height: 44px; border: 0; background: transparent; color: var(--ios-label); font: inherit; font-size: 17px; text-align: right; text-align-last: right; outline: none; cursor: pointer; }
+.ios-field select:disabled { color: var(--ios-label-3); cursor: default; }
+.ios-field select:focus-visible { outline: 2px solid var(--ios-tint); outline-offset: -2px; border-radius: 8px; }
+/* Settings → 模型: the CLI picker sits above its list; sub-headings for the model list and hidden models. */
+.model-providers { display: flex; width: fit-content; max-width: 100%; margin: 0 16px 10px; overflow-x: auto; }
+.ios-section-header h3 { margin-top: 18px; font-size: 15px; font-weight: 600; color: var(--ios-label-2); }
+.model-form-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 6px 16px 12px; }
 .ios-search { display: flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 10px; border-radius: 12px; background: var(--ios-fill); color: var(--ios-label-2); }
 .ios-search input { flex: 1; min-width: 0; min-height: 40px; border: 0; background: transparent; color: var(--ios-label); font-size: 17px; outline: none; }
 .ios-search input::-webkit-search-cancel-button { -webkit-appearance: none; }
@@ -953,6 +960,22 @@ html.theme-revealing::view-transition-new(root) { z-index: 2; }
 .widget-resize.is-active path, .widget-resize:hover path { stroke-width: 6.5; }
 .widget-resize:focus-visible path { stroke: var(--ios-tint); }
 .library-sheet .ios-row .ios-button + .ios-button { margin-left: -6px; }
+
+/* Outside edit mode the whole card is a button that opens the widget's app (StudioWidgets); it sits over the
+   card's content, under its own controls, and presses in slightly like an icon. */
+.widget-open {
+  position: absolute; inset: 0; z-index: 1; padding: 0; border: 0; border-radius: inherit; background: none; cursor: pointer;
+}
+.widget-open:focus-visible { outline: 2px solid var(--ios-tint); outline-offset: 3px; }
+.widget { transition: scale var(--dur-slow) var(--ease-spring); }
+.widget:has(> .widget-open:active) { scale: .97; transition-duration: var(--dur-press); }
+.widget-eye {
+  position: relative; z-index: 2; display: grid; place-items: center; flex-shrink: 0; width: 28px; height: 28px; margin: -4px -4px -4px auto;
+  border-radius: 50%; color: var(--ios-label-2); background: var(--ios-fill);
+}
+/* A 44px hit area around the 28px eye. */
+.widget-eye::after { content: ""; position: absolute; inset: -8px; }
+.widget-masked { letter-spacing: .06em; }
 
 /* ---------- Website quick-browse ---------- */
 .links-sheet { width: min(640px, calc(100% - 32px)); }
