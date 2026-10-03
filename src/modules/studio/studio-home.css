@@ -200,7 +200,80 @@
 .aj-sheet-actions { display: grid; gap: 8px; margin-top: 20px; }
 .aj-sheet .aj-sheet-actions .ios-button { width: 100%; min-height: 50px; font-size: 17px; }
 
+/* ---------- Names typed in place (edit mode) ---------- */
+/* The field sits exactly where the name was; the name itself steps aside while it is typed. */
+.home-tile-slot.is-renaming .home-label { visibility: hidden; }
+.home-label-input {
+  position: absolute; z-index: 4; left: 50%; top: calc(var(--icon) + 12px); translate: -50% 0;
+  width: min(calc(var(--tile) + 20px), 170px); height: 26px; padding: 0 8px; border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--ios-tint) 55%, transparent); outline: none;
+  background: var(--ios-glass-strong); color: var(--ios-label); font: inherit; font-size: var(--label); font-weight: 500; text-align: center;
+  -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); box-shadow: 0 4px 14px rgba(0, 0, 0, .14);
+  animation: studio-pop var(--dur-base) var(--ease-spring);
+}
+.home-label-input::placeholder { color: var(--ios-label-3); }
+/* In edit mode the name looks tappable. */
+.home-screen.editing .home-tile-slot[data-sort-id] .home-label { cursor: text; }
+
+/* ---------- Folders ---------- */
+/* On the grid: the icon card holds up to nine miniatures, three by three. */
+.home-tile .home-icon.home-folder-icon { padding: 14%; place-items: stretch; }
+.home-folder-grid {
+  position: relative; z-index: 1; display: grid; grid-template-columns: repeat(3, 1fr); grid-auto-rows: 1fr; gap: 8%;
+  width: 100%; height: 100%; align-content: start;
+}
+.home-folder-grid > .home-icon.mini {
+  --icon: 100%; width: 100%; height: auto; aspect-ratio: 1; border-radius: 26%;
+  background: color-mix(in srgb, var(--ios-label) 8%, transparent); border: 0; box-shadow: none; color: var(--ios-label);
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+.home-folder-grid > .home-icon.mini::before, .home-folder-grid > .home-icon.mini::after { display: none; }
+.home-folder-grid > .home-icon.mini > svg { width: 64%; height: 64%; opacity: .8; filter: none; }
+
+/* An icon held over another: the other grows a folder's backdrop (and holds still) once the hold is long enough. */
+.home-tile-slot.is-merge-target .home-icon { transition: transform 260ms var(--ease-spring), box-shadow 260ms ease; }
+.home-tile-slot.is-merge-ready .home-icon {
+  transform: scale(1.14);
+  box-shadow: 0 0 0 calc(var(--icon) * .1) color-mix(in srgb, var(--home-card) 92%, transparent), var(--home-card-lift);
+}
+.home-tile-slot.is-merge-ready { animation: none !important; }
+
+/* Open: a frosted panel of the folder's icons under its large name, grown out of the folder icon. */
+.home-folder-layer { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 24px; }
+.home-folder-scrim {
+  position: absolute; inset: 0; background: color-mix(in srgb, var(--ios-scrim) 70%, transparent);
+  -webkit-backdrop-filter: blur(26px) saturate(150%); backdrop-filter: blur(26px) saturate(150%);
+  animation: studio-fade var(--dur-base) ease backwards;
+}
+.home-folder {
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 18px; width: min(640px, 100%);
+  animation: home-folder-open 420ms cubic-bezier(.2, .9, .25, 1.06) backwards;
+}
+@keyframes home-folder-open {
+  from { opacity: 0; transform: translate(var(--folder-from-x, 0), var(--folder-from-y, 0)) scale(.18); }
+}
+.home-folder-title {
+  max-width: 100%; min-height: 48px; padding: 4px 16px; border: 0; border-radius: 14px; background: transparent;
+  font-family: var(--serif); font-size: 36px; font-weight: 500; line-height: 1.2; color: var(--ios-label); text-align: center;
+  text-shadow: var(--home-label-shadow); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.home-folder-title.is-field { width: min(420px, 100%); background: var(--ios-glass-strong); outline: none; text-shadow: none; }
+.home-folder-title.is-field:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, var(--ios-tint) 60%, transparent); }
+.home-folder-panel {
+  width: 100%; max-height: min(72dvh, 620px); overflow-y: auto; padding: 26px 22px; border-radius: 38px;
+  background: var(--home-glass); border: 1px solid var(--home-glass-edge);
+  -webkit-backdrop-filter: blur(40px) saturate(180%); backdrop-filter: blur(40px) saturate(180%);
+  box-shadow: inset 0 1px 0 var(--home-glass-rim), var(--ios-shadow-float);
+}
+.home-folder-panel .home-grid.home-folder-grid-open { margin: 0 auto; gap: 24px 22px; }
+.home-folder-hint { font-size: 13px; color: var(--ios-label-2); text-shadow: var(--home-label-shadow); }
+@media (max-width: 699px) {
+  .home-folder-title { font-size: 28px; }
+  .home-folder-panel { padding: 20px 12px; border-radius: 30px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .home-folder { animation: none; }
   .home-screen.editing .home-tile-slot[data-sort-id], .widget-grid.editing .widget-slot > .widget { animation: none !important; }
   .home-drag-overlay > .home-tile-slot.is-lifted, .widget-drag-overlay > .widget.is-lifted { scale: 1.02; animation: none; }
 }
