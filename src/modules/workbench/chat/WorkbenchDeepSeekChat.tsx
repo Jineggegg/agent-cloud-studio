@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent } from 'react';
+import type { KeyboardEvent, ReactNode } from 'react';
 import { AnimatePresence, m } from 'motion/react';
 import { Activity, AlertTriangle, KeyRound, Sparkle, X } from 'lucide-react';
 import { toast } from 'sonner';
@@ -7,8 +7,8 @@ import { toast } from 'sonner';
 import { LazyMessageRow, useLazyRowObserver } from '@/modules/chat';
 import { writeDeviceModelChoice } from '@/shared/modelDefaults';
 import type {
-  ChatMessage, Project, ProviderModelOption, StudioConversation, WorkbenchChatChrome, WorkbenchModelCatalogs, WorkbenchNewChatChoice,
-  WorkbenchNewProvider, WorkbenchSessionItem,
+  ChatMessage, Project, ProviderModelOption, StudioConversation, WorkbenchChatChrome, WorkbenchHandoffRequest, WorkbenchModelCatalogs,
+  WorkbenchNewChatChoice, WorkbenchNewProvider, WorkbenchSessionItem,
 } from '@/shared/types';
 import { useDeepSeekConversation } from '@/modules/workbench/chat/hooks/useDeepSeekConversation';
 import { useSpeechDictation } from '@/modules/workbench/chat/hooks/useSpeechDictation';
@@ -27,6 +27,9 @@ const FALLBACK_MODELS = ['deepseek-flash', 'deepseek-v4-pro'];
 const INPUT_MAX_HEIGHT = 320;
 // Safari ends IME composition just before the confirming Enter arrives.
 const IME_RACE_WINDOW_MS = 30;
+// The server takes 16000 characters per message; a handoff's first message also carries the summary (≤ 7.5K).
+const MAX_MESSAGE = 16000;
+const MAX_HANDOFF_MESSAGE = 8000;
 
 type WorkbenchDeepSeekChatProps = {
   project: Project;
@@ -34,14 +37,22 @@ type WorkbenchDeepSeekChatProps = {
   conversationId: string | null;
   title: string | null;
   hubProjectId: string | null;
-  // Providers a new chat may switch to before its first send; null once the shell has a conversation open.
+  // Providers the model menu offers besides DeepSeek (switched to before the first send, handed over to after it);
+  // null when the provider cannot change here.
   providerChoices: WorkbenchNewChatChoice[] | null;
+  // Another provider's model picked once the conversation has started: the column confirms and hands it over.
+  onRequestHandoff?: (request: WorkbenchHandoffRequest) => void;
+  // A handoff's first message: the owner's text with the earlier conversation's summary appended.
+  prepareFirstMessage?: (text: string) => Promise<string>;
+  // Earlier stretches of a handed-over conversation, shown above this conversation's messages.
+  prelude?: ReactNode;
   // The Claude Code and Codex models for the one model menu.
   catalogs: WorkbenchModelCatalogs;
   // The DeepSeek model a new conversation sends with (picked here or in the agent view); null: the first offered.
   draftModel: string | null;
   onDraftModelChange: (model: string) => void;
-  onSelectProvider: (provider: WorkbenchNewProvider) => void;
+  // Another provider picked before the first send (with the picked model's label, when there is one).
+  onSelectProvider: (provider: WorkbenchNewProvider, modelLabel?: string | null) => void;
   onSessionCreated: (item: WorkbenchSessionItem) => void;
   // The shell's controls and project name for the title bar.
   chrome?: WorkbenchChatChrome;
@@ -86,6 +97,9 @@ export function WorkbenchDeepSeekChat({
   title,
   hubProjectId,
   providerChoices,
+  onRequestHandoff,
+  prepareFirstMessage,
+  prelude,
   catalogs,
   draftModel,
   onDraftModelChange,
@@ -119,20 +133,34 @@ export function WorkbenchDeepSeekChat({
   const models = chat.status?.deepseek.models?.length ? chat.status.deepseek.models : FALLBACK_MODELS;
   const modelOptions = useMemo<ProviderModelOption[]>(() => models.map((value) => ({ value, label: value })), [models]);
   const activeModel = chat.conversation?.model ?? (draftModel && models.includes(draftModel) ? draftModel : models[0]);
-  const started = Boolean(chat.conversation) || chat.sending;
+  // An open conversation counts as started while it loads, so the menu never offers an instant switch for it.
+  const started = Boolean(conversationId) || Boolean(chat.conversation) || chat.sending;
   const configured = chat.status ? chat.status.deepseek.configured : true;
   const dictation = useSpeechDictation({ text: draft, onText: setDraft, onError: (message) => toast.error(message) });
 
-  // Claude Code or Codex picked before the first send: that agent starts on this device with the chosen model.
-  const switchProvider = (target: WorkbenchNewProvider, model: string | null) => {
-    if (target !== 'deepseek' && model) writeDeviceModelChoice(target, model);
-    onSelectProvider(target);
+  // Before the first send another provider's model switches this chat; afterwards it hands the conversation over.
+  const switchMode = !providerChoices ? 'locked' : !started ? 'switch' : onRequestHandoff ? 'handoff' : 'locked';
+  // Claude Code or Codex picked: that agent starts on this device with the chosen model — at once before the first
+  // send, or once the owner agrees to hand the conversation over.
+  const switchProvider = (target: WorkbenchNewProvider, model: string | null, modelLabel: string | null) => {
+    const recordPick = () => { if (target !== 'deepseek' && model) writeDeviceModelChoice(target, model); };
+    if (started && onRequestHandoff) {
+      onRequestHandoff({
+        provider: target, model, modelLabel,
+        from: { kind: 'deepseek', id: chat.conversation?.id ?? null, provider: 'deepseek', modelLabel: activeModel },
+        busy: chat.sending,
+        apply: recordPick,
+      });
+      return;
+    }
+    recordPick();
+    onSelectProvider(target, modelLabel);
   };
   const menuSections = oneModelMenuSections({
-    providers: menuProvidersFor({ choices: started ? null : providerChoices, current: 'deepseek', currentOptions: modelOptions, catalogs }),
+    providers: menuProvidersFor({ choices: switchMode === 'locked' ? null : providerChoices, current: 'deepseek', currentOptions: modelOptions, catalogs }),
     current: 'deepseek',
     currentModel: activeModel,
-    locked: started || providerChoices === null,
+    mode: switchMode,
     onSelectModel: started ? undefined : onDraftModelChange,
     onSwitch: switchProvider,
   });
@@ -169,7 +197,18 @@ export function WorkbenchDeepSeekChat({
     const text = draft;
     if (!text.trim() || chat.sending) return;
     setDraft('');
-    if (!await chat.send(text, activeModel, includeSnr)) setDraft(text);
+    let message = text;
+    // A handoff's first message carries the summary; without one the send waits for the owner to retry.
+    if (prepareFirstMessage && !chat.conversation) {
+      try {
+        message = await prepareFirstMessage(text);
+      } catch (failure) {
+        toast.error(failure instanceof Error && failure.message ? failure.message : '没能整理交接摘要，请再试一次');
+        setDraft(text);
+        return;
+      }
+    }
+    if (!await chat.send(message, activeModel, includeSnr)) setDraft(text);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -186,7 +225,7 @@ export function WorkbenchDeepSeekChat({
       <WorkbenchProviderMark provider="deepseek" size={60} />
       <h2 className="wbc-empty-title">{project.displayName}</h2>
       <p className="wbc-empty-sub">DeepSeek · {activeModel} · {hubProjectId ? '保存在这个项目里' : '保存在 DeepSeek 应用里'}</p>
-      <p className="wbc-empty-note">适合提问、写作和整理思路；它看不到项目文件，也不会运行命令。{providerChoices && '发送第一条消息前，可以在模型菜单里换成 Claude Code 或 Codex。'}</p>
+      <p className="wbc-empty-note">适合提问、写作和整理思路；它看不到项目文件，也不会运行命令。{providerChoices && '可以在模型菜单里换成 Claude Code 或 Codex；对话开始后换服务，前面的内容会整理成摘要交给它。'}</p>
     </div>
   ) : (
     <div className="wbc-empty">
@@ -215,7 +254,8 @@ export function WorkbenchDeepSeekChat({
               <span className="wbc-skel is-line is-long" />
             </div>
           )}
-          {!chat.loading && messages.length === 0 && !chat.sending && emptyState}
+          {prelude}
+          {!prelude && !chat.loading && messages.length === 0 && !chat.sending && emptyState}
           {messages.map((message, index) => {
             const previous = messages[index - 1];
             return (
@@ -251,7 +291,7 @@ export function WorkbenchDeepSeekChat({
               dir="auto"
               aria-label="消息"
               enterKeyHint="send"
-              maxLength={16000}
+              maxLength={prepareFirstMessage && !chat.conversation ? MAX_HANDOFF_MESSAGE : MAX_MESSAGE}
               placeholder={configured ? '给 DeepSeek 发消息' : '先添加 DeepSeek 密钥'}
               value={draft}
               disabled={chat.sending}

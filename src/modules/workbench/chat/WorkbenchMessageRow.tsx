@@ -6,6 +6,7 @@ import type { ChatMessage, DiffCalculator, Project } from '@/shared/types';
 import { copyTextToClipboard } from '@/shared/utils';
 import { WorkbenchProviderMark } from '@/modules/workbench/WorkbenchProviderMark';
 import { modelDisplayName, providerLabel } from '@/modules/workbench/chat/utils/workbenchChatCopy';
+import { splitHandoffContent } from '@/modules/workbench/chat/utils/workbenchHandoff';
 import { readToolInput } from '@/modules/workbench/chat/utils/workbenchToolSummary';
 
 const timeFormatter = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' });
@@ -38,8 +39,9 @@ function CopyMessageButton({ content }: { content: string }) {
 }
 
 /**
- * Used by WorkbenchTranscript and WorkbenchDeepSeekChat for one turn of the owner: a soft bubble on the right, with
- * attachments above it and copy / edit beneath.
+ * Used by WorkbenchTranscript, WorkbenchDeepSeekChat and WorkbenchHandoffPrelude for one turn of the owner: a soft
+ * bubble on the right, with attachments above it and copy / edit beneath. The first message of a session that took a
+ * conversation over shows the owner's words, with the handoff summary it carried folded beneath.
  */
 export const WorkbenchUserMessage = memo(function WorkbenchUserMessage({ message, projectId, onEdit, failed }: {
   message: ChatMessage;
@@ -49,7 +51,7 @@ export const WorkbenchUserMessage = memo(function WorkbenchUserMessage({ message
   // A DeepSeek turn the model never answered.
   failed?: boolean;
 }) {
-  const content = String(message.content ?? '');
+  const { message: content, summary: handoffSummary } = splitHandoffContent(String(message.content ?? ''));
   const time = formatTime(message.timestamp);
   return (
     <div className={`wbc-row is-user${failed ? ' is-failed' : ''}`}>
@@ -68,6 +70,12 @@ export const WorkbenchUserMessage = memo(function WorkbenchUserMessage({ message
           <span className="wbc-visually-hidden">你：</span>
           <Markdown breaks className="wbc-prose is-bubble">{content}</Markdown>
         </div>
+      )}
+      {handoffSummary && (
+        <details className="wbc-handoff-carried">
+          <summary>附带了交接摘要</summary>
+          <Markdown className="wbc-prose is-quiet">{handoffSummary}</Markdown>
+        </details>
       )}
       <div className="wbc-row-actions">
         {failed && <span className="wbc-row-failed">没有送达</span>}

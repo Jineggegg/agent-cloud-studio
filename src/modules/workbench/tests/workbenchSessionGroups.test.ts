@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest';
 
-import type { WorkbenchSessionItem } from '@/shared/types';
-import { filterSessions, formatSessionTime, groupSessionsByDay, sortSessionsByRecency } from '@/modules/workbench/utils/workbenchSessionGroups';
+import type { WorkbenchSessionItem, WorkbenchThread } from '@/shared/types';
+import { collapseThreads, filterSessions, formatSessionTime, groupSessionsByDay, sortSessionsByRecency } from '@/modules/workbench/utils/workbenchSessionGroups';
 import { isListedAgentSession, newChatChoices, parseNewProvider, resolveNewChatProvider, toAgentItem, workbenchPath } from '@/modules/workbench/utils/workbenchRoutes';
 
 // Friday 2 October 2026, 15:30 local time.
@@ -92,4 +92,34 @@ test('Cursor and OpenCode are hidden: a ?new= or remembered choice naming one is
   expect(isListedAgentSession({ provider: 'opencode' })).toBe(false);
   expect(isListedAgentSession({ provider: 'codex' })).toBe(true);
   expect(isListedAgentSession({})).toBe(true);
+});
+
+test('a conversation handed between providers folds into one row: its title, its latest session and its newest time', () => {
+  const thread: WorkbenchThread = {
+    id: 't1', projectId: 'p1', title: '登录改版', createdAt: at(3), updatedAt: at(2),
+    segments: [
+      { kind: 'agent', provider: 'claude', sessionId: 'old', modelLabel: 'Opus', handoffAt: null },
+      { kind: 'agent', provider: 'codex', sessionId: 'eight-days', modelLabel: 'GPT-5.5', handoffAt: at(2) },
+      { kind: 'deepseek', provider: 'deepseek', sessionId: 'week', modelLabel: null, handoffAt: at(1) },
+    ],
+  };
+  // One of its sessions is running (an earlier stretch's background work): the folded row runs.
+  const rows = collapseThreads(sortSessionsByRecency(ROWS.map(item => (item.id === 'old' ? { ...item, running: true } : item))), [thread]);
+  const folded = rows.find(item => item.thread);
+  expect(folded).toMatchObject({ id: 'week', kind: 'deepseek', provider: 'deepseek', title: '登录改版', running: true, thread });
+  // The newest of its sessions' times and the chain's own; the stretches are not listed on their own.
+  expect(folded?.updatedAt).toBe(new Date(Math.max(Date.parse(at(2)), Date.parse(at(6, 9)), Date.parse(at(7, 9)), Date.parse(at(30)))).toISOString());
+  expect(rows.map(item => item.id).filter(id => id === 'old' || id === 'eight-days')).toEqual([]);
+  expect(rows).toHaveLength(ROWS.length - 2);
+  // Rows stay newest first.
+  expect(rows).toEqual(sortSessionsByRecency(rows));
+});
+
+test('a chain none of whose sessions is loaded adds nothing, and no chains leaves the rows as they are', () => {
+  const unloaded: WorkbenchThread = {
+    id: 't2', projectId: 'p1', title: '更早的', createdAt: at(90), updatedAt: at(90),
+    segments: [{ kind: 'agent', provider: 'claude', sessionId: 'not-loaded', modelLabel: null, handoffAt: null }],
+  };
+  expect(collapseThreads(ROWS, [unloaded])).toEqual(sortSessionsByRecency(ROWS));
+  expect(collapseThreads(ROWS, [])).toBe(ROWS);
 });

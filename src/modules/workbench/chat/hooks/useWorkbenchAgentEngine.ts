@@ -23,6 +23,8 @@ type UseWorkbenchAgentEngineArgs = {
   newSessionTrigger: number;
   onSessionCreated: (item: WorkbenchSessionItem) => void;
   onOpenFile: (path: string) => void;
+  // Rewrites a new chat's first prompt (a handoff appends the earlier conversation's summary); absent otherwise.
+  prepareNewSessionContent?: (content: string) => Promise<string>;
 };
 
 /**
@@ -38,6 +40,7 @@ export function useWorkbenchAgentEngine({
   newSessionTrigger,
   onSessionCreated,
   onOpenFile,
+  prepareNewSessionContent,
 }: UseWorkbenchAgentEngineArgs) {
   const { ws, sendMessage, subscribe, isConnected } = useWebSocket();
   const processingSessions = useProcessingSessions();
@@ -126,6 +129,7 @@ export function useWorkbenchAgentEngine({
     onDeliveryReconciled: (reconciledSessionId) => { void requestLatestMessages(reconciledSessionId, true); },
     onSessionProcessing: markSessionProcessing,
     onSessionEstablished: handleSessionEstablished,
+    prepareNewSessionContent,
     onFileOpen: onOpenFile,
     scrollToBottom: sessionState.scrollToBottom,
     addMessage: sessionState.addMessage,

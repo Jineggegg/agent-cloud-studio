@@ -11,13 +11,14 @@ function exitDelay() {
 
 /**
  * Used by StudioPage, StudioConnections, StudioSettingsMail (removing a mail
- * account), the workbench module (deleting a session) and StudioMemory (deleting a note) in place of window.confirm, which cannot be styled and blocks the iOS
+ * account), the workbench module (deleting a session, handing a conversation to another model) and StudioMemory
+ * (deleting a note) in place of window.confirm, which cannot be styled and blocks the iOS
  * standalone web app. Rendered through a portal so animated ancestors never
- * become the containing block.
+ * become the containing block. The confirm action reads as destructive (red) unless `destructive` is false.
  */
-export function StudioConfirmSheet({ title, message, confirmLabel, onConfirm, onCancel }: {
+export function StudioConfirmSheet({ title, message, confirmLabel, onConfirm, onCancel, destructive = true }: {
   title: string; message?: string; confirmLabel: string;
-  onConfirm: () => void; onCancel: () => void;
+  onConfirm: () => void; onCancel: () => void; destructive?: boolean;
 }) {
   // The exit animation runs before the chosen callback unmounts the alert.
   const [closing, setClosing] = useState(false);
@@ -55,7 +56,7 @@ export function StudioConfirmSheet({ title, message, confirmLabel, onConfirm, on
         </div>
         <div className="sheet-actions">
           <button ref={cancelButton} type="button" className="sheet-action" onClick={() => finish(onCancel)}>取消</button>
-          <button ref={confirmButton} type="button" className="sheet-action destructive" onClick={() => finish(onConfirm)}>{confirmLabel}</button>
+          <button ref={confirmButton} type="button" className={`sheet-action ${destructive ? 'destructive' : 'is-default'}`} onClick={() => finish(onConfirm)}>{confirmLabel}</button>
         </div>
       </div>
     </div>,

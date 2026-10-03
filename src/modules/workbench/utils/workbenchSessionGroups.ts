@@ -1,4 +1,4 @@
-import type { WorkbenchSessionGroup, WorkbenchSessionItem } from '@/shared/types';
+import type { WorkbenchSessionGroup, WorkbenchSessionItem, WorkbenchThread } from '@/shared/types';
 
 // Display order and headings of the history buckets.
 const GROUP_LABELS: Record<WorkbenchSessionGroup['id'], string> = {
@@ -39,6 +39,41 @@ export function sortSessionsByRecency(items: WorkbenchSessionItem[]): WorkbenchS
     if (!Number.isFinite(b)) return -1;
     return b - a;
   });
+}
+
+/**
+ * Folds every conversation handed between providers into one row: the thread's title, its latest session's id and
+ * provider (so the row opens and marks the session that continues it), the newest time of any of its sessions, and
+ * running while any of them runs. The row carries the thread. A thread none of whose sessions are loaded (an older
+ * page, or all deleted) adds nothing. Rows of other sessions pass through; the result is newest first.
+ */
+export function collapseThreads(items: WorkbenchSessionItem[], threads: WorkbenchThread[]): WorkbenchSessionItem[] {
+  if (!threads.length) return items;
+  const owner = new Map<string, WorkbenchThread>();
+  for (const thread of threads) for (const segment of thread.segments) owner.set(`${segment.kind}:${segment.sessionId}`, thread);
+  const rowsOf = new Map<string, WorkbenchSessionItem[]>();
+  const rows: WorkbenchSessionItem[] = [];
+  for (const item of items) {
+    const thread = owner.get(`${item.kind}:${item.id}`);
+    if (thread) rowsOf.set(thread.id, [...(rowsOf.get(thread.id) ?? []), item]);
+    else rows.push(item);
+  }
+  for (const thread of threads) {
+    const members = rowsOf.get(thread.id);
+    const latest = thread.segments[thread.segments.length - 1];
+    if (!members?.length || !latest) continue;
+    const times = [...members.map(timestamp), Date.parse(thread.updatedAt)].filter(Number.isFinite);
+    rows.push({
+      id: latest.sessionId,
+      kind: latest.kind,
+      provider: latest.provider,
+      title: thread.title,
+      updatedAt: times.length ? new Date(Math.max(...times)).toISOString() : null,
+      running: members.some(member => member.running) || undefined,
+      thread,
+    });
+  }
+  return sortSessionsByRecency(rows);
 }
 
 /** Splits the history into 今天 / 昨天 / 本周 / 更早 (local calendar days), dropping empty buckets. */

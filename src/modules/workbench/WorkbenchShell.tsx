@@ -94,7 +94,7 @@ export function WorkbenchShell() {
   const project = current?.project ?? null;
   const hubProjectId = current?.hub?.id ?? null;
   const sessions = useWorkbenchSessions(project?.projectId ?? null, hubProjectId);
-  const { upsert, rename, archive, restore, remove, reload: reloadSessions, loadMore } = sessions;
+  const { upsert, upsertThread, rename, archive, restore, remove, reload: reloadSessions, loadMore } = sessions;
 
   // The history's search text.
   const [query, setQuery] = useState('');
@@ -104,8 +104,9 @@ export function WorkbenchShell() {
   const [lastProvider, setLastProvider] = useState<WorkbenchNewProvider>(() => parseNewProvider(readStored(LAST_PROVIDER_KEY)) ?? 'claude');
   // Bumped by every explicit new chat, so the chat column starts fresh even when the URL stays the same.
   const [chatEpoch, setChatEpoch] = useState(0);
-  // The session the current new chat turned into: the same chat stays mounted while its URL changes.
-  const [adoptedId, setAdoptedId] = useState<string | null>(null);
+  // The session the chat on screen turned into (a new chat's first send, or a handoff to another provider) with the
+  // chat's identity at that moment: the same chat stays mounted while its URL changes.
+  const [adopted, setAdopted] = useState<{ id: string; key: string } | null>(null);
   // A session opened by URL that the loaded history does not contain (a deep link or an older page).
   const [fetched, setFetched] = useState<{ key: string; item: WorkbenchSessionItem | null } | null>(null);
   // The row waiting for the delete confirmation.
@@ -157,7 +158,12 @@ export function WorkbenchShell() {
     : resolveNewChatProvider(requestedProvider, hubProjectId);
   // What "+ 新会话" offers here: the shared rule (DeepSeek only with a Studio project).
   const newChoices = useMemo(() => newChatChoices(hubProjectId), [hubProjectId]);
-  const chatKey = project ? `${project.projectId}:${session && session.id !== adoptedId ? `${session.kind}:${session.id}` : `new:${chatEpoch}`}` : '';
+  const chatIdentity = session && session.id === adopted?.id ? adopted.key : session ? `${session.kind}:${session.id}` : `new:${chatEpoch}`;
+  const chatKey = project ? `${project.projectId}:${chatIdentity}` : '';
+  // The conversation the open session belongs to when it was handed between providers (the history row carries it;
+  // a session opened by URL is looked up among the project's chains).
+  const thread = !session ? null : session.thread
+    ?? sessions.threads.find(item => item.segments.some(segment => segment.kind === session.kind && segment.sessionId === session.id)) ?? null;
 
   useEffect(() => { if (project) writeStored(LAST_PROJECT_KEY, project.projectId); }, [project]);
 
@@ -193,7 +199,7 @@ export function WorkbenchShell() {
     writeStored(LAST_PROVIDER_KEY, chosen);
     // The inherited chat engine reads the agent from this shared preference when a new chat mounts.
     if (chosen !== 'deepseek') writeSelectedProvider(chosen);
-    setAdoptedId(null);
+    setAdopted(null);
     setChatEpoch(value => value + 1);
     setSheetOpen(false);
     navigate(workbenchPath(project.projectId, null, chosen));
@@ -207,12 +213,13 @@ export function WorkbenchShell() {
     if (project) navigate(workbenchPath(project.projectId, null, provider), { replace: true });
   }, [project, navigate]);
 
+  // The chat keeps its identity (and stays mounted) as its URL moves to the new session.
   const onSessionCreated = useCallback((item: WorkbenchSessionItem) => {
     if (!project) return;
     upsert(item);
-    setAdoptedId(item.id);
+    setAdopted({ id: item.id, key: chatIdentity });
     navigate(workbenchPath(project.projectId, item), { replace: true });
-  }, [project, upsert, navigate]);
+  }, [project, upsert, navigate, chatIdentity]);
 
   const leaveIfOpen = (item: WorkbenchSessionItem) => {
     if (project && session?.id === item.id && session.kind === item.kind) navigate(workbenchPath(project.projectId), { replace: true });
@@ -359,7 +366,7 @@ export function WorkbenchShell() {
     }
     return <WorkbenchChatBoundary key={chatKey} header={shellBar} onNewChat={() => startNewChat()}>
       <WorkbenchChat project={project} session={session} provider={chatProvider} hubProjectId={hubProjectId}
-        onSessionCreated={onSessionCreated} onOpenFile={onOpenFile} chrome={chatChrome} />
+        onSessionCreated={onSessionCreated} onOpenFile={onOpenFile} chrome={chatChrome} thread={thread} onThreadChange={upsertThread} />
     </WorkbenchChatBoundary>;
   })();
 
@@ -391,8 +398,10 @@ export function WorkbenchShell() {
       onProjectSelect={(next: Project) => navigate(workbenchPath(next.projectId))} onProjectsRefresh={() => void refreshProjects()} />}
 
     {pendingDelete && <StudioConfirmSheet
-      title={pendingDelete.kind === 'deepseek' ? '删除这段对话？' : '删除这个会话？'}
-      message={`「${pendingDelete.title}」${pendingDelete.kind === 'deepseek' ? '及全部消息' : '及其对话记录'}将被永久删除，无法撤销。只想收起它可以选择「归档」。`}
+      title={pendingDelete.kind === 'deepseek' || pendingDelete.thread ? '删除这段对话？' : '删除这个会话？'}
+      message={pendingDelete.thread
+        ? `「${pendingDelete.title}」经过的 ${pendingDelete.thread.segments.length} 个会话及其记录将被永久删除，无法撤销。`
+        : `「${pendingDelete.title}」${pendingDelete.kind === 'deepseek' ? '及全部消息' : '及其对话记录'}将被永久删除，无法撤销。只想收起它可以选择「归档」。`}
       confirmLabel="删除"
       onCancel={() => setPendingDelete(null)}
       onConfirm={() => { const item = pendingDelete; setPendingDelete(null); void deleteSession(item); }} />}

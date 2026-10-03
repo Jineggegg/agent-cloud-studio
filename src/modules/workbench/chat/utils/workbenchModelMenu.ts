@@ -7,8 +7,10 @@ import { resolveModelChoice } from '@/shared/utils';
 import { WorkbenchProviderMark } from '@/modules/workbench/WorkbenchProviderMark';
 import { providerLabel } from '@/modules/workbench/chat/utils/workbenchChatCopy';
 
-// Under the menu once a conversation has started: why the other providers' models are gone.
-const SWITCH_LOCKED_NOTE = '对话开始后只能换同一服务的模型。想改用 Claude、Codex 或 DeepSeek 的其他模型，请新建会话。';
+// Under the menu of a started conversation: what picking another provider's model does.
+const HANDOFF_NOTE = '换成其他服务的模型时，前面的对话会整理成摘要交给它，在这里接着聊。';
+// Under the menu when the provider cannot change here (an earlier stretch of a handed-over conversation).
+const SWITCH_LOCKED_NOTE = '这段对话已经交给其他模型继续了；要换服务，请打开最新的会话。';
 // The model of a started DeepSeek conversation is the one it was created with.
 const MODEL_FIXED_NOTE = '这个对话的模型已固定。';
 
@@ -66,8 +68,8 @@ type ModelMenuProvider = {
 
 /**
  * The providers of the one model menu with their rows: the open chat's own provider with the options it already
- * shows, the others from `catalogs`. `choices` is null once the provider is fixed, and then only the chat's own
- * provider is listed. Used by the agent and DeepSeek views of the workbench chat, so both menus read alike.
+ * shows, the others from `catalogs`. `choices` is null when the provider cannot change, and then only the chat's
+ * own provider is listed. Used by the agent and DeepSeek views of the workbench chat, so both menus read alike.
  */
 export function menuProvidersFor({ choices, current, currentOptions, catalogs }: {
   choices: WorkbenchNewChatChoice[] | null;
@@ -85,21 +87,28 @@ export function menuProvidersFor({ choices, current, currentOptions, catalogs }:
 }
 
 /**
- * The one model menu of a workbench chat (header pill and composer chip): a section per provider, titled with its
- * official mark, listing its models. Before the first message every provider is offered, so picking another
- * provider's model switches the conversation to that provider (`onSwitch`); once the conversation has started only
- * its own provider's models remain (`locked`), with a note saying a new session is needed to change provider.
- * `onSelectModel` is absent when even the model is fixed (a started DeepSeek conversation).
+ * How the one model menu treats the other providers: `switch` (before the first message) lists them and a pick
+ * switches the chat in place; `handoff` (a started conversation) lists them with a note that a pick hands the
+ * conversation over with a summary; `locked` lists only the chat's own provider, with the reason.
  */
-export function oneModelMenuSections({ providers, current, currentModel, locked, onSelectModel, onSwitch, emptyNote }: {
+type ProviderSwitchMode = 'switch' | 'handoff' | 'locked';
+
+/**
+ * The one model menu of a workbench chat (header pill and composer chip): a section per provider, titled with its
+ * official mark, listing its models. Picking another provider's model calls `onSwitch` with the model and its label
+ * (`mode` says what that means and which note explains it). `onSelectModel` is absent when even the model is fixed
+ * (a started DeepSeek conversation).
+ */
+export function oneModelMenuSections({ providers, current, currentModel, mode, onSelectModel, onSwitch, emptyNote }: {
   providers: ModelMenuProvider[];
   current: WorkbenchNewProvider;
   currentModel: string;
-  locked: boolean;
+  mode: ProviderSwitchMode;
   onSelectModel?: (model: string) => void;
-  onSwitch: (provider: WorkbenchNewProvider, model: string | null) => void;
+  onSwitch: (provider: WorkbenchNewProvider, model: string | null, modelLabel: string | null) => void;
   emptyNote?: string;
 }): WorkbenchMenuSection[] {
+  const locked = mode === 'locked';
   const sections: WorkbenchMenuSection[] = [];
   for (const entry of providers) {
     const title = providerLabel(entry.provider);
@@ -128,11 +137,14 @@ export function oneModelMenuSections({ providers, current, currentModel, locked,
           label: option.label,
           hint: option.description,
           badge: option.recommended ? '推荐' : undefined,
-          onSelect: () => onSwitch(entry.provider, option.value),
+          onSelect: () => onSwitch(entry.provider, option.value, option.label),
         }))
-        : [{ key: 'default', label: '默认模型', hint: `改用 ${title}，模型列表还没读到`, onSelect: () => onSwitch(entry.provider, null) }],
+        : [{ key: 'default', label: '默认模型', hint: `改用 ${title}，模型列表还没读到`, onSelect: () => onSwitch(entry.provider, null, null) }],
     });
   }
   if (locked) sections.push({ key: 'locked', note: SWITCH_LOCKED_NOTE, items: [] });
+  if (mode === 'handoff' && sections.some((section) => section.key.startsWith('model-') && section.key !== `model-${current}`)) {
+    sections.push({ key: 'handoff', note: HANDOFF_NOTE, items: [] });
+  }
   return sections;
 }

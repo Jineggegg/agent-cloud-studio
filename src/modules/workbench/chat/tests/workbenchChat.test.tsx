@@ -1,15 +1,24 @@
 import { createRef } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { PaletteOpsProvider, usePaletteOpsRegister } from '@/modules/command-palette';
 import { api } from '@/shared/api';
-import type { ChatMessage, PendingPermissionRequest, Project, WorkbenchChatChrome, WorkbenchChatProps } from '@/shared/types';
+import type {
+  ChatMessage, PendingPermissionRequest, Project, WorkbenchChatChrome, WorkbenchChatProps, WorkbenchSessionItem, WorkbenchThread,
+} from '@/shared/types';
 import { WorkbenchChat } from '@/modules/workbench/chat/WorkbenchChat';
 
 // The chat engine talks to the WebSocket and the session store; these tests fake it and check the column's rules.
 const engine = vi.hoisted(() => ({
-  calls: [] as { draftProvider: string; session: { id: string; __provider: string } | null }[],
+  calls: [] as {
+    draftProvider: string;
+    session: { id: string; __provider: string } | null;
+    // A handoff's first-prompt rewrite and the new-session callback, as the column hands them to the engine.
+    prepareNewSessionContent?: (content: string) => Promise<string>;
+    onSessionCreated: (item: WorkbenchSessionItem) => void;
+  }[],
   messages: [] as unknown[],
   sessionId: null as string | null,
   pending: [] as unknown[],
@@ -35,7 +44,7 @@ const engine = vi.hoisted(() => ({
 }));
 
 vi.mock('@/modules/workbench/chat/hooks/useWorkbenchAgentEngine', () => ({
-  useWorkbenchAgentEngine: (args: { draftProvider: string; session: { id: string; __provider: string } | null }) => {
+  useWorkbenchAgentEngine: (args: (typeof engine.calls)[number]) => {
     engine.calls.push(args);
     const provider = args.session?.__provider ?? args.draftProvider;
     const noop = () => undefined;
@@ -150,6 +159,8 @@ function renderChat(props: Partial<WorkbenchChatProps> & { chrome?: WorkbenchCha
       onOpenFile={onOpenFile}
       {...props}
     />,
+    // The handoff prelude links to the original sessions, as inside the workbench's router.
+    { wrapper: MemoryRouter },
   );
   return { ...utils, onSessionCreated, onOpenFile };
 }
@@ -214,7 +225,7 @@ describe('one chat for every model', () => {
     expect(localStorage.getItem('claude-model')).toBe('sonnet');
   });
 
-  test('an open session keeps its provider; only its own models remain, with the reason', async () => {
+  test('an open session changes its own model in place and offers the other providers as a handoff', async () => {
     const selectModel = vi.fn(() => Promise.resolve());
     engine.selectModel = selectModel;
     renderChat({ session: { id: 's1', kind: 'agent', provider: 'codex', title: '重构侧栏', updatedAt: null } });
@@ -223,20 +234,29 @@ describe('one chat for every model', () => {
     expect(screen.getByText('重构侧栏')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Codex · Opus/ }));
     const menu = screen.getByRole('menu');
-    expect(within(menu).queryByRole('group', { name: 'DeepSeek' })).toBeNull();
-    expect(within(menu).queryByRole('group', { name: 'Claude Code' })).toBeNull();
-    expect(within(menu).getByText(/对话开始后只能换同一服务的模型/)).toBeTruthy();
-    fireEvent.click(within(menu).getByRole('menuitemradio', { name: 'Sonnet' }));
+    expect(within(menu).getByRole('group', { name: 'Claude Code' })).toBeTruthy();
+    // Without a Studio project DeepSeek is listed with the reason, as before.
+    expect(within(within(menu).getByRole('group', { name: 'DeepSeek' })).queryAllByRole('menuitemradio')).toHaveLength(0);
+    expect(within(menu).getByText(/前面的对话会整理成摘要交给它/)).toBeTruthy();
+    // A model of the same provider: changed in place, no handoff.
+    fireEvent.click(within(within(menu).getByRole('group', { name: 'Codex' })).getByRole('menuitemradio', { name: 'Sonnet' }));
     await waitFor(() => expect(selectModel).toHaveBeenCalledWith('sonnet'));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 
-  test('once the first message is out, a new chat locks its provider too', () => {
+  test('once the first message is out, another provider’s model asks before handing the chat over', () => {
     engine.sessionId = 's-new';
     engine.messages = [{ type: 'user', content: '你好', timestamp: '2026-10-02T08:00:00.000Z' } satisfies ChatMessage];
+    const selectProviderModel = vi.fn(() => Promise.resolve());
+    engine.selectProviderModel = selectProviderModel;
     renderChat();
     fireEvent.click(screen.getByRole('button', { name: /Claude Code · Opus/ }));
-    expect(within(screen.getByRole('menu')).queryByRole('group', { name: 'Codex' })).toBeNull();
-    expect(within(screen.getByRole('menu')).queryByRole('menuitemradio', { name: 'GPT-5.5' })).toBeNull();
+    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitemradio', { name: 'GPT-5.5' }));
+    const sheet = screen.getByRole('alertdialog', { name: '交给 Codex 继续？' });
+    expect(within(sheet).getByText(/前面的对话会整理成摘要交给 Codex · GPT-5.5/)).toBeTruthy();
+    // Nothing changes until the owner agrees.
+    expect(engine.calls.at(-1)?.draftProvider).toBe('claude');
+    expect(selectProviderModel).not.toHaveBeenCalled();
   });
 
   test('the token ring reports how full the context is', () => {
@@ -340,9 +360,12 @@ describe('DeepSeek', () => {
     expect(reload).not.toHaveBeenCalled();
     // The thinking line plays its exit before it leaves the DOM.
     await waitFor(() => expect(screen.queryByRole('status', { name: 'DeepSeek 正在思考' })).toBeNull());
-    // Started: the provider is fixed and the model too.
-    expect(screen.queryByRole('button', { name: /切换模型/ })).toBeNull();
-    expect(screen.getByLabelText('模型 deepseek-flash（已固定）')).toBeTruthy();
+    // Started: the model is fixed, and the agents are offered as a handoff.
+    fireEvent.click(screen.getByRole('button', { name: '模型 deepseek-flash' }));
+    const menu = screen.getByRole('menu', { name: '模型 deepseek-flash' });
+    expect(within(menu).getByText('这个对话的模型已固定。')).toBeTruthy();
+    expect(within(menu).getByRole('group', { name: 'Codex' })).toBeTruthy();
+    expect(within(menu).getByText(/前面的对话会整理成摘要交给它/)).toBeTruthy();
   });
 
   test('without a key the column says where to add one', async () => {
@@ -359,7 +382,7 @@ describe('DeepSeek', () => {
     }));
     renderChat({ provider: 'claude', session: { id: 'c9', kind: 'deepseek', provider: 'deepseek', title: '旧对话', updatedAt: null } });
     expect(await screen.findByText('在的')).toBeTruthy();
-    expect(screen.getByLabelText('DeepSeek · deepseek-v4-pro')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'DeepSeek · deepseek-v4-pro，切换模型' })).toBeTruthy();
   });
 });
 
@@ -476,7 +499,7 @@ describe('reasoning effort is its own control beside the model chip', () => {
     fireEvent.click(screen.getByRole('button', { name: '模型 Opus' }));
     const modelMenu = screen.getByRole('menu', { name: '模型 Opus' });
     expect(within(modelMenu).queryByText('思考强度')).toBeNull();
-    expect(within(modelMenu).getAllByRole('menuitemradio').map((row) => row.textContent)).toEqual(['Opus', 'Sonnet']);
+    expect(within(within(modelMenu).getByRole('group', { name: 'Claude Code' })).getAllByRole('menuitemradio').map((row) => row.textContent)).toEqual(['Opus', 'Sonnet']);
     fireEvent.keyDown(modelMenu, { key: 'Escape' });
 
     fireEvent.click(screen.getByRole('button', { name: '思考强度：高' }));
@@ -565,5 +588,186 @@ describe('edge cases', () => {
     renderChat({ session: { id: 's1', kind: 'agent', provider: 'claude', title: 't', updatedAt: null } });
     expect(screen.getByRole('heading', { name: '叫什么名字？' })).toBeTruthy();
     expect(screen.getByRole('radio', { name: '其他' })).toBeTruthy();
+  });
+});
+
+describe('handing a conversation to another provider', () => {
+  const CONTEXT = '<handoff>\n这段对话之前由 Claude Code（Opus）进行……\n\n## 目标\n把侧栏改成可折叠\n</handoff>';
+  const EARLIER = {
+    success: true,
+    data: {
+      messages: [
+        { id: 'm1', kind: 'text', role: 'user', content: '把侧栏改成可折叠', timestamp: '2026-10-03T08:00:00.000Z' },
+        { id: 'm2', kind: 'tool_use', toolName: 'Edit', toolInput: { file_path: 'src/Sidebar.tsx' } },
+        { id: 'm3', kind: 'text', role: 'assistant', content: '好的，侧栏已经可以折叠。', timestamp: '2026-10-03T08:01:00.000Z' },
+      ],
+      hasMore: false,
+    },
+  };
+  const THREAD: WorkbenchThread = {
+    id: 't1', projectId: 'p1', title: '折叠侧栏', createdAt: '2026-10-03T08:02:00.000Z', updatedAt: '2026-10-03T08:02:00.000Z',
+    segments: [
+      { kind: 'agent', provider: 'claude', sessionId: 's1', modelLabel: 'Opus', handoffAt: null },
+      { kind: 'agent', provider: 'codex', sessionId: 's2', modelLabel: 'GPT-5.5', handoffAt: '2026-10-03T08:02:00.000Z' },
+    ],
+  };
+
+  // Confirms the sheet; the sheet plays its exit before the choice takes effect.
+  async function confirmHandoff() {
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '交接' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+  }
+
+  test('Claude Code to Codex: a summary seeds the new session, the earlier messages stay above a divider and the chain is recorded', async () => {
+    const handoff = vi.spyOn(api.studio.workbench, 'handoff').mockResolvedValue(json({ summary: '## 目标\n侧栏折叠的需求', context: CONTEXT }));
+    const history = vi.spyOn(api.providers, 'sessionMessages').mockResolvedValue(json(EARLIER));
+    const link = vi.spyOn(api.studio.workbench, 'linkThread').mockResolvedValue(json(THREAD));
+    const selectProviderModel = vi.fn(() => Promise.resolve());
+    engine.selectProviderModel = selectProviderModel;
+    engine.sessionId = 's1';
+    const onThreadChange = vi.fn();
+    const session: WorkbenchSessionItem = { id: 's1', kind: 'agent', provider: 'claude', title: '折叠侧栏', updatedAt: null };
+    const { onSessionCreated, rerender } = renderChat({ session, onThreadChange });
+
+    fireEvent.click(screen.getByRole('button', { name: /Claude Code · Opus/ }));
+    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitemradio', { name: 'GPT-5.5' }));
+    // The engine's own session id belongs to the session being left; the new chat has none.
+    engine.sessionId = null;
+    await confirmHandoff();
+
+    // The column becomes a new Codex chat, with the picked model recorded the way the agent view records it.
+    expect(selectProviderModel).toHaveBeenCalledWith('codex', 'gpt-5.5', null);
+    expect(engine.calls.at(-1)).toMatchObject({ draftProvider: 'codex', session: null });
+    expect(handoff).toHaveBeenCalledWith({ projectId: 'p1', from: { kind: 'agent', id: 's1', modelLabel: 'Opus' }, toProvider: 'codex' });
+    // The conversation so far stays on screen above the handoff divider, with the summary to look at and a way back.
+    expect(history).toHaveBeenCalledWith('s1', { limit: 120, offset: 0 });
+    expect(await screen.findByText('好的，侧栏已经可以折叠。')).toBeTruthy();
+    expect(screen.getByText('把侧栏改成可折叠')).toBeTruthy();
+    expect(screen.getByText('将交给 Codex · GPT-5.5 继续')).toBeTruthy();
+    expect(await screen.findByText('查看交接摘要')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '取消交接' })).toBeTruthy();
+
+    // The owner's next message goes out with the summary appended.
+    const call = engine.calls.at(-1)!;
+    expect(await call.prepareNewSessionContent?.('再加一个快捷键')).toBe(`再加一个快捷键\n\n${CONTEXT}`);
+
+    // Its session is created: the shell is told, and the chain is recorded with both sessions.
+    const created: WorkbenchSessionItem = { id: 's2', kind: 'agent', provider: 'codex', title: '再加一个快捷键', updatedAt: null };
+    act(() => call.onSessionCreated(created));
+    expect(onSessionCreated).toHaveBeenCalledWith(created);
+    await waitFor(() => expect(link).toHaveBeenCalledWith({
+      projectId: 'p1', title: '折叠侧栏',
+      from: { kind: 'agent', id: 's1', modelLabel: 'Opus' },
+      to: { kind: 'agent', id: 's2', modelLabel: 'GPT-5.5' },
+    }));
+    await waitFor(() => expect(onThreadChange).toHaveBeenCalledWith(THREAD));
+
+    // The shell routes to the new session: one thread on screen, the divider now says who took over.
+    rerender(
+      <WorkbenchChat project={project} session={{ ...created, thread: THREAD }} thread={THREAD} provider="claude" hubProjectId={null}
+        onSessionCreated={onSessionCreated} onOpenFile={vi.fn()} onThreadChange={onThreadChange} />,
+    );
+    expect(engine.calls.at(-1)?.session).toMatchObject({ id: 's2', __provider: 'codex' });
+    expect(await screen.findByText(/已交接给 Codex · GPT-5.5/)).toBeTruthy();
+    expect(screen.getByText('好的，侧栏已经可以折叠。')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '取消交接' })).toBeNull();
+  });
+
+  test('DeepSeek to Claude Code: the agent model is recorded for this device and the DeepSeek messages stay above', async () => {
+    vi.spyOn(api.studio, 'status').mockResolvedValue(json({ deepseek: { configured: true, models: ['deepseek-flash', 'deepseek-v4-pro'], source: 'vault', baseUrl: '' } }));
+    vi.spyOn(api.providers, 'models').mockImplementation(async (provider: string) => json({
+      success: true, data: { models: provider === 'codex' ? engine.catalog.codex : engine.catalog.claude },
+    }));
+    vi.spyOn(api.studio, 'conversation').mockResolvedValue(json({
+      id: 'c9', title: '起名字', model: 'deepseek-v4-pro', updated_at: '2026-10-03T08:00:00.000Z',
+      messages: [{ id: 1, role: 'user', content: '帮我给侧栏功能起个名字', status: 'complete' }, { id: 2, role: 'assistant', content: '叫「折叠侧栏」如何？', status: 'complete' }],
+    }));
+    const handoff = vi.spyOn(api.studio.workbench, 'handoff').mockResolvedValue(json({ summary: 's', context: '<handoff>\ns\n</handoff>' }));
+    renderChat({ hubProjectId: 'hub1', session: { id: 'c9', kind: 'deepseek', provider: 'deepseek', title: '起名字', updatedAt: null } });
+
+    expect(await screen.findByText('叫「折叠侧栏」如何？')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'DeepSeek · deepseek-v4-pro，切换模型' }));
+    const claude = within(screen.getByRole('menu')).getByRole('group', { name: 'Claude Code' });
+    fireEvent.click(await within(claude).findByRole('menuitemradio', { name: 'Sonnet' }));
+    expect(screen.getByRole('alertdialog', { name: '交给 Claude Code 继续？' })).toBeTruthy();
+    await confirmHandoff();
+
+    expect(localStorage.getItem('claude-model')).toBe('sonnet');
+    expect(engine.calls.at(-1)).toMatchObject({ draftProvider: 'claude', session: null });
+    expect(handoff).toHaveBeenCalledWith({ projectId: 'p1', from: { kind: 'deepseek', id: 'c9', modelLabel: 'deepseek-v4-pro' }, toProvider: 'claude' });
+    expect(await screen.findByText('叫「折叠侧栏」如何？')).toBeTruthy();
+    expect(screen.getByText('将交给 Claude Code · Sonnet 继续')).toBeTruthy();
+  });
+
+  test('Codex to DeepSeek: the first DeepSeek message carries the summary and the new conversation joins the chain', async () => {
+    vi.spyOn(api.studio, 'status').mockResolvedValue(json({ deepseek: { configured: true, models: ['deepseek-flash', 'deepseek-v4-pro'], source: 'vault', baseUrl: '' } }));
+    vi.spyOn(api.providers, 'sessionMessages').mockResolvedValue(json(EARLIER));
+    vi.spyOn(api.studio.workbench, 'handoff').mockResolvedValue(json({ summary: 's', context: CONTEXT }));
+    const create = vi.spyOn(api.studio, 'createConversation').mockResolvedValue(json({ id: 'c1', title: '新对话', model: 'deepseek-v4-pro', updated_at: '2026-10-03T08:05:00.000Z', messages: [] }));
+    const send = vi.spyOn(api.studio, 'send').mockResolvedValue(json({
+      id: 'c1', title: '帮我写发布说明', model: 'deepseek-v4-pro', updated_at: '2026-10-03T08:05:05.000Z',
+      messages: [
+        { id: 1, role: 'user', content: `帮我写发布说明\n\n${CONTEXT}`, status: 'complete' },
+        { id: 2, role: 'assistant', content: '发布说明如下。', status: 'complete' },
+      ],
+    }));
+    const link = vi.spyOn(api.studio.workbench, 'linkThread').mockResolvedValue(json({
+      ...THREAD, segments: [THREAD.segments[0], { kind: 'deepseek', provider: 'deepseek', sessionId: 'c1', modelLabel: 'deepseek-v4-pro', handoffAt: '2026-10-03T08:05:00.000Z' }],
+    }));
+    engine.sessionId = 's1';
+    renderChat({ hubProjectId: 'hub1', session: { id: 's1', kind: 'agent', provider: 'codex', title: '折叠侧栏', updatedAt: null } });
+
+    fireEvent.click(screen.getByRole('button', { name: /Codex · Opus/ }));
+    const deepseek = within(screen.getByRole('menu')).getByRole('group', { name: 'DeepSeek' });
+    fireEvent.click(await within(deepseek).findByRole('menuitemradio', { name: 'deepseek-v4-pro' }));
+    await confirmHandoff();
+
+    const field = await screen.findByPlaceholderText('给 DeepSeek 发消息');
+    expect(await screen.findByText('将交给 DeepSeek · deepseek-v4-pro 继续')).toBeTruthy();
+    fireEvent.change(field, { target: { value: '帮我写发布说明' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(create).toHaveBeenCalledWith('deepseek-v4-pro', 'project:hub1'));
+    await waitFor(() => expect(send).toHaveBeenCalledWith('c1', `帮我写发布说明\n\n${CONTEXT}`, false, expect.anything()));
+    await waitFor(() => expect(link).toHaveBeenCalledWith(expect.objectContaining({
+      from: { kind: 'agent', id: 's1', modelLabel: 'Opus' }, to: { kind: 'deepseek', id: 'c1', modelLabel: 'deepseek-v4-pro' },
+    })));
+    // The owner's row shows their words; the summary it carried is folded beneath.
+    expect(await screen.findByText('发布说明如下。')).toBeTruthy();
+    expect(screen.getByText('帮我写发布说明')).toBeTruthy();
+    expect(screen.getByText('附带了交接摘要')).toBeTruthy();
+  });
+
+  test('a handoff can be called off before the next message, returning to the session', async () => {
+    vi.spyOn(api.studio.workbench, 'handoff').mockResolvedValue(json({ summary: 's', context: CONTEXT }));
+    vi.spyOn(api.providers, 'sessionMessages').mockResolvedValue(json(EARLIER));
+    engine.sessionId = 's1';
+    renderChat({ session: { id: 's1', kind: 'agent', provider: 'claude', title: '折叠侧栏', updatedAt: null } });
+    fireEvent.click(screen.getByRole('button', { name: /Claude Code · Opus/ }));
+    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitemradio', { name: 'GPT-5.5' }));
+    await confirmHandoff();
+    fireEvent.click(await screen.findByRole('button', { name: '取消交接' }));
+    expect(engine.calls.at(-1)?.session).toMatchObject({ id: 's1', __provider: 'claude' });
+    expect(screen.queryByText(/将交给 Codex/)).toBeNull();
+  });
+
+  test('reopening a handed-over conversation shows it whole; an earlier stretch can no longer be handed on', async () => {
+    vi.spyOn(api.providers, 'sessionMessages').mockResolvedValue(json(EARLIER));
+    engine.messages = [{ type: 'user', content: `再加一个快捷键\n\n${CONTEXT}`, timestamp: '2026-10-03T08:02:00.000Z' } satisfies ChatMessage];
+    const latest = renderChat({ session: { id: 's2', kind: 'agent', provider: 'codex', title: '折叠侧栏', updatedAt: null }, thread: THREAD });
+    expect(await screen.findByText('好的，侧栏已经可以折叠。')).toBeTruthy();
+    expect(screen.getByText(/已交接给 Codex · GPT-5.5/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: '打开原会话' }).getAttribute('href')).toBe('/work/p1/s/s1');
+    expect(screen.getByText('再加一个快捷键')).toBeTruthy();
+    expect(screen.getByText('附带了交接摘要')).toBeTruthy();
+    latest.unmount();
+
+    // The first stretch opened on its own: its provider stays, and the menu says where the conversation went on.
+    engine.messages = [];
+    renderChat({ session: { id: 's1', kind: 'agent', provider: 'claude', title: '折叠侧栏', updatedAt: null }, thread: THREAD });
+    fireEvent.click(screen.getByRole('button', { name: /Claude Code · Opus/ }));
+    const menu = screen.getByRole('menu');
+    expect(within(menu).queryByRole('group', { name: 'Codex' })).toBeNull();
+    expect(within(menu).getByText(/已经交给其他模型继续了/)).toBeTruthy();
   });
 });

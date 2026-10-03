@@ -274,6 +274,22 @@ export const api = {
     // the project app's links to existing sessions. Read-only; it never registers a directory.
     workbench: {
       hubLinks: () => get('/api/studio/workbench/hub-links'),
+      // Conversations handed between providers mid-way: the project's chains, the handoff summary of the session
+      // being left (with the block that seeds the next one), recording the next session, renaming and forgetting.
+      threads: (projectId: string) => get(`/api/studio/workbench/threads${query({ projectId })}`),
+      handoff: (body: {
+        projectId: string;
+        from: { kind: 'agent' | 'deepseek'; id: string; modelLabel: string | null };
+        toProvider: 'claude' | 'codex' | 'deepseek';
+      }) => post('/api/studio/workbench/handoffs', body),
+      linkThread: (body: {
+        projectId: string;
+        title: string;
+        from: { kind: 'agent' | 'deepseek'; id: string; modelLabel: string | null };
+        to: { kind: 'agent' | 'deepseek'; id: string; modelLabel: string | null };
+      }) => post('/api/studio/workbench/threads', body),
+      renameThread: (threadId: string, title: string) => patch(`/api/studio/workbench/threads/${encodeURIComponent(threadId)}`, { title }),
+      removeThread: (threadId: string) => del(`/api/studio/workbench/threads/${encodeURIComponent(threadId)}`),
     },
     // ── v6 track: chat — endpoints below this line ──
     // ── v6 track: github — endpoints below this line ──
