@@ -171,8 +171,8 @@
 
 /* ---------- AJ 出口: a tile that is a switch ---------- */
 /* On: a green ring on the card's edge and a green state line with a dot, like a status light. */
-.home-tile .home-icon-wrap[data-on] .home-icon { border-color: var(--ios-green); box-shadow: 0 0 0 1.5px var(--ios-green); }
-.home-tile:is(:hover, :active) .home-icon-wrap[data-on] .home-icon { box-shadow: 0 0 0 1.5px var(--ios-green), var(--home-card-lift); }
+.home-tile .home-icon-wrap[data-on] .home-icon { border-color: var(--ios-green); box-shadow: 0 0 0 1.5px var(--ios-green), var(--icon-glass-shadow); }
+.home-tile:is(:hover, :active) .home-icon-wrap[data-on] .home-icon { box-shadow: 0 0 0 1.5px var(--ios-green), var(--icon-glass-shadow), var(--home-card-lift); }
 .home-status.is-switch { display: inline-flex; align-items: center; gap: 5px; }
 .home-status.is-switch.is-on { color: var(--ios-green); }
 .home-status.is-switch.is-on::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
@@ -224,7 +224,7 @@
 }
 .home-folder-grid > .home-icon.mini {
   --icon: 100%; width: 100%; height: auto; aspect-ratio: 1; border-radius: 26%;
-  background: color-mix(in srgb, var(--ios-label) 8%, transparent); border: 0; box-shadow: none; color: var(--ios-label);
+  background: color-mix(in srgb, var(--ios-label) 8%, transparent); border: 0; box-shadow: none; color: var(--icon-glyph, var(--ios-label));
   -webkit-backdrop-filter: none; backdrop-filter: none;
 }
 .home-folder-grid > .home-icon.mini::before, .home-folder-grid > .home-icon.mini::after { display: none; }
