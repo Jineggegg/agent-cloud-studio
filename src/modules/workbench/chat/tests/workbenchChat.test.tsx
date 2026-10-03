@@ -279,6 +279,69 @@ describe('one chat for every model', () => {
   });
 });
 
+describe('the context usage card', () => {
+  const SESSION = { id: 's1', kind: 'agent', provider: 'claude', title: 't', updatedAt: null } as const;
+
+  test('the ring blooms a small card with the basics instead of opening the old usage window', async () => {
+    const showCostModal = vi.fn();
+    engine.showCostModal = showCostModal;
+    engine.tokenBudget = {
+      used: 42_000, total: 200_000, inputTokens: 41_000, outputTokens: 1_000, cacheReadTokens: 30_000, cacheCreationTokens: 2_048,
+    };
+    renderChat({ session: SESSION });
+    const ring = screen.getByRole('button', { name: '上下文已用 21%（42K / 200K）' });
+    expect(ring.getAttribute('aria-haspopup')).toBe('dialog');
+
+    fireEvent.click(ring);
+    const card = await screen.findByRole('dialog', { name: '上下文用量' });
+    expect(ring.getAttribute('aria-expanded')).toBe('true');
+    expect(ring.getAttribute('aria-controls')).toBe(card.id);
+    expect(within(card).getByText('21%')).toBeTruthy();
+    expect(within(card).getByText('42K / 200K tokens')).toBeTruthy();
+    expect(within(card).getByText('Claude Code · Opus')).toBeTruthy();
+    expect(within(card).getByText('41,000')).toBeTruthy();
+    expect(within(card).getByText('1,000')).toBeTruthy();
+    expect(within(card).getByText('读 30,000 · 写 2,048')).toBeTruthy();
+    // Below 80% there is nothing to warn about.
+    expect(within(card).queryByRole('note')).toBeNull();
+    // No new window, route or command: the old /cost panel is never asked for.
+    expect(showCostModal).not.toHaveBeenCalled();
+
+    // A second press on the ring closes it.
+    fireEvent.click(ring);
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '上下文用量' })).toBeNull());
+    expect(ring.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  test('a press outside or Escape closes the card, and Escape does not also stop the run', async () => {
+    const abort = vi.fn();
+    engine.abort = abort;
+    engine.processing = true;
+    engine.canAbort = true;
+    renderChat({ session: SESSION });
+    const ring = screen.getByRole('button', { name: /上下文已用 25%/ });
+
+    fireEvent.click(ring);
+    await screen.findByRole('dialog', { name: '上下文用量' });
+    fireEvent.pointerDown(screen.getByRole('textbox', { name: '消息' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '上下文用量' })).toBeNull());
+
+    fireEvent.click(ring);
+    const card = await screen.findByRole('dialog', { name: '上下文用量' });
+    fireEvent.keyDown(card, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '上下文用量' })).toBeNull());
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  test('a nearly full window explains compaction in one line', async () => {
+    engine.tokenBudget = { used: 172_000, total: 200_000 };
+    renderChat({ session: SESSION });
+    fireEvent.click(screen.getByRole('button', { name: /上下文已用 86%/ }));
+    const card = await screen.findByRole('dialog', { name: '上下文用量' });
+    expect(within(card).getByRole('note').textContent).toMatch(/自动压缩/);
+  });
+});
+
 describe('the run status row', () => {
   const SESSION = { id: 's1', kind: 'agent', provider: 'claude', title: 't', updatedAt: null } as const;
   const TODOS = [

@@ -307,7 +307,7 @@ export function WorkbenchAgentChat({
           modelLabel={modelName}
           title={session?.title ?? title}
           menuSections={menuSections}
-          end={<WorkbenchTokenRing usage={sessionState.tokenBudget} onOpen={composer.showCostModal} />}
+          end={<WorkbenchTokenRing usage={sessionState.tokenBudget} provider={provider} modelLabel={modelName} />}
           chrome={chrome}
         />
 

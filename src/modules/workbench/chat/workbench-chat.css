@@ -266,6 +266,39 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
 .wbc-menu-switch.is-on { background: var(--wbc-green); }
 .wbc-menu-switch.is-on::after { transform: translateX(14px); }
 
+/* ---------- Context usage card (the header's token ring) ----------
+ * Blooms out of the ring under the header, flush with its right edge; a sheet on a phone. */
+.wbc-ring[aria-expanded="true"] { background: var(--wbc-fill-pressed); }
+.wbc-menu.wbc-usage { padding: 14px 16px 12px; outline: none; }
+.wbc-menu.wbc-usage.is-sheet { padding: 18px 20px calc(16px + env(safe-area-inset-bottom, 0px)); }
+.wbc-usage-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.wbc-usage-title { font-size: 13px; font-weight: 600; color: var(--wbc-label-2); }
+.wbc-usage-percent {
+  font-size: 24px; font-weight: 650; letter-spacing: -.02em; line-height: 30px; color: var(--wbc-label); font-variant-numeric: tabular-nums;
+}
+.wbc-usage.is-high .wbc-usage-percent { color: var(--wbc-orange); }
+.wbc-usage.is-critical .wbc-usage-percent { color: var(--wbc-red); }
+.wbc-usage-figure { font-size: 13px; color: var(--wbc-label-2); font-variant-numeric: tabular-nums; }
+.wbc-usage-meter { height: 6px; margin: 10px 0 12px; border-radius: 6px; background: var(--wbc-fill-pressed); overflow: hidden; }
+.wbc-usage-meter span { display: block; height: 100%; border-radius: inherit; background: var(--wbc-tint); transform-origin: left center; }
+.wbc-usage.is-high .wbc-usage-meter span { background: var(--wbc-orange); }
+.wbc-usage.is-critical .wbc-usage-meter span { background: var(--wbc-red); }
+.wbc-usage-rows { display: flex; flex-direction: column; margin: 0; border-top: .5px solid var(--wbc-separator); }
+.wbc-usage-rows > div {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: .5px solid var(--wbc-separator);
+}
+.wbc-usage-rows dt { flex-shrink: 0; font-size: 13.5px; color: var(--wbc-label-2); }
+.wbc-usage-rows dd {
+  min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13.5px; font-weight: 500; font-variant-numeric: tabular-nums;
+}
+.wbc-usage-note { margin-top: 8px; font-size: 12px; color: var(--wbc-label-3); }
+.wbc-usage-hint {
+  margin-top: 8px; padding: 8px 10px; border-radius: 10px; font-size: 12.5px; line-height: 1.45;
+  background: var(--wbc-orange-soft); color: var(--wbc-orange);
+}
+.wbc-usage.is-critical .wbc-usage-hint { background: var(--wbc-red-soft); color: var(--wbc-red); }
+
 /* ---------- Reasoning effort popover (composer chip) ----------
  * The level as the title, the model under it (opens the model menu), reset and help top-right, then a discrete
  * slider: 更快 … 更聪明, one dot per level, a filled track up to a white round thumb that springs onto a stop. */
