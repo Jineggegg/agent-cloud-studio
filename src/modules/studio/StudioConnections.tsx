@@ -10,6 +10,7 @@ import { StudioSettingsMail } from '@/modules/studio/StudioSettingsMail';
 import { StudioSettingsModels } from '@/modules/studio/StudioSettingsModels';
 import { StudioSettingsNetwork } from '@/modules/studio/StudioSettingsNetwork';
 import { StudioSettingsRuntime } from '@/modules/studio/StudioSettingsRuntime';
+import { StudioSettingsSecurity } from '@/modules/studio/StudioSettingsSecurity';
 import { StudioSettingsTrading } from '@/modules/studio/StudioSettingsTrading';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 
@@ -88,6 +89,8 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
     <StudioSettingsRuntime />
 
     <StudioSettingsNetwork />
+
+    <StudioSettingsSecurity />
 
     <section className="ios-section" aria-labelledby="studio-remote-heading">
       <div className="ios-section-header"><h2 id="studio-remote-heading">远程主机</h2><span className="caption">Tailscale + SSH</span></div>

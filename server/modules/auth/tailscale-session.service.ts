@@ -1,6 +1,6 @@
 import { BlockList, isIP } from 'node:net';
 
-import { isViaCloudflareEdge } from '@/shared/utils.js';
+import { isViaCloudflareEdge, readCloudflaredPort } from '@/shared/utils.js';
 
 /**
  * Passwordless sign-in policy for requests that arrive through Tailscale Serve.
@@ -57,11 +57,18 @@ type TailscaleSignInConfig = {
    * started with). It must be the https MagicDNS origin Serve answers on.
    */
   pinnedOrigin: string | null;
+  /**
+   * STUDIO_CLOUDFLARED_PORT: the loopback port only cloudflared connects to. A request that
+   * arrived there is public-door traffic, whatever its headers say. Absent or null: not set.
+   */
+  cloudflaredPort?: number | null;
 };
 
 type TailscaleSessionRequest = {
   /** Raw TCP peer address of the request socket (never a forwarded-for value). */
   remoteAddress: string | undefined;
+  /** Local port the connection arrived on (the cloudflared listener is never the tailnet door). */
+  localPort?: number;
   /** Host header as received; Serve forwards the host the browser used. */
   host: string | undefined;
   /** Origin header; browsers send it on every POST, same-origin included. */
@@ -147,6 +154,25 @@ function canonicalAddressIn(list: BlockList, value: string | undefined): string 
   }
 }
 
+/**
+ * Tells whether a socket peer is this machine (127.0.0.0/8 or ::1, IPv4-mapped spellings too).
+ * Used by request-client.service: only loopback peers (cloudflared, Tailscale Serve) may vouch for
+ * a client address in their proxy headers.
+ */
+export function isLoopbackAddress(value: string | undefined): boolean {
+  return canonicalAddressIn(LOOPBACK_ADDRESSES, value) !== null;
+}
+
+/**
+ * The tailnet peer Tailscale Serve wrote into X-Forwarded-For, in canonical spelling, when the
+ * header holds exactly one tailnet address; null for a list, a public address or garbage.
+ * Used by request-client.service to key tailnet-door clients by device instead of by loopback.
+ */
+export function singleTailnetAddress(forwardedFor: string | undefined): string | null {
+  const value = forwardedFor?.trim();
+  return value && !value.includes(',') ? canonicalAddressIn(TAILNET_ADDRESSES, value) : null;
+}
+
 // Canonical STUDIO_TAILSCALE_NODES entries, or null when any entry is not a tailnet address.
 // A typo must not silently empty the list, because an empty list means "every device".
 function canonicalAllowedNodes(config: TailscaleSignInConfig): string[] | null {
@@ -172,7 +198,12 @@ function parsePinnedOrigin(value: string): string | null {
 }
 
 // MagicDNS names have the shape <machine>.<tailnet>.ts.net; certificates for Serve exist only there.
-function isTailnetHost(host: string | undefined): host is string {
+/**
+ * Tells whether a Host header names a MagicDNS host (<machine>.<tailnet>.ts.net, optional port).
+ * Used by this service and by request-client.service, which never treats such a request as the
+ * public Cloudflare door.
+ */
+export function isTailnetHost(host: string | undefined): host is string {
   if (!host || !HOST_HEADER_PATTERN.test(host)) {
     return false;
   }
@@ -237,6 +268,7 @@ export function parseTailscaleSignInConfig(env: Record<string, string | undefine
     mappedUsername: env.STUDIO_TAILSCALE_USER?.trim() || null,
     // Only an unset (or blank) STUDIO_TAILNET_ORIGIN falls back; a malformed one fails closed.
     pinnedOrigin: env.STUDIO_TAILNET_ORIGIN?.trim() || env.STUDIO_PUBLIC_ORIGIN?.trim() || null,
+    cloudflaredPort: readCloudflaredPort(env),
   };
 }
 
@@ -279,7 +311,8 @@ export function evaluateTailscaleSessionRequest(
   if (request.funnelRequest !== undefined) {
     return deny('funnel-request');
   }
-  if (isViaCloudflare(request)) {
+  if (isViaCloudflare(request)
+    || (config.cloudflaredPort && request.localPort === config.cloudflaredPort)) {
     return deny('via-cloudflare');
   }
   if (canonicalAddressIn(LOOPBACK_ADDRESSES, request.remoteAddress) === null) {
@@ -287,10 +320,7 @@ export function evaluateTailscaleSessionRequest(
   }
   // Exactly one tailnet address, as Serve writes it. A list means another proxy appended a hop,
   // and a missing value means the loopback caller is not Serve.
-  const forwardedFor = request.forwardedFor?.trim();
-  node = forwardedFor && !forwardedFor.includes(',')
-    ? canonicalAddressIn(TAILNET_ADDRESSES, forwardedFor)
-    : null;
+  node = singleTailnetAddress(request.forwardedFor);
   if (node === null) {
     return deny('forwarded-for-not-tailnet');
   }
@@ -324,16 +354,21 @@ export function evaluateTailscaleSessionRequest(
  *
  * Used by auth.middleware for every HTTP request (including POST /api/auth/refresh) and WebSocket
  * upgrade that presents a token with the `tailscale` claim; password sessions are not checked.
+ * Also used by request-client.service to put tailnet traffic in its own throttle and rate-limit door.
  * Like sign-in, this cannot tell Serve from another process on this machine that forges headers.
  */
 export function isTailnetDoorRequest(
   request: {
     headers: Record<string, string | string[] | undefined>;
-    socket?: { remoteAddress?: string };
+    socket?: { remoteAddress?: string; localPort?: number };
   },
   config: TailscaleSignInConfig,
 ): boolean {
   if (isViaCloudflareEdge(request.headers) || request.headers['tailscale-funnel-request'] !== undefined) {
+    return false;
+  }
+  // The cloudflared listener only ever carries public traffic.
+  if (config.cloudflaredPort && request.socket?.localPort === config.cloudflaredPort) {
     return false;
   }
   if (canonicalAddressIn(LOOPBACK_ADDRESSES, request.socket?.remoteAddress) === null) {

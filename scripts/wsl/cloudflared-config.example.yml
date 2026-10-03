@@ -1,0 +1,22 @@
+# Example ~/.cloudflared/config.yml for the public door (docs/network.md, docs/security.md).
+# Copy it, fill in the tunnel UUID, and keep the real file out of this repository.
+#
+# The ingress points at Studio's dedicated cloudflared listener, 127.0.0.1:3012, which Studio
+# opens when .env sets STUDIO_CLOUDFLARED_PORT=3012. Only connections arriving on that port count
+# as public-door traffic, so a device on the tailnet cannot pose as an internet client by sending
+# Cloudflare headers through Tailscale Serve (which keeps using 127.0.0.1:3002).
+#
+# Order of the switch: set STUDIO_CLOUDFLARED_PORT=3012 in .env and restart
+# agent-cloud-studio.service (the log shows "Cloudflare Tunnel listener: http://127.0.0.1:3012"),
+# then change the service line below and restart studio-tunnel.service.
+tunnel: <UUID>
+credentials-file: /home/laosong/.cloudflared/<UUID>.json
+
+ingress:
+  - hostname: studio.ajarche.com
+    service: http://127.0.0.1:3012
+    originRequest:
+      # Studio always sees the public host, so a client cannot pose as a *.ts.net address.
+      httpHostHeader: studio.ajarche.com
+  # Any other host name gets 404, so the tunnel cannot be used to reach anything else.
+  - service: http_status:404

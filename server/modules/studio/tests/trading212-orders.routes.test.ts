@@ -40,7 +40,9 @@ async function withApp(run: (call: Call, posts: () => string[], setOrderStatus: 
   });
   const orders = createTrading212OrdersService({
     database, trading212, trading: 'demo', origins: [ORIGIN],
-    verifyPassword: async (_userId, password) => password === 'route-password',
+    verifyStepUp: async (_who, password) => {
+      if (password !== 'route-password') throw new AppError('密码不正确', { code: 'AUTH_STEP_UP_FAILED', statusCode: 403 });
+    },
   });
   const app = express();
   app.use(express.json());
@@ -51,7 +53,7 @@ async function withApp(run: (call: Call, posts: () => string[], setOrderStatus: 
   });
   // Mounted exactly like studio.module: the read-only router first, then the orders router on the same path.
   app.use('/trading212', createTrading212Router(trading212));
-  app.use('/trading212', createTrading212OrdersRouter(orders));
+  app.use('/trading212', createTrading212OrdersRouter(orders, (req) => ({ door: 'direct', address: req.socket.remoteAddress ?? 'unknown' })));
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(error instanceof AppError ? error.statusCode : 500).json({ error: error instanceof Error ? error.message : 'error' });
   });

@@ -10,3 +10,14 @@ export { validateApiKey } from './auth.middleware.js';
 // requireCloudflareAccess / admitCloudflareAccessUpgrade: used by the server entrypoint to enforce the
 // optional Cloudflare Access check on HTTP requests and WebSocket upgrades from the public door.
 export { admitCloudflareAccessUpgrade, requireCloudflareAccess } from './auth.module.js';
+// onSessionsRevoked: used by the server entrypoint to terminate a user's live WebSockets,
+// deactivate their API keys and drop SNR cookies after "退出所有设备".
+export { onSessionsRevoked } from './auth.module.js';
+// verifyStepUpPassword: used by the settings module to ask for the password before an API key is
+// created or re-activated.
+export { verifyStepUpPassword } from './auth.module.js';
+// recordSecurityEvent: used by the settings module to log a new Web Push endpoint.
+export { recordSecurityEvent } from './auth.module.js';
+// readRequestClient: used by the request-guard module to key its rate limits and WebSocket
+// connection caps by the same real client (and door) the auth throttles use.
+export { readRequestClient } from './request-client.service.js';

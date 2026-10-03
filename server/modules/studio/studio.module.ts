@@ -2,8 +2,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { existsSync, realpathSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 
+import { readRequestClient, verifyStepUpPassword } from '@/modules/auth/index.js';
 import { getConnection, getDatabasePath, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { createProject } from '@/modules/projects/index.js';
 import { readCodexAccountRateLimits } from '@/modules/providers/index.js';
@@ -154,9 +154,8 @@ export function createStudioModule() {
   // ── v4 track: orders — create its service and mount its router below this line ──
   // Order placement is off unless STUDIO_T212_TRADING allows an account; each order is capped and needs a passkey (or,
   // only while the user has none, a double confirmation). Only requests from these origins may trade; localhost only
-  // with STUDIO_T212_ALLOW_LOCALHOST=1. Passkey changes are stepped up with the Studio account password.
-  // bcrypt has no TypeScript declarations here, so its compare function is narrowed like in the auth module.
-  const bcrypt = createRequire(import.meta.url)('bcrypt') as { compare(password: string, passwordHash: string): Promise<boolean> };
+  // with STUDIO_T212_ALLOW_LOCALHOST=1. Passkey changes are stepped up with the Studio account password, through
+  // the auth module's step-up (its per-session budget, daily per-user cap and security log apply).
   const trading212Orders = createTrading212OrdersService({
     database: getConnection(),
     trading212,
@@ -165,14 +164,9 @@ export function createStudioModule() {
     requirePasskey: process.env.STUDIO_T212_REQUIRE_PASSKEY,
     allowLocalhost: process.env.STUDIO_T212_ALLOW_LOCALHOST,
     origins: [process.env.STUDIO_PUBLIC_ORIGIN, process.env.STUDIO_TAILNET_ORIGIN],
-    async verifyPassword(userId, password) {
-      // getUserById omits the hash, so the active account is re-read by username for the comparison.
-      const account = userDb.getUserById(userId);
-      const row = account ? userDb.getUserByUsername(account.username) : undefined;
-      return row ? bcrypt.compare(password, row.password_hash) : false;
-    },
+    verifyStepUp: ({ user, client }, password) => verifyStepUpPassword(user, password, client),
   });
-  routes.use('/trading212', createTrading212OrdersRouter(trading212Orders));
+  routes.use('/trading212', createTrading212OrdersRouter(trading212Orders, (req) => readRequestClient(req)));
   // ── v4 track: mail — create its service and mount its router below this line ──
   // Per-user read-only mail accounts (Gmail over IMAP, Outlook over Graph). Project-bound Gmail OAuth
   // connections from the older project mail module appear as extra accounts in the same inbox.
@@ -196,5 +190,11 @@ export function createStudioModule() {
     },
   });
   routes.use('/mail', createMailRouter(mailAccounts));
-  return { routes, snrRoutes: createSnrGatewayRouter(gateway), mailCallbackRoutes: createProjectMailCallbackRouter(mail) };
+  return {
+    routes,
+    snrRoutes: createSnrGatewayRouter(gateway),
+    mailCallbackRoutes: createProjectMailCallbackRouter(mail),
+    // Used by the server entrypoint when "退出所有设备" also drops the user's SNR access cookies.
+    revokeSnrAccess: (userId: number) => gateway.revoke(userId),
+  };
 }

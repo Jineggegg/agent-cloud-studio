@@ -72,6 +72,11 @@ type CheckInput = {
   method: string;
   /** Request path, possibly with a query string (which is never logged). */
   path: string;
+  /**
+   * True when the connection arrived on the cloudflared listener (STUDIO_CLOUDFLARED_PORT): such a
+   * request is public-door traffic and is checked even if it carries no Cloudflare headers.
+   */
+  viaTunnelListener?: boolean;
 };
 
 const ALLOWED: AccessDecision = { allowed: true };
@@ -159,7 +164,7 @@ export function createCloudflareAccessGate(dependencies: CloudflareAccessGateDep
 
   async function decide(input: CheckInput): Promise<AccessDecision> {
     const { headers } = input;
-    if (!isViaCloudflareEdge(headers) || isPublicPath(input.method, input.path)) {
+    if ((!input.viaTunnelListener && !isViaCloudflareEdge(headers)) || isPublicPath(input.method, input.path)) {
       return ALLOWED;
     }
     const config = dependencies.config();
@@ -223,11 +228,17 @@ export function createCloudflareAccessGate(dependencies: CloudflareAccessGateDep
 /**
  * Wraps the gate as Express middleware: a refused request gets 403 with the usual AppError body
  * (code CF_ACCESS_REQUIRED). Used by auth.module for the middleware the server entrypoint mounts
- * before every route, static files included.
+ * before every route, static files included. `tunnelPort` reads STUDIO_CLOUDFLARED_PORT, so every
+ * request on the cloudflared listener is checked, Cloudflare headers or not.
  */
-export function createCloudflareAccessMiddleware(gate: ReturnType<typeof createCloudflareAccessGate>): RequestHandler {
+export function createCloudflareAccessMiddleware(
+  gate: ReturnType<typeof createCloudflareAccessGate>,
+  tunnelPort: () => number | null = () => null,
+): RequestHandler {
   return (req, res, next) => {
-    gate.check({ headers: req.headers, method: req.method, path: req.originalUrl }).then((decision) => {
+    const port = tunnelPort();
+    const viaTunnelListener = port !== null && req.socket.localPort === port;
+    gate.check({ headers: req.headers, method: req.method, path: req.originalUrl, viaTunnelListener }).then((decision) => {
       if (decision.allowed) {
         next();
         return;

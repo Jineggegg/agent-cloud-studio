@@ -1,10 +1,13 @@
 // @ts-nocheck -- JWT request augmentation is narrowed by Auth route contracts.
+import { randomUUID } from 'node:crypto';
+
 import jwt from 'jsonwebtoken';
 
 import { IS_PLATFORM } from '@/shared/utils.js';
 
 import { userDb, appConfigDb } from '../database/index.js';
 
+import { getAuthSecurityStore } from './auth-security.store.js';
 import {
   isTailnetDoorRequest,
   isTailscaleSessionRevoked,
@@ -27,6 +30,28 @@ const isRevokedTailscaleSession = (decoded) =>
 const isTailscaleSessionOffTailnetDoor = (decoded, request) =>
   decoded.tailscale !== undefined
   && !(request && isTailnetDoorRequest(request, parseTailscaleSignInConfig(process.env)));
+
+// Every token carries the user's token version (`ver`) from when it was signed; "退出所有设备"
+// (account-security.service) bumps the stored version, which refuses every older token at once.
+// Tokens signed before versions existed carry none and count as version 0, the starting value.
+const tokenVersionOf = (decoded) => (Number.isSafeInteger(decoded.ver) ? decoded.ver : 0);
+const currentSessionVersion = (userId) => getAuthSecurityStore().sessionVersions.current(Number(userId));
+const isRevokedSessionVersion = (decoded) => tokenVersionOf(decoded) !== currentSessionVersion(decoded.userId);
+
+// Every sign-in gets its own session id (sid), which refreshes keep; the per-session step-up
+// budget (auth.service) is keyed by it, so a stolen token can only lock its own password checks.
+// Tokens signed before session ids existed fall back to their issue time and version.
+const sessionIdOf = (decoded) => (typeof decoded.sid === 'string' && decoded.sid
+  ? decoded.sid.slice(0, 64)
+  : `${decoded.iat ?? 0}.${tokenVersionOf(decoded)}`);
+
+// Attaches the token's session id to the user row as a non-enumerable property, so it reaches the
+// services and generateToken without ever appearing in a JSON response.
+const withSessionId = (user, decoded) => Object.defineProperty(user, 'sessionId', {
+  value: sessionIdOf(decoded),
+  enumerable: false,
+  configurable: true,
+});
 
 // Optional API key middleware
 const validateApiKey = (req, res, next) => {
@@ -89,6 +114,14 @@ const authenticateToken = async (req, res, next) => {
       });
     }
 
+    if (isRevokedSessionVersion(decoded)) {
+      res.setHeader('X-Auth-Error', 'invalid-token');
+      return res.status(401).json({
+        error: 'Session revoked. Please sign in again.',
+        code: 'AUTH_TOKEN_REVOKED',
+      });
+    }
+
     if (isRevokedTailscaleSession(decoded)) {
       res.setHeader('X-Auth-Error', 'invalid-token');
       return res.status(401).json({
@@ -111,12 +144,13 @@ const authenticateToken = async (req, res, next) => {
       const now = Math.floor(Date.now() / 1000);
       const halfLife = (decoded.exp - decoded.iat) / 2;
       if (now > decoded.iat + halfLife) {
-        const newToken = generateToken(user, decoded.tailscale);
+        const newToken = generateToken(withSessionId(user, decoded), decoded.tailscale);
         res.setHeader('X-Refreshed-Token', newToken);
       }
     }
 
-    req.user = user;
+    // The session id rides along (not serialized) for per-session step-up budgets and refreshes.
+    req.user = withSessionId(user, decoded);
     // Read by the /refresh route so an explicit refresh keeps the claim as well.
     req.tailscaleSession = decoded.tailscale;
     next();
@@ -142,11 +176,15 @@ const authenticateToken = async (req, res, next) => {
 };
 
 // Generate JWT token. `tailscaleSession` ({ login, node }) is passed only for sessions issued by
-// Tailscale sign-in, and by every refresh of such a session.
+// Tailscale sign-in, and by every refresh of such a session. `ver` is the user's current token
+// version, so "退出所有设备" revokes this token along with every other one.
 const generateToken = (user, tailscaleSession?) => {
   const payload = {
     userId: user.id,
-    username: user.username
+    username: user.username,
+    ver: currentSessionVersion(user.id),
+    // A refresh carries the session id on; a new sign-in starts a new session.
+    sid: typeof user.sessionId === 'string' && user.sessionId ? user.sessionId : randomUUID(),
   };
   if (tailscaleSession) {
     payload.tailscale = { login: tailscaleSession.login, node: tailscaleSession.node };
@@ -180,7 +218,12 @@ const authenticateWebSocket = (token, request?) => {
     const decoded = jwt.verify(token, JWT_SECRET);
     // Verify user actually exists in database (matches REST authenticateToken behavior)
     const user = userDb.getUserById(decoded.userId);
-    if (!user || isRevokedTailscaleSession(decoded) || isTailscaleSessionOffTailnetDoor(decoded, request)) {
+    if (
+      !user
+      || isRevokedSessionVersion(decoded)
+      || isRevokedTailscaleSession(decoded)
+      || isTailscaleSessionOffTailnetDoor(decoded, request)
+    ) {
       return null;
     }
     return { userId: user.id, username: user.username };

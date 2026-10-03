@@ -2116,3 +2116,40 @@ export type StudioRuntimeInfo = {
   };
 };
 // ---------------------------
+
+//----------------- STUDIO ACCOUNT SECURITY ------------
+/** A Face ID / Touch ID passkey that signs in to the Studio account on one domain (its RP ID). */
+export type StudioSignInPasskey = { id: string; rpId: string; label: string | null; createdAt: string; lastUsedAt: string | null };
+/**
+ * One entry of the server's bounded security log: failed and successful sign-ins, password locks,
+ * passkey changes and "退出所有设备". `client` is already masked ("198.51.*.*"); `detail` is plain text.
+ */
+export type StudioSecurityEvent = {
+  id: number; at: string; type: string; door: string; client: string; detail: string | null;
+  // How many events this row stands for: repeated sign-ins of one session are folded together.
+  repeats?: number;
+};
+/** One password lock: whether it holds now and until when (ISO-8601). */
+export type StudioPasswordLock = { locked: boolean; lockedUntil: string | null };
+/** GET /api/auth/security: what Settings → 安全 shows for the signed-in account. */
+export type StudioSecurityOverview = {
+  // Origins whose pages may add and use sign-in passkeys (the configured front doors).
+  passkeyOrigins: string[];
+  passkeys: StudioSignInPasskey[];
+  // Newest first, every kind of event.
+  events: StudioSecurityEvent[];
+  // Newest first: locks, lock lifts, passkey changes and revocations, which a flood of failed
+  // sign-ins can never push out of the log.
+  importantEvents: StudioSecurityEvent[];
+  // Newest first: successful sign-ins (password, passkey, Tailscale, handoff), kept apart too.
+  signIns: StudioSecurityEvent[];
+  // Each door locks on its own: the public domain's password sign-in, the Tailscale address's, and
+  // the password a signed-in session re-enters in Settings. Passkeys and Tailscale sign-in still work.
+  passwordLocks: { public: StudioPasswordLock; tailnet: StudioPasswordLock; session: StudioPasswordLock };
+};
+/** POST /api/auth/security/revoke-all: what "退出所有设备" took away, for the confirmation toast. */
+export type StudioRevokeAllResult = {
+  success: boolean;
+  revoked: { sessions: boolean; webSockets: number; apiKeys: number; snrAccess: number; pushSubscriptions: number; handoffCodes: number };
+};
+// ---------------------------

@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import Database from 'better-sqlite3';
 
 import type { StudioT212OrderInput } from '@/shared/types.js';
+import { AppError } from '@/shared/utils.js';
 
 import { createTrading212Service } from '../trading212.service.js';
 import { createTrading212OrdersService } from '../trading212-orders.service.js';
@@ -91,6 +92,8 @@ function fixture(options: FixtureOptions = {}) {
   });
   const { webauthn, calls: webauthnCalls } = fakeWebAuthn();
   const passwordChecks: string[] = [];
+  const stepUpUsers: unknown[] = [];
+  let stepUpRefusal: AppError | null = null;
   const orders = createTrading212OrdersService({
     database, trading212, webauthn, now: () => clock,
     trading: 'trading' in options ? options.trading : 'both',
@@ -98,13 +101,19 @@ function fixture(options: FixtureOptions = {}) {
     requirePasskey: options.requirePasskey,
     allowLocalhost: options.allowLocalhost,
     origins: [STUDIO.origin, `${TAILNET.origin}/`, undefined],
-    async verifyPassword(userId, password) {
+    // Stands in for the auth module's step-up, which owns every limit on passwords.
+    async verifyStepUp(who, password) {
       passwordChecks.push(password);
-      return userId === 1 && password === PASSWORD;
+      stepUpUsers.push(who.user);
+      if (stepUpRefusal) throw stepUpRefusal;
+      if ((who.user as { id?: number }).id !== 1 || password !== PASSWORD) {
+        throw new AppError('密码不正确', { code: 'AUTH_STEP_UP_FAILED', statusCode: 403 });
+      }
     },
   });
   return {
-    orders, calls, database, webauthnCalls, passwordChecks,
+    orders, calls, database, webauthnCalls, passwordChecks, stepUpUsers,
+    refuseStepUps: (error: AppError | null) => { stepUpRefusal = error; },
     posts: () => calls.filter(call => call.method === 'POST'),
     advance: (ms: number) => { clock += ms; },
     onOrder: (respond: (url: string) => Response) => { respondToOrder = respond; },
@@ -385,17 +394,28 @@ test('STUDIO_T212_REQUIRE_PASSKEY=1 removes the double confirmation entirely', a
   try { assert.equal(standard.orders.config(1).requirePasskey, false); } finally { standard.close(); }
 });
 
-test('concurrent wrong passwords cannot slip past the five-attempt lock', async () => {
+test('passkey step-ups go through the auth module, which alone limits them', async () => {
   const f = fixture();
   try {
-    const attempts = await Promise.allSettled(Array.from({ length: 20 }, (_, index) => f.orders.passkeyOptions(1, 'owner', STUDIO, `guess-${index}`)));
-    assert.ok(attempts.every(result => result.status === 'rejected'));
-    assert.ok(f.passwordChecks.length <= 5, `checked ${f.passwordChecks.length} passwords`);
-    await assert.rejects(f.orders.passkeyOptions(1, 'owner', STUDIO, PASSWORD), coded('T212_STEP_UP_LOCKED'));
+    // No limit of its own: many wrong passwords, then the right one still works when auth says so.
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      await assert.rejects(f.orders.passkeyOptions(1, 'owner', STUDIO, `guess-${attempt}`), coded('T212_STEP_UP_FAILED'));
+    }
+    assert.equal(f.passwordChecks.length, 8, 'every attempt reached the auth step-up');
+    const who = { user: Object.defineProperty({ id: 1 }, 'sessionId', { value: 's-1' }), client: { door: 'cloudflare', address: '198.51.100.7' } } as const;
+    await f.orders.passkeyOptions(1, 'owner', STUDIO, PASSWORD, who);
+    assert.equal(f.stepUpUsers.at(-1), who.user, 'the signed-in user (with its session) is passed on');
+    // Auth's throttle, lock or daily cap answer 429, kept as a lock with auth's own words.
+    f.refuseStepUps(new AppError('今天的密码确认次数已用完，请在「设置 → 安全」退出所有设备', { code: 'AUTH_STEP_UP_RATE_LIMITED', statusCode: 429 }));
+    await assert.rejects(f.orders.passkeyOptions(1, 'owner', STUDIO, PASSWORD), (error: Error & { code?: string; statusCode?: number }) =>
+      error.code === 'T212_STEP_UP_LOCKED' && error.statusCode === 429 && /退出所有设备/.test(error.message));
+    const passkey = await registerPasskey(f).catch(() => null);
+    assert.equal(passkey, null);
+    f.refuseStepUps(null);
   } finally { f.close(); }
 });
 
-test('adding a passkey needs the Studio password, and repeated wrong passwords lock passkey changes', async () => {
+test('adding a passkey needs the Studio password', async () => {
   const f = fixture();
   try {
     await assert.rejects(f.orders.passkeyOptions(1, 'owner', STUDIO, 'guess'), coded('T212_STEP_UP_FAILED'));
@@ -404,17 +424,7 @@ test('adding a passkey needs the Studio password, and repeated wrong passwords l
     // Without a password-gated challenge the attestation is refused.
     await assert.rejects(f.orders.registerPasskey(1, STUDIO, { id: 'cred-1', rawId: 'cred-1', response: { attestationObject: 'x' } } as any), coded('T212_PASSKEY_FAILED'));
     assert.deepEqual(f.orders.config(1).passkeys, []);
-
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      await assert.rejects(f.orders.passkeyOptions(1, 'owner', STUDIO, `guess-${attempt}`), coded('T212_STEP_UP_FAILED'));
-    }
-    // Five wrong passwords in a row: even the right one is refused for fifteen minutes.
-    await assert.rejects(f.orders.passkeyOptions(1, 'owner', STUDIO, PASSWORD), (error: Error & { code?: string; statusCode?: number }) =>
-      error.code === 'T212_STEP_UP_LOCKED' && error.statusCode === 429);
-    const checks = f.passwordChecks.length;
-    f.advance(15 * 60_000 + 1);
     const passkey = await registerPasskey(f);
-    assert.equal(f.passwordChecks.length, checks + 1);
     assert.equal(f.passwordChecks.at(-1), PASSWORD);
     assert.equal(passkey.rpId, STUDIO.rpId);
   } finally { f.close(); }

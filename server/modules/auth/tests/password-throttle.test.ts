@@ -117,18 +117,23 @@ test('a successful login clears that client\'s own count', async () => {
   assert.equal((await harness.service.login('andrew', PASSWORD, TAILNET_CLIENT)).success, true);
 });
 
-test('login and the handoff password share one budget', async () => {
+test('the handoff password has its own per-user budget, which wrong logins never use up', async () => {
   const harness = createHarness();
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  // A flood of wrong logins on the tailnet door uses up that door's sign-in budget...
+  for (let attempt = 0; attempt < 5; attempt += 1) {
     await assert.rejects(harness.service.login('andrew', 'guess', TAILNET_CLIENT), isAppError('AUTH_INVALID_CREDENTIALS', 401));
   }
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  await assert.rejects(harness.service.login('andrew', PASSWORD, TAILNET_CLIENT), isAppError('AUTH_RATE_LIMITED', 429));
+  // ...but the signed-in owner can still move to the public door with the password.
+  const ticket = await harness.service.issueHandoff(OWNER, OWNER_SESSION, { target: 'public', password: PASSWORD, client: TAILNET_CLIENT });
+  assert.equal(ticket.target, 'public');
+  // Wrong handoff passwords are limited on their own: five, then 429.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
     await assert.rejects(
       harness.service.issueHandoff(OWNER, OWNER_SESSION, { target: 'public', password: 'guess', client: TAILNET_CLIENT }),
       isAppError('AUTH_INVALID_CREDENTIALS', 401),
     );
   }
-  await assert.rejects(harness.service.login('andrew', PASSWORD, TAILNET_CLIENT), isAppError('AUTH_RATE_LIMITED', 429));
   await assert.rejects(
     harness.service.issueHandoff(OWNER, OWNER_SESSION, { target: 'public', password: PASSWORD, client: TAILNET_CLIENT }),
     isAppError('AUTH_HANDOFF_RATE_LIMITED', 429),
@@ -212,12 +217,12 @@ test('the redeem route buckets by door, so a public flood leaves tailnet switche
   };
 
   try {
-    // 30 junk attempts from rotating public addresses exhaust the public door's total.
+    // 30 malformed junk attempts from rotating public addresses exhaust the public door's total.
     for (let index = 0; index < 30; index += 1) {
-      const junk = await post('/handoff/redeem', { code: 'x'.repeat(43) }, { 'CF-Ray': 'r', 'CF-Connecting-IP': `203.0.113.${index}` });
+      const junk = await post('/handoff/redeem', { code: 'junk' }, { 'CF-Ray': 'r', 'CF-Connecting-IP': `203.0.113.${index}` });
       assert.equal(junk.status, 400);
     }
-    const flooded = await post('/handoff/redeem', { code: 'x'.repeat(43) }, { 'CF-Ray': 'r', 'CF-Connecting-IP': '192.0.2.1' });
+    const flooded = await post('/handoff/redeem', { code: 'junk' }, { 'CF-Ray': 'r', 'CF-Connecting-IP': '192.0.2.1' });
     assert.equal(flooded.status, 429);
 
     const ticket = await post('/handoff', { target: 'tailnet' });

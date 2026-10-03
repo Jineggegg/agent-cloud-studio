@@ -271,8 +271,26 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
     }),
+    // "用面容 ID 登录": a fresh challenge for this door, then the passkey's assertion for a session.
+    passkeyOptions: () => fetch('/api/auth/passkey/options', { method: 'POST' }),
+    // The ceremony id from passkeyOptions names the challenge this assertion answers.
+    passkeySignIn: (ceremonyId: string, response: unknown) => fetch('/api/auth/passkey', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ceremonyId, response }),
+    }),
     refresh: () => post('/api/auth/refresh'),
     user: () => get('/api/auth/user'),
+    // Settings → 安全 (signed in). Adding or removing a sign-in passkey is stepped up with the password.
+    security: {
+      overview: () => get('/api/auth/security'),
+      passkeyOptions: (password: string) => post('/api/auth/security/passkeys/options', { password }),
+      registerPasskey: (response: unknown) => post('/api/auth/security/passkeys', { response }),
+      removePasskey: (id: string, password: string) =>
+        post(`/api/auth/security/passkeys/${encodeURIComponent(id)}/remove`, { password }),
+      // "退出所有设备": every session token so far stops working, this one included.
+      revokeAll: () => post('/api/auth/security/revoke-all'),
+    },
   },
 
   // Protected endpoints
@@ -594,10 +612,11 @@ export const api = {
   // Server-side settings: API keys, stored credentials, notifications, web push
   settings: {
     apiKeys: () => get('/api/settings/api-keys'),
-    createApiKey: (keyName: string) => post('/api/settings/api-keys', { keyName }),
+    // Creating a key, or turning a disabled one back on, needs the Studio login password.
+    createApiKey: (keyName: string, password: string) => post('/api/settings/api-keys', { keyName, password }),
     deleteApiKey: (keyId: string) => del(`/api/settings/api-keys/${keyId}`),
-    toggleApiKey: (keyId: string, isActive: boolean) =>
-      patch(`/api/settings/api-keys/${keyId}/toggle`, { isActive }),
+    toggleApiKey: (keyId: string, isActive: boolean, password?: string) =>
+      patch(`/api/settings/api-keys/${keyId}/toggle`, password === undefined ? { isActive } : { isActive, password }),
 
     credentials: (type: string) => get(`/api/settings/credentials${query({ type })}`),
     createCredential: (payload: {
@@ -616,7 +635,9 @@ export const api = {
 
     push: {
       vapidPublicKey: () => get('/api/settings/push/vapid-public-key'),
-      subscribe: (subscription: { endpoint?: string; keys?: unknown }) =>
+      // `resubscribe` re-registers a subscription this browser already has (after sign-in): the
+      // server stores it again without switching Web Push on or announcing it.
+      subscribe: (subscription: { endpoint?: string; keys?: unknown; resubscribe?: boolean }) =>
         post('/api/settings/push/subscribe', subscription),
       unsubscribe: (endpoint: string) => post('/api/settings/push/unsubscribe', { endpoint }),
     },
