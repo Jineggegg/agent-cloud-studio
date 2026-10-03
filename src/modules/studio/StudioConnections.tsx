@@ -24,6 +24,7 @@ import { StudioSettingsRemote } from '@/modules/studio/StudioSettingsRemote';
 import { SettingsIcon, SettingsLinkRow } from '@/modules/studio/StudioSettingsRows';
 import { StudioSettingsRuntime } from '@/modules/studio/StudioSettingsRuntime';
 import { StudioSettingsTrading } from '@/modules/studio/StudioSettingsTrading';
+import { StudioSettingsTradingLog } from '@/modules/studio/StudioSettingsTradingLog';
 import { useAjExitState } from '@/modules/studio/hooks/useAjExit';
 import { useHomeLayout } from '@/modules/studio/utils/homeLayout';
 import { DEFAULT_SETTINGS_PAGE, SETTINGS_PAGES, browserBuild } from '@/modules/studio/settingsPages';
@@ -51,7 +52,10 @@ function entryLabel() {
   return '公网';
 }
 
-/** Trading 212's key files as the server found them (whether each is set up; the keys themselves are never sent). */
+/**
+ * Whether the server found each Trading 212 account's key file, as a badge only (the keys themselves are never sent;
+ * where the files live is server configuration, not something to read here).
+ */
 function T212KeyStatus() {
   const [t212, setT212] = useState<T212Status[] | null>(null);
   useEffect(() => {
@@ -60,16 +64,15 @@ function T212KeyStatus() {
     return () => { active = false; };
   }, []);
   return <section className="ios-section first" aria-labelledby="studio-t212-heading">
-    <div className="ios-section-header"><h2 id="studio-t212-heading">账户</h2><span className="caption">密钥文件</span></div>
+    <div className="ios-section-header"><h2 id="studio-t212-heading">账户</h2></div>
     <div className="ios-list">
       {(t212 ?? []).map(item => <div className="ios-row" key={item.env}>
         <SettingsIcon><IconChartCandle size={18} strokeWidth={1.6} /></SettingsIcon>
-        <span className="ios-row-body"><strong>{item.env === 'live' ? '实盘账户' : '模拟账户'}</strong><small>{item.source ? `密钥文件 · ${item.source}` : '未设置密钥文件'}</small></span>
+        <span className="ios-row-body"><strong>{item.env === 'live' ? '实盘账户' : '模拟账户'}</strong></span>
         <span className={`status-badge ${item.configured ? 'good' : ''}`}>{item.configured ? '已接入' : '未接入'}</span>
       </div>)}
       {t212 === null && <div className="ios-row no-icon"><span className="ios-row-body"><small>正在检查…</small></span></div>}
     </div>
-    <p className="ios-section-footer">密钥只保存在服务器指定的 .env 文件里（STUDIO_T212_ENV_FILE / STUDIO_T212_DEMO_ENV_FILE），下单默认关闭，开启方式和安全设置见下方「交易安全」。</p>
   </section>;
 }
 
@@ -89,7 +92,8 @@ function SettingsPageContent({ page, status, onChange, onNavigate, onSignOut, mo
     case 'network': return <><StudioSettingsNetwork /><StudioSettingsRemote /></>;
     case 'aj-exit': return <StudioSettingsAjExit />;
     case 'mail': return <StudioSettingsMail />;
-    case 'trading': return <><T212KeyStatus /><StudioSettingsTrading /></>;
+    case 'trading': return <><T212KeyStatus /><StudioSettingsTrading onOpenLog={() => onNavigate('trading-log')} /></>;
+    case 'trading-log': return <StudioSettingsTradingLog />;
     case 'home': return <StudioSettingsHome />;
     case 'about': return <StudioSettingsAbout onOpenRuntime={() => onNavigate('runtime')} />;
     case 'runtime': return <StudioSettingsRuntime onOpenNetwork={() => onNavigate('network')} />;
@@ -158,7 +162,7 @@ function SettingsRootList({ status, selected, onOpen }: { status: StudioStatus |
     <section className="ios-section" aria-label="连接">
       <div className="ios-list">
         {row('network', <IconWorld size={18} />, entryLabel())}
-        {row('aj-exit', <IconRoute size={18} />, !aj.ready ? '未设置' : aj.on ? '已开启' : '未开启')}
+        {row('aj-exit', <IconRoute size={18} />, !aj.supported ? '仅限 iPhone / iPad' : !aj.ready ? '未设置' : aj.on ? '已开启' : '未开启')}
         {row('mail', <IconMail size={18} />)}
         {row('trading', <IconChartCandle size={18} />)}
       </div>
@@ -177,8 +181,8 @@ function SettingsRootList({ status, selected, onOpen }: { status: StudioStatus |
  * Used by StudioPage for Studio's settings app (/apps/connections?tab=<page>), laid out like iOS Settings. A wide
  * screen shows the list beside the chosen page, as on iPadOS; a phone shows one screen at a time, pushed in from the
  * side. The settings changed most often are one tap on the list itself; everything else is a page, and what is
- * rarely touched is one level further in (模型 → 模型列表, 关于本机 → 版本与运行状态). Secrets are provisioned
- * without ever being read back to the browser (StudioSettingsDeepSeek).
+ * rarely touched is one level further in (模型 → 模型列表, Trading 212 → 变更日志, 关于本机 → 版本与运行状态).
+ * Secrets are provisioned without ever being read back to the browser (StudioSettingsDeepSeek).
  */
 export function StudioConnections({ status, onChange, page, split, onNavigate, onScroll, onSignOut }: {
   status: StudioStatus | null; onChange: () => Promise<void>;

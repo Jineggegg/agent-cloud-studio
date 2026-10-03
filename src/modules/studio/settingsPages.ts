@@ -7,7 +7,8 @@ import type { StudioBuildInfo } from '@/shared/types';
  * screen) lists, and the pages one level further in. Kept apart from the pages themselves so StudioPage can title its
  * navigation bar without loading them.
  */
-export type SettingsPageId = 'account' | 'models' | 'model-list' | 'quota' | 'deepseek' | 'network' | 'aj-exit' | 'mail' | 'trading' | 'home' | 'about' | 'runtime';
+export type SettingsPageId = 'account' | 'models' | 'model-list' | 'quota' | 'deepseek' | 'network' | 'aj-exit' | 'mail' | 'trading' | 'trading-log'
+  | 'home' | 'about' | 'runtime';
 
 export const SETTINGS_PAGES: Record<SettingsPageId, { title: string; parent?: SettingsPageId }> = {
   account: { title: '账户与安全' },
@@ -19,6 +20,8 @@ export const SETTINGS_PAGES: Record<SettingsPageId, { title: string; parent?: Se
   'aj-exit': { title: 'AJ 出口' },
   mail: { title: '邮箱' },
   trading: { title: 'Trading 212' },
+  // Every Trading 212 safety record (cap and trading-mode changes, Face ID requests, passkeys) in one list.
+  'trading-log': { title: '变更日志', parent: 'trading' },
   home: { title: '主屏幕' },
   about: { title: '关于本机' },
   runtime: { title: '版本与运行状态', parent: 'about' },

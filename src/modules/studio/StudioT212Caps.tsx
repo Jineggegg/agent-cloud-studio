@@ -5,12 +5,9 @@ import { toast } from 'sonner';
 import { IconCheck, IconFaceId } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import { T212_ENV_LABELS } from '@/shared/constants';
-import type {
-  T212AccountCaps, T212CapChange, T212CapLimits, T212CapsInput, T212Env, T212StepUpChallenge, T212TradingConfig,
-} from '@/shared/types';
-import { apiErrorCode, decimalInputProblem, parseDecimalInput } from '@/shared/utils';
+import type { T212AccountCaps, T212CapLimits, T212CapsInput, T212Env, T212StepUpChallenge, T212TradingConfig } from '@/shared/types';
+import { apiErrorCode, decimalInputProblem, formatT212CapAmount, formatT212CapChange, parseDecimalInput } from '@/shared/utils';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
-import { StudioT212HistoryList, StudioT212HistoryRow } from '@/modules/studio/StudioT212History';
 import { StudioT212ReviewSheet } from '@/modules/studio/StudioT212ReviewSheet';
 import '@/modules/studio/studio-orders.css';
 
@@ -27,15 +24,6 @@ const ENVS: T212Env[] = ['live', 'demo'];
 // Caps are amounts of money: the server accepts at most two decimals.
 const CAP_PLACES = 2;
 
-function money(value: number, currency: string | undefined) {
-  if (!currency) return `${value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}（账户货币）`;
-  try { return new Intl.NumberFormat('zh-CN', { style: 'currency', currency, maximumFractionDigits: 2 }).format(value); }
-  catch { return `${value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })} ${currency}`; }
-}
-// "£250.00 → £400.00", or just the value when it does not change.
-function change(from: number, to: number, currency: string | undefined) {
-  return from === to ? money(to, currency) : `${money(from, currency)} → ${money(to, currency)}`;
-}
 // Raising either cap is a raise even when the other goes down, exactly as the server decides; null when unchanged.
 function capDirection(current: T212CapLimits, next: T212CapLimits): Direction | null {
   if (next.maxOrderValue > current.maxOrderValue || next.dailyLimit > current.dailyLimit) return 'raise';
@@ -63,11 +51,11 @@ function raiseBlocker(config: T212TradingConfig, trusted: boolean) {
 }
 
 /**
- * Used by StudioSettingsTrading (Settings → 交易安全) to show and edit this user's Trading 212 caps per account:
- * the per-order cap and the rolling-24-hour cap on buys with today's usage, the server ceiling, applied changes and,
- * listed apart, refused raises. Lowering is saved with the session alone; raising asks the server for a challenge
- * bound to the exact new values, shows them for review, then signs it with Face ID / Touch ID, so it needs a passkey
- * on this domain (the editor explains when there is none).
+ * Used by StudioSettingsTrading (Settings → 交易安全) to show and edit this user's Trading 212 caps per account: the
+ * per-order cap and the rolling-24-hour cap on buys (their records are on 变更日志). Lowering is saved with the session
+ * alone; raising asks the server for a challenge bound to the exact new values, shows them for review, then signs it
+ * with Face ID / Touch ID, so it needs a passkey on this domain (the editor explains when there is none). The server
+ * ceiling is only mentioned when a typed value goes over it.
  */
 export function StudioT212CapsEditor({ config, trusted, onSaved }: {
   config: T212TradingConfig; trusted: boolean; onSaved: () => Promise<void> | void;
@@ -79,7 +67,6 @@ export function StudioT212CapsEditor({ config, trusted, onSaved }: {
   const headingId = useId();
   const caps = config.caps.envs[env];
   const currency = caps.currency ?? config.currency;
-  const currencyOf = (item: T212CapChange) => (item.env ? config.caps.envs[item.env].currency : undefined) ?? config.currency;
 
   return <>
     <div className="t212-subheading">
@@ -92,15 +79,6 @@ export function StudioT212CapsEditor({ config, trusted, onSaved }: {
     {/* Remounted whenever the saved caps change, so the fields start from what the server now enforces. */}
     <CapsForm key={`${env}:${caps.maxOrderValue}:${caps.dailyLimit}:${caps.updatedAt ?? ''}`} env={env} caps={caps} currency={currency}
       ceiling={config.caps.ceiling} blocker={raiseBlocker(config, trusted)} labelledBy={headingId} busy={busy} setBusy={setBusy} onSaved={onSaved} />
-    <p className="ios-section-footer t212-settings-note">
-      服务器硬上限 {money(config.caps.ceiling, currency)}（<code>STUDIO_T212_CAP_CEILING</code>），任何修改都不能超过。
-      降低上限立即生效，不需要验证；提高上限要先核对数值，再用这个网址的面容 ID / 触控 ID 验证，60 秒内有效。
-      每日上限只计买入：过去 24 小时已提交、正在提交和状态未知的买单；卖出不占用额度，但仍受单笔上限限制。
-      {!caps.custom && ` 当前是服务器默认值（单笔 ${money(config.caps.defaults.maxOrderValue, currency)}，每日 ${money(config.caps.defaults.dailyLimit, currency)}）。`}
-    </p>
-
-    <StudioT212HistoryList title="上限变更记录" items={config.capChanges} renderItem={item => <CapChangeRow change={item} currency={currencyOf(item)} />} />
-    <StudioT212HistoryList title="被拒绝的提高" items={config.capRefusals} renderItem={item => <CapChangeRow change={item} currency={currencyOf(item)} />} />
   </>;
 }
 
@@ -122,12 +100,11 @@ function CapsForm({ env, caps, currency, ceiling, blocker, labelledBy, busy, set
   const dailyLimit = parseDecimalInput(dailyText, CAP_PLACES);
   const valid = maxOrderValue !== null && dailyLimit !== null;
   const problem = decimalInputProblem(orderText, CAP_PLACES, '单笔上限') || decimalInputProblem(dailyText, CAP_PLACES, '每日上限')
-    || (valid && Math.max(maxOrderValue, dailyLimit) > ceiling ? `上限不能超过服务器硬上限 ${money(ceiling, currency)}` : '')
+    || (valid && Math.max(maxOrderValue, dailyLimit) > ceiling ? `上限不能超过服务器硬上限 ${formatT212CapAmount(ceiling, currency)}` : '')
     || (valid && maxOrderValue > dailyLimit ? '单笔上限不能超过每日上限' : '');
   const direction = valid && !problem ? capDirection(caps, { maxOrderValue, dailyLimit }) : null;
   const blocked = direction === 'raise' && Boolean(blocker);
   const ready = busy === null && direction !== null && !blocked;
-  const usedRatio = caps.dailyLimit > 0 ? Math.min(1, caps.dailyUsed / caps.dailyLimit) : 0;
 
   const fail = (reason: unknown, raising: boolean) => {
     const message = saveError(reason);
@@ -154,7 +131,7 @@ function CapsForm({ env, caps, currency, ceiling, blocker, labelledBy, busy, set
     setBusy('saving');
     try {
       await readApiJson(await api.studio.t212Trading.updateCaps(input));
-      toast.success(`已降低${T212_ENV_LABELS[env]}上限`, { description: `单笔 ${money(maxOrderValue, currency)} · 每日 ${money(dailyLimit, currency)}` });
+      toast.success(`已降低${T212_ENV_LABELS[env]}上限`, { description: `单笔 ${formatT212CapAmount(maxOrderValue, currency)} · 每日 ${formatT212CapAmount(dailyLimit, currency)}` });
       await onSaved();
     } catch (reason) { fail(reason, false); }
     finally { setBusy(null); }
@@ -168,7 +145,7 @@ function CapsForm({ env, caps, currency, ceiling, blocker, labelledBy, busy, set
       const assertion = await startAuthentication({ optionsJSON: challenge.authentication });
       await readApiJson(await api.studio.t212Trading.updateCaps(input, { challengeId: challenge.challengeId, assertion }));
       toast.success(`已用面容 ID / 触控 ID 提高${T212_ENV_LABELS[env]}上限`, {
-        description: `单笔 ${money(input.maxOrderValue, currency)} · 每日 ${money(input.dailyLimit, currency)}`,
+        description: `单笔 ${formatT212CapAmount(input.maxOrderValue, currency)} · 每日 ${formatT212CapAmount(input.dailyLimit, currency)}`,
       });
       setPendingRaise(null);
       await onSaved();
@@ -191,15 +168,6 @@ function CapsForm({ env, caps, currency, ceiling, blocker, labelledBy, busy, set
           disabled={busy !== null} aria-invalid={Boolean(decimalInputProblem(dailyText, CAP_PLACES, '每日上限')) || undefined} />
         <span className="t212-order-aside">{currency ?? '账户货币'}</span>
       </div>
-      <div className="ios-row no-icon">
-        <span className="ios-row-body">
-          <strong>过去 24 小时买入</strong>
-          <small>已用 {money(caps.dailyUsed, currency)} · 还可买入 {money(caps.dailyRemaining, currency)}</small>
-        </span>
-        <span className={`t212-order-meter t212-caps-meter ${usedRatio >= 1 ? 'full' : usedRatio >= 0.8 ? 'near' : ''}`} aria-hidden="true">
-          <span style={{ transform: `scaleX(${usedRatio})` }} />
-        </span>
-      </div>
       <button type="submit" className="ios-row action left no-icon" disabled={!ready}>
         {busy === 'saving' || busy === 'challenge' ? <StudioSpinner size={16} /> : direction === 'raise' ? <IconFaceId size={19} aria-hidden="true" /> : <IconCheck size={19} aria-hidden="true" />}
         {direction === 'raise' ? '用面容 ID / 触控 ID 提高上限' : direction === 'lower' ? '降低上限' : '保存上限'}
@@ -214,19 +182,9 @@ function CapsForm({ env, caps, currency, ceiling, blocker, labelledBy, busy, set
       message="服务器只接受下面这组数值，而且只在上限仍是左边的值时有效。确认后用面容 ID / 触控 ID 验证，验证 60 秒内有效。"
       rows={[
         { label: '账户', value: T212_ENV_LABELS[pendingRaise.challenge.env] },
-        { label: '单笔上限', value: change(pendingRaise.challenge.from.maxOrderValue, pendingRaise.challenge.to.maxOrderValue, currency) },
-        { label: '每日上限', value: change(pendingRaise.challenge.from.dailyLimit, pendingRaise.challenge.to.dailyLimit, currency) },
+        { label: '单笔上限', value: formatT212CapChange(pendingRaise.challenge.from.maxOrderValue, pendingRaise.challenge.to.maxOrderValue, currency) },
+        { label: '每日上限', value: formatT212CapChange(pendingRaise.challenge.from.dailyLimit, pendingRaise.challenge.to.dailyLimit, currency) },
       ]}
       verifying={busy === 'passkey'} onConfirm={() => void confirmRaise()} onCancel={cancelRaise} />}
   </>;
-}
-
-function CapChangeRow({ change: item, currency }: { change: T212CapChange; currency: string | undefined }) {
-  const refused = item.status === 'refused';
-  const action = refused ? '提高被拒绝' : item.direction === 'raise' ? '提高' : '降低';
-  const values = item.from && item.to
-    ? `单笔 ${change(item.from.maxOrderValue, item.to.maxOrderValue, currency)} · 每日 ${change(item.from.dailyLimit, item.to.dailyLimit, currency)}`
-    : '请求无效，没有可识别的数值';
-  return <StudioT212HistoryRow heading={`${item.env ? T212_ENV_LABELS[item.env] : '未知账户'} · ${action}`} values={values}
-    mark={item.direction === 'raise' ? 'up' : 'down'} refused={refused} method={item.method} createdAt={item.createdAt} reason={item.reason} who={item} />;
 }

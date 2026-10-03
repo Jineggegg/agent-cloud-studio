@@ -351,6 +351,28 @@ export function decimalInputProblem(value: string, places: number, label: string
 
 // ---------------------------
 
+//----------------- TRADING 212 CAP AMOUNTS ------------
+
+/**
+ * A Trading 212 order cap in the account currency ("£250.00"), or the bare number marked （账户货币） while the
+ * currency is not known yet. Used by the cap editor in Settings → Trading 212 and by its 变更日志 page.
+ */
+export function formatT212CapAmount(value: number, currency: string | undefined): string {
+  if (!currency) return `${value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}（账户货币）`;
+  try { return new Intl.NumberFormat('zh-CN', { style: 'currency', currency, maximumFractionDigits: 2 }).format(value); }
+  catch { return `${value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })} ${currency}`; }
+}
+
+/**
+ * A cap moving between two values ("£250.00 → £400.00"), or just the value when it stays the same; formatted with
+ * formatT212CapAmount. Used by the cap editor's raise review and the 变更日志 page.
+ */
+export function formatT212CapChange(from: number, to: number, currency: string | undefined): string {
+  return from === to ? formatT212CapAmount(to, currency) : `${formatT212CapAmount(from, currency)} → ${formatT212CapAmount(to, currency)}`;
+}
+
+// ---------------------------
+
 //----------------- ERROR MESSAGES ------------
 
 /**

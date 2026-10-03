@@ -24,6 +24,9 @@ vi.mock('@simplewebauthn/browser', () => webauthn);
 vi.mock('sonner', () => ({ toast }));
 
 const { StudioSettingsTrading } = await import('@/modules/studio/StudioSettingsTrading');
+const onOpenLog = vi.fn();
+// The Trading 212 settings page as Settings shows it; its records are one level further in.
+const renderTrading = () => render(<StudioSettingsTrading onOpenLog={onOpenLog} />);
 
 const json = (value: unknown, status = 200, code?: string) => async () => Response.json(status === 200 ? value : { error: value, code }, { status });
 const OTHER_DOMAIN = { id: 'k-tailnet', rpId: 'desktop.tail1234.ts.net', label: 'Windows', createdAt: '2026-09-01T00:00:00Z', lastUsedAt: null };
@@ -80,18 +83,23 @@ test('shows the allowed accounts, the cap and passkeys by domain, then registers
   trading.registerPasskey.mockImplementation(json(THIS_DOMAIN));
   const attestation = { id: 'cred-2', rawId: 'cred-2', type: 'public-key', response: { attestationObject: 'x' } };
   webauthn.startRegistration.mockResolvedValue(attestation);
-  render(<StudioSettingsTrading />);
+  renderTrading();
 
   expect((await modeOption('模拟盘')).getAttribute('aria-checked')).toBe('true');
-  // The caps editor opens on the account that may trade, with its saved caps and today's usage.
+  // The caps editor opens on the account that may trade, with its saved caps.
   expect((within(capsForm()).getByLabelText('单笔上限') as HTMLInputElement).value).toBe('250');
   expect((within(capsForm()).getByLabelText('每日上限') as HTMLInputElement).value).toBe('1000');
-  expect(within(capsForm()).getByText('已用 £160.00 · 还可买入 £840.00')).toBeTruthy();
-  expect(screen.getByText('desktop.tail1234.ts.net')).toBeTruthy();
-  // Face ID exists on another domain, so this one cannot trade until it has its own.
+  // Each passkey's domain and device; when it was enabled or last used is on 变更日志.
+  const passkeys = screen.getByRole('group', { name: '已启用通行密钥的网址' });
+  expect(within(passkeys).getByText('desktop.tail1234.ts.net')).toBeTruthy();
+  expect(within(passkeys).getByText('Windows')).toBeTruthy();
+  // Face ID exists on another domain, so this one cannot trade until it has its own: the badge says so.
   expect(screen.getByText('需先启用面容 ID')).toBeTruthy();
-  expect(screen.getByText(/你已在其他网址启用了面容 ID/)).toBeTruthy();
-  expect(screen.getByText(/还没有任何通行密钥时，每笔订单都需要二次确认/)).toBeTruthy();
+  // No small print: no explanations, no live usage, no server configuration.
+  expect(screen.queryByText(/你已在其他网址启用了面容 ID/)).toBeNull();
+  expect(screen.queryByText(/还没有任何通行密钥时/)).toBeNull();
+  expect(screen.queryByText(/过去 24 小时买入|已用 £160\.00/)).toBeNull();
+  expect(screen.queryByText(/服务器硬上限|STUDIO_T212_|密钥文件/)).toBeNull();
 
   const enable = await screen.findByRole('button', { name: '启用面容 ID / 触控 ID 下单' });
   await typePassword(screen, '');
@@ -111,7 +119,7 @@ test('shows the allowed accounts, the cap and passkeys by domain, then registers
 test('a wrong password is shown and nothing is registered', async () => {
   trading.config.mockImplementation(json({ ...CONFIG, passkeys: [] }));
   trading.passkeyOptions.mockImplementation(json('Studio 密码不正确', 403, 'T212_STEP_UP_FAILED'));
-  render(<StudioSettingsTrading />);
+  renderTrading();
   expect(await screen.findByText('可下单')).toBeTruthy();
   await typePassword(screen, 'guess');
   fireEvent.click(screen.getByRole('button', { name: '启用面容 ID / 触控 ID 下单' }));
@@ -123,7 +131,7 @@ test('a wrong password is shown and nothing is registered', async () => {
 test('removing another domain’s passkey asks for the password; a wrong one keeps the alert open', async () => {
   trading.config.mockImplementationOnce(json({ ...CONFIG, passkeys: [OTHER_DOMAIN] })).mockImplementation(json({ ...CONFIG, passkeys: [] }));
   trading.removePasskey.mockImplementationOnce(json('Studio 密码不正确', 403, 'T212_STEP_UP_FAILED')).mockImplementation(json({ removed: true }));
-  render(<StudioSettingsTrading />);
+  renderTrading();
 
   fireEvent.click(await screen.findByRole('button', { name: '移除 desktop.tail1234.ts.net 的通行密钥' }));
   const alert = await screen.findByRole('alertdialog', { name: '移除 desktop.tail1234.ts.net 的通行密钥？' });
@@ -152,7 +160,7 @@ test('this domain’s passkey can authorise its own removal with Face ID; a canc
   trading.removalOptions.mockImplementation(json(options));
   trading.removePasskey.mockImplementation(json({ removed: true }));
   webauthn.startAuthentication.mockResolvedValue(assertion);
-  render(<StudioSettingsTrading />);
+  renderTrading();
 
   fireEvent.click(await screen.findByRole('button', { name: `移除 ${window.location.hostname} 的通行密钥` }));
   const alert = await screen.findByRole('alertdialog');
@@ -171,30 +179,47 @@ test('this domain’s passkey can authorise its own removal with Face ID; a canc
   expect(trading.registerPasskey).not.toHaveBeenCalled();
 });
 
-test('an untrusted address cannot enable Face ID and trading-off explains the setting', async () => {
+test('an untrusted address cannot enable Face ID and says where to fix it; trading off on the server just disables the options', async () => {
   trading.config.mockImplementation(json({ ...CONFIG, allowedEnvs: [], tradingMode: modeState('off'), allowLocalhost: false, passkeys: [] }));
-  render(<StudioSettingsTrading />);
+  renderTrading();
   expect((await modeOption('关闭')).getAttribute('aria-checked')).toBe('true');
-  expect(screen.getByText('服务器未开启实盘和模拟盘下单（STUDIO_T212_TRADING=off），「模拟盘」「实盘」「实盘+模拟盘」不可选')).toBeTruthy();
+  expect(modeOptions().map(option => option.disabled)).toEqual([false, true, true, true]);
+  expect(screen.queryByText(/STUDIO_T212_TRADING|不可选/)).toBeNull();
   expect(screen.getByText('未列入白名单')).toBeTruthy();
   expect((screen.getByRole('button', { name: '启用面容 ID / 触控 ID 下单' }) as HTMLButtonElement).disabled).toBe(true);
   expect((screen.getByLabelText('登录密码') as HTMLInputElement).disabled).toBe(true);
+  // The one warning kept: it needs action on the server.
   expect(screen.getByText(/STUDIO_PUBLIC_ORIGIN 或 STUDIO_TAILNET_ORIGIN/)).toBeTruthy();
-  expect(screen.getByText('STUDIO_T212_TRADING=demo')).toBeTruthy();
 });
 
 test('with STUDIO_T212_REQUIRE_PASSKEY the domain needs its own passkey even before any exists', async () => {
   trading.config.mockImplementation(json({ ...CONFIG, passkeys: [], requirePasskey: true }));
-  render(<StudioSettingsTrading />);
+  renderTrading();
   expect(await screen.findByText('需先启用面容 ID')).toBeTruthy();
-  expect(screen.getByText(/STUDIO_T212_REQUIRE_PASSKEY=1/)).toBeTruthy();
+  expect(screen.queryByText(/STUDIO_T212_REQUIRE_PASSKEY/)).toBeNull();
 });
 
-test('lowering a cap is saved with the session alone, toasted and listed in the change history', async () => {
+test('every record is one row away on 变更日志; none of them is listed here', async () => {
+  const who = { session: 'owner-se', currentSession: true, client: 'Tailscale 100.64.*.*' };
+  trading.config.mockImplementation(json({
+    ...CONFIG, passkeys: [{ ...THIS_DOMAIN, lastUsedAt: '2026-10-02T09:00:00Z' }],
+    capChanges: [capChange(1)], capRefusals: [capChange(2, { direction: 'raise', status: 'refused', reason: '面容 ID / 触控 ID 验证失败' })],
+    modeChanges: [modeChange(1)], modeRefusals: [modeChange(2, { direction: 'widen', status: 'refused' })],
+    stepUpRequests: [{ id: 'caps-1', kind: 'caps', env: 'demo', to: { maxOrderValue: 900, dailyLimit: 2000 }, outcome: 'used', origin: null, createdAt: '2026-10-02T09:00:00Z', ...who }],
+  }));
+  renderTrading();
+  await screen.findByRole('form', { name: '下单上限' });
+  expect(screen.queryAllByRole('list')).toHaveLength(0);
+  expect(screen.queryByText(/变更记录|被拒绝|验证请求|用过|启用$/)).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: '变更日志' }));
+  expect(onOpenLog).toHaveBeenCalledTimes(1);
+});
+
+test('lowering a cap is saved with the session alone and toasted; the form starts from the saved values', async () => {
   const lowered = { ...CONFIG, caps: { ...CAPS, envs: { ...CAPS.envs, demo: accountCaps(200, 1000, 160, true) } }, capChanges: [capChange(1, { from: { maxOrderValue: 250, dailyLimit: 1000 }, to: { maxOrderValue: 200, dailyLimit: 1000 } })] };
   trading.config.mockImplementationOnce(json(CONFIG)).mockImplementation(json(lowered));
   trading.updateCaps.mockImplementation(json({ env: 'demo', direction: 'lower', method: 'session' }));
-  render(<StudioSettingsTrading />);
+  renderTrading();
 
   const form = await typeCaps('200');
   const save = within(form).getByRole('button', { name: '降低上限' });
@@ -205,11 +230,9 @@ test('lowering a cap is saved with the session alone, toasted and listed in the 
   expect(webauthn.startAuthentication).not.toHaveBeenCalled();
   await waitFor(() => expect(toast.success).toHaveBeenCalledWith('已降低模拟盘上限', { description: '单笔 £200.00 · 每日 £1,000.00' }));
 
-  const history = await screen.findByRole('list', { name: '上限变更记录' });
-  expect(within(history).getByText('模拟盘 · 降低')).toBeTruthy();
-  expect(within(history).getByText('单笔 £250.00 → £200.00 · 每日 £1,000.00')).toBeTruthy();
-  // The form now starts from the saved values, so nothing is left to save.
-  expect((within(capsForm()).getByLabelText('单笔上限') as HTMLInputElement).value).toBe('200');
+  // The form now starts from the saved values, so nothing is left to save; the change itself is on 变更日志.
+  await waitFor(() => expect((within(capsForm()).getByLabelText('单笔上限') as HTMLInputElement).value).toBe('200'));
+  expect(screen.queryByRole('list', { name: '上限变更记录' })).toBeNull();
   expect((within(capsForm()).getByRole('button', { name: '保存上限' }) as HTMLButtonElement).disabled).toBe(true);
 });
 
@@ -221,7 +244,7 @@ test('raising asks for a challenge bound to the new values and signs it with Fac
   trading.capsChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '2026-10-02T10:01:00Z', authentication, env: 'demo', from: { maxOrderValue: 250, dailyLimit: 1000 }, to: { maxOrderValue: 400, dailyLimit: 900 } }));
   trading.updateCaps.mockImplementation(json({ env: 'demo', direction: 'raise', method: 'passkey' }));
   webauthn.startAuthentication.mockResolvedValue(assertion);
-  render(<StudioSettingsTrading />);
+  renderTrading();
 
   // A mixed change (per-order up, daily down) is a raise too.
   const form = await typeCaps('400', '900');
@@ -251,7 +274,7 @@ test('raising asks for a challenge bound to the new values and signs it with Fac
 test('cancelling the review sends nothing to Face ID and unlocks the editor', async () => {
   trading.config.mockImplementation(json({ ...CONFIG, passkeys: [THIS_DOMAIN] }));
   trading.capsChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '', authentication: { challenge: 'c' }, env: 'demo', from: { maxOrderValue: 250, dailyLimit: 1000 }, to: { maxOrderValue: 400, dailyLimit: 1000 } }));
-  render(<StudioSettingsTrading />);
+  renderTrading();
   const form = await typeCaps('400');
   fireEvent.click(within(form).getByRole('button', { name: '用面容 ID / 触控 ID 提高上限' }));
   const review = await screen.findByRole('alertdialog', { name: '提高模拟盘上限？' });
@@ -268,7 +291,7 @@ test('cancelling the review sends nothing to Face ID and unlocks the editor', as
 test('a rate-limited raise is explained and toasted without a review', async () => {
   trading.config.mockImplementation(json({ ...CONFIG, passkeys: [THIS_DOMAIN] }));
   trading.capsChallenge.mockImplementation(json('一小时内发起提高上限的次数过多，请约 42 分钟后再试；降低上限不受影响', 429, 'T212_CAPS_RATE_LIMITED'));
-  render(<StudioSettingsTrading />);
+  renderTrading();
   const form = await typeCaps('400');
   fireEvent.click(within(form).getByRole('button', { name: '用面容 ID / 触控 ID 提高上限' }));
   expect((await screen.findByRole('alert')).textContent).toContain('次数过多');
@@ -279,7 +302,7 @@ test('a rate-limited raise is explained and toasted without a review', async () 
 
 test('without a passkey caps cannot be raised and the editor says to enable Face ID first; lowering still works', async () => {
   trading.config.mockImplementation(json({ ...CONFIG, passkeys: [] }));
-  render(<StudioSettingsTrading />);
+  renderTrading();
   const form = await typeCaps('300');
   expect((within(form).getByRole('button', { name: '用面容 ID / 触控 ID 提高上限' }) as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getByText(/提高上限需要面容 ID \/ 触控 ID：请先在上方启用/)).toBeTruthy();
@@ -290,7 +313,7 @@ test('without a passkey caps cannot be raised and the editor says to enable Face
 
   // A passkey on another domain does not let this one raise.
   trading.config.mockImplementation(json(CONFIG));
-  render(<StudioSettingsTrading />);
+  renderTrading();
   const other = await typeCaps('300');
   expect((within(other).getByRole('button', { name: '用面容 ID / 触控 ID 提高上限' }) as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getByText(new RegExp(`请先在上方为 ${window.location.hostname} 启用，或到 desktop\\.tail1234\\.ts\\.net 操作`))).toBeTruthy();
@@ -299,7 +322,7 @@ test('without a passkey caps cannot be raised and the editor says to enable Face
 
 test('values are checked against the ceiling, each other and two decimals before anything is sent', async () => {
   trading.config.mockImplementation(json({ ...CONFIG, passkeys: [THIS_DOMAIN] }));
-  render(<StudioSettingsTrading />);
+  renderTrading();
   const form = await typeCaps('250', '10000.01');
   expect(within(form).getByRole('button', { name: '保存上限' })).toBeTruthy();
   expect(screen.getByRole('alert').textContent).toBe('上限不能超过服务器硬上限 £10,000.00');
@@ -310,7 +333,8 @@ test('values are checked against the ceiling, each other and two decimals before
   fireEvent.change(within(form).getByLabelText('单笔上限'), { target: { value: '0' } });
   expect(screen.getByRole('alert').textContent).toBe('单笔上限必须是大于 0 的数字');
   expect((within(form).getByRole('button', { name: '保存上限' }) as HTMLButtonElement).disabled).toBe(true);
-  expect(screen.getByText(/服务器硬上限 £10,000\.00/)).toBeTruthy();
+  // The ceiling is only mentioned when a value goes over it.
+  expect(screen.queryByText(/服务器硬上限/)).toBeNull();
   expect(trading.capsChallenge).not.toHaveBeenCalled();
   expect(trading.updateCaps).not.toHaveBeenCalled();
 });
@@ -319,7 +343,7 @@ test('a cancelled Face ID changes nothing quietly; a server refusal is shown and
   trading.config.mockImplementation(json({ ...CONFIG, passkeys: [THIS_DOMAIN] }));
   trading.capsChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '', authentication: { challenge: 'c' }, env: 'demo', from: { maxOrderValue: 250, dailyLimit: 1000 }, to: { maxOrderValue: 400, dailyLimit: 1000 } }));
   webauthn.startAuthentication.mockRejectedValueOnce(Object.assign(new Error('The operation either timed out or was not allowed.'), { name: 'NotAllowedError' }));
-  render(<StudioSettingsTrading />);
+  renderTrading();
   const form = await typeCaps('400');
   const confirmReview = async () => {
     fireEvent.click(within(form).getByRole('button', { name: '用面容 ID / 触控 ID 提高上限' }));
@@ -341,58 +365,39 @@ test('a cancelled Face ID changes nothing quietly; a server refusal is shown and
   expect((within(form).getByLabelText('单笔上限') as HTMLInputElement).value).toBe('400');
 });
 
-test('the editor switches accounts and lists applied changes apart from refused raises', async () => {
-  const changes = [
-    capChange(5, { env: 'live', direction: 'raise', method: 'passkey', from: { maxOrderValue: 300, dailyLimit: 2000 }, to: { maxOrderValue: 500, dailyLimit: 2000 } }),
-    capChange(4), capChange(3), capChange(2), capChange(1),
-  ];
-  const refusals = [
-    capChange(9, { env: null, direction: 'raise', method: 'passkey', status: 'refused', reason: '面容 ID 验证编号无效，请重新提交', from: null, to: null }),
-    capChange(8, { env: 'live', direction: 'raise', method: 'passkey', status: 'refused', reason: '面容 ID / 触控 ID 验证失败，上限没有改变', to: { maxOrderValue: 900, dailyLimit: 2000 }, from: { maxOrderValue: 500, dailyLimit: 2000 } }),
-  ];
-  trading.config.mockImplementation(json({ ...CONFIG, capChanges: changes, capRefusals: refusals }));
-  render(<StudioSettingsTrading />);
-  const history = await screen.findByRole('list', { name: '上限变更记录' });
-  expect(within(history).getAllByRole('listitem')).toHaveLength(4);
-  expect(within(history).getByText('实盘 · 提高')).toBeTruthy();
-  expect(within(history).queryByText('已拒绝')).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: '显示全部 5 条' }));
-  expect(within(history).getAllByRole('listitem')).toHaveLength(5);
-
-  const refused = screen.getByRole('list', { name: '被拒绝的提高' });
-  expect(within(refused).getAllByText('已拒绝')).toHaveLength(2);
-  expect(within(refused).getByText('实盘 · 提高被拒绝')).toBeTruthy();
-  expect(within(refused).getByText(/面容 ID \/ 触控 ID · .* · 面容 ID \/ 触控 ID 验证失败/)).toBeTruthy();
-  expect(within(refused).getByText('未知账户 · 提高被拒绝')).toBeTruthy();
-  expect(within(refused).getByText('请求无效，没有可识别的数值')).toBeTruthy();
-
+test('the editor switches accounts and shows each account’s saved caps', async () => {
+  trading.config.mockImplementation(json(CONFIG));
+  renderTrading();
+  expect(await screen.findByRole('form', { name: '下单上限' })).toBeTruthy();
+  expect((within(capsForm()).getByLabelText('单笔上限') as HTMLInputElement).value).toBe('250');
   fireEvent.click(capsAccount('实盘'));
   expect((within(capsForm()).getByLabelText('单笔上限') as HTMLInputElement).value).toBe('500');
-  expect(within(capsForm()).getByText('已用 £0.00 · 还可买入 £2,000.00')).toBeTruthy();
-  expect(screen.getByText(/当前是服务器默认值（单笔 £500\.00，每日 £2,000\.00）/)).toBeTruthy();
+  expect((within(capsForm()).getByLabelText('每日上限') as HTMLInputElement).value).toBe('2000');
+  // Whether these are the server defaults is not spelled out any more.
+  expect(screen.queryByText(/服务器默认值/)).toBeNull();
 });
 
 test('the trading mode in force is selected; options outside STUDIO_T212_TRADING are disabled with the server’s reason', async () => {
   trading.config.mockImplementation(json({ ...CONFIG, passkeys: [THIS_DOMAIN] }));
-  render(<StudioSettingsTrading />);
+  renderTrading();
   expect((await modeOption('模拟盘')).getAttribute('aria-checked')).toBe('true');
   expect(modeOptions().map(option => [option.textContent, option.disabled])).toEqual([
     ['关闭', false], ['模拟盘', false], ['实盘', true], ['实盘+模拟盘', true],
   ]);
   expect((await modeOption('实盘')).title).toBe('服务器未开启实盘下单');
-  expect(screen.getByText('服务器未开启实盘下单（STUDIO_T212_TRADING=demo），「实盘」「实盘+模拟盘」不可选')).toBeTruthy();
-  expect(screen.getByText(/服务器上限：模拟盘/)).toBeTruthy();
+  // No standing note about the server's setting under the selector.
+  expect(screen.queryByText(/STUDIO_T212_TRADING|服务器上限|不可选/)).toBeNull();
   fireEvent.click(await modeOption('实盘'));
   expect(trading.modeChallenge).not.toHaveBeenCalled();
   expect(trading.updateMode).not.toHaveBeenCalled();
 });
 
-test('narrowing saves at once with the session, locks the selector meanwhile, is toasted and listed in the history', async () => {
+test('narrowing saves at once with the session, locks the selector meanwhile and is toasted', async () => {
   const narrowed = { ...BOTH, allowedEnvs: ['demo'], tradingMode: modeState('demo', 'both', true), modeChanges: [modeChange(1, { to: 'demo' })] };
   trading.config.mockImplementationOnce(json({ ...BOTH, passkeys: [] })).mockImplementation(json({ ...narrowed, passkeys: [] }));
   let finish!: () => void;
   trading.updateMode.mockImplementation(() => new Promise<Response>(resolve => { finish = () => resolve(Response.json({ mode: 'demo', direction: 'narrow', method: 'session' })); }));
-  render(<StudioSettingsTrading />);
+  renderTrading();
   expect((await modeOption('实盘+模拟盘')).getAttribute('aria-checked')).toBe('true');
   // Without any passkey nothing is widened, but every narrowing is available.
   expect(modeOptions().every(option => !option.disabled)).toBe(true);
@@ -411,16 +416,13 @@ test('narrowing saves at once with the session, locks the selector meanwhile, is
   // Adding live back now needs Face ID, which this domain has not enabled.
   expect(modeOptions().map(option => option.disabled)).toEqual([false, false, true, true]);
   expect(screen.getByText(/启用面容 ID 后才能开启：请先在下方启用面容 ID \/ 触控 ID/)).toBeTruthy();
-  const history = screen.getByRole('list', { name: '下单账户变更记录' });
-  expect(within(history).getByText('减少下单账户')).toBeTruthy();
-  expect(within(history).getByText('实盘+模拟盘 → 模拟盘')).toBeTruthy();
-  expect(within(history).getByText(/登录会话/)).toBeTruthy();
+  expect(screen.queryByRole('list', { name: '下单账户变更记录' })).toBeNull();
 });
 
 test('turning trading off is one tap; a refused narrowing is shown and toasted', async () => {
   trading.config.mockImplementation(json({ ...BOTH, passkeys: [] }));
   trading.updateMode.mockImplementationOnce(json('交易模式没有保存：数据库暂时不可用', 500)).mockImplementation(json({ mode: 'off', direction: 'narrow', method: 'session' }));
-  render(<StudioSettingsTrading />);
+  renderTrading();
   fireEvent.click(await modeOption('关闭'));
   expect((await screen.findByRole('alert')).textContent).toBe('交易模式没有保存：数据库暂时不可用');
   expect(toast.error).toHaveBeenCalledWith('交易模式没有保存', { description: '交易模式没有保存：数据库暂时不可用' });
@@ -431,7 +433,7 @@ test('turning trading off is one tap; a refused narrowing is shown and toasted',
 
 test('without a passkey on this domain, adding an account is disabled: 启用面容 ID 后才能开启', async () => {
   trading.config.mockImplementation(json({ ...BOTH, allowedEnvs: [], tradingMode: modeState('off', 'both', true), passkeys: [OTHER_DOMAIN] }));
-  render(<StudioSettingsTrading />);
+  renderTrading();
   expect((await modeOption('关闭')).getAttribute('aria-checked')).toBe('true');
   expect(modeOptions().map(option => option.disabled)).toEqual([false, true, true, true]);
   expect(screen.getByText(new RegExp(`启用面容 ID 后才能开启：请先在下方为 ${window.location.hostname} 启用，或到 desktop\\.tail1234\\.ts\\.net 操作`))).toBeTruthy();
@@ -447,7 +449,7 @@ test('adding an account shows from → to for review, then signs the challenge b
   trading.modeChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '2026-10-02T10:01:00Z', authentication, from: 'demo', to: 'both', adds: ['live'], ceiling: 'both' }));
   trading.updateMode.mockImplementation(json({ mode: 'both', direction: 'widen', method: 'passkey' }));
   webauthn.startAuthentication.mockResolvedValue(assertion);
-  render(<StudioSettingsTrading />);
+  renderTrading();
 
   fireEvent.click(await modeOption('实盘+模拟盘'));
   const review = await screen.findByRole('alertdialog', { name: '开启实盘下单？' });
@@ -466,15 +468,12 @@ test('adding an account shows from → to for review, then signs the challenge b
   await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
   await waitFor(() => expect(modeOptions()[3].getAttribute('aria-checked')).toBe('true'));
   expect(modeOptions().every(option => !option.disabled)).toBe(true);
-  const history = screen.getByRole('list', { name: '下单账户变更记录' });
-  expect(within(history).getByText('开启下单')).toBeTruthy();
-  expect(within(history).getByText(/面容 ID \/ 触控 ID ·/)).toBeTruthy();
 });
 
 test('a cancelled review or Face ID changes nothing quietly; a server refusal is shown and toasted', async () => {
   trading.config.mockImplementation(json({ ...BOTH, allowedEnvs: [], tradingMode: modeState('off', 'both', true), passkeys: [THIS_DOMAIN] }));
   trading.modeChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '', authentication: { challenge: 'c' }, from: 'off', to: 'demo', adds: ['demo'], ceiling: 'both' }));
-  render(<StudioSettingsTrading />);
+  renderTrading();
 
   fireEvent.click(await modeOption('模拟盘'));
   let review = await screen.findByRole('alertdialog', { name: '开启模拟盘下单？' });
@@ -503,33 +502,22 @@ test('a cancelled review or Face ID changes nothing quietly; a server refusal is
   expect((await modeOption('关闭')).getAttribute('aria-checked')).toBe('true');
 });
 
-test('a refused challenge (rate limit) is toasted without a review; refused widenings are listed apart', async () => {
-  const refusals = [
-    modeChange(9, { direction: 'widen', method: 'session', status: 'refused', from: 'off', to: 'live', reason: '启用面容 ID 后才能开启：请先在「设置 → 交易安全」为 localhost 启用面容 ID / 触控 ID' }),
-    modeChange(8, { direction: 'widen', method: 'passkey', status: 'refused', from: null, to: null, reason: '交易模式必须为 off、demo、live 或 both' }),
-  ];
-  trading.config.mockImplementation(json({ ...BOTH, allowedEnvs: [], tradingMode: modeState('off', 'both', true), passkeys: [THIS_DOMAIN], modeRefusals: refusals }));
+test('a refused challenge (rate limit) is toasted without a review', async () => {
+  trading.config.mockImplementation(json({ ...BOTH, allowedEnvs: [], tradingMode: modeState('off', 'both', true), passkeys: [THIS_DOMAIN] }));
   trading.modeChallenge.mockImplementation(json('一小时内发起开启下单的次数过多，请约 42 分钟后再试；关闭或减少账户不受影响', 429, 'T212_MODE_RATE_LIMITED'));
-  render(<StudioSettingsTrading />);
+  renderTrading();
   fireEvent.click(await modeOption('实盘'));
   expect((await screen.findByRole('alert')).textContent).toContain('次数过多');
   expect(toast.error).toHaveBeenCalledWith('没有开启下单', { description: expect.stringContaining('42 分钟') });
   expect(screen.queryByRole('alertdialog')).toBeNull();
   expect(modeOptions().every(option => !option.disabled)).toBe(true);
-
-  const refused = screen.getByRole('list', { name: '被拒绝的开启' });
-  expect(within(refused).getAllByText('已拒绝')).toHaveLength(2);
-  expect(within(refused).getByText('关闭 → 实盘')).toBeTruthy();
-  expect(within(refused).getByText('请求无效，没有可识别的交易模式')).toBeTruthy();
-  expect(within(refused).getAllByText('开启下单被拒绝')).toHaveLength(2);
-  expect(screen.queryByRole('list', { name: '下单账户变更记录' })).toBeNull();
 });
 
 test('the widening review shows the server’s state from the challenge, not this page’s possibly stale copy', async () => {
   // This page still believes demo is in force; the server says another tab turned trading off meanwhile.
   trading.config.mockImplementation(json({ ...BOTH, allowedEnvs: ['demo'], tradingMode: modeState('demo', 'both', true), passkeys: [THIS_DOMAIN] }));
   trading.modeChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '', authentication: { challenge: 'c' }, from: 'off', to: 'both', adds: ['live', 'demo'], ceiling: 'both' }));
-  render(<StudioSettingsTrading />);
+  renderTrading();
   fireEvent.click(await modeOption('实盘+模拟盘'));
   const review = await screen.findByRole('alertdialog', { name: '开启实盘和模拟盘下单？' });
   expect(within(review).getByText('关闭 → 实盘+模拟盘')).toBeTruthy();
@@ -543,7 +531,7 @@ test('the raise review shows the server’s caps from the challenge, not this pa
     challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '', authentication: { challenge: 'c' },
     env: 'demo', from: { maxOrderValue: 300, dailyLimit: 1200 }, to: { maxOrderValue: 400, dailyLimit: 1000 },
   }));
-  render(<StudioSettingsTrading />);
+  renderTrading();
   const form = await typeCaps('400');
   fireEvent.click(within(form).getByRole('button', { name: '用面容 ID / 触控 ID 提高上限' }));
   const review = await screen.findByRole('alertdialog', { name: '提高模拟盘上限？' });
@@ -559,47 +547,10 @@ test('a stale or other trading-mode refusal re-reads the settings so the selecto
   trading.modeChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '', authentication: { challenge: 'c' }, from: 'demo', to: 'both', adds: ['live'], ceiling: 'both' }));
   trading.updateMode.mockImplementation(json('核对之后交易模式已经改过，这次验证作废，没有开启：请重新选择', 409, 'T212_MODE_STALE'));
   webauthn.startAuthentication.mockResolvedValue({ id: 'cred-local', rawId: 'cred-local', response: { signature: 'sig' } });
-  render(<StudioSettingsTrading />);
+  renderTrading();
   fireEvent.click(await modeOption('实盘+模拟盘'));
   fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '用面容 ID / 触控 ID 确认' }));
   await waitFor(() => expect(toast.error).toHaveBeenCalledWith('没有开启下单', { description: expect.stringContaining('作废') }));
   await waitFor(() => expect(trading.config).toHaveBeenCalledTimes(2));
   await waitFor(() => expect(modeOptions()[0].getAttribute('aria-checked')).toBe('true'));
-});
-
-test('Face ID requests and every audit entry show which session and client caused them', async () => {
-  const thief = { session: 'thief-se', currentSession: false, client: '公网 203.0.*.*' };
-  const mine = { session: 'owner-se', currentSession: true, client: 'Tailscale 100.64.*.*' };
-  trading.config.mockImplementation(json({
-    ...BOTH, passkeys: [THIS_DOMAIN],
-    modeChanges: [
-      modeChange(3, { direction: 'narrow', from: 'both', to: 'off', ...thief }),
-      modeChange(2, { direction: 'pin', from: null, to: 'both', reason: '首次读取时固定为服务器当时允许的账户', ...mine }),
-    ],
-    stepUpRequests: [
-      { id: 'mode-7', kind: 'mode', to: 'live', outcome: 'replaced', origin: 'https://studio.ajarche.com', createdAt: '2026-10-02T09:30:00Z', ...thief },
-      { id: 'caps-4', kind: 'caps', env: 'live', to: { maxOrderValue: 900, dailyLimit: 2000 }, outcome: 'used', origin: null, createdAt: '2026-10-02T09:00:00Z', ...mine },
-      // Recorded before sessions and outcomes were.
-      { id: 'caps-1', kind: 'caps', env: 'live', to: { maxOrderValue: 800, dailyLimit: 2000 }, outcome: 'unknown', origin: null, createdAt: '2026-10-01T09:00:00Z', session: null, currentSession: false, client: null },
-    ],
-  }));
-  render(<StudioSettingsTrading />);
-  const requests = await screen.findByRole('list', { name: '面容 ID 验证请求' });
-  const [theirs, ours, legacy] = within(requests).getAllByRole('listitem');
-  expect(within(legacy).getByText(/升级前的记录，结果未知/)).toBeTruthy();
-  expect(within(legacy).queryByText('其他会话')).toBeNull();
-  expect(within(theirs).getByText('开启下单 · 改为「实盘」')).toBeTruthy();
-  expect(within(theirs).getByText(/被同一会话的新请求替换/)).toBeTruthy();
-  expect(within(theirs).getByText('其他会话 thief-se · 公网 203.0.*.*')).toBeTruthy();
-  expect(within(theirs).getByText('其他会话', { selector: '.status-badge' })).toBeTruthy();
-  expect(within(ours).getByText('提高实盘上限 · 单笔 900 · 每日 2,000')).toBeTruthy();
-  expect(within(ours).getByText('本会话 · Tailscale 100.64.*.*')).toBeTruthy();
-  expect(within(ours).queryByText('其他会话', { selector: '.status-badge' })).toBeNull();
-
-  const history = screen.getByRole('list', { name: '下单账户变更记录' });
-  expect(within(history).getByText('关闭下单')).toBeTruthy();
-  expect(within(history).getByText('其他会话 thief-se · 公网 203.0.*.*')).toBeTruthy();
-  // A pin made on the first read: the mode that was already in force, now the user's own choice.
-  expect(within(history).getByText('固定下单账户')).toBeTruthy();
-  expect(within(history).getByText('实盘+模拟盘')).toBeTruthy();
 });
