@@ -57,13 +57,14 @@ const prefersReducedMotion = () => Boolean(window.matchMedia?.('(prefers-reduced
 type Target = { kind: 'project'; id: string } | { kind: 'app'; id: keyof typeof SYSTEM_TITLES } | null;
 type Tab = { id: string; label: string };
 // History state of an app's entries. `fromHome`: the entry behind the app's root is the home screen. `appTrail`: the
-// app's earlier views behind this entry (tab ids, or `chat`), nearest last. Every in-app step (a tab, 全部, a DeepSeek conversation) is
-// pushed with one more, and replace navigations keep the state, so the trail always matches the entries behind it:
-// the top-left back walks it with history, like a UINavigationController, and leaves the app only from its root.
+// app's earlier views behind this entry (tab ids, or `chat`), nearest last. Every in-app step (a tab, 全部, a DeepSeek
+// conversation) is pushed with one more, and replace navigations keep the state, so the trail always matches the
+// entries behind it: the top-left back walks it with history, like a UINavigationController, and leaves the app only
+// from its root.
 type AppEntryState = { fromHome?: boolean; appTrail?: string[] } | null;
 
 // Integrations lead (SNR opens on its K-line lab), then AI, then housekeeping. An app Studio's AI built opens on
-// 主页 (the app itself) and calls its AI tab AI 工坊: the workshop where the owner and the AI keep improving it.
+// 主页 (the app itself), with the same AI 助手 tab where the owner and the AI keep improving it.
 function projectTabs(project: HubProject, isApp: boolean): Tab[] {
   const tabs: Tab[] = [];
   if (isApp) tabs.push({ id: 'app', label: '主页' });
@@ -71,7 +72,7 @@ function projectTabs(project: HubProject, isApp: boolean): Tab[] {
   if (project.modules.includes('trading212')) tabs.push({ id: 'trading212', label: '股票分析' });
   if (project.modules.includes('mail')) tabs.push({ id: 'mail', label: '邮箱' });
   // One AI 助手 tab for Claude Code, Codex and DeepSeek; the project's DeepSeek chat (`chat`) opens from inside it.
-  if (project.modules.includes('agents') || project.providers.includes('deepseek')) tabs.push({ id: 'ai', label: isApp ? 'AI 工坊' : 'AI 助手' });
+  if (project.modules.includes('agents') || project.providers.includes('deepseek')) tabs.push({ id: 'ai', label: 'AI 助手' });
   if (project.modules.includes('automations')) tabs.push({ id: 'automations', label: '自动化' });
   tabs.push({ id: 'settings', label: '设置' });
   return tabs;
@@ -282,7 +283,7 @@ export function StudioPage() {
     // An app's settings lead with whether it is running.
     return appBuild ? <><StudioAppRunSettings project={project} />{editor}</> : editor;
   };
-  // Opens the project's DeepSeek chat (a new conversation, or `conversationId`) from AI 助手 / AI 工坊 or the 主页.
+  // Opens the project's DeepSeek chat (a new conversation, or `conversationId`) from AI 助手 or the 主页.
   const openProjectChat = (conversationId?: string) => {
     setTab('chat');
     if (conversationId) { void studio.select(conversationId); setThreadOpen(true); }

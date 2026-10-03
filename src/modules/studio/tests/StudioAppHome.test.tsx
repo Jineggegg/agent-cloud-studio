@@ -116,14 +116,14 @@ test('when the AI finishes a change the app opens again on the new code', async 
   await waitFor(() => expect(screen.getByTitle('云记事').getAttribute('src')).toBe(`/api/studio/app-site/${'b'.repeat(64)}/`));
 });
 
-test('an AI-built app opens on 主页, with AI 工坊 and 设置 beside it', async () => {
+test('an AI-built app opens on 主页, with AI 助手 and 设置 beside it', async () => {
   render(<MemoryRouter initialEntries={['/projects/notes']}><Routes>
     <Route path="/" element={<StudioPage />} />
     <Route path="/projects/:id" element={<StudioPage />} />
   </Routes></MemoryRouter>);
   await act(async () => {});
   const tabs = await screen.findByRole('navigation', { name: '项目功能' });
-  await waitFor(() => expect(Array.from(tabs.querySelectorAll('button')).map(button => button.textContent)).toEqual(['主页', 'AI 工坊', '设置']));
+  await waitFor(() => expect(Array.from(tabs.querySelectorAll('button')).map(button => button.textContent)).toEqual(['主页', 'AI 助手', '设置']));
   expect(tabs.querySelector('[aria-current="page"]')?.textContent).toBe('主页');
   expect(await screen.findByTitle('云记事')).toBeTruthy();
 });

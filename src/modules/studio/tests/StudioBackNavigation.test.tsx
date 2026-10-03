@@ -7,7 +7,7 @@ import type * as ApiModule from '@/shared/api';
 import type { HubProject, StudioAppStatus, StudioBuild } from '@/shared/types';
 
 const json = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } }));
-// 云记事: an app Studio's AI built (it has a build), so it opens on 主页 with AI 工坊 and 设置 beside it.
+// 云记事: an app Studio's AI built (it has a build), so it opens on 主页 with AI 助手 and 设置 beside it.
 const NOTES: HubProject = {
   id: 'notes', name: '云记事', description: 'AI 开发 · 记事本', workspacePath: '/home/me/projects/ai-app', modules: ['agents'],
   providers: ['claude', 'codex', 'deepseek'], tone: 'slate', glyph: 'book', links: [], remoteHost: '', remoteDir: '', updatedAt: '1',
@@ -93,16 +93,16 @@ test('a tab or 全部 is a step: back returns to the view before it, then home, 
   renderAt(openedFromHome);
   const notes = await screen.findByRole('region', { name: '云记事' });
   const tabs = await within(notes).findByRole('navigation', { name: '项目功能' });
-  await waitFor(() => expect(within(tabs).getAllByRole('button').map(button => button.textContent)).toEqual(['主页', 'AI 工坊', '设置']));
+  await waitFor(() => expect(within(tabs).getAllByRole('button').map(button => button.textContent)).toEqual(['主页', 'AI 助手', '设置']));
 
-  fireEvent.click(within(tabs).getByRole('button', { name: 'AI 工坊' }));
+  fireEvent.click(within(tabs).getByRole('button', { name: 'AI 助手' }));
   expect(where()).toBe('/projects/notes?tab=ai');
   expect(probe().dataset.type).toBe('PUSH');
   fireEvent.click(within(tabs).getByRole('button', { name: '设置' }));
   expect(where()).toBe('/projects/notes?tab=settings');
 
   // No zoom while stepping back inside the app; the button is named after the view it returns to.
-  fireEvent.click(within(notes).getByRole('button', { name: '返回 AI 工坊' }));
+  fireEvent.click(within(notes).getByRole('button', { name: '返回 AI 助手' }));
   expect(notes.classList.contains('closing')).toBe(false);
   expect(where()).toBe('/projects/notes?tab=ai');
   expect(probe().dataset.type).toBe('POP');
@@ -111,12 +111,12 @@ test('a tab or 全部 is a step: back returns to the view before it, then home, 
   expect(await currentTab()).toBe('主页');
 
   // Tapping the tab just behind steps back to it instead of piling up history.
-  fireEvent.click(within(tabs).getByRole('button', { name: 'AI 工坊' }));
+  fireEvent.click(within(tabs).getByRole('button', { name: 'AI 助手' }));
   fireEvent.click(within(tabs).getByRole('button', { name: '主页' }));
   expect(where()).toBe('/projects/notes');
   expect(probe().dataset.type).toBe('POP');
 
-  // 全部 in the 主页's 最近会话 opens AI 工坊 as a step too.
+  // 全部 in the 主页's 最近会话 opens AI 助手 as a step too.
   fireEvent.click(await within(notes).findByRole('button', { name: '全部' }));
   expect(where()).toBe('/projects/notes?tab=ai');
   fireEvent.click(within(notes).getByRole('button', { name: '返回 主页' }));
@@ -151,7 +151,7 @@ test('a session opened from the app returns to the app page, not the home screen
 test('a deep link to a view inside the app has no history: back goes to the app\'s root first, then home', async () => {
   renderAt(['/projects/notes?tab=ai']);
   const notes = await screen.findByRole('region', { name: '云记事' });
-  await waitFor(async () => expect(await currentTab()).toBe('AI 工坊'));
+  await waitFor(async () => expect(await currentTab()).toBe('AI 助手'));
   fireEvent.click(within(notes).getByRole('button', { name: '返回 主页' }));
   expect(where()).toBe('/projects/notes');
   expect(probe().dataset.type).toBe('REPLACE');

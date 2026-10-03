@@ -335,7 +335,7 @@ function ProjectSessions({ project, onOpenChat }: { project: HubProject; onOpenC
 
 /**
  * Used by StudioAppHome's AI sidebar (an AI-built app's 主页): 新建会话 and the project's few newest sessions, running
- * ones first, each opening in the workbench; 全部 (`onShowAll`) goes to the AI 工坊 tab with the whole history.
+ * ones first, each opening in the workbench; 全部 (`onShowAll`) goes to the AI 助手 tab with the whole history.
  */
 export function StudioProjectRecentSessions({ project, onOpenChat, onShowAll, limit = 3 }: {
   project: HubProject; onOpenChat: (conversationId?: string) => void; onShowAll: () => void; limit?: number;
@@ -361,7 +361,7 @@ export function StudioProjectRecentSessions({ project, onOpenChat, onShowAll, li
 }
 
 /**
- * Used by StudioPage's project app as the AI 助手 tab (AI 工坊 in an AI-built app, which opens on its 主页 instead),
+ * Used by StudioPage's project app as the AI 助手 tab (an AI-built app opens on its 主页 instead),
  * the page a project opens on: the product's website (打开网站),
  * 新建会话 (one chat for Claude Code, Codex and DeepSeek), the running and earlier sessions of the project with
  * their official marks, a small 终端 button, and for a remote project the agents of its host. `onOpenChat` opens the
