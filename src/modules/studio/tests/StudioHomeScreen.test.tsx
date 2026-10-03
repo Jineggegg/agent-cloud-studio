@@ -28,7 +28,7 @@ const TILES: StudioHomeTile[] = [
 ];
 
 function renderHome(overrides: Partial<Parameters<typeof StudioHomeScreen>[0]> = {}) {
-  const props = { tiles: TILES, loading: false, covered: false, snr: null, onOpen: vi.fn(), onOpenWidget: vi.fn(), onCreate: vi.fn(), onRefresh: vi.fn(), onSignOut: vi.fn(), refreshing: false, ...overrides };
+  const props = { tiles: TILES, loading: false, covered: false, snr: null, onOpen: vi.fn(), onOpenWidget: vi.fn(), onOpenSettings: vi.fn(), onCreate: vi.fn(), onRefresh: vi.fn(), onSignOut: vi.fn(), refreshing: false, ...overrides };
   render(<MemoryRouter><Routes>
     <Route path="/" element={<StudioHomeScreen {...props} />} />
     <Route path="/work" element={<div>Workbench opened</div>} />
@@ -57,6 +57,18 @@ test('each project is a large tile that opens its own app; the IDE tile is a rou
   expect(within(apps).getByRole('link', { name: '工作台' }).getAttribute('href')).toBe('/work');
   fireEvent.click(within(apps).getByRole('button', { name: '新建项目' }));
   expect(props.onCreate).toHaveBeenCalledTimes(1);
+});
+
+test('a small gear at the end of the toolbar opens Studio settings; edit mode has no gear', () => {
+  const props = renderHome();
+  const gear = screen.getByRole('button', { name: '设置' });
+  expect(gear.parentElement?.lastElementChild).toBe(gear);
+  fireEvent.click(gear);
+  expect(props.onOpenSettings).toHaveBeenCalledTimes(1);
+  // The settings app zooms out of the button.
+  expect(typeof (vi.mocked(props.onOpenSettings).mock.calls[0][0] as DOMRect).width).toBe('number');
+  fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
+  expect(screen.queryByRole('button', { name: '设置' })).toBeNull();
 });
 
 test('labels and hidden tiles are customised in edit mode and remembered on this device', () => {

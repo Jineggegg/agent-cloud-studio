@@ -223,3 +223,19 @@ export const WORKBENCH_PANEL_SPRING = { type: 'spring', stiffness: 260, damping:
  * and every frame re-wraps the visible transcript, so a short ease replaces the half-second spring.
  */
 export const WORKBENCH_DOCK_TWEEN = { type: 'tween', duration: 0.24, ease: [0.32, 0.72, 0, 1] } as const;
+
+// ---------------------------
+
+//----------------- STUDIO HOME SCREEN ------------
+
+/**
+ * Id of the built-in AJ 出口 home tile. StudioPage lists it with the other system tiles (so it can be moved and
+ * hidden like them); StudioHomeScreen recognises it and turns a tap into the Tailscale exit-node toggle.
+ */
+export const STUDIO_AJ_EXIT_TILE_ID = 'aj-exit';
+
+/**
+ * Names of the two iOS Shortcuts the AJ 出口 tile runs (useAjExit builds their shortcuts:// URL, the setup sheet tells
+ * the owner to create them). They must match the owner's shortcuts exactly.
+ */
+export const STUDIO_AJ_EXIT_SHORTCUTS = { on: 'Studio AJ 出口 开', off: 'Studio AJ 出口 关' } as const;

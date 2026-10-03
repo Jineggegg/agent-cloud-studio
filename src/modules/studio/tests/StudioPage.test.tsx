@@ -67,6 +67,14 @@ test('projects appear as home tiles and open into their own app with project-sco
   expect(screen.getByRole('navigation', { name: '应用' })).toBeTruthy();
 });
 
+test('the gear in the home screen corner opens the settings app; AJ 出口 sits among the system tiles', async () => {
+  renderStudio();
+  const apps = await screen.findByRole('navigation', { name: '应用' });
+  expect(within(apps).getByRole('button', { name: 'AJ 出口，未开启' })).toBeTruthy();
+  fireEvent.click(screen.getByTitle('设置'));
+  expect(await screen.findByRole('region', { name: '设置' })).toBeTruthy();
+});
+
 test('SNR opens on its K-line lab and a deep link works without the home screen', async () => {
   renderStudio('/projects/snr');
   const snr = await screen.findByRole('region', { name: 'SNR 3.0' });

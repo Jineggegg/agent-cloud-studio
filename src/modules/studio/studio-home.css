@@ -1,21 +1,72 @@
 /*
  * Home screen editing, the iPadOS way: a long press lifts an icon or widget, edit mode jiggles, items drag to
  * a new place while their neighbours glide aside, and a drop settles with a spring. Icons slide aside with
- * transforms; widgets (two sizes in one grid) reorder for real while the lifted card rides in a drag overlay,
- * so the grid always shows the layout a drop keeps.
+ * transforms while the lifted icon rides in a drag overlay above the pages (so it stays under the finger when a
+ * held edge turns the page); widgets (three sizes in one grid) reorder for real while the lifted card rides in a
+ * drag overlay, so the grid always shows the layout a drop keeps.
  *
  * Every effect here uses the individual `rotate`, `translate` and `scale` properties, never `transform`:
  * dnd-kit moves sortable items with an inline `transform` and the drop glide animates `transform`, and the
  * individual properties compose with it instead of overwriting it.
  */
 
-/* Edit mode leaves room for the floating appearance bar at the bottom. */
-.home-screen.editing { padding-bottom: calc(112px + env(safe-area-inset-bottom)); }
+/* ---------- Pages ---------- */
+/* The viewport clips a row of full-width pages that useHomePager slides (translate3d) under the fixed header.
+   pan-y leaves vertical panning to the browser and hands every sideways touch to the pager. */
+.home-pager {
+  position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: pan-y;
+  -webkit-user-select: none; user-select: none;
+}
+.home-pager-track { display: flex; height: 100%; will-change: transform; }
+/* A page scrolls on its own only when its content cannot fit (a phone with many widgets), with no scroll bar. */
+.home-page {
+  flex: 0 0 100%; min-width: 0; height: 100%; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none;
+  padding: 0 var(--home-gutter-right) var(--home-page-bottom) var(--home-gutter-left);
+}
+.home-page::-webkit-scrollbar { display: none; }
+/* Holds the margin above the widget grid, so its measured height is everything above the first page's icons. */
+.home-widgets-slot { display: flow-root; }
+/* An icon that moved to another page appears there in place; only its first arrival rises in. */
+.home-tile.has-arrived { animation: none; }
+
+/* ---------- Page control ---------- */
+/* iOS page dots at the foot of the screen; while the pages move they gather into a frosted capsule. */
+.home-page-control {
+  position: fixed; z-index: 20; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); translate: -50% 0;
+  display: flex; padding: 2px 6px; border-radius: 999px; border: 1px solid transparent;
+  transition: background-color var(--dur-base) ease, border-color var(--dur-base) ease;
+}
+.home-page-control.is-lit {
+  background: var(--home-glass); border-color: var(--home-glass-edge);
+  -webkit-backdrop-filter: blur(24px) saturate(180%); backdrop-filter: blur(24px) saturate(180%);
+}
+.home-page-control button { display: grid; place-items: center; width: 22px; height: 28px; }
+.home-page-control i {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: color-mix(in srgb, var(--ios-label) 28%, transparent); transition: background-color var(--dur-fast) ease;
+}
+.home-page-control button[aria-current="true"] i { background: color-mix(in srgb, var(--ios-label) 82%, transparent); }
+
+/* ---------- Toolbar ---------- */
+/* The settings gear: a size smaller than the toolbar's other buttons, at its far end. */
+.home-actions .glass-icon.home-gear { min-width: 38px; width: 38px; height: 38px; border-radius: 19px; }
+@media (max-width: 699px) {
+  .home-actions .glass-icon.home-gear { min-width: 34px; width: 34px; height: 34px; border-radius: 17px; }
+}
+/* Narrow phones: the date and five buttons share one line. */
+@media (max-width: 420px) {
+  .home-top { gap: 10px; }
+  .home-top .home-date h1 { font-size: 30px; }
+  .home-top .home-actions { gap: 4px; }
+  .home-top .home-actions .glass-icon { min-width: 38px; height: 38px; border-radius: 19px; }
+  .home-top .home-actions .glass-icon.home-gear { min-width: 32px; width: 32px; height: 32px; border-radius: 16px; }
+}
 
 /* Sortable items: no text selection, callout or link preview during the long press; taps stay instant. */
 .home-tile-slot[data-sort-id], .widget-slot > .widget {
   -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; touch-action: manipulation;
 }
+.home-tile-slot[data-sort-id] a { -webkit-user-drag: none; }
 
 /* Widget cells: the cell spans the grid columns and fades in and out, the card inside is what moves. */
 .widget-grid { position: relative; }
@@ -35,7 +86,7 @@
   to { rotate: var(--jiggle-angle); translate: 0 .4px; }
 }
 /* Each item gets its own phase and speed (inline custom properties), so the grid never swings in lockstep. */
-.home-screen.editing .home-tile-slot[data-sort-id]:not(.is-lifted),
+.home-screen.editing .home-tile-slot[data-sort-id]:not(.is-placeholder),
 .widget-grid.editing .widget-slot > .widget:not(.is-placeholder) {
   animation: home-jiggle var(--jiggle-duration, 260ms) ease-in-out var(--jiggle-delay, 0ms) infinite alternate;
 }
@@ -43,23 +94,29 @@
 .widget-grid.editing .widget-slot > .widget:has(.widget-resize.is-active) { animation: none; }
 
 /* ---------- Lift ---------- */
-/* The lifted item rides above its neighbours, grows a little and casts a deeper shadow; it stops jiggling. */
-.home-tile-slot[data-sort-id].is-lifted { z-index: 10; scale: 1.12; }
+/* A lifted icon is a copy in the drag overlay (IconDragLayer): it grows a little, casts a deeper shadow and stops
+   jiggling, while its slot stays behind as the empty gap where it will land. */
+.home-tile-slot[data-sort-id].is-placeholder { opacity: 0; }
+.home-drag-overlay > .home-tile-slot.is-lifted {
+  height: 100%; scale: 1.12; cursor: grabbing;
+  animation: tile-lift 380ms cubic-bezier(.34, 1.3, .64, 1) backwards;
+}
+@keyframes tile-lift { from { scale: 1; } }
+.home-drag-overlay .home-tile { animation: none; }
 .home-tile-slot[data-sort-id] .home-icon {
   transition: transform var(--dur-slow) var(--ease-spring), filter var(--dur-fast) ease, box-shadow var(--dur-base) var(--ease-out);
 }
-.home-screen .home-tile-slot[data-sort-id].is-lifted .home-icon {
+.home-screen .home-tile-slot.is-lifted .home-icon {
   transform: none; filter: none;
   box-shadow: var(--icon-rim, inset 0 1px 0 rgba(255, 255, 255, .32)), 0 2px 4px rgba(30, 25, 15, .1), 0 22px 40px -10px rgba(30, 25, 15, .45);
 }
-.dark .home-screen .home-tile-slot[data-sort-id].is-lifted .home-icon {
+.dark .home-screen .home-tile-slot.is-lifted .home-icon {
   box-shadow: var(--icon-rim, inset 0 1px 0 rgba(255, 255, 255, .2)), 0 2px 6px rgba(0, 0, 0, .4), 0 24px 44px -10px rgba(0, 0, 0, .7);
 }
 /* In edit mode a press dims nothing and never shrinks the icon: it is the start of a drag. */
 .home-screen.editing .home-tile-slot[data-sort-id] .home-tile:active .home-icon { transform: none; filter: none; }
-/* Labels, badges and edit controls step aside while their item is carried, as on iPadOS. */
-.home-tile-slot[data-sort-id] :is(.home-label, .home-status) { transition: opacity var(--dur-fast) ease; }
-.home-tile-slot[data-sort-id].is-lifted :is(.home-label, .home-status) { opacity: 0; }
+/* Labels and badges step aside while their item is carried, as on iPadOS. */
+.home-tile-slot.is-lifted :is(.home-label, .home-status) { opacity: 0; }
 .is-lifted .home-remove, .is-lifted .widget-resize { opacity: 0; scale: .6; transition: opacity var(--dur-fast) ease, scale var(--dur-fast) ease; }
 .home-remove, .widget-resize { transition: opacity var(--dur-fast) ease, scale var(--dur-base) var(--ease-spring); }
 
@@ -74,7 +131,7 @@
 @keyframes widget-lift { from { scale: 1; box-shadow: inset 0 1px 0 var(--home-glass-rim), var(--home-glass-shadow); } }
 
 @media (hover: hover) {
-  .home-screen .home-tile-slot[data-sort-id].is-lifted .home-tile:hover .home-icon { transform: none; }
+  .home-screen .home-tile-slot.is-lifted .home-tile:hover .home-icon { transform: none; }
 }
 
 /* ---------- Move buttons (VoiceOver, Switch Control, keyboard) ---------- */
@@ -99,18 +156,56 @@
 }
 
 /* ---------- Floating appearance bar (edit mode) ---------- */
-/* Fixed, so entering edit mode never pushes the grid down under a finger that is already dragging. */
+/* Fixed, so entering edit mode never moves the pages under a finger that is already dragging. It sits over the
+   space every page keeps free at its foot, and carries the page control at its start. */
 .home-screen .home-edit-bar {
   /* Inset on both sides with auto margins, so fit-content measures the whole width and the pill stays on one line. */
   position: fixed; z-index: 30; left: 16px; right: 16px; bottom: calc(20px + env(safe-area-inset-bottom)); margin: 0 auto;
-  padding: 6px 22px; box-shadow: var(--ios-shadow-float);
+  align-items: center; padding: 6px 22px; box-shadow: var(--ios-shadow-float);
   -webkit-backdrop-filter: saturate(170%) blur(24px); backdrop-filter: saturate(170%) blur(24px);
   background: var(--ios-glass-strong);
   animation: home-edit-bar-in var(--dur-slow) var(--ease-spring) backwards;
 }
 @keyframes home-edit-bar-in { from { opacity: 0; transform: translateY(24px) scale(.96); } }
+.home-edit-bar .home-page-control {
+  position: static; translate: none; padding: 0; border: 0; background: none;
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+
+/* ---------- AJ 出口: a tile that is a switch ---------- */
+/* On: a green ring round the icon and a green state line with a dot, like a status light. */
+.home-tile .home-icon-wrap[data-on] .home-icon {
+  box-shadow: var(--icon-rim), 0 0 0 3px var(--ios-green), 0 2px 4px rgba(0, 0, 0, .06),
+    0 22px 30px -14px color-mix(in srgb, var(--tone-b) 55%, var(--home-icon-float));
+}
+.home-status.is-switch { display: inline-flex; align-items: center; gap: 5px; }
+.home-status.is-switch.is-on { color: var(--ios-green); }
+.home-status.is-switch.is-on::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+/* Large icons hide ordinary status lines, but a switch's state is the point of the tile; without labels the ring says it. */
+.large-icons .home-status.is-switch { display: inline-flex; }
+.no-labels .home-status.is-switch { display: none; }
+
+/* The setup and settings sheet: a bottom sheet on every screen size, as in the prototype the owner tried. */
+.library-sheet.aj-sheet {
+  top: auto; bottom: 0; width: min(560px, 100%); max-height: 88dvh; transform: translateX(-50%);
+  border-radius: 28px 28px 0 0; padding: 10px 22px calc(24px + env(safe-area-inset-bottom)); animation-name: sheet-up;
+}
+.aj-sheet .library-grabber { display: block; width: 36px; height: 5px; margin: 0 auto 6px; border-radius: 3px; background: var(--ios-fill-pressed); }
+.aj-sheet > p { margin-top: 10px; font-size: 15px; line-height: 1.55; color: var(--ios-label-2); }
+.aj-sheet > p.aj-note { font-size: 13px; line-height: 1.5; color: var(--ios-label-3); }
+.aj-sheet > p.aj-note.is-warning { color: var(--ios-orange); }
+.aj-sheet code {
+  padding: 1px 5px; border-radius: 5px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px;
+  color: var(--ios-label); background: var(--ios-fill); overflow-wrap: anywhere;
+}
+.aj-steps { margin: 12px 0 0; padding-left: 22px; font-size: 15px; line-height: 1.65; color: var(--ios-label); }
+.aj-steps li + li { margin-top: 6px; }
+.aj-state { padding: 3px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; color: var(--ios-label-2); background: var(--ios-fill); }
+.aj-state.is-on { color: var(--ios-green); background: var(--ios-green-soft); }
+.aj-sheet-actions { display: grid; gap: 8px; margin-top: 20px; }
+.aj-sheet .aj-sheet-actions .ios-button { width: 100%; min-height: 50px; font-size: 17px; }
 
 @media (prefers-reduced-motion: reduce) {
   .home-screen.editing .home-tile-slot[data-sort-id], .widget-grid.editing .widget-slot > .widget { animation: none !important; }
-  .home-tile-slot[data-sort-id].is-lifted, .widget-drag-overlay > .widget.is-lifted { scale: 1.02; animation: none; }
+  .home-drag-overlay > .home-tile-slot.is-lifted, .widget-drag-overlay > .widget.is-lifted { scale: 1.02; animation: none; }
 }

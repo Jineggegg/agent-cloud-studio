@@ -173,10 +173,17 @@
 @keyframes home-recede { to { transform: scale(1.05); opacity: .35; } }
 @keyframes home-return { from { transform: scale(1.05); opacity: .35; } }
 
+/* The header stays put; below it the pages slide sideways edge to edge (studio-home.css), each with these gutters. */
 .home-screen {
   --icon: 92px; --tile: 132px; --label: 14px;
-  position: relative; height: 100%; overflow-y: auto; overflow-x: hidden;
-  padding: calc(28px + env(safe-area-inset-top)) max(48px, env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) max(48px, env(safe-area-inset-left));
+  --home-gutter-left: max(48px, env(safe-area-inset-left)); --home-gutter-right: max(48px, env(safe-area-inset-right));
+  /* Space above the icon grid: below the widgets on the first page, below the header on later ones. StudioHomeScreen
+     reads both to work out how many icons fit on a page. */
+  --home-grid-top: 56px; --home-grid-top-later: 36px;
+  /* Kept free at the foot of every page for the page control (and, in edit mode, the floating bar). */
+  --home-page-bottom: calc(88px + env(safe-area-inset-bottom));
+  position: relative; display: flex; flex-direction: column; height: 100%; overflow: hidden;
+  padding-top: calc(28px + env(safe-area-inset-top));
 }
 .home-screen.large-icons { --icon: 124px; --tile: 156px; }
 .home-wallpaper { position: fixed; inset: 0; z-index: -1; overflow: hidden; background: var(--ios-bg) var(--wall); pointer-events: none; }
@@ -187,7 +194,10 @@
 }
 .dark .home-wallpaper::after { mix-blend-mode: screen; filter: invert(1); }
 
-.home-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; max-width: 1040px; margin: 0 auto; }
+.home-top {
+  flex-shrink: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+  width: min(1040px, 100% - var(--home-gutter-left) - var(--home-gutter-right)); margin: 0 auto;
+}
 .home-date { animation: studio-rise 900ms var(--ease-out) backwards; }
 .home-weekday { display: block; font-size: 15px; font-weight: 600; letter-spacing: .14em; color: var(--ios-label-2); text-shadow: var(--home-label-shadow); }
 .home-date h1 { margin-top: 4px; font-family: var(--serif); font-size: 54px; font-weight: 500; line-height: 1.05; letter-spacing: .01em; text-shadow: var(--home-label-shadow); }
@@ -217,8 +227,9 @@
 
 .home-grid {
   display: grid; grid-template-columns: repeat(auto-fill, var(--tile)); justify-content: center; gap: 30px 34px;
-  max-width: 1040px; margin: 56px auto 0;
+  max-width: 1040px; margin: var(--home-grid-top) auto 0;
 }
+.home-page + .home-page .home-grid { margin-top: var(--home-grid-top-later); }
 .home-tile-slot { position: relative; display: flex; justify-content: center; }
 .home-tile {
   display: flex; flex-direction: column; align-items: center; gap: 10px; width: var(--tile); padding: 6px 0;
@@ -257,6 +268,7 @@
 .tone-stone { --tone-a: #a9a59d; --tone-b: #6f6b64; }
 .tone-moss { --tone-a: #a8b08f; --tone-b: #6c7556; }
 .tone-rose { --tone-a: #c6a7ab; --tone-b: #8d6a70; }
+.tone-ink { --tone-a: #8a93a6; --tone-b: #3d4659; }
 .tone-ghost { --tone-a: transparent; --tone-b: transparent; color: var(--ios-label-2); box-shadow: none; border: 1.5px dashed color-mix(in srgb, var(--ios-label-2) 50%, transparent); }
 .tone-ghost::before, .tone-ghost::after { display: none; }
 
@@ -623,7 +635,7 @@ article.studio-message:nth-last-of-type(-n+2) { animation: studio-bubble-in var(
 
 /* ---------- iPad portrait ---------- */
 @media (min-width: 700px) and (max-width: 1023px) {
-  .home-screen { padding-left: max(36px, env(safe-area-inset-left)); padding-right: max(36px, env(safe-area-inset-right)); }
+  .home-screen { --home-gutter-left: max(36px, env(safe-area-inset-left)); --home-gutter-right: max(36px, env(safe-area-inset-right)); }
   .home-grid { gap: 28px 26px; }
   .studio-chat-list { width: 300px; }
   .snr-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -633,12 +645,17 @@ article.studio-message:nth-last-of-type(-n+2) { animation: studio-bubble-in var(
 /* ---------- Phone ---------- */
 @media (max-width: 699px) {
   .studio .studio-wide-only { display: none; }
-  .home-screen { --icon: 62px; --tile: 74px; --label: 12px; padding: calc(20px + env(safe-area-inset-top)) 20px calc(32px + env(safe-area-inset-bottom)); }
+  .home-screen {
+    --icon: 62px; --tile: 74px; --label: 12px;
+    --home-gutter-left: max(20px, env(safe-area-inset-left)); --home-gutter-right: max(20px, env(safe-area-inset-right));
+    --home-grid-top: 40px; --home-grid-top-later: 26px; --home-page-bottom: calc(80px + env(safe-area-inset-bottom));
+    padding-top: calc(20px + env(safe-area-inset-top));
+  }
   .home-screen.large-icons { --icon: 76px; --tile: 80px; }
   .home-date h1 { font-size: 40px; }
   .home-weekday { font-size: 13px; }
   .home-actions { gap: 6px; }
-  .home-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px 12px; margin-top: 40px; }
+  .home-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px 12px; }
   .home-tile { width: 100%; gap: 7px; }
   .home-status { font-size: 11px; margin-top: -4px; }
   .library-sheet { top: auto; bottom: 0; width: 100%; max-height: 88dvh; transform: translateX(-50%); border-radius: 28px 28px 0 0; padding-bottom: calc(24px + env(safe-area-inset-bottom)); animation-name: sheet-up; }

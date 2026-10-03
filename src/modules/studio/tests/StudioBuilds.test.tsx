@@ -72,7 +72,7 @@ const homeTile = (patch: Partial<StudioHomeTile>): StudioHomeTile => ({ id: 'pro
 
 function renderHome(tiles: StudioHomeTile[], onBuildAction = vi.fn()) {
   render(<MemoryRouter><Routes>
-    <Route path="/" element={<StudioHomeScreen tiles={tiles} loading={false} covered={false} snr={null} onOpen={vi.fn()} onOpenWidget={vi.fn()} onCreate={vi.fn()}
+    <Route path="/" element={<StudioHomeScreen tiles={tiles} loading={false} covered={false} snr={null} onOpen={vi.fn()} onOpenWidget={vi.fn()} onOpenSettings={vi.fn()} onCreate={vi.fn()}
       onRefresh={vi.fn()} onSignOut={vi.fn()} refreshing={false} onBuildAction={onBuildAction} />} />
   </Routes></MemoryRouter>);
   return onBuildAction;

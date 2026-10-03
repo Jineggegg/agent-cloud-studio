@@ -2,8 +2,8 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { KeyboardCode, KeyboardSensor, PointerSensor, TouchSensor, closestCenter, pointerWithin, useSensor, useSensors } from '@dnd-kit/core';
 import type {
-  Announcements, CollisionDetection, DragCancelEvent, DragEndEvent, DragOverEvent, DragStartEvent, KeyboardCodes, PointerSensorOptions,
-  UniqueIdentifier,
+  Announcements, CollisionDetection, DragCancelEvent, DragEndEvent, DragOverEvent, DragStartEvent, KeyboardCodes, KeyboardCoordinateGetter,
+  PointerSensorOptions, UniqueIdentifier,
 } from '@dnd-kit/core';
 import { arrayMove, rectSortingStrategy, sortableKeyboardCoordinates, useSortable } from '@dnd-kit/sortable';
 import type { SortingStrategy } from '@dnd-kit/sortable';
@@ -59,6 +59,49 @@ const pointerFirstCollision: CollisionDetection = args => {
   return underPointer.length ? underPointer : closestCenter(args);
 };
 
+// Whether an item's measured centre lies across `bounds` (the visible page). Without a measured area (no layout
+// yet) every item counts.
+function centredWithin(rect: { left: number; width: number } | undefined | null, bounds: DOMRect | null) {
+  if (!bounds || bounds.width <= 0) return true;
+  const centre = rect ? rect.left + rect.width / 2 : Number.NaN;
+  return centre >= bounds.left && centre <= bounds.right;
+}
+
+/**
+ * The home screen's icons sit on pages side by side. A drop goes to the nearest icon on the page in view, never one
+ * on a page off screen (the nearest centre to a gap at the end of a page can otherwise be an icon on the page next to
+ * it); with no icon in view, the nearest of all.
+ */
+function closestCenterWithin(area: () => DOMRect | null): CollisionDetection {
+  return args => {
+    const bounds = area();
+    const inView = args.droppableContainers.filter(container => centredWithin(args.droppableRects.get(container.id), bounds));
+    return closestCenter(inView.length ? { ...args, droppableContainers: inView } : args);
+  };
+}
+
+/**
+ * Keyboard sorting moves to the nearest item in the arrow's direction; with the home screen split into pages that
+ * could be an item on a page out of view, where the lifted copy would vanish. This keeps keyboard moves to items
+ * whose centre is inside `area` (the visible page); the move buttons still cross pages.
+ */
+function keyboardCoordinatesWithin(area: () => DOMRect | null): KeyboardCoordinateGetter {
+  return (event, args) => {
+    const bounds = area();
+    if (!bounds || bounds.width <= 0) return sortableKeyboardCoordinates(event, args);
+    const { droppableContainers, droppableRects } = args.context;
+    const inView = droppableContainers.getEnabled().filter(entry => centredWithin(droppableRects.get(entry.id), bounds));
+    // sortableKeyboardCoordinates reads only getEnabled() and get() from the container map.
+    const scoped = { getEnabled: () => inView, get: (id: UniqueIdentifier) => droppableContainers.get(id) } as unknown as typeof droppableContainers;
+    return sortableKeyboardCoordinates(event, { ...args, context: { ...args.context, droppableContainers: scoped } });
+  };
+}
+
+// dnd-kit scrolls the item's scrollable ancestors when it nears their edges. The home screen's pages never scroll
+// sideways (holding an icon at the screen's side turns the page instead), and a page's own vertical scroll is left to
+// the finger, so pages are not auto-scrolled at all.
+const AUTO_SCROLL = { canScroll: (element: Element) => !element.classList.contains('home-page') };
+
 function prefersReducedMotion() {
   return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
@@ -99,10 +142,10 @@ const orderKey = (ids: string[]) => ids.join('\n');
  * (entering edit mode), edit mode drags with mouse, touch, pen or keyboard, and drops settle with a spring.
  * Spread `dndProps` on DndContext and `sortableProps` on SortableContext, attach `containerRef` to the grid, wrap
  * layout changes that should glide (removing or resizing an item) in `glide`, wire visible move buttons to `move`
- * and announce `moveMessage` in a polite live region. With `reorderWhileDragging`, render the lifted item in a
- * DragOverlay and attach `overlayRef` to it.
+ * and announce `moveMessage` in a polite live region. When the lifted item rides in a DragOverlay (required with
+ * `reorderWhileDragging`), attach `overlayRef` to it, so a drop glides the real item down from there.
  */
-export function useHomeSortableList({ ids, editing, onEnterEdit, onReorder, labelOf, reorderWhileDragging = false }: {
+export function useHomeSortableList({ ids, editing, onEnterEdit, onReorder, labelOf, reorderWhileDragging = false, onDragActiveChange, visibleArea }: {
   ids: string[];
   editing: boolean;
   // Called when a long press lifts an item while the home screen is not yet in edit mode.
@@ -114,9 +157,13 @@ export function useHomeSortableList({ ids, editing, onEnterEdit, onReorder, labe
   // Mixed-size grids (widgets) reorder for real on every hover, so the preview is exactly the layout a drop keeps;
   // same-size grids (icons) slide their neighbours aside with transforms and reorder on drop.
   reorderWhileDragging?: boolean;
+  // Told when a drag starts and when it ends or is cancelled (the home screen holds its pages still meanwhile).
+  onDragActiveChange?: (active: boolean) => void;
+  // The part of the list in view (the visible page): drops and keyboard moves go to items there. Must be stable.
+  visibleArea?: () => DOMRect | null;
 }) {
   const containerRef = useRef<HTMLElement | null>(null);
-  // The lifted card inside the DragOverlay (live reordering only); a drop glides the real item from there.
+  // The lifted copy inside the DragOverlay; a drop glides the real item from there.
   const overlayRef = useRef<HTMLElement | null>(null);
   // Item rects captured just before a layout change; the effect below glides items from there.
   const pendingRects = useRef<Map<string, DOMRect> | null>(null);
@@ -143,8 +190,9 @@ export function useHomeSortableList({ ids, editing, onEnterEdit, onReorder, labe
     activationConstraint: { delay: editing ? EDIT_TOUCH_DELAY_MS : LONG_PRESS_MS, tolerance: PRESS_TOLERANCE_PX },
   }), [editing]);
   const keyboardOptions = useMemo(() => ({
-    coordinateGetter: sortableKeyboardCoordinates, keyboardCodes: editing ? EDIT_KEYBOARD_CODES : IDLE_KEYBOARD_CODES,
-  }), [editing]);
+    coordinateGetter: visibleArea ? keyboardCoordinatesWithin(visibleArea) : sortableKeyboardCoordinates,
+    keyboardCodes: editing ? EDIT_KEYBOARD_CODES : IDLE_KEYBOARD_CODES,
+  }), [editing, visibleArea]);
   const pointerSensor = useSensor(MousePointerSensor, pointerOptions);
   const touchSensor = useSensor(TouchSensor, touchOptions);
   const keyboardSensor = useSensor(KeyboardSensor, keyboardOptions);
@@ -206,10 +254,11 @@ export function useHomeSortableList({ ids, editing, onEnterEdit, onReorder, labe
     runningGlides.current.forEach(animation => animation.cancel());
     startOrder.current = ids;
     settling.current = null;
+    onDragActiveChange?.(true);
     if (!editing) onEnterEdit();
     // A tick of haptics where the platform has it (Android); browsers refuse it before the page's first tap.
     if (typeof navigator.vibrate === 'function' && navigator.userActivation?.hasBeenActive) navigator.vibrate(8);
-  }, [editing, ids, onEnterEdit]);
+  }, [editing, ids, onDragActiveChange, onEnterEdit]);
 
   const onDragOver = useCallback(({ active, over, delta }: DragOverEvent) => {
     if (!over || over.id === active.id) return;
@@ -225,30 +274,32 @@ export function useHomeSortableList({ ids, editing, onEnterEdit, onReorder, labe
     glide(() => onReorder(next));
   }, [glide, ids, onReorder]);
 
-  // Where the lifted card is, so the real item can glide down from it (live reordering only).
+  // Where the lifted copy is, so the real item can glide down from it (when it rides in a DragOverlay).
   const landingFor = useCallback((id: UniqueIdentifier) => {
-    const card = reorderWhileDragging ? overlayRef.current : null;
+    const card = overlayRef.current;
     return card ? { id: idOf(id), rect: card.getBoundingClientRect() } : undefined;
-  }, [reorderWhileDragging]);
+  }, []);
 
   const onDragEnd = useCallback(({ active, over, activatorEvent }: DragEndEvent) => {
     if (!isKeyboardEvent(activatorEvent)) swallowNextClick();
     startOrder.current = null;
     settling.current = null;
+    onDragActiveChange?.(false);
     // A live grid already shows the order the drop keeps; only the lifted card still has to land.
     if (reorderWhileDragging) { glide(() => {}, landingFor(active.id)); return; }
     const from = ids.indexOf(idOf(active.id));
     const to = over ? ids.indexOf(idOf(over.id)) : -1;
-    glide(() => { if (from >= 0 && to >= 0 && from !== to) onReorder(arrayMove(ids, from, to)); });
-  }, [glide, ids, landingFor, onReorder, reorderWhileDragging]);
+    glide(() => { if (from >= 0 && to >= 0 && from !== to) onReorder(arrayMove(ids, from, to)); }, landingFor(active.id));
+  }, [glide, ids, landingFor, onDragActiveChange, onReorder, reorderWhileDragging]);
 
   const onDragCancel = useCallback(({ active, activatorEvent }: DragCancelEvent) => {
     if (!isKeyboardEvent(activatorEvent)) swallowNextClick();
     const original = startOrder.current;
     startOrder.current = null;
     settling.current = null;
+    onDragActiveChange?.(false);
     glide(() => { if (original && orderKey(original) !== orderKey(ids)) onReorder(original); }, landingFor(active.id));
-  }, [glide, ids, landingFor, onReorder]);
+  }, [glide, ids, landingFor, onDragActiveChange, onReorder]);
 
   const move = useCallback((id: string, step: -1 | 1) => {
     const from = ids.indexOf(id);
@@ -275,7 +326,8 @@ export function useHomeSortableList({ ids, editing, onEnterEdit, onReorder, labe
     moveMessage,
     dndProps: {
       sensors,
-      collisionDetection: reorderWhileDragging ? pointerFirstCollision : closestCenter,
+      collisionDetection: reorderWhileDragging ? pointerFirstCollision : visibleArea ? closestCenterWithin(visibleArea) : closestCenter,
+      autoScroll: AUTO_SCROLL,
       onDragStart,
       onDragOver: reorderWhileDragging ? onDragOver : undefined,
       onDragEnd,
