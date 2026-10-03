@@ -48,9 +48,9 @@ function SettingsHint({ text }: { text: string }) {
     <span className="ios-row-body"><strong>打开设置</strong><small>{text}</small></span><IconChevronRight size={18} className="chevron" aria-hidden="true" />
   </Link></div>;
 }
+// Cursor and OpenCode are not offered (OFFERED_AGENT_PROVIDERS); the server saves either as Claude Code.
 const PROVIDERS: { id: HubProvider; name: string }[] = [
-  { id: 'claude', name: 'Claude Code' }, { id: 'codex', name: 'Codex' }, { id: 'cursor', name: 'Cursor' },
-  { id: 'opencode', name: 'OpenCode' }, { id: 'deepseek', name: 'DeepSeek' },
+  { id: 'claude', name: 'Claude Code' }, { id: 'codex', name: 'Codex' }, { id: 'deepseek', name: 'DeepSeek' },
 ];
 // Must match the server's link limit.
 const MAX_LINKS = 8;
