@@ -7,4 +7,7 @@ export { scheduledMessagesService } from './services/scheduled-messages.service.
 export {
   initializeScheduledMessageDispatcher,
   closeScheduledMessageDispatcher,
+  // Integration verification drives one dispatcher pass without starting timers.
+  dispatchDueScheduledMessages,
+  dispatchQueuedMessages,
 } from './services/scheduled-message-dispatcher.service.js';

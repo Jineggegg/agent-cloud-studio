@@ -617,6 +617,12 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
 }
 .wbc-to-bottom::before { content: ""; position: absolute; inset: -4px; }
 .wbc-dock-plan { margin-bottom: 10px; }
+/* A prepared continuation of an interrupted run, with the way back to an ordinary request. */
+.wbc-recovery-note {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 10px; margin-bottom: 8px;
+  padding: 4px 6px 4px 14px; border-radius: 14px; background: var(--wbc-fill, rgba(120, 120, 128, .12)); font-size: 14px;
+}
+.wbc-recovery-note button { min-height: 44px; padding: 0 12px; border-radius: 10px; color: var(--wbc-label-2); }
 .wbc-dock-error {
   display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 6px 6px 6px 14px; border-radius: 14px;
   background: var(--wbc-red-soft); color: var(--wbc-red); font-size: 14px;

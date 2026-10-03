@@ -7,6 +7,7 @@ type Dependencies = Parameters<typeof createSettingsService>[0];
 
 function dependencies(overrides: Partial<Dependencies> = {}): Dependencies {
   return {
+    verifyStepUp: async () => undefined,
     apiKeys: { list: () => [], create: () => ({}), remove: () => false, toggle: () => false },
     credentials: { list: () => [], create: () => ({}), remove: () => false, toggle: () => false },
     notifications: {
@@ -15,7 +16,7 @@ function dependencies(overrides: Partial<Dependencies> = {}): Dependencies {
       createEnabledEvent: () => ({}),
       notifyUser: () => undefined,
     },
-    pushSubscriptions: { save: () => undefined, remove: () => undefined },
+    pushSubscriptions: { save: () => undefined, remove: () => undefined, isKnown: () => false, recordNew: () => undefined },
     getVapidPublicKey: () => null,
     ...overrides,
   };
@@ -37,6 +38,8 @@ test('subscribeToPush persists the subscription and enables Web Push', () => {
     pushSubscriptions: {
       save: (_id, endpoint) => operations.push(`save:${endpoint}`),
       remove: () => undefined,
+      isKnown: () => true,
+      recordNew: () => operations.push('event'),
     },
     notifications: {
       getPreferences: () => ({ channels: { webPush: false } }),
@@ -51,4 +54,68 @@ test('subscribeToPush persists the subscription and enables Web Push', () => {
     keys: { p256dh: 'key', auth: 'auth' },
   });
   assert.deepEqual(operations, ['save:https://push.example.test', 'preferences', 'notify']);
+});
+
+test('creating an API key or turning one back on needs the password step-up; turning one off does not', async () => {
+  const stepUps: unknown[] = [];
+  const created: string[] = [];
+  const toggled: boolean[] = [];
+  let passwordOk = false;
+  const service = createSettingsService(dependencies({
+    verifyStepUp: async (stepUp) => {
+      stepUps.push(stepUp.password);
+      if (!passwordOk) throw Object.assign(new Error('wrong'), { statusCode: 403 });
+    },
+    apiKeys: {
+      list: () => [],
+      create: (_userId, keyName) => { created.push(keyName); return { keyName }; },
+      remove: () => true,
+      toggle: (_userId, _keyId, isActive) => { toggled.push(isActive); return true; },
+    },
+  }));
+  const client = { door: 'cloudflare', address: '198.51.100.7' } as const;
+
+  await assert.rejects(service.createApiKey(1, 'laptop', { user: { id: 1 }, password: 'guess', client }));
+  assert.deepEqual(created, []);
+  await assert.rejects(service.toggleApiKey(1, 3, true, { user: { id: 1 }, password: 'guess', client }));
+  await service.toggleApiKey(1, 3, false, { user: { id: 1 }, password: undefined, client });
+  assert.deepEqual(toggled, [false]);
+
+  passwordOk = true;
+  await service.createApiKey(1, 'laptop', { user: { id: 1 }, password: 'right', client });
+  await service.toggleApiKey(1, 3, true, { user: { id: 1 }, password: 'right', client });
+  assert.deepEqual(created, ['laptop']);
+  assert.deepEqual(toggled, [false, true]);
+  assert.deepEqual(stepUps, ['guess', 'guess', 'right', 'right']);
+});
+
+test('re-registering a known push endpoint is silent; a new endpoint is a new, logged subscription', () => {
+  const operations: string[] = [];
+  const known = new Set<string>();
+  const service = createSettingsService(dependencies({
+    pushSubscriptions: {
+      save: (_id, endpoint) => { operations.push(`save:${endpoint}`); known.add(endpoint); },
+      remove: () => undefined,
+      isKnown: (_id, endpoint) => known.has(endpoint),
+      recordNew: (client, endpoint) => operations.push(`event:${client.address}:${endpoint}`),
+    },
+    notifications: {
+      getPreferences: () => ({ channels: { webPush: false } }),
+      updatePreferences: () => { operations.push('preferences'); return {}; },
+      createEnabledEvent: () => ({ code: 'push.enabled' }),
+      notifyUser: () => { operations.push('notify'); },
+    },
+  }));
+  const client = { door: 'cloudflare', address: '198.51.100.7' } as const;
+  // A device re-registering an endpoint the user already had (here: a tombstone after revoke-all).
+  known.add('https://push.example.test/mine');
+  const mine = { endpoint: 'https://push.example.test/mine', keys: { p256dh: 'key', auth: 'auth' }, resubscribe: true };
+  service.subscribeToPush(1, mine, client);
+  service.subscribeToPush(1, mine, client);
+  assert.deepEqual(operations, ['save:https://push.example.test/mine', 'save:https://push.example.test/mine']);
+
+  // A stolen token claiming "resubscribe" for an endpoint the user never had: a new subscription.
+  operations.length = 0;
+  service.subscribeToPush(1, { endpoint: 'https://attacker.example/x', keys: { p256dh: 'key', auth: 'auth' }, resubscribe: true }, client);
+  assert.deepEqual(operations, ['save:https://attacker.example/x', 'event:198.51.100.7:https://attacker.example/x', 'preferences', 'notify']);
 });

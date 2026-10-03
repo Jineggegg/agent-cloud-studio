@@ -12,6 +12,7 @@ import { StudioBuildBadge, StudioBuildProgress, StudioBuildStatus } from '@/modu
 import { StudioFluidBackground } from '@/modules/studio/StudioFluidBackground';
 import { StudioTileIcon } from '@/modules/studio/StudioTileIcon';
 import { StudioWidgets } from '@/modules/studio/StudioWidgets';
+import type { WidgetType } from '@/modules/studio/StudioWidgets';
 import { useHomeSortableItem, useHomeSortableList } from '@/modules/studio/hooks/useHomeSortable';
 import '@/modules/studio/studio-home.css';
 
@@ -136,12 +137,14 @@ function SortableTile({ tile, index, last, editing, labels, iconSize, onActivate
  * buttons give VoiceOver and Switch Control the same rearranging. Icons an AI is building dim under a progress
  * ring (StudioBuildProgress); in edit mode they offer stop, and failed ones continue.
  */
-export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreate, onRefresh, onSignOut, refreshing, onBuildAction }: {
+export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenWidget, onCreate, onRefresh, onSignOut, refreshing, onBuildAction }: {
   tiles: StudioHomeTile[]; loading: boolean;
-  // True while an app fully covers the home screen; the wallpaper animation pauses to save battery.
+  // True while an app fully covers the home screen; widget polling pauses to save battery.
   covered: boolean;
   snr: StudioSnr | null;
   onOpen: (tile: StudioHomeTile, icon: DOMRect | null) => void;
+  // A tapped widget opens its app (Claude and Codex open a new session in the workbench).
+  onOpenWidget: (type: WidgetType, card: DOMRect) => void;
   onCreate: () => void; onRefresh: () => void; onSignOut: () => void; refreshing: boolean;
   // Stops a running AI build or continues a failed one (edit-mode buttons on tiles that carry `progress`).
   onBuildAction?: (tile: StudioHomeTile, action: 'stop' | 'resume') => void;
@@ -189,7 +192,7 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreat
   const iconSize = layout.large ? 52 : 40;
 
   return <div className={`home-screen ${layout.large ? 'large-icons' : ''} ${layout.labels ? '' : 'no-labels'} ${editing ? 'editing' : ''}`} onClick={leaveEditOnEmptyTap}>
-    <StudioFluidBackground paused={covered} />
+    <StudioFluidBackground />
     <header className="home-top">
       <div className="home-date">
         <span className="home-weekday">{new Intl.DateTimeFormat('zh-CN', { weekday: 'long', timeZone: 'Europe/London' }).format(today)}</span>
@@ -220,7 +223,7 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onCreat
       </label>
     </div>}
 
-    <StudioWidgets editing={editing} snr={snr} paused={covered} onEnterEdit={enterEdit}
+    <StudioWidgets editing={editing} snr={snr} paused={covered} onEnterEdit={enterEdit} onOpen={onOpenWidget}
       galleryOpen={widgetGalleryOpen} onGalleryClose={() => setWidgetGalleryOpen(false)} />
 
     <DndContext {...dndProps}>

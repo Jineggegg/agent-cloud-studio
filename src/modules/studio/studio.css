@@ -29,10 +29,18 @@
   --ios-shadow: 0 1px 2px rgba(40, 35, 25, .04), 0 10px 30px rgba(40, 35, 25, .05);
   --ios-shadow-float: 0 2px 6px rgba(40, 35, 25, .06), 0 18px 48px rgba(40, 35, 25, .14);
   --ios-scrim: rgba(20, 18, 14, .28);
-  --wall-a: rgba(143, 168, 154, .5);
-  --wall-b: rgba(196, 160, 136, .38);
-  --wall-c: rgba(142, 159, 184, .42);
-  --grain-opacity: .09;
+  /* Home wallpaper: near-white, cool mist at the top easing to warm paper at the bottom. */
+  --wall: linear-gradient(165deg, #e6ecf3 0%, #f7f7f5 48%, #f2ece4 100%);
+  --grain-opacity: .05;
+  /* Home-screen glass (widgets, toolbar buttons): frosted white with a bright top rim, floating on the wallpaper. */
+  --home-glass: linear-gradient(140deg, rgba(255, 255, 255, .5), rgba(255, 255, 255, .2));
+  --home-glass-sheen: rgba(255, 255, 255, .4);
+  --home-glass-edge: rgba(255, 255, 255, .6);
+  --home-glass-rim: rgba(255, 255, 255, .9);
+  --home-glass-shadow: 0 1px 2px rgba(60, 45, 30, .06), 0 24px 46px -20px rgba(60, 45, 30, .32);
+  --home-icon-edge: rgba(255, 255, 255, .55);
+  --home-icon-float: rgba(60, 45, 30, .3);
+  --home-label-shadow: 0 1px 1px rgba(255, 255, 255, .45);
   --ease-out: cubic-bezier(.22, .8, .2, 1);
   --ease-spring: cubic-bezier(.34, 1.3, .64, 1);
   --dur-press: 90ms;
@@ -74,10 +82,16 @@
   --ios-shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 10px 30px rgba(0, 0, 0, .25);
   --ios-shadow-float: 0 2px 8px rgba(0, 0, 0, .4), 0 18px 48px rgba(0, 0, 0, .5);
   --ios-scrim: rgba(0, 0, 0, .5);
-  --wall-a: rgba(83, 112, 96, .42);
-  --wall-b: rgba(128, 96, 78, .32);
-  --wall-c: rgba(78, 94, 122, .4);
+  --wall: linear-gradient(165deg, #1e2330 0%, #16191f 48%, #0f1013 100%);
   --grain-opacity: .07;
+  --home-glass: linear-gradient(140deg, rgba(255, 255, 255, .16), rgba(255, 255, 255, .05));
+  --home-glass-sheen: rgba(255, 255, 255, .12);
+  --home-glass-edge: rgba(255, 255, 255, .16);
+  --home-glass-rim: rgba(255, 255, 255, .3);
+  --home-glass-shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 28px 52px -20px rgba(0, 0, 0, .75);
+  --home-icon-edge: rgba(255, 255, 255, .24);
+  --home-icon-float: rgba(0, 0, 0, .6);
+  --home-label-shadow: 0 1px 3px rgba(0, 0, 0, .55);
 }
 
 /* ---------- Base ---------- */
@@ -165,26 +179,26 @@
   padding: calc(28px + env(safe-area-inset-top)) max(48px, env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) max(48px, env(safe-area-inset-left));
 }
 .home-screen.large-icons { --icon: 124px; --tile: 156px; }
-.home-wallpaper { position: fixed; inset: 0; z-index: -1; overflow: hidden; background: var(--ios-bg); pointer-events: none; }
-.home-wallpaper span { position: absolute; width: 62vmax; height: 62vmax; border-radius: 50%; filter: blur(70px); will-change: transform; }
-.home-wallpaper span:nth-child(1) { background: var(--wall-a); left: -18vmax; top: -22vmax; animation: wall-drift-a 46s ease-in-out infinite alternate; }
-.home-wallpaper span:nth-child(2) { background: var(--wall-b); right: -22vmax; top: 18vh; animation: wall-drift-b 58s ease-in-out infinite alternate; }
-.home-wallpaper span:nth-child(3) { background: var(--wall-c); left: 12vw; bottom: -34vmax; animation: wall-drift-c 52s ease-in-out infinite alternate; }
-/* Film grain keeps the gradients from looking digital. */
+.home-wallpaper { position: fixed; inset: 0; z-index: -1; overflow: hidden; background: var(--ios-bg) var(--wall); pointer-events: none; }
+/* Film grain keeps the gradient from looking digital. */
 .home-wallpaper::after {
   content: ""; position: absolute; inset: 0; opacity: var(--grain-opacity); mix-blend-mode: multiply;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .9 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 .dark .home-wallpaper::after { mix-blend-mode: screen; filter: invert(1); }
-@keyframes wall-drift-a { to { transform: translate(14vw, 10vh) scale(1.12); } }
-@keyframes wall-drift-b { to { transform: translate(-12vw, -8vh) scale(.92); } }
-@keyframes wall-drift-c { to { transform: translate(10vw, -12vh) scale(1.08); } }
 
 .home-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; max-width: 1040px; margin: 0 auto; }
 .home-date { animation: studio-rise 900ms var(--ease-out) backwards; }
-.home-weekday { display: block; font-size: 15px; font-weight: 500; letter-spacing: .12em; color: var(--ios-label-2); }
-.home-date h1 { margin-top: 4px; font-family: var(--serif); font-size: 52px; font-weight: 400; line-height: 1.05; letter-spacing: .01em; }
-.home-actions { display: flex; align-items: center; gap: 8px; padding-top: 4px; }
+.home-weekday { display: block; font-size: 15px; font-weight: 600; letter-spacing: .14em; color: var(--ios-label-2); text-shadow: var(--home-label-shadow); }
+.home-date h1 { margin-top: 4px; font-family: var(--serif); font-size: 54px; font-weight: 500; line-height: 1.05; letter-spacing: .01em; text-shadow: var(--home-label-shadow); }
+.home-actions { display: flex; align-items: center; gap: 10px; padding-top: 4px; }
+/* The home toolbar floats on the wallpaper as round glass, like the widgets below it. */
+.home-actions :is(.glass-icon, .glass-button:not(.strong)) {
+  background: var(--home-glass); border: 1px solid var(--home-glass-edge);
+  -webkit-backdrop-filter: blur(30px) saturate(185%); backdrop-filter: blur(30px) saturate(185%);
+  box-shadow: inset 0 1px 0 var(--home-glass-rim), var(--home-glass-shadow);
+}
+.home-actions .glass-icon { min-width: 46px; height: 46px; border-radius: 23px; }
 .glass-icon, .glass-button {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 44px; height: 44px; border-radius: 22px;
   background: var(--ios-glass); color: var(--ios-label);
@@ -212,8 +226,8 @@
   animation: tile-in 700ms var(--ease-out) backwards;
 }
 @keyframes tile-in { from { opacity: 0; transform: translateY(18px) scale(.9); } }
-.home-label { max-width: 100%; font-size: var(--label); font-weight: 500; letter-spacing: .01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.home-status { margin-top: -6px; font-size: 12px; color: var(--ios-label-2); }
+.home-label { max-width: 100%; font-size: var(--label); font-weight: 500; letter-spacing: .01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: var(--home-label-shadow); }
+.home-status { margin-top: -6px; font-size: 12px; color: var(--ios-label-2); text-shadow: var(--home-label-shadow); }
 .no-labels .home-label, .no-labels .home-status, .large-icons .home-status { display: none; }
 .home-empty { max-width: 420px; margin: 80px auto 0; text-align: center; color: var(--ios-label-2); font-size: 15px; line-height: 1.6; }
 
@@ -245,6 +259,24 @@
 .tone-rose { --tone-a: #c6a7ab; --tone-b: #8d6a70; }
 .tone-ghost { --tone-a: transparent; --tone-b: transparent; color: var(--ios-label-2); box-shadow: none; border: 1.5px dashed color-mix(in srgb, var(--ios-label-2) 50%, transparent); }
 .tone-ghost::before, .tone-ghost::after { display: none; }
+
+/* Home-screen icons are tinted glass: the tone shows through at part strength so the wallpaper glows behind it,
+   with a bright rim, a specular highlight at the top and a soft coloured shadow that lifts the icon off the page. */
+.home-tile .home-icon {
+  --icon-rim: inset 0 1.5px 0 rgba(255, 255, 255, .6), inset 0 -12px 22px -10px rgba(0, 0, 0, .14);
+  background: linear-gradient(160deg, color-mix(in srgb, var(--tone-a) 52%, transparent), color-mix(in srgb, var(--tone-b) 62%, transparent));
+  -webkit-backdrop-filter: blur(22px) saturate(190%); backdrop-filter: blur(22px) saturate(190%);
+  border: 1px solid var(--home-icon-edge);
+  box-shadow: var(--icon-rim), 0 2px 4px rgba(0, 0, 0, .06), 0 22px 30px -14px color-mix(in srgb, var(--tone-b) 55%, var(--home-icon-float));
+}
+.home-tile .home-icon::before { background: radial-gradient(95% 60% at 28% -4%, rgba(255, 255, 255, .5), transparent 62%); }
+.home-tile .home-icon::after { display: none; }
+.home-tile .home-icon svg { filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .28)); }
+.home-tile .home-icon.tone-ghost {
+  background: rgba(255, 255, 255, .1); box-shadow: none; color: var(--ios-label-2);
+  border: 1.5px dashed color-mix(in srgb, var(--ios-label-2) 55%, transparent);
+}
+.home-tile .home-icon.tone-ghost svg { filter: none; }
 
 .home-tile:not(.add):active .home-icon { transform: scale(.9); filter: brightness(.86); transition-duration: var(--dur-press); }
 @media (hover: hover) { .home-tile:hover .home-icon { transform: translateY(-3px); } }
@@ -412,6 +444,13 @@
 .ios-field label { flex-shrink: 0; width: 76px; font-size: 17px; }
 .ios-field input { flex: 1; min-width: 0; min-height: 44px; border: 0; background: transparent; color: var(--ios-label); font-size: 17px; outline: none; }
 .ios-field input::placeholder, .ios-search input::placeholder { color: var(--ios-label-3); }
+.ios-field select { flex: 1; min-width: 0; min-height: 44px; border: 0; background: transparent; color: var(--ios-label); font: inherit; font-size: 17px; text-align: right; text-align-last: right; outline: none; cursor: pointer; }
+.ios-field select:disabled { color: var(--ios-label-3); cursor: default; }
+.ios-field select:focus-visible { outline: 2px solid var(--ios-tint); outline-offset: -2px; border-radius: 8px; }
+/* Settings → 模型: the CLI picker sits above its list; sub-headings for the model list and hidden models. */
+.model-providers { display: flex; width: fit-content; max-width: 100%; margin: 0 16px 10px; overflow-x: auto; }
+.ios-section-header h3 { margin-top: 18px; font-size: 15px; font-weight: 600; color: var(--ios-label-2); }
+.model-form-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 6px 16px 12px; }
 .ios-search { display: flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 10px; border-radius: 12px; background: var(--ios-fill); color: var(--ios-label-2); }
 .ios-search input { flex: 1; min-width: 0; min-height: 40px; border: 0; background: transparent; color: var(--ios-label); font-size: 17px; outline: none; }
 .ios-search input::-webkit-search-cancel-button { -webkit-appearance: none; }
@@ -636,7 +675,7 @@ article.studio-message:nth-last-of-type(-n+2) { animation: studio-bubble-in var(
     transition-duration: 1ms !important; transition-delay: 0ms !important;
   }
   .studio :active { transform: none !important; }
-  .studio .skeleton-block::after, .home-wallpaper span { animation: none !important; }
+  .studio .skeleton-block::after { animation: none !important; }
   .studio-progress::before { animation: none !important; width: 100%; opacity: .5; }
 }
 
@@ -813,12 +852,6 @@ article.studio-message:nth-last-of-type(-n+2) { animation: studio-bubble-in var(
 .ios-field + .ios-field::before { content: ""; position: absolute; top: 0; right: 0; left: 16px; height: .5px; background: var(--ios-separator); }
 .studio-main.has-tabs .studio-content { padding-top: calc(var(--chrome-top) + 16px); }
 
-/* ---------- Fluid wallpaper (WebGL) ----------
- * The canvas fades in over the CSS blobs once the first frame is drawn; the grain
- * (::after) stays on top so both look like the same printed surface. */
-.home-wallpaper-canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; opacity: 0; transition: opacity 1.4s var(--ease-out); }
-.home-wallpaper.is-webgl .home-wallpaper-canvas { opacity: 1; }
-.home-wallpaper.is-webgl span { opacity: 0; visibility: hidden; transition: opacity 1.4s ease, visibility 0s linear 1.4s; }
 
 /* Theme: the toggle icon spins in, and the new theme spreads as a circle from the button. */
 .theme-toggle svg { animation: theme-icon-in var(--dur-slow) var(--ease-spring); }
@@ -833,11 +866,14 @@ html.theme-revealing::view-transition-new(root) { z-index: 2; }
   display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--widget-unit), 1fr)); grid-auto-rows: var(--widget-unit);
   gap: 18px; max-width: 1040px; margin: 36px auto 0;
 }
+/* Widgets are frosted glass floating over the wallpaper: a sheen in the top-left corner, a bright top rim and a deep soft shadow. */
 .widget {
-  position: relative; display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 14px 15px; border-radius: 26px;
-  background: var(--ios-glass); color: var(--ios-label); text-align: left;
-  -webkit-backdrop-filter: saturate(170%) blur(28px); backdrop-filter: saturate(170%) blur(28px);
-  border: .5px solid var(--ios-glass-edge); box-shadow: var(--ios-shadow);
+  position: relative; display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 15px 16px; border-radius: 26px;
+  background: radial-gradient(120% 70% at 12% -12%, var(--home-glass-sheen), transparent 62%), var(--home-glass);
+  color: var(--ios-label); text-align: left;
+  -webkit-backdrop-filter: blur(30px) saturate(185%); backdrop-filter: blur(30px) saturate(185%);
+  border: 1px solid var(--home-glass-edge);
+  box-shadow: inset 0 1px 0 var(--home-glass-rim), inset 0 -1px 1px rgba(255, 255, 255, .08), var(--home-glass-shadow);
 }
 .widget-head { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 13px; font-weight: 600; color: var(--ios-label-2); }
 .widget-head > span:not(.home-icon, .widget-source) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -862,7 +898,12 @@ html.theme-revealing::view-transition-new(root) { z-index: 2; }
 
 .widget-figure { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: 4px; min-height: 0; }
 .widget-figure strong { font-size: 26px; font-weight: 600; line-height: 1.1; letter-spacing: -.015em; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.widget-medium .widget-figure strong { font-size: 32px; }
+.widget:is(.widget-medium, .widget-large) .widget-figure strong { font-size: 32px; }
+/* A medium card that also lists detail rows keeps the figure a size down so both fit the single row. */
+.widget-medium .widget-figure:has(~ .widget-rows) strong { font-size: 26px; }
+.widget-large .widget-figure { flex: 0 0 auto; }
+.widget-large .widget-rings { flex: 0 0 auto; padding: 4px 0; }
+.widget-large .widget-spark { height: 64px; margin-top: 10px; }
 .widget-figure small { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; color: var(--ios-label-2); }
 .widget-delta { font-weight: 600; font-variant-numeric: tabular-nums; }
 .widget-delta.gain { color: var(--chart-gain); }
@@ -886,16 +927,55 @@ html.theme-revealing::view-transition-new(root) { z-index: 2; }
   animation: studio-shimmer 1.5s ease-in-out infinite;
 }
 
-/* Edit mode: widgets expose a remove badge and a resize control (the jiggle lives in studio-home.css). */
+/* Detail rows, stats and chips that medium and large widgets add under their figure. */
+.widget-rows { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; font-size: 12px; }
+.widget-rows li { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 4px 0; border-top: .5px solid var(--ios-separator); }
+.widget-rows li:first-child { border-top: 0; }
+.widget-rows span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ios-label-2); }
+.widget-rows small { flex-shrink: 0; font-size: 11px; color: var(--ios-label-3); }
+.widget-rows strong { margin-left: auto; flex-shrink: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.widget-large .widget-rows { font-size: 13px; }
+.widget-large .widget-rows li { padding: 6px 0; }
+.widget-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 2px 0 0; }
+.widget-stats div { min-width: 0; }
+.widget-stats dt { font-size: 11px; color: var(--ios-label-3); }
+.widget-stats dd { margin: 2px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.widget-footnote { margin-top: auto; font-size: 11px; color: var(--ios-label-3); }
+.widget-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+.widget-chips span { padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 500; color: var(--ios-label-2); background: var(--ios-fill); }
+
+/* Edit mode: widgets expose a remove badge and a resize corner (the jiggle lives in studio-home.css). */
 .widget .widget-remove { top: -8px; left: -8px; }
-.widget-edit-bar {
-  position: absolute; right: 8px; bottom: 8px; display: flex; gap: 2px; padding: 2px; border-radius: 999px;
-  background: var(--ios-glass-strong); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, .14); animation: studio-pop var(--dur-base) var(--ease-spring);
+/* The resize corner is an arc hugging the card's bottom-right curve (radius 26px, drawn 6px outside the card edge),
+   with a 44px hit area. touch-action keeps the browser from panning while a finger drags it. */
+.widget-resize {
+  position: absolute; right: -6px; bottom: -6px; z-index: 2; width: 44px; height: 44px; border-radius: 0 0 26px 0;
+  cursor: nwse-resize; touch-action: none; outline: none; animation: studio-pop var(--dur-base) var(--ease-spring);
 }
-.widget-edit-bar button { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; color: var(--ios-label); transition: transform var(--dur-slow) var(--ease-spring), background-color var(--dur-fast) ease; }
-.widget-edit-bar button:not(:disabled):active { transform: scale(.88); background: var(--ios-fill-pressed); transition-duration: var(--dur-press); }
+.widget-resize svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.widget-resize path {
+  fill: none; stroke: rgba(255, 255, 255, .96); stroke-width: 5; stroke-linecap: round;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .35)); transition: stroke-width var(--dur-fast) ease;
+}
+.widget-resize.is-active path, .widget-resize:hover path { stroke-width: 6.5; }
+.widget-resize:focus-visible path { stroke: var(--ios-tint); }
 .library-sheet .ios-row .ios-button + .ios-button { margin-left: -6px; }
+
+/* Outside edit mode the whole card is a button that opens the widget's app (StudioWidgets); it sits over the
+   card's content, under its own controls, and presses in slightly like an icon. */
+.widget-open {
+  position: absolute; inset: 0; z-index: 1; padding: 0; border: 0; border-radius: inherit; background: none; cursor: pointer;
+}
+.widget-open:focus-visible { outline: 2px solid var(--ios-tint); outline-offset: 3px; }
+.widget { transition: scale var(--dur-slow) var(--ease-spring); }
+.widget:has(> .widget-open:active) { scale: .97; transition-duration: var(--dur-press); }
+.widget-eye {
+  position: relative; z-index: 2; display: grid; place-items: center; flex-shrink: 0; width: 28px; height: 28px; margin: -4px -4px -4px auto;
+  border-radius: 50%; color: var(--ios-label-2); background: var(--ios-fill);
+}
+/* A 44px hit area around the 28px eye. */
+.widget-eye::after { content: ""; position: absolute; inset: -8px; }
+.widget-masked { letter-spacing: .06em; }
 
 /* ---------- Website quick-browse ---------- */
 .links-sheet { width: min(640px, calc(100% - 32px)); }
@@ -939,7 +1019,6 @@ html.dark [data-sonner-toaster] .studio-toast[data-type="success"] [data-icon] {
   .link-grid { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .home-wallpaper-canvas { transition: none; }
   .status-dot.good { animation: none !important; }
   .studio-spinner { animation-duration: 1.6s !important; animation-iteration-count: infinite !important; }
 }

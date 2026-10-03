@@ -7,7 +7,10 @@ import { useTheme } from '@/shared/context/ThemeContext';
 import type { StudioRemoteHost, StudioRemoteStatus, StudioStatus, T212Status, ThemeMode } from '@/shared/types';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { StudioSettingsMail } from '@/modules/studio/StudioSettingsMail';
+import { StudioSettingsModels } from '@/modules/studio/StudioSettingsModels';
 import { StudioSettingsNetwork } from '@/modules/studio/StudioSettingsNetwork';
+import { StudioSettingsRuntime } from '@/modules/studio/StudioSettingsRuntime';
+import { StudioSettingsSecurity } from '@/modules/studio/StudioSettingsSecurity';
 import { StudioSettingsTrading } from '@/modules/studio/StudioSettingsTrading';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 
@@ -83,7 +86,11 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
       </div>
     </section>
 
+    <StudioSettingsRuntime />
+
     <StudioSettingsNetwork />
+
+    <StudioSettingsSecurity />
 
     <section className="ios-section" aria-labelledby="studio-remote-heading">
       <div className="ios-section-header"><h2 id="studio-remote-heading">远程主机</h2><span className="caption">Tailscale + SSH</span></div>
@@ -149,6 +156,8 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
       </div>
       <p className="ios-section-footer">工作台直接调用这台电脑上已登录的 Claude Code 与 Codex CLI，不替换凭据，也不会转为 API 计费。</p>
     </section>
+
+    <StudioSettingsModels />
 
     <section className="ios-section" aria-labelledby="studio-t212-heading">
       <div className="ios-section-header"><h2 id="studio-t212-heading">Trading 212</h2><span className="caption">密钥文件</span></div>

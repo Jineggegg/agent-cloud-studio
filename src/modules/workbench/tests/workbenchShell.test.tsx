@@ -10,6 +10,9 @@ import type { ServerEvent, WorkbenchChatChrome, WorkbenchChatProps } from '@/sha
 // Fakes for every external service: the workbench only talks to these through @/shared/api and the websocket.
 const NOW = Date.now();
 const iso = (offsetMs: number) => new Date(NOW - offsetMs).toISOString();
+// Noon of the previous local calendar day: always 昨天, whatever time of day the suite runs (1.2 days ago is not,
+// before about 05:00).
+const YESTERDAY_NOON = (() => { const day = new Date(NOW); day.setHours(0, 0, 0, 0); return new Date(day.getTime() - 12 * 3_600_000).toISOString(); })();
 const PROJECTS = [
   { projectId: 'p1', displayName: 'professor-app', fullPath: '/home/me/projects/professor', path: '/home/me/projects/professor', isStarred: false, sessions: [] },
   { projectId: 'p2', displayName: 'snr3-lab', fullPath: '/home/me/projects/snr3-lab', path: '/home/me/projects/snr3-lab', isStarred: false, sessions: [] },
@@ -130,7 +133,7 @@ beforeEach(() => {
     projectId,
     sessions: [
       { id: 's1', provider: 'claude', summary: '修复登录', lastActivity: iso(60_000) },
-      { id: 's2', provider: 'codex', summary: '重构侧栏', lastActivity: iso(86_400_000 * 1.2) },
+      { id: 's2', provider: 'codex', summary: '重构侧栏', lastActivity: YESTERDAY_NOON },
       { id: 's3', provider: 'claude', summary: '整理旧接口', lastActivity: iso(86_400_000 * 40) },
     ],
     sessionMeta: { hasMore: false, total: 3 },

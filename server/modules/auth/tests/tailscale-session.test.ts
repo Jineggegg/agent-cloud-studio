@@ -356,7 +356,7 @@ test('a request through the Cloudflare tunnel with forged Tailscale headers is r
 test('parseTailscaleSignInConfig normalises the allowlists and optional settings', () => {
   assert.deepEqual(
     parseTailscaleSignInConfig({}),
-    { allowedLogins: [], allowedNodes: [], mappedUsername: null, pinnedOrigin: null },
+    { allowedLogins: [], allowedNodes: [], mappedUsername: null, pinnedOrigin: null, cloudflaredPort: null },
   );
   assert.deepEqual(
     parseTailscaleSignInConfig({
@@ -370,8 +370,13 @@ test('parseTailscaleSignInConfig normalises the allowlists and optional settings
       allowedNodes: [IPAD_NODE, 'fd7a:115c:a1e0::53'],
       mappedUsername: 'andrew',
       pinnedOrigin: null,
+      cloudflaredPort: null,
     },
   );
+  // The cloudflared listener port is read along, and ignored when it equals SERVER_PORT.
+  assert.equal(parseTailscaleSignInConfig({ STUDIO_CLOUDFLARED_PORT: '3012', SERVER_PORT: '3002' }).cloudflaredPort, 3012);
+  assert.equal(parseTailscaleSignInConfig({ STUDIO_CLOUDFLARED_PORT: '3002', SERVER_PORT: '3002' }).cloudflaredPort, null);
+  assert.equal(parseTailscaleSignInConfig({ STUDIO_CLOUDFLARED_PORT: 'tunnel' }).cloudflaredPort, null);
   // A blank STUDIO_TAILNET_ORIGIN counts as unset and falls back to STUDIO_PUBLIC_ORIGIN.
   assert.equal(
     parseTailscaleSignInConfig({ STUDIO_TAILNET_ORIGIN: ' ', STUDIO_PUBLIC_ORIGIN: ` https://${SERVE_HOST} ` }).pinnedOrigin,

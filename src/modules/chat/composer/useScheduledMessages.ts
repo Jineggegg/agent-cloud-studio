@@ -25,6 +25,7 @@ export function useScheduledMessages(sessionId: string | null) {
 
     try {
       const response = await api.scheduledMessages.list(sessionId);
+      if (!response.ok) return;
       const payload = await response.json();
       if (activeSessionRef.current !== sessionId) {
         return;
@@ -48,6 +49,20 @@ export function useScheduledMessages(sessionId: string | null) {
     activeSessionRef.current = sessionId;
     void refresh();
   }, [refresh, sessionId]);
+
+  const hasUnfinishedSchedule = scheduledMessages.some((message) => message.status === 'pending' || message.status === 'claimed');
+  useEffect(() => {
+    if (!sessionId) return;
+    const onVisible = () => { if (document.visibilityState === 'visible') void refresh(); };
+    window.addEventListener('focus', onVisible);
+    document.addEventListener('visibilitychange', onVisible);
+    const timer = hasUnfinishedSchedule ? setInterval(onVisible, 5000) : null;
+    return () => {
+      window.removeEventListener('focus', onVisible);
+      document.removeEventListener('visibilitychange', onVisible);
+      if (timer) clearInterval(timer);
+    };
+  }, [sessionId, refresh, hasUnfinishedSchedule]);
 
   const schedule = useCallback(async (input: {
     content: string;

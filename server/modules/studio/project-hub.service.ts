@@ -30,6 +30,8 @@ type Dependencies = {
   remoteCommand?: (host: string, dir: string, agent: 'claude' | 'codex' | 'shell') => StudioRemoteLaunch;
   // Checks whether links answer and may be framed; never returns page bodies.
   checkLinks?: (links: StudioProjectLink[]) => Promise<StudioLinkStatus[]>;
+  // The scratch directory home-screen widgets open new agent sessions in, created on first use.
+  workbench?: () => Promise<string>;
 };
 
 const MODULES = ['agents', 'mail', 'automations', 'snr-lab', 'trading212'];
@@ -167,6 +169,14 @@ export function createProjectHubService(deps: Dependencies) {
       if (!project.workspacePath) fail('请先在设置中填写项目工作目录');
       const workspace = await deps.resolveWorkspace(project.workspacePath);
       // The workbench opens a new chat in the project with this agent preselected.
+      return { url: `/work/${encodeURIComponent(workspace.projectId)}?new=${encodeURIComponent(provider)}` };
+    },
+    // A new agent session outside any project: the Claude and Codex widgets open the scratch directory in the
+    // workbench, with the same /work URL shape as launch so the browser never goes through the legacy redirect.
+    async launchWorkbench(provider: string) {
+      if (!AGENTS.includes(provider as StudioAgentProvider)) fail('该模型不在开发工具中运行');
+      if (!deps.workbench) fail('工作台不可用', 503);
+      const workspace = await deps.resolveWorkspace(await deps.workbench());
       return { url: `/work/${encodeURIComponent(workspace.projectId)}?new=${encodeURIComponent(provider)}` };
     },
     // The server, never the browser, decides the remote command from the project's validated config.

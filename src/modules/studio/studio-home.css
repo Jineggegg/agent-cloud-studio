@@ -21,6 +21,7 @@
 .widget-grid { position: relative; }
 .widget-slot { position: relative; display: flex; min-width: 0; }
 .widget-slot-medium { grid-column: span 2; }
+.widget-slot-large { grid-column: span 2; grid-row: span 2; }
 .widget-slot > .widget { flex: 1; }
 
 /* ---------- Jiggle ---------- */
@@ -28,6 +29,7 @@
 .widget-slot > .widget { --jiggle-angle: .9deg; }
 /* A wide widget swings further at its corners for the same angle, so it turns less. */
 .widget-slot-medium > .widget { --jiggle-angle: .55deg; }
+.widget-slot-large > .widget { --jiggle-angle: .4deg; }
 @keyframes home-jiggle {
   from { rotate: calc(var(--jiggle-angle) * -1); translate: 0 -.4px; }
   to { rotate: var(--jiggle-angle); translate: 0 .4px; }
@@ -37,6 +39,8 @@
 .widget-grid.editing .widget-slot > .widget:not(.is-placeholder) {
   animation: home-jiggle var(--jiggle-duration, 260ms) ease-in-out var(--jiggle-delay, 0ms) infinite alternate;
 }
+/* A widget holds still while its corner is being dragged, so the corner stays under the finger. */
+.widget-grid.editing .widget-slot > .widget:has(.widget-resize.is-active) { animation: none; }
 
 /* ---------- Lift ---------- */
 /* The lifted item rides above its neighbours, grows a little and casts a deeper shadow; it stops jiggling. */
@@ -46,38 +50,34 @@
 }
 .home-screen .home-tile-slot[data-sort-id].is-lifted .home-icon {
   transform: none; filter: none;
-  box-shadow: 0 2px 4px rgba(30, 25, 15, .1), 0 22px 40px -10px rgba(30, 25, 15, .45), inset 0 1px 0 rgba(255, 255, 255, .32);
+  box-shadow: var(--icon-rim, inset 0 1px 0 rgba(255, 255, 255, .32)), 0 2px 4px rgba(30, 25, 15, .1), 0 22px 40px -10px rgba(30, 25, 15, .45);
 }
 .dark .home-screen .home-tile-slot[data-sort-id].is-lifted .home-icon {
-  box-shadow: 0 2px 6px rgba(0, 0, 0, .4), 0 24px 44px -10px rgba(0, 0, 0, .7), inset 0 1px 0 rgba(255, 255, 255, .2);
+  box-shadow: var(--icon-rim, inset 0 1px 0 rgba(255, 255, 255, .2)), 0 2px 6px rgba(0, 0, 0, .4), 0 24px 44px -10px rgba(0, 0, 0, .7);
 }
 /* In edit mode a press dims nothing and never shrinks the icon: it is the start of a drag. */
 .home-screen.editing .home-tile-slot[data-sort-id] .home-tile:active .home-icon { transform: none; filter: none; }
 /* Labels, badges and edit controls step aside while their item is carried, as on iPadOS. */
 .home-tile-slot[data-sort-id] :is(.home-label, .home-status) { transition: opacity var(--dur-fast) ease; }
 .home-tile-slot[data-sort-id].is-lifted :is(.home-label, .home-status) { opacity: 0; }
-.is-lifted .home-remove, .is-lifted .widget-edit-bar { opacity: 0; scale: .6; transition: opacity var(--dur-fast) ease, scale var(--dur-fast) ease; }
-.home-remove, .widget-edit-bar { transition: opacity var(--dur-fast) ease, scale var(--dur-base) var(--ease-spring); }
+.is-lifted .home-remove, .is-lifted .widget-resize { opacity: 0; scale: .6; transition: opacity var(--dur-fast) ease, scale var(--dur-fast) ease; }
+.home-remove, .widget-resize { transition: opacity var(--dur-fast) ease, scale var(--dur-base) var(--ease-spring); }
 
 /* A dragged widget leaves its slot empty (the grid reflows around the gap where it will land) and rides in
    dnd-kit's DragOverlay, a fixed box the size of the card, growing a little as it lifts. */
 .widget-slot > .widget.is-placeholder { opacity: 0; }
 .widget-drag-overlay > .widget.is-lifted {
-  width: 100%; height: 100%; cursor: grabbing; scale: 1.035; box-shadow: var(--ios-shadow-float);
+  width: 100%; height: 100%; cursor: grabbing; scale: 1.035; box-shadow: inset 0 1px 0 var(--home-glass-rim), var(--ios-shadow-float);
   -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
   animation: widget-lift 380ms cubic-bezier(.34, 1.3, .64, 1) backwards;
 }
-@keyframes widget-lift { from { scale: 1; box-shadow: var(--ios-shadow); } }
+@keyframes widget-lift { from { scale: 1; box-shadow: inset 0 1px 0 var(--home-glass-rim), var(--home-glass-shadow); } }
 
 @media (hover: hover) {
   .home-screen .home-tile-slot[data-sort-id].is-lifted .home-tile:hover .home-icon { transform: none; }
 }
 
 /* ---------- Move buttons (VoiceOver, Switch Control, keyboard) ---------- */
-/* Widgets show small 前移/后移 buttons beside resize; at either end a button dims but keeps focus. */
-.widget-edit-bar .widget-move { width: 30px; }
-.widget-edit .widget-edit-bar button[aria-disabled="true"] { opacity: .35; }
-.widget-edit .widget-edit-bar button[aria-disabled="true"]:active { transform: none; background: none; }
 /* Icons keep the clean grid: their pair stays out of sight but reachable, and appears under the icon when focused. */
 .home-move:not(:focus-within) {
   position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;

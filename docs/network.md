@@ -68,13 +68,18 @@ cloudflared tunnel route dns studio studio.ajarche.com # 在 Cloudflare 自动�
 
 ### 4. 写 `~/.cloudflared/config.yml`
 
+隧道要连 Studio 给 cloudflared 单独开的端口（这里用 3012），而不是 Tailscale Serve 用的 3002：
+先在 Studio 的 `.env` 里加 `STUDIO_CLOUDFLARED_PORT=3012` 并重启 Studio。只有从这个端口进来的连接才算公网入口，
+tailnet 里的设备就冒充不了公网访客（原因见 [security.md](security.md) 第一部分第 1 节）。
+完整示例在 `scripts/wsl/cloudflared-config.example.yml`。
+
 ```yaml
 tunnel: <UUID>
 credentials-file: /home/laosong/.cloudflared/<UUID>.json
 
 ingress:
   - hostname: studio.ajarche.com
-    service: http://127.0.0.1:3002
+    service: http://127.0.0.1:3012
     originRequest:
       # 固定转给 Studio 的 Host，客户端无法通过隧道伪装成 *.ts.net 地址。
       httpHostHeader: studio.ajarche.com
@@ -100,7 +105,8 @@ journalctl --user -u studio-tunnel -f      # 看到 "Registered tunnel connectio
 ### 6. 强烈建议：在前面加 Cloudflare Access
 
 Studio 能在这台笔记本上运行 Claude Code、Codex 和终端，**等于能在你的电脑上执行代码**。
-公网域名谁都能访问，只靠 Studio 自己的密码太单薄。在 Cloudflare 后台加一道 Access：
+公网域名谁都能访问，只靠 Studio 自己的密码太单薄（Studio 自己的限流、账户锁定、面容 ID 登录和
+Cloudflare 的 WAF 限流、Bot Fight Mode 见 [security.md](security.md)）。在 Cloudflare 后台加一道 Access：
 
 1. Cloudflare 后台 → Zero Trust → Access → Applications → Add an application → **Self-hosted**。
 2. Application domain 填 `studio.ajarche.com`（整个域名，不填路径）。
@@ -320,6 +326,7 @@ iPad 小提示：主屏幕上的 Web App 绑定在一个网址上。两个入口
 | 变量 | 作用 |
 | --- | --- |
 | `STUDIO_PUBLIC_ORIGIN` | 公网入口的完整地址，例如 `https://studio.ajarche.com`（不带路径）。从这个入口发起的 Gmail 连接回调到这里。 |
+| `STUDIO_CLOUDFLARED_PORT` | 推荐：cloudflared 专用的本机端口（例如 `3012`），隧道的 ingress 指向它；只有从这个端口进来的连接算公网入口。见 [security.md](security.md)。 |
 | `STUDIO_TAILNET_ORIGIN` | Tailscale 入口的完整地址，例如 `https://laptop-acgghbuq.tail6e45f0.ts.net:8443`。免密码登录只接受这个地址的页面，免密码会话也只在这里有效。 |
 | `STUDIO_CF_ACCESS_TEAM_DOMAIN` | 可选，和下一项一起设置：Zero Trust 团队，例如 `myteam.cloudflareaccess.com`。见第 6b 步。 |
 | `STUDIO_CF_ACCESS_AUD` | 可选：Access 应用的 AUD 标签。设置后经 Cloudflare 的请求必须通过 Access 校验，否则 403。 |

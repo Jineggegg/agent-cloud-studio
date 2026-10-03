@@ -6,3 +6,6 @@
  * runners such as `tsx` that do not apply Vite's define replacement.
  */
 declare const __APP_VERSION__: string;
+
+/** Immutable identity of this browser bundle; null for a Vite development page. */
+declare const __STUDIO_BUILD_INFO__: import('@/shared/types').StudioBuildInfo | null;

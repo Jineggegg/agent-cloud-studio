@@ -1,3 +1,4 @@
+import type { StudioRequestClient } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
 type ApiKeyRow = Record<string, unknown> & { api_key: string };
@@ -5,7 +6,16 @@ type NotificationPreferences = Record<string, unknown> & {
   channels?: Record<string, unknown> & { webPush?: boolean };
 };
 
+/** Who is asking and the password they re-entered, for the step-up before an API key works. */
+type ApiKeyStepUp = { user: unknown; password: unknown; client: StudioRequestClient };
+
 type SettingsDependencies = {
+  /**
+   * The auth module's password step-up (403 wrong password, 429 while the session's budget is used
+   * up). An API key is a long-lived credential outside the session, so creating one, or turning a
+   * disabled one back on, needs the password.
+   */
+  verifyStepUp(stepUp: ApiKeyStepUp): Promise<void>;
   apiKeys: {
     list(userId: number): ApiKeyRow[];
     create(userId: number, keyName: string): unknown;
@@ -33,6 +43,10 @@ type SettingsDependencies = {
   pushSubscriptions: {
     save(userId: number, endpoint: string, p256dh: string, auth: string): void;
     remove(endpoint: string): void;
+    /** Subscribed now, or removed by "退出所有设备" not long ago (a tombstone). */
+    isKnown(userId: number, endpoint: string): boolean;
+    /** Records a genuinely new endpoint in the security log (auth module), with the masked client. */
+    recordNew(client: StudioRequestClient, endpoint: string): void;
   };
   getVapidPublicKey(): string | null;
 };
@@ -61,20 +75,25 @@ export function createSettingsService(dependencies: SettingsDependencies) {
       }));
       return { apiKeys };
     },
-    createApiKey(userId: number, keyNameInput: unknown) {
+    async createApiKey(userId: number, keyNameInput: unknown, stepUp: ApiKeyStepUp) {
       const keyName = requiredString(keyNameInput, 'Key name', 'API_KEY_NAME_REQUIRED');
+      await dependencies.verifyStepUp(stepUp);
       return { success: true, apiKey: dependencies.apiKeys.create(userId, keyName) };
     },
     deleteApiKey(userId: number, keyId: number) {
       assertFound(dependencies.apiKeys.remove(userId, keyId), 'API key', 'API_KEY_NOT_FOUND');
       return { success: true };
     },
-    toggleApiKey(userId: number, keyId: number, isActive: unknown) {
+    async toggleApiKey(userId: number, keyId: number, isActive: unknown, stepUp: ApiKeyStepUp) {
       if (typeof isActive !== 'boolean') {
         throw new AppError('isActive must be a boolean', {
           code: 'INVALID_ACTIVE_STATE',
           statusCode: 400,
         });
+      }
+      // Disabling never needs the password; turning a key back on is as good as creating one.
+      if (isActive) {
+        await dependencies.verifyStepUp(stepUp);
       }
       assertFound(
         dependencies.apiKeys.toggle(userId, keyId, isActive),
@@ -150,14 +169,31 @@ export function createSettingsService(dependencies: SettingsDependencies) {
     getVapidPublicKey() {
       return { publicKey: dependencies.getVapidPublicKey() };
     },
-    subscribeToPush(userId: number, input: Record<string, unknown>) {
+    /**
+     * Stores a browser's push subscription (an upsert by endpoint). A re-registration
+     * (`resubscribe`) of an endpoint already known for this user is silent; any genuinely new
+     * endpoint, re-registration or not, is a new subscription: it switches Web Push on, sends the
+     * "enabled" notification and is recorded as a security event, so a stolen token cannot add a
+     * push endpoint unnoticed.
+     */
+    subscribeToPush(userId: number, input: Record<string, unknown>, client: StudioRequestClient = { door: 'direct', address: 'unknown' }) {
       const endpoint = requiredString(input.endpoint, 'Endpoint', 'PUSH_SUBSCRIPTION_REQUIRED');
       const keys = typeof input.keys === 'object' && input.keys !== null
         ? input.keys as Record<string, unknown>
         : {};
       const p256dh = requiredString(keys.p256dh, 'p256dh', 'PUSH_SUBSCRIPTION_REQUIRED');
       const auth = requiredString(keys.auth, 'auth', 'PUSH_SUBSCRIPTION_REQUIRED');
+      const known = dependencies.pushSubscriptions.isKnown(userId, endpoint);
+      // An upsert by endpoint, so sending the same subscription again changes nothing.
       dependencies.pushSubscriptions.save(userId, endpoint, p256dh, auth);
+      // A page re-registering its own subscription after sign-in (e.g. after "退出所有设备" removed
+      // it) must not switch Web Push back on or send the "enabled" notification.
+      if (input.resubscribe === true && known) {
+        return { success: true };
+      }
+      if (!known) {
+        dependencies.pushSubscriptions.recordNew(client, endpoint);
+      }
 
       const currentPreferences = dependencies.notifications.getPreferences(userId);
       if (!currentPreferences?.channels?.webPush) {

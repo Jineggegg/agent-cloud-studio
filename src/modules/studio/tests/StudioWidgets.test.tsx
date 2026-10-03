@@ -31,9 +31,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+const onOpen = vi.fn();
 function renderWidgets(editing: boolean) {
   const onEnterEdit = vi.fn();
-  render(<StudioWidgets editing={editing} snr={SNR} onEnterEdit={onEnterEdit} galleryOpen={false} onGalleryClose={vi.fn()} />);
+  onOpen.mockReset();
+  render(<StudioWidgets editing={editing} snr={SNR} onEnterEdit={onEnterEdit} onOpen={onOpen} galleryOpen={false} onGalleryClose={vi.fn()} />);
   return onEnterEdit;
 }
 
@@ -76,8 +78,12 @@ async function readStylesheet(name: string) {
   return readFileSync(`${testsDir}/../${name}`, 'utf8');
 }
 
-// Small widgets take one column of the grid, medium ones two.
-const spanOfWidget = (item: Element) => item.classList.contains('widget-medium') ? 2 : 1;
+// Small widgets take one column of the grid, medium and large ones two.
+const spanOfWidget = (item: Element) => item.classList.contains('widget-small') ? 1 : 2;
+
+function savedSizes() {
+  return (JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]') as { size: string }[]).map(widget => widget.size);
+}
 
 test('a long press on a widget asks the home screen to enter edit mode; a short press does not', () => {
   vi.useFakeTimers();
@@ -112,7 +118,8 @@ test('touch and Apple Pencil pointers are left to the touch sensor, so neither l
 test('outside edit mode widgets are not focusable and show no edit controls', () => {
   renderWidgets(false);
   expect(cards().every(item => !item.hasAttribute('tabindex'))).toBe(true);
-  expect(screen.queryByRole('button', { name: /移除|前移|后移/ })).toBeNull();
+  expect(screen.queryByRole('button', { name: /移除/ })).toBeNull();
+  expect(screen.queryByRole('slider')).toBeNull();
 });
 
 test('a widget dragged to a new place keeps that order on this device', async () => {
@@ -182,25 +189,6 @@ test('the widget grid places cards in their saved order, never back-filling gaps
   expect(widgetGridRules.filter(rule => /grid-auto-flow\s*:[^;}]*dense/.test(rule))).toEqual([]);
 });
 
-test('前移 and 后移 move a widget for VoiceOver and Switch Control users, keep focus and announce the new place', () => {
-  renderWidgets(true);
-  // At either end the button stays focusable but says it has nowhere to go.
-  expect(screen.getAllByRole('button', { name: '前移 SNR 实验室' })[0].getAttribute('aria-disabled')).toBe('true');
-  expect(screen.getAllByRole('button', { name: '后移 SNR 实验室' })[2].getAttribute('aria-disabled')).toBe('true');
-  fireEvent.click(screen.getAllByRole('button', { name: '前移 SNR 实验室' })[0]);
-  expect(savedOrder()).toEqual(['w-a', 'w-b', 'w-c']);
-
-  const later = screen.getAllByRole('button', { name: '后移 SNR 实验室' })[0];
-  later.focus();
-  fireEvent.click(later);
-  expect(shownOrder()).toEqual(['w-b', 'w-a', 'w-c']);
-  expect(savedOrder()).toEqual(['w-b', 'w-a', 'w-c']);
-  expect(document.activeElement).toBe(later);
-  expect(screen.getByText('「SNR 实验室」已移到第 2 个，共 3 个。')).toBeTruthy();
-  // The moved widget is now in the middle, so neither of its buttons is at an end any more.
-  expect(later.getAttribute('aria-disabled')).toBe('false');
-});
-
 test('the lifted copy of a Trading 212 widget reuses the grid\'s reading instead of fetching again', async () => {
   localStorage.setItem(STORAGE_KEY, JSON.stringify([{ id: 'w-t', type: 'trading212', size: 'medium' }, { id: 'w-s', type: 'snr', size: 'small' }]));
   mocks.trading212.status.mockResolvedValue(Response.json([{ env: 'live', configured: false, source: null }]));
@@ -217,10 +205,112 @@ test('the lifted copy of a Trading 212 widget reuses the grid\'s reading instead
   rects.mockRestore();
 });
 
-test('edit mode resizes and removes widgets, and the layout is remembered', () => {
+test('edit mode shows a resize corner instead of move and resize buttons', () => {
   renderWidgets(true);
-  fireEvent.click(screen.getAllByRole('button', { name: '放大 SNR 实验室' })[0]);
-  expect((JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]') as { size: string }[]).map(widget => widget.size)).toEqual(['medium', 'medium', 'small']);
+  expect(screen.queryByRole('button', { name: /前移|后移|放大|缩小/ })).toBeNull();
+  expect(screen.getAllByRole('slider', { name: '调整 SNR 实验室 大小' }).map(handle => handle.getAttribute('aria-valuetext'))).toEqual(['小', '中', '小']);
+});
+
+test('dragging a widget corner snaps it between small, medium and large, without lifting the widget', () => {
+  vi.useFakeTimers();
+  const onEnterEdit = renderWidgets(true);
+  const first = card('w-a');
+  // A small widget is one 100px cell; the grid has no gap in jsdom.
+  vi.spyOn(first, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100, toJSON: () => ({}) } as DOMRect);
+  const handle = screen.getAllByRole('slider', { name: '调整 SNR 实验室 大小' })[0];
+
+  fireEvent.pointerDown(handle, { ...MOUSE, clientX: 100, clientY: 100 });
+  // Less than half a cell further changes nothing.
+  fireEvent.pointerMove(handle, { clientX: 140, clientY: 120 });
+  expect(savedSizes()).toEqual(['small', 'medium', 'small']);
+  // Past half a cell to the right: two columns.
+  fireEvent.pointerMove(handle, { clientX: 170, clientY: 120 });
+  expect(savedSizes()).toEqual(['medium', 'medium', 'small']);
+  // And down as well: two rows, the large size.
+  fireEvent.pointerMove(handle, { clientX: 190, clientY: 180 });
+  expect(savedSizes()).toEqual(['large', 'medium', 'small']);
+  expect(first.classList.contains('widget-large')).toBe(true);
+  // Back towards the start: small again.
+  fireEvent.pointerMove(handle, { clientX: 110, clientY: 110 });
+  fireEvent.pointerMove(handle, { clientX: 190, clientY: 110 });
+  fireEvent.pointerUp(handle, { clientX: 190, clientY: 110 });
+  expect(savedSizes()).toEqual(['medium', 'medium', 'small']);
+  // Moving the pointer after the drag ended resizes nothing.
+  fireEvent.pointerMove(handle, { clientX: 300, clientY: 300 });
+  expect(savedSizes()).toEqual(['medium', 'medium', 'small']);
+
+  act(() => { vi.advanceTimersByTime(800); });
+  expect(onEnterEdit).not.toHaveBeenCalled();
+  expect(liftedCopy()).toBeNull();
+});
+
+test('the resize corner is a slider for the keyboard and stays within the three sizes', () => {
+  renderWidgets(true);
+  const handle = screen.getAllByRole('slider', { name: '调整 SNR 实验室 大小' })[0];
+  handle.focus();
+  fireEvent.keyDown(handle, { key: 'ArrowRight', code: 'ArrowRight' });
+  expect(savedSizes()[0]).toBe('medium');
+  fireEvent.keyDown(handle, { key: 'End', code: 'End' });
+  expect(savedSizes()[0]).toBe('large');
+  expect(handle.getAttribute('aria-valuetext')).toBe('大');
+  fireEvent.keyDown(handle, { key: 'ArrowUp', code: 'ArrowUp' });
+  expect(savedSizes()[0]).toBe('large');
+  fireEvent.keyDown(handle, { key: 'Home', code: 'Home' });
+  expect(savedSizes()[0]).toBe('small');
+  // The keys resize; they never pick the widget up.
+  expect(liftedCopy()).toBeNull();
+  expect(savedOrder()).toEqual(['w-a', 'w-b', 'w-c']);
+});
+
+test('a large widget is kept on this device and shows its detail rows', () => {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify([{ id: 'w-a', type: 'snr', size: 'large' }, { id: 'w-x', type: 'snr', size: 'huge' }]));
+  renderWidgets(false);
+  expect(cards().map(item => item.className.includes('widget-large'))).toEqual([true]);
+  expect(screen.getByText('数据集')).toBeTruthy();
+  expect(screen.getByText('规则')).toBeTruthy();
+});
+
+test('edit mode removes widgets, and the layout is remembered', () => {
+  renderWidgets(true);
   fireEvent.click(screen.getAllByRole('button', { name: '移除 SNR 实验室' })[1]);
   expect(savedOrder()).toEqual(['w-a', 'w-c']);
+});
+
+test('a tap on a widget opens its app with the card as the zoom origin; edit mode has no open button', () => {
+  renderWidgets(false);
+  const first = card('w-a');
+  vi.spyOn(first, 'getBoundingClientRect').mockReturnValue({ x: 10, y: 20, left: 10, top: 20, right: 110, bottom: 120, width: 100, height: 100, toJSON: () => ({}) } as DOMRect);
+  fireEvent.click(screen.getAllByRole('button', { name: '打开 SNR 实验室' })[0]);
+  expect(onOpen).toHaveBeenCalledWith('snr', expect.objectContaining({ left: 10, width: 100 }));
+  cleanup();
+  renderWidgets(true);
+  expect(screen.queryByRole('button', { name: /打开/ })).toBeNull();
+});
+
+test('the eye on the Trading 212 widget hides every amount, is remembered on this device and does not open the app', async () => {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify([{ id: 'w-t', type: 'trading212', size: 'large' }]));
+  localStorage.removeItem('studio-widgets-hide-amounts');
+  const overview = {
+    env: 'live', currency: 'GBP', totalValue: 10071.22, fetchedAt: '2026-10-02T10:00:00Z',
+    cash: { available: 5789, reserved: 0, inPies: 0 }, investments: { value: 3483, cost: 3400, unrealized: 39, realized: 0 },
+    changes: { today: { amount: 12.5, percent: 0.12, since: '2026-10-02T00:00:00Z', flowAdjusted: false }, yesterday: null },
+    recordedSince: null,
+    positions: [{ ticker: 'VUSA', name: 'Vanguard S&P 500', currency: 'GBP', quantity: 1, averagePrice: 1, currentPrice: 1, value: 2000, cost: 1980, pnl: 18.99, fx: null, openedAt: '2026-01-01' }],
+  };
+  mocks.trading212.status.mockImplementation(async () => Response.json([{ env: 'live', configured: true, source: 'file' }]));
+  mocks.trading212.overview.mockImplementation(async () => Response.json(overview));
+  mocks.trading212.history.mockImplementation(async () => Response.json([]));
+  renderWidgets(false);
+  const eye = await screen.findByRole('button', { name: '隐藏金额' });
+  const tradingCard = card('w-t');
+  expect(tradingCard.textContent).toContain('5,789');
+  fireEvent.click(eye);
+  expect(onOpen).not.toHaveBeenCalled();
+  expect(screen.getByRole('button', { name: '显示金额' }).getAttribute('aria-pressed')).toBe('true');
+  expect(tradingCard.textContent).toContain('金额已隐藏');
+  expect(tradingCard.textContent).not.toMatch(/5,789|3,483|18\.99|10,071|12\.50/);
+  expect(localStorage.getItem('studio-widgets-hide-amounts')).toBe('1');
+  cleanup();
+  renderWidgets(false);
+  expect(await screen.findByRole('button', { name: '显示金额' })).toBeTruthy();
 });

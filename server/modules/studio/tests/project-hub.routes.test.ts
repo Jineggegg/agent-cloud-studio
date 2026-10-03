@@ -58,6 +58,10 @@ test('project routes validate transport input, ownership and disabled modules be
     assert.equal((await request(`/${project.id}`, '2')).status, 404);
     assert.equal((await request('', '1', { name: 'bad', providers: 'claude', modules: [] })).status, 400);
     assert.equal((await request(`/${project.id}/launch`, '1', { provider: 42 })).status, 400);
+    // The workbench route is not read as a project id; this test service has no workbench directory.
+    assert.equal((await request('/workbench/launch', '', { provider: 'claude' })).status, 401);
+    assert.equal((await request('/workbench/launch', '1', { provider: 42 })).status, 400);
+    assert.equal((await request('/workbench/launch', '1', { provider: 'claude' })).status, 503);
     assert.equal((await request(`/${mailProject.id}/mail/messages?q=a&q=b`)).status, 400);
     assert.equal((await request(`/${mailProject.id}/mail/connect`, '1', {})).status, 503);
     assert.equal((await request(`/${mailProject.id}`, '2', undefined, 'DELETE')).status, 404);

@@ -1,8 +1,9 @@
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 import type { WebSocket } from 'ws';
 
-import { sessionsDb } from '@/modules/database/index.js';
+import { getConnection, sessionsDb, taskRunsDb } from '@/modules/database/index.js';
 import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
@@ -18,6 +19,7 @@ import type {
   LLMProvider,
   ProviderPermissionDecision,
   ProviderRuntimeWriter,
+  TaskRunRecord,
 } from '@/shared/types.js';
 import { parseIncomingJsonObject } from '@/shared/utils.js';
 
@@ -110,7 +112,10 @@ function readRequestUserId(
 
 function sendJson(ws: WebSocket, payload: unknown): void {
   if (ws.readyState === WS_OPEN_STATE) {
-    ws.send(JSON.stringify(payload));
+    try { ws.send(JSON.stringify(payload)); } catch {
+      // A disconnect after durable acceptance must not cancel an admitted run.
+      console.warn('[Chat] Could not deliver frame to disconnected client.');
+    }
   }
 }
 
@@ -125,11 +130,14 @@ function sendProtocolError(
   ws: WebSocket,
   code: string,
   error: string,
-  sessionId?: string
+  sessionId?: string,
+  requestId?: string,
 ): void {
   sendJson(ws, {
     kind: 'protocol_error',
     code,
+    errorCode: code,
+    requestId,
     error,
     sessionId: sessionId ?? null,
     timestamp: new Date().toISOString(),
@@ -178,7 +186,7 @@ function resolveSendTarget(
 ): ResolvedSendTarget | null {
   const sessionId = readRequiredSessionId(data);
   if (!sessionId) {
-    sendProtocolError(ws, 'SESSION_ID_REQUIRED', `${frameName} requires a sessionId.`);
+    sendProtocolError(ws, 'SESSION_ID_REQUIRED', `${frameName} requires a sessionId.`, undefined, data.requestId);
     return null;
   }
 
@@ -188,14 +196,14 @@ function resolveSendTarget(
       ws,
       'SESSION_NOT_FOUND',
       `Session "${sessionId}" was not found. Create it via POST /api/providers/sessions first.`,
-      sessionId
+      sessionId, data.requestId
     );
     return null;
   }
 
   const provider = session.provider as LLMProvider;
   if (!dependencies.runtime.hasRuntime(provider)) {
-    sendProtocolError(ws, 'UNSUPPORTED_PROVIDER', `Provider "${provider}" is not available.`, sessionId);
+    sendProtocolError(ws, 'UNSUPPORTED_PROVIDER', `Provider "${provider}" is not available.`, sessionId, data.requestId);
     return null;
   }
 
@@ -217,41 +225,12 @@ async function dispatchRun(
   dependencies: ChatWebSocketDependencies,
   extraRuntimeOptions: AnyRecord = {},
   beforeRun?: (run: NonNullable<ReturnType<typeof chatRunRegistry.startRun>>) => void | Promise<void>,
-): Promise<{ started: boolean; error: string | null }> {
+  acceptedRun?: TaskRunRecord,
+): Promise<{ started: boolean; error: string | null; errorCode?: string }> {
   const provider = session.provider as LLMProvider;
-
-  const run = chatRunRegistry.startRun({
-    appSessionId: sessionId,
-    provider,
-    providerSessionId: session.provider_session_id,
-    connection: ws,
-    userId,
-  });
-
-  if (!run) {
-    if (ws) {
-      sendProtocolError(
-        ws,
-        'RUN_IN_PROGRESS',
-        `Session "${sessionId}" already has a run in progress.`,
-        sessionId
-      );
-    }
-    return { started: false, error: 'A run is already in progress for this session.' };
-  }
 
   const clientOptions = (data.options ?? {}) as AnyRecord;
   const command = typeof data.content === 'string' ? data.content : '';
-
-  // Record what this turn runs with so reopening the session later restores the
-  // same model and reasoning effort, and so the resume path has a
-  // session-scoped model answer to use.
-  if (typeof clientOptions.model === 'string' && clientOptions.model.trim()) {
-    providerModelsService.setSessionModel(provider, sessionId, clientOptions.model);
-  }
-  if (typeof clientOptions.effort === 'string' && clientOptions.effort.trim()) {
-    providerModelsService.setSessionEffort(provider, sessionId, clientOptions.effort);
-  }
 
   const attachmentCandidates = [
     ...normalizeAttachmentDescriptors(clientOptions.images),
@@ -282,14 +261,92 @@ async function dispatchRun(
     projectPath: session.project_path ?? clientOptions.projectPath,
   };
 
+  const requestId = typeof data.requestId === 'string' ? data.requestId : randomUUID();
+  if (!requestId.trim() || requestId.length > 200) {
+    if (ws) sendProtocolError(ws, 'INVALID_REQUEST_ID', 'requestId must contain 1–200 characters.', sessionId, requestId);
+    return { started: false, error: 'Invalid requestId.', errorCode: 'INVALID_REQUEST_ID' };
+  }
+
+  let run: ReturnType<typeof chatRunRegistry.startRun> = null;
+  let admission: ReturnType<typeof taskRunsDb.accept>;
+  try {
+    admission = getConnection().transaction(() => {
+      const candidate = acceptedRun ? taskRunsDb.getByRunId(acceptedRun.runId) : null;
+      if (acceptedRun && !candidate) throw new Error('CLAIM_NOT_FOUND');
+      if (candidate && (candidate.sessionId !== sessionId || candidate.provider !== provider
+        || candidate.userId !== (userId === null ? null : String(userId)) || candidate.content !== command)) {
+        throw new Error('CLAIM_MISMATCH');
+      }
+      const result = candidate
+        ? { kind: candidate.state === 'accepted' ? 'accepted' as const : 'duplicate' as const, run: candidate }
+        : taskRunsDb.accept({
+          userId, requestId, sessionId, provider,
+          projectPath: session.project_path ?? null,
+          content: command,
+          // Persist only safe input settings. An edit's resolved rewind point
+          // changes after the first execution, so identity uses its original anchor.
+          options: {
+            ...clientOptions,
+            attachments: runtimeOptions.attachments,
+            images: runtimeOptions.images,
+            files: runtimeOptions.files,
+            sessionId,
+            cwd: runtimeOptions.cwd,
+            projectPath: runtimeOptions.projectPath,
+            operation: data.type ?? 'chat.send',
+            editAnchorId: data.anchorId,
+          },
+          recoveryOfRunId: typeof data.recoveryOfRunId === 'string' ? data.recoveryOfRunId : undefined,
+        });
+      if (result.kind !== 'accepted') return result;
+      if (chatRunRegistry.isProcessing(sessionId)) throw new Error('RUN_IN_PROGRESS');
+      if (!taskRunsDb.markRunning(result.run.runId)) throw new Error('CLAIM_UNAVAILABLE');
+      run = chatRunRegistry.startRun({
+        runId: result.run.runId,
+        appSessionId: sessionId, provider,
+        providerSessionId: session.provider_session_id,
+        connection: ws, userId,
+      });
+      if (!run) throw new Error('RUN_IN_PROGRESS');
+      return result;
+    })();
+  } catch (error) {
+    if (run) chatRunRegistry.discardRun(run);
+    const busy = error instanceof Error && error.message === 'RUN_IN_PROGRESS';
+    const errorCode = busy ? 'RUN_IN_PROGRESS' : 'ACCEPTANCE_FAILED';
+    const message = busy ? 'A run is already in progress for this session.' : 'Could not durably accept the request.';
+    if (ws) sendProtocolError(ws, errorCode, message, sessionId, requestId);
+    return { started: false, error: message, errorCode };
+  }
+  if (admission.kind === 'rejected') {
+    if (ws) sendProtocolError(ws, admission.errorCode, 'The request conflicts with a previous request or recovery.', sessionId, requestId);
+    return { started: false, error: admission.errorCode, errorCode: admission.errorCode };
+  }
+  if (ws) sendJson(ws, {
+    type: 'run-accepted', kind: 'run_accepted', requestId,
+    runId: admission.run.runId, sessionId,
+    duplicate: admission.kind === 'duplicate',
+    state: admission.kind === 'duplicate' ? admission.run.state : 'running',
+  });
+  if (admission.kind === 'duplicate' || !run) {
+    return { started: false, error: null, errorCode: 'DUPLICATE_REQUEST' };
+  }
+  // The transaction has committed before acknowledgment or any provider/tool work.
+  const activeRun: NonNullable<ReturnType<typeof chatRunRegistry.startRun>> = run;
   let failure: string | null = null;
   try {
     // Runs only now that the session is reserved, because an edit rewinds the
     // conversation here and a rewind for a run that was never admitted cannot
     // be taken back. Inside the try so a rewind that throws still releases the
     // run instead of leaving the session processing forever.
-    await beforeRun?.(run);
-    await dependencies.runtime.run(provider, command, runtimeOptions, run.writer);
+    if (typeof clientOptions.model === 'string' && clientOptions.model.trim()) {
+      providerModelsService.setSessionModel(provider, sessionId, clientOptions.model);
+    }
+    if (typeof clientOptions.effort === 'string' && clientOptions.effort.trim()) {
+      providerModelsService.setSessionEffort(provider, sessionId, clientOptions.effort);
+    }
+    await beforeRun?.(activeRun);
+    await dependencies.runtime.run(provider, command, runtimeOptions, activeRun.writer);
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
     console.error(`[Chat] Provider runtime "${provider}" failed`, { sessionId, error: failure });
@@ -299,10 +356,17 @@ async function dispatchRun(
     // "processing" forever on every connected client. Scoped to THIS run —
     // a queued message can start the session's next run before this promise
     // settles, and the session-keyed completeRun would kill that new run.
-    chatRunRegistry.completeRunIfCurrent(run, { exitCode: 1 });
+    chatRunRegistry.completeRunIfCurrent(activeRun, { exitCode: failure || activeRun.failure ? 1 : 0 });
+    // A provider's early complete only ends its visible turn. Its promise
+    // settles after held background work exits; persist completion only here.
+    taskRunsDb.settle(activeRun.runId, {
+      state: activeRun.terminalState === 'aborted' ? 'aborted'
+        : failure || activeRun.failure ? 'failed' : activeRun.terminalState ?? 'completed',
+      error: failure ?? activeRun.failure ?? undefined,
+    });
   }
 
-  return { started: true, error: failure };
+  return { started: true, error: failure ?? activeRun.failure ?? (activeRun.terminalState === 'failed' ? 'Provider run failed.' : null) };
 }
 
 /**
@@ -326,9 +390,13 @@ async function handleChatEditSend(
   }
 
   const { sessionId, session, provider } = resolved;
+  if (typeof data.requestId === 'string' && taskRunsDb.getByRequestId(userId, data.requestId)) {
+    await dispatchRun(ws, userId, sessionId, session, data, dependencies);
+    return;
+  }
   const anchorId = typeof data.anchorId === 'string' ? data.anchorId.trim() : '';
   if (!anchorId) {
-    sendProtocolError(ws, 'ANCHOR_REQUIRED', 'chat.edit-send requires the anchorId of the message being replaced.', sessionId);
+    sendProtocolError(ws, 'ANCHOR_REQUIRED', 'chat.edit-send requires the anchorId of the message being replaced.', sessionId, data.requestId);
     return;
   }
 
@@ -340,18 +408,18 @@ async function handleChatEditSend(
         ws,
         'EDIT_NOT_SUPPORTED',
         `Provider "${provider}" cannot replace an already-sent message.`,
-        sessionId
+        sessionId, data.requestId
       );
       return;
     }
     if (!anchor.found) {
-      sendProtocolError(ws, 'ANCHOR_NOT_FOUND', 'That message is no longer in the transcript.', sessionId);
+      sendProtocolError(ws, 'ANCHOR_NOT_FOUND', 'That message is no longer in the transcript.', sessionId, data.requestId);
       return;
     }
     resumeThroughId = anchor.resumeThroughId;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    sendProtocolError(ws, 'ANCHOR_LOOKUP_FAILED', `Could not read the transcript: ${message}`, sessionId);
+    sendProtocolError(ws, 'ANCHOR_LOOKUP_FAILED', `Could not read the transcript: ${message}`, sessionId, data.requestId);
     return;
   }
 
@@ -400,7 +468,7 @@ async function handleChatEditSend(
           await sessionsService.rewindSessionForEdit(sessionId, resumeThroughId);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          sendProtocolError(ws, 'EDIT_REWIND_FAILED', `Could not rewind the conversation: ${message}`, sessionId);
+          sendProtocolError(ws, 'EDIT_REWIND_FAILED', `Could not rewind the conversation: ${message}`, sessionId, data.requestId);
           // Ends the run before the provider is asked to continue a
           // conversation that was not rewound after all.
           throw error;
@@ -433,6 +501,10 @@ async function handleChatAbort(
   }
 
   const success = await dependencies.runtime.abort(run.provider, sessionId);
+  if (!success) {
+    sendProtocolError(ws, 'ABORT_FAILED', 'The active run could not be stopped.', sessionId, data.requestId);
+    return;
+  }
 
   chatRunRegistry.completeRun(sessionId, {
     exitCode: success ? 0 : 1,
@@ -540,6 +612,7 @@ function handleChatSubscribe(
       sessionId,
       isProcessing,
       lastSeq: run?.lastSeq ?? 0,
+      runId: run?.runId ?? null,
       pendingPermissions,
       timestamp: new Date().toISOString(),
     });
@@ -549,7 +622,7 @@ function handleChatSubscribe(
     // replaying them (e.g. after a page reload where the client's lastSeq is
     // 0) would duplicate messages the history fetch already returned.
     if (isProcessing) {
-      for (const event of chatRunRegistry.replayEvents(sessionId, lastSeq)) {
+      for (const event of chatRunRegistry.replayEvents(sessionId, lastSeq, typeof (target as AnyRecord).runId === 'string' ? (target as AnyRecord).runId : undefined)) {
         sendJson(ws, event);
       }
     }
@@ -608,6 +681,9 @@ export async function runDetachedChatTurn(
     userId: string | number | null;
     content: string;
     options?: AnyRecord;
+    requestId?: string;
+    /** Durable claim created atomically with removal from its queue/schedule. */
+    acceptedRun?: TaskRunRecord;
     /**
      * Aborts a run already in progress instead of refusing to start. A
      * scheduled message sets this: the user picked the time knowing it might
@@ -616,21 +692,21 @@ export async function runDetachedChatTurn(
     interruptActiveRun?: boolean;
   },
   dependencies: ChatWebSocketDependencies,
-): Promise<{ started: boolean; error: string | null }> {
+): Promise<{ started: boolean; error: string | null; errorCode?: string }> {
   const session = sessionsDb.getSessionById(input.sessionId);
   if (!session) {
-    return { started: false, error: 'The session no longer exists.' };
+    return { started: false, error: 'The session no longer exists.', errorCode: 'SESSION_NOT_FOUND' };
   }
 
   const provider = session.provider as LLMProvider;
   if (!dependencies.runtime.hasRuntime(provider)) {
-    return { started: false, error: `Provider "${provider}" is not available.` };
+    return { started: false, error: `Provider "${provider}" is not available.`, errorCode: 'UNSUPPORTED_PROVIDER' };
   }
 
   const activeRun = chatRunRegistry.getRun(input.sessionId);
   if (activeRun && activeRun.status === 'running') {
     if (!input.interruptActiveRun) {
-      return { started: false, error: 'A run was already in progress for this session.' };
+      return { started: false, error: 'A run is already in progress for this session.', errorCode: 'RUN_IN_PROGRESS' };
     }
     // Same shape as `chat.abort`: cancel the provider run and emit the
     // terminal `complete` on its behalf, so every watching client sees the
@@ -638,6 +714,9 @@ export async function runDetachedChatTurn(
     // run's own dispatch settles later through completeRunIfCurrent, which is
     // scoped to that run and cannot touch the one started here.
     const aborted = await dependencies.runtime.abort(activeRun.provider, input.sessionId);
+    if (!aborted) {
+      return { started: false, error: 'The active run could not be stopped.', errorCode: 'ABORT_FAILED' };
+    }
     chatRunRegistry.completeRun(input.sessionId, {
       exitCode: aborted ? 0 : 1,
       aborted: true,
@@ -649,8 +728,11 @@ export async function runDetachedChatTurn(
     input.userId,
     input.sessionId,
     session,
-    { sessionId: input.sessionId, content: input.content, options: input.options ?? {} },
+    { type: 'chat.send', sessionId: input.sessionId, content: input.content, options: input.options ?? {}, requestId: input.requestId },
     dependencies,
+    {},
+    undefined,
+    input.acceptedRun,
   );
 }
 
@@ -665,6 +747,7 @@ export function handleChatConnection(
   const userId = readRequestUserId(request);
 
   ws.on('message', async (rawMessage) => {
+    let requestId: string | undefined;
     try {
       const parsed = parseIncomingJsonObject(rawMessage);
       if (!parsed) {
@@ -672,6 +755,7 @@ export function handleChatConnection(
       }
 
       const data = parsed as AnyRecord;
+      requestId = typeof data.requestId === 'string' ? data.requestId : undefined;
       const messageType = typeof data.type === 'string' ? data.type : '';
 
       switch (messageType) {
@@ -700,7 +784,7 @@ export function handleChatConnection(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error('[ERROR] Chat WebSocket error:', message);
-      sendProtocolError(ws, 'INTERNAL_ERROR', message);
+      sendProtocolError(ws, 'INTERNAL_ERROR', message, undefined, requestId);
     }
   });
 

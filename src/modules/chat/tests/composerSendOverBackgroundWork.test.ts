@@ -67,6 +67,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } })));
   vi.stubGlobal('confirm', confirm);
   confirm.mockReset();
+  sessionStorage.clear();
   localStorage.clear();
 });
 

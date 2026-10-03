@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
 
 import { getConnection } from '@/modules/database/connection.js';
+import { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
+import { taskRunsDb } from '@/modules/database/repositories/task-runs.db.js';
+import type { TaskRunRecord } from '@/shared/types.js';
 
-export type ScheduledMessageStatus = 'pending' | 'sent' | 'failed' | 'cancelled';
+export type ScheduledMessageStatus = 'pending' | 'claimed' | 'sent' | 'failed' | 'cancelled';
 
 export type ScheduledMessageRow = {
   id: string;
@@ -68,15 +71,16 @@ export const scheduledMessagesDb = {
   },
 
   /**
-   * Claims every message whose time has passed, marking them in the same
-   * statement that selects them.
+   * Claims due schedules together with durable execution receipts in one
+   * transaction. A claimed schedule is not yet a successfully sent message.
    *
    * Claiming is what makes a missed schedule work: the server can be down at
    * the moment a message was due, and the next poll after it starts picks the
-   * message up instead of skipping it. Doing it in one transaction is what
-   * stops two overlapping polls from sending the same message twice.
+   * pending message up instead of skipping it. Once claimed, a crash leaves
+   * recoverable input for manual review instead of automatically replaying it.
+   * The transaction prevents overlapping polls from sending a message twice.
    */
-  claimDue(now: Date): ScheduledMessageRow[] {
+  claimDue(now: Date): Array<ScheduledMessageRow & { execution: TaskRunRecord }> {
     const db = getConnection();
     const nowIso = now.toISOString();
 
@@ -89,14 +93,41 @@ export const scheduledMessagesDb = {
         )
         .all(nowIso) as ScheduledMessageRow[];
 
-      for (const row of due) {
+      return due.map((row) => {
+        const session = sessionsDb.getSessionById(row.session_id);
+        if (!session) throw new Error('Scheduled message session disappeared during claim.');
+        let options: Record<string, unknown> = {};
+        try {
+          const parsed: unknown = JSON.parse(row.options);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) options = parsed as Record<string, unknown>;
+        } catch { /* Invalid old options fall back to defaults. */ }
+        const result = taskRunsDb.accept({
+          userId: row.user_id, requestId: `scheduled:${row.id}`,
+          sessionId: row.session_id, provider: session.provider,
+          projectPath: session.project_path, content: row.content,
+          options, source: 'scheduled',
+        });
+        if (result.kind !== 'accepted') throw new Error('Scheduled execution was already claimed.');
         db.prepare(
-          `UPDATE scheduled_messages SET status = 'sent', updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+          `UPDATE scheduled_messages SET status = 'claimed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`
         ).run(row.id);
-      }
-
-      return due;
+        return { ...row, execution: result.run };
+      });
     })();
+  },
+
+  /** Marks completion only after the dispatcher has observed the runtime settle. */
+  markSent(id: string): void {
+    getConnection().prepare(
+      `UPDATE scheduled_messages SET status = 'sent', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'claimed'`
+    ).run(id);
+  },
+
+  /** Startup recovery never sends a previously claimed schedule a second time. */
+  failInterruptedClaims(): void {
+    getConnection().prepare(
+      `UPDATE scheduled_messages SET status = 'failed', failure_reason = 'The service restarted during execution. Review the interrupted task before continuing.', updated_at = CURRENT_TIMESTAMP WHERE status = 'claimed'`
+    ).run();
   },
 
   markFailed(id: string, reason: string): void {

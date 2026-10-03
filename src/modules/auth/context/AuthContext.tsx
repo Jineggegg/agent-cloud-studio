@@ -1,6 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ReactNode } from 'react';
+import { startAuthentication } from '@simplewebauthn/browser';
+import type { PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/browser';
 
 import { IS_PLATFORM, takeHandoffCodeFromUrl, writeIngressPreference } from '@/shared/utils';
 import { api } from '@/shared/api';
@@ -32,7 +34,27 @@ const AUTH_ERROR_MESSAGES = {
   networkError: 'errors.networkError',
   sessionExpired: 'errors.sessionExpired',
   handoffExpired: 'errors.handoffExpired',
+  passkeyCancelled: 'login.errors.passkeyCancelled',
+  passkeyFailed: 'login.errors.passkeyFailed',
 } as const;
+
+// Re-registers the Web Push subscription this browser already holds, so a device keeps getting
+// notifications after "退出所有设备" removed every subscription on the server. Only when the user
+// once allowed notifications here; the server stores it as an upsert by endpoint and, for
+// `resubscribe`, changes no preference. Failures are silent: notifications are optional.
+async function reregisterPushSubscription(): Promise<void> {
+  if (typeof window === 'undefined' || (window as { cloudcliDesktopNotifications?: unknown }).cloudcliDesktopNotifications
+    || !('Notification' in window) || Notification.permission !== 'granted' || !('serviceWorker' in navigator)) {
+    return;
+  }
+  const registration = await navigator.serviceWorker.ready;
+  const subscription = await registration.pushManager.getSubscription();
+  const json = subscription?.toJSON();
+  if (!json?.endpoint || !json.keys) {
+    return;
+  }
+  await api.settings.push.subscribe({ endpoint: json.endpoint, keys: json.keys, resubscribe: true });
+}
 
 // Outcome of the one handoff attempt of a page load: no code in the URL, a session, or a refusal.
 type HandoffOutcome = 'none' | 'redeemed' | 'failed';
@@ -75,6 +97,8 @@ type AuthContextValue = {
   hasCompletedOnboarding: boolean;
   error: string | null;
   login: (username: string, password: string) => Promise<AuthActionResult>;
+  // "用面容 ID 登录": the device's passkey for this domain instead of the password.
+  loginWithPasskey: () => Promise<AuthActionResult>;
   register: (username: string, password: string) => Promise<AuthActionResult>;
   logout: () => void;
   refreshOnboardingStatus: () => Promise<void>;
@@ -218,6 +242,16 @@ export function AuthProvider({ children }: AuthProviderProps) {
     void hydrateUserPreferences();
     void hydrateChatDrafts();
   }, [userKey]);
+
+  // After every sign-in (and token change) the browser's existing push subscription is sent again.
+  useEffect(() => {
+    if (IS_PLATFORM || !userKey || !token) {
+      return;
+    }
+    void reregisterPushSubscription().catch((caughtError: unknown) => {
+      console.warn('[Auth] Push subscription could not be re-registered:', caughtError);
+    });
+  }, [token, userKey]);
 
   const checkOnboardingStatus = useCallback(async () => {
     try {
@@ -490,6 +524,44 @@ export function AuthProvider({ children }: AuthProviderProps) {
     [publishSession, t],
   );
 
+  // Passkey sign-in: a fresh ceremony for this door (its id and challenge), the device's Face ID /
+  // Touch ID prompt (discoverable credential, so no username), then the assertion, named by the
+  // ceremony id, for a session. A cancelled prompt is not an error worth the server's time.
+  const loginWithPasskey = useCallback<AuthContextValue['loginWithPasskey']>(async () => {
+    const fail = (message: string): AuthActionResult => {
+      setError(message);
+      return { success: false, error: message };
+    };
+    try {
+      setError(null);
+      const optionsResponse = await api.auth.passkeyOptions();
+      const started = await parseJsonSafely<{ ceremonyId?: string; options?: PublicKeyCredentialRequestOptionsJSON } & ApiErrorPayload>(optionsResponse);
+      if (!optionsResponse.ok || !started?.ceremonyId || !started.options?.challenge) {
+        return fail(resolveApiErrorMessage(started, t(AUTH_ERROR_MESSAGES.passkeyFailed)));
+      }
+
+      let assertion: Awaited<ReturnType<typeof startAuthentication>>;
+      try {
+        assertion = await startAuthentication({ optionsJSON: started.options });
+      } catch (caughtError) {
+        const cancelled = caughtError instanceof Error && ['NotAllowedError', 'AbortError'].includes(caughtError.name);
+        return fail(t(cancelled ? AUTH_ERROR_MESSAGES.passkeyCancelled : AUTH_ERROR_MESSAGES.passkeyFailed));
+      }
+
+      const response = await api.auth.passkeySignIn(started.ceremonyId, assertion);
+      const payload = await parseJsonSafely<AuthSessionPayload>(response);
+      if (!response.ok || !payload?.token || !payload.user) {
+        return fail(resolveApiErrorMessage(payload, t(AUTH_ERROR_MESSAGES.passkeyFailed)));
+      }
+
+      await publishSession(payload.user, payload.token);
+      return { success: true };
+    } catch (caughtError) {
+      console.error('Passkey sign-in error:', caughtError);
+      return fail(t(AUTH_ERROR_MESSAGES.networkError));
+    }
+  }, [publishSession, t]);
+
   const register = useCallback<AuthContextValue['register']>(
     async (username, password) => {
       try {
@@ -529,6 +601,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       hasCompletedOnboarding,
       error,
       login,
+      loginWithPasskey,
       register,
       logout,
       refreshOnboardingStatus,
@@ -538,6 +611,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       hasCompletedOnboarding,
       isLoading,
       login,
+      loginWithPasskey,
       logout,
       needsSetup,
       refreshOnboardingStatus,

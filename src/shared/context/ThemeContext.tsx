@@ -69,6 +69,11 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
   // theme had been fetched — writing this device's system default over the
   // theme the user actually chose on another one.
   useEffect(() => {
+    // The same colours index.html applies before first paint: without this, switching theme left the page
+    // background and native controls (color-scheme) on the theme the app started with.
+    const root = document.documentElement;
+    root.style.colorScheme = isDarkMode ? 'dark' : 'light';
+    root.style.backgroundColor = isDarkMode ? '#121315' : '#efede8';
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
 
@@ -80,7 +85,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
 
       const themeColorMeta = document.querySelector('meta[name="theme-color"]');
       if (themeColorMeta) {
-        themeColorMeta.setAttribute('content', '#141414'); // Dark background color (hsl(0 0% 8%))
+        themeColorMeta.setAttribute('content', '#121315'); // The Studio's dark background (--ios-bg)
       }
     } else {
       document.documentElement.classList.remove('dark');
@@ -93,7 +98,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
 
       const themeColorMeta = document.querySelector('meta[name="theme-color"]');
       if (themeColorMeta) {
-        themeColorMeta.setAttribute('content', '#f6f4ef'); // Light background color (warm cream)
+        themeColorMeta.setAttribute('content', '#efede8'); // The Studio's light background (--ios-bg)
       }
     }
   }, [isDarkMode]);

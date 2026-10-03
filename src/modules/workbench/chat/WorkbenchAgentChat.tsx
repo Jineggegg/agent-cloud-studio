@@ -5,6 +5,8 @@ import { ArrowDown, AtSign, ImagePlus, Slash } from 'lucide-react';
 import { toast } from 'sonner';
 
 import {
+  ChatDeliveryStatus,
+  ChatRecoveryBanner,
   CommandResultModal,
   MarkdownWorkspaceContext,
   PermissionContext,
@@ -118,11 +120,13 @@ export function WorkbenchAgentChat({
     onSessionCreated,
     onOpenFile,
   });
-  const { provider: providerState, session: sessionState, composer } = engine;
+  const { provider: providerState, session: sessionState, composer, recovery } = engine;
   const provider = providerState.provider;
   const messages = sessionState.chatMessages;
   const pending = providerState.pendingPermissionRequests;
   const isProcessing = sessionState.isProcessing;
+  // A send the server has not confirmed yet blocks another send (and recovery), as ChatComposer does.
+  const deliveryPending = composer.delivery?.state === 'sending' || composer.delivery?.state === 'unknown';
 
   const started = Boolean(engine.sessionId) || messages.length > 0;
   const providerChoices = started ? null : newChatProviderChoices;
@@ -282,6 +286,24 @@ export function WorkbenchAgentChat({
               </m.div>
             ) : null}
           </AnimatePresence>
+
+          {/* Durable sends and task recovery, as in ChatInterface: interrupted runs are offered for reviewed
+              continuation, and a send stays visibly unconfirmed until the server's receipt arrives. */}
+          {!questionRequest && <ChatRecoveryBanner
+            runs={recovery.runs}
+            error={recovery.error}
+            disabled={isProcessing || deliveryPending || Boolean(composer.preparedRecovery)}
+            onRefresh={recovery.refresh}
+            onViewRecords={(run) => { if (run.sessionId) void sessionState.requestLatestMessages(run.sessionId, true).then(sessionState.scrollToBottomAndReset); }}
+            onPrepare={composer.prepareRecovery}
+            onResolve={recovery.resolve}
+          />}
+          {!questionRequest && composer.delivery && <ChatDeliveryStatus delivery={composer.delivery} pendingContent={composer.pendingContent}
+            isConnected={engine.isConnected} onCheck={() => void composer.checkDelivery()} onRetry={() => void composer.retryDelivery()} />}
+          {!questionRequest && composer.preparedRecovery && <div role="status" className="wbc-recovery-note">
+            <span>已准备续接草稿。请先核对已生效的操作，编辑确认后再发送。</span>
+            <button type="button" onClick={composer.cancelPreparedRecovery}>取消续接关联</button>
+          </div>}
 
           {!questionRequest && (
             <WorkbenchComposer

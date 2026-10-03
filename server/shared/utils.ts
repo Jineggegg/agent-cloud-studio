@@ -1782,6 +1782,47 @@ export function recordClaudeRateLimitEvent(
 }
 
 // ---------------------------
+//----------------- CLOUDFLARED LISTENER ------------
+/**
+ * The dedicated loopback port the Cloudflare Tunnel's ingress points at (STUDIO_CLOUDFLARED_PORT,
+ * docs/security.md), or null when it is unset, not a port number, or equal to SERVER_PORT (that
+ * would make every request look public, so it is ignored). When set, the server also listens on
+ * 127.0.0.1:<port>, and only connections that arrived there count as the public door; Cloudflare
+ * headers on any other port are ignored.
+ *
+ * Used by the auth module (request classification, the Tailscale door check, the Cloudflare Access
+ * gate) and by the server entrypoint, which opens the listener. Read per request from process.env,
+ * which load-env fills from .env once at startup.
+ */
+export function readCloudflaredPort(env: Record<string, string | undefined> = process.env): number | null {
+  const raw = env.STUDIO_CLOUDFLARED_PORT?.trim();
+  if (!raw || !/^\d{1,5}$/.test(raw)) return null;
+  const port = Number(raw);
+  const serverPort = Number(env.SERVER_PORT?.trim() || env.PORT?.trim() || '3001');
+  return port >= 1 && port <= 65535 && port !== serverPort ? port : null;
+}
+
+// ---------------------------
+//----------------- PASSKEY UTILITIES ------------
+/**
+ * A rough device name for a newly registered passkey, so two passkeys on the same domain can be
+ * told apart in Settings: iPad, iPhone, Android, Windows or "Mac / iPad" (iPadOS Safari reports
+ * itself as a Mac); null when the User-Agent says nothing recognisable. Never used for any
+ * security decision, since the header is client-controlled.
+ *
+ * Used by the Studio module (Trading 212 order passkeys) and the auth module (sign-in passkeys).
+ */
+export function describePasskeyDevice(userAgent: string | undefined): string | null {
+  const agent = userAgent ?? '';
+  if (/iPad/.test(agent)) return 'iPad';
+  if (/iPhone/.test(agent)) return 'iPhone';
+  if (/Android/.test(agent)) return 'Android';
+  if (/Windows/.test(agent)) return 'Windows';
+  if (/Macintosh/.test(agent)) return 'Mac / iPad';
+  return null;
+}
+
+// ---------------------------
 //----------------- STUDIO MAIL UTILITIES ------------
 /**
  * Normalizes a mail date (a Date, or a header / API date string) to ISO-8601, or returns '' when the

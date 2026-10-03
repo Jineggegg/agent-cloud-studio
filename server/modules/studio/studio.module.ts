@@ -1,8 +1,9 @@
 import path from 'node:path';
 import os from 'node:os';
 import { existsSync, realpathSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import { mkdir } from 'node:fs/promises';
 
+import { readRequestClient, verifyStepUpPassword } from '@/modules/auth/index.js';
 import { getConnection, getDatabasePath, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { createProject } from '@/modules/projects/index.js';
 import { readCodexAccountRateLimits } from '@/modules/providers/index.js';
@@ -39,6 +40,8 @@ import { createMemoryMcpClient } from './memory/memory-client.adapter.js';
 import { createMemoryService, findWindowsHome, memoryFolderName } from './memory/memory.service.js';
 import { createMemoryChatBridge } from './memory/memory-chat.service.js';
 import { createMemoryRouter } from './memory/memory.routes.js';
+import { createStudioRuntimeService } from './runtime.service.js';
+import { createStudioRuntimeRouter } from './runtime.routes.js';
 
 const linkChecker = createLinkChecker();
 
@@ -84,6 +87,11 @@ export function createStudioModule() {
     remoteHosts: () => remote.names(),
     remoteSeeds: () => remote.seeds(),
     remoteCommand: (host, dir, agent) => remote.command(host, dir, agent),
+    async workbench() {
+      const directory = process.env.STUDIO_WORKBENCH_PATH || path.join(os.homedir(), 'studio-workbench');
+      await mkdir(directory, { recursive: true });
+      return directory;
+    },
     async resolveWorkspace(directory) {
       if (!existsSync(directory)) throw new AppError('工作目录不存在', { statusCode: 400 });
       const canonical = realpathSync(directory);
@@ -145,6 +153,7 @@ export function createStudioModule() {
     codexRateLimits: () => readCodexAccountRateLimits(),
   });
   const routes = createStudioRouter(service, gateway);
+  routes.use('/runtime', createStudioRuntimeRouter(createStudioRuntimeService()));
   routes.use('/projects', createProjectHubRouter(hub, mail));
   routes.use('/trading212', createTrading212Router(trading212));
   routes.use('/remote', createRemoteHostsRouter(remote));
@@ -153,27 +162,25 @@ export function createStudioModule() {
   // Both front doors (STUDIO_PUBLIC_ORIGIN, STUDIO_TAILNET_ORIGIN) reach this one backend.
   routes.use('/network', createStudioNetworkRouter(createStudioNetworkService()));
   // ── v4 track: orders — create its service and mount its router below this line ──
+  // Caps (per order and per rolling 24 hours) default to the env values, are edited per user in Settings (raising needs
+  // Face ID / Touch ID) and never exceed STUDIO_T212_CAP_CEILING.
   // Order placement is off unless STUDIO_T212_TRADING allows an account; each order is capped and needs a passkey (or,
   // only while the user has none, a double confirmation). Only requests from these origins may trade; localhost only
-  // with STUDIO_T212_ALLOW_LOCALHOST=1. Passkey changes are stepped up with the Studio account password.
-  // bcrypt has no TypeScript declarations here, so its compare function is narrowed like in the auth module.
-  const bcrypt = createRequire(import.meta.url)('bcrypt') as { compare(password: string, passwordHash: string): Promise<boolean> };
+  // with STUDIO_T212_ALLOW_LOCALHOST=1. Passkey changes are stepped up with the Studio account password, through
+  // the auth module's step-up (its per-session budget, daily per-user cap and security log apply).
   const trading212Orders = createTrading212OrdersService({
     database: getConnection(),
     trading212,
     trading: process.env.STUDIO_T212_TRADING,
     maxOrderValue: process.env.STUDIO_T212_MAX_ORDER_VALUE,
+    maxDailyValue: process.env.STUDIO_T212_MAX_DAILY_VALUE,
+    capCeiling: process.env.STUDIO_T212_CAP_CEILING,
     requirePasskey: process.env.STUDIO_T212_REQUIRE_PASSKEY,
     allowLocalhost: process.env.STUDIO_T212_ALLOW_LOCALHOST,
     origins: [process.env.STUDIO_PUBLIC_ORIGIN, process.env.STUDIO_TAILNET_ORIGIN],
-    async verifyPassword(userId, password) {
-      // getUserById omits the hash, so the active account is re-read by username for the comparison.
-      const account = userDb.getUserById(userId);
-      const row = account ? userDb.getUserByUsername(account.username) : undefined;
-      return row ? bcrypt.compare(password, row.password_hash) : false;
-    },
+    verifyStepUp: ({ user, client }, password) => verifyStepUpPassword(user, password, client),
   });
-  routes.use('/trading212', createTrading212OrdersRouter(trading212Orders));
+  routes.use('/trading212', createTrading212OrdersRouter(trading212Orders, (req) => readRequestClient(req)));
   // ── v4 track: mail — create its service and mount its router below this line ──
   // Per-user read-only mail accounts (Gmail over IMAP, Outlook over Graph). Project-bound Gmail OAuth
   // connections from the older project mail module appear as extra accounts in the same inbox.
@@ -258,5 +265,11 @@ export function createStudioModule() {
     }));
   }
   routes.use('/memory', createMemoryRouter(memory));
-  return { routes, snrRoutes: createSnrGatewayRouter(gateway), mailCallbackRoutes: createProjectMailCallbackRouter(mail) };
+  return {
+    routes,
+    snrRoutes: createSnrGatewayRouter(gateway),
+    mailCallbackRoutes: createProjectMailCallbackRouter(mail),
+    // Used by the server entrypoint when "退出所有设备" also drops the user's SNR access cookies.
+    revokeSnrAccess: (userId: number) => gateway.revoke(userId),
+  };
 }

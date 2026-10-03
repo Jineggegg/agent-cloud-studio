@@ -54,6 +54,8 @@ export function ScheduleMessagePopover({ disabled, onSchedule }: ScheduleMessage
   const [customValue, setCustomValue] = useState(() => toLocalInputValue(new Date(Date.now() + 3_600_000)));
 
   const commit = (scheduledFor: Date) => {
+    // A recovery or unconfirmed send can disable an already-open menu.
+    if (disabled) return;
     onSchedule(scheduledFor);
     setIsOpen(false);
   };

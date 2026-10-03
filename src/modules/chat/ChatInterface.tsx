@@ -29,6 +29,8 @@ import {
 import ChatMessagesPane from '@/modules/chat/transcript/ChatMessagesPane';
 import ChatComposer from '@/modules/chat/composer/ChatComposer';
 import CommandResultModal from '@/modules/chat/modals/CommandResultModal';
+import { ChatRecoveryBanner } from '@/modules/chat/composer/ChatRecoveryBanner';
+import { useTaskRecovery } from '@/modules/chat/hooks/useTaskRecovery';
 
 type ChatInterfaceProps = {
   isActive: boolean;
@@ -72,7 +74,7 @@ function ChatInterface({
   onShowAllTasks,
 }: ChatInterfaceProps) {
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
-  const { subscribe } = useWebSocket();
+  const { subscribe, sendMessage: sendSocketMessage, isConnected } = useWebSocket();
   const { t } = useTranslation('chat');
   const processingSessions = useProcessingSessions();
   const {
@@ -92,6 +94,8 @@ function ChatInterface({
   // on every sequenced frame, read whenever a `chat.subscribe` is sent so the
   // server replays only the events this client actually missed.
   const lastSeqRef = useRef(new Map<string, number>());
+  // Sequence numbers restart for each run; subscriptions must identify their run too.
+  const lastRunIdRef = useRef(new Map<string, string>());
 
   const resetStreamingState = useCallback(() => {
     if (streamTimerRef.current) {
@@ -174,6 +178,7 @@ function ChatInterface({
     resetStreamingState,
     statusCheckSentAtRef,
     lastSeqRef,
+    lastRunIdRef,
     sessionStore,
   });
 
@@ -187,6 +192,13 @@ function ChatInterface({
   }, [setCurrentSessionId, onSessionEstablished, onNavigateToSession]);
 
   const {
+    delivery,
+    pendingContent,
+    checkDelivery,
+    retryDelivery,
+    prepareRecovery,
+    preparedRecovery,
+    cancelPreparedRecovery,
     input,
     setInput,
     textareaRef,
@@ -249,7 +261,10 @@ function ChatInterface({
     processingSessions,
     canAbortSession,
     tokenBudget,
-    sendMessage,
+    sendMessage: sendSocketMessage,
+    subscribe,
+    isConnected,
+    onDeliveryReconciled: (sessionId) => { void requestLatestMessages(sessionId, isActive); },
     sendByCtrlEnter,
     onSessionProcessing,
     onSessionEstablished: handleSessionEstablished,
@@ -275,6 +290,7 @@ function ChatInterface({
       sessions: [{
         sessionId: selectedSession.id,
         lastSeq: lastSeqRef.current.get(selectedSession.id) ?? 0,
+        runId: lastRunIdRef.current.get(selectedSession.id),
       }],
     });
   }, [isActive, requestLatestMessages, selectedProject, selectedSession, sendMessage]);
@@ -291,6 +307,7 @@ function ChatInterface({
     streamTimerRef,
     accumulatedStreamRef,
     lastSeqRef,
+    lastRunIdRef,
     statusCheckSentAtRef,
     onSessionProcessing,
     onSessionIdle,
@@ -299,6 +316,12 @@ function ChatInterface({
     onWebSocketReconnect: handleWebSocketReconnect,
     requestLatestMessages,
     sessionStore,
+  });
+
+  const recovery = useTaskRecovery({
+    projectPath: selectedProject?.fullPath || selectedProject?.path || '',
+    sessionId: selectedSession?.id || currentSessionId || null,
+    subscribe,
   });
 
   // Lets other modules (the quick settings Commands tab) hand text to the
@@ -378,6 +401,7 @@ function ChatInterface({
    * the box as a send would — the message has left the composer either way.
    */
   const handleScheduleMessage = useCallback(async (scheduledFor: Date) => {
+    if (preparedRecovery || delivery?.state === 'sending' || delivery?.state === 'unknown') return;
     const content = input.trim();
     if (!content) return;
 
@@ -389,7 +413,7 @@ function ChatInterface({
     if (scheduled) {
       setInput('');
     }
-  }, [currentProviderEffort, currentProviderModel, input, permissionMode, scheduleMessage, setInput]);
+  }, [currentProviderEffort, currentProviderModel, input, permissionMode, scheduleMessage, setInput, preparedRecovery, delivery]);
 
   const permissionContextValue = useMemo(() => ({
     pendingPermissionRequests,
@@ -532,6 +556,22 @@ function ChatInterface({
           )}
 
           <ChatComposer
+          delivery={delivery}
+          pendingContent={pendingContent}
+          isConnected={isConnected}
+          onCheckDelivery={checkDelivery}
+          onRetryDelivery={retryDelivery}
+          isPreparingRecovery={Boolean(preparedRecovery)}
+          onCancelPreparedRecovery={cancelPreparedRecovery}
+          recoveryBanner={<ChatRecoveryBanner
+            runs={recovery.runs}
+            error={recovery.error}
+            disabled={isProcessing || delivery?.state === 'sending' || delivery?.state === 'unknown' || Boolean(preparedRecovery)}
+            onRefresh={recovery.refresh}
+            onViewRecords={(run) => { if (run.sessionId) void requestLatestMessages(run.sessionId, true).then(scrollToBottomAndReset); }}
+            onPrepare={prepareRecovery}
+            onResolve={recovery.resolve}
+          />}
           pendingPermissionRequests={pendingPermissionRequests}
           handlePermissionDecision={handlePermissionDecision}
           handleGrantToolPermission={handleGrantToolPermission}

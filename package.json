@@ -43,7 +43,7 @@
     "desktop:icon:mac": "node electron/scripts/generate-macos-icon.js",
     "build": "npm run build:client && npm run build:server",
     "build:client": "vite build",
-    "prebuild:server": "node -e \"require('node:fs').rmSync('dist-server.next', { recursive: true, force: true })\"",
+    "prebuild:server": "node scripts/prepare-server-build.mjs",
     "build:server": "tsc -p server/tsconfig.json && tsc-alias -p server/tsconfig.json",
     "postbuild:server": "node scripts/promote-dist-server.mjs",
     "preview": "vite preview",

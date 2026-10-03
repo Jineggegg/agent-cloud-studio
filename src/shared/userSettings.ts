@@ -28,6 +28,8 @@ export type UserPreferences = {
   codeEditorSettings: unknown;
   uiPreferences: unknown;
   selectedProvider: string;
+  // Studio settings: each CLI's default model and effort, and models hidden from the menus (modelDefaults.ts).
+  modelDefaults: unknown;
 };
 
 export type UserPreferenceKey = keyof UserPreferences;
@@ -67,6 +69,8 @@ const LEGACY_STORAGE_KEYS: Record<UserPreferenceKey, string> = {
   codeEditorSettings: '',
   uiPreferences: 'uiPreferences',
   selectedProvider: 'selected-provider',
+  // Unused: new with Studio settings, so there is nothing to migrate.
+  modelDefaults: '',
 };
 
 const PREFERENCE_KEYS = Object.keys(LEGACY_STORAGE_KEYS) as UserPreferenceKey[];

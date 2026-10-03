@@ -4,8 +4,9 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState';
-import type { LLMProvider, PermissionMode, Project, ProjectSession } from '@/shared/types';
+import type { LLMProvider, PermissionMode, Project, ProjectSession, ServerEvent } from '@/shared/types';
 import { resetUserPreferences, writeUserPreference } from '@/shared/userSettings';
+import { resetChatDrafts } from '@/shared/chatDrafts';
 
 /**
  * The composer resolves the tool-permission settings it sends with every
@@ -29,6 +30,7 @@ const SESSION: ProjectSession = { id: 'session-1' };
 
 type SentMessage = {
   type: string;
+  requestId?: string;
   options?: {
     toolsSettings?: { allowedTools?: string[]; skipPermissions?: boolean };
     skipPermissions?: boolean;
@@ -38,6 +40,7 @@ type SentMessage = {
 /** Sends one message through the real submit path and returns its `chat.send` options. */
 const submit = async (provider: LLMProvider) => {
   const sent: SentMessage[] = [];
+  let listener: ((event: ServerEvent) => void) | undefined;
   const view = renderHook(() =>
     useChatComposerState({
       selectedProject: PROJECT,
@@ -52,8 +55,13 @@ const submit = async (provider: LLMProvider) => {
       isLoading: false,
       canAbortSession: false,
       tokenBudget: null,
+      subscribe: (next) => {
+        listener = next;
+        return () => { listener = undefined; };
+      },
       sendMessage: (message) => {
         sent.push(message as SentMessage);
+        return true;
       },
       scrollToBottom: () => undefined,
       addMessage: () => undefined,
@@ -71,6 +79,13 @@ const submit = async (provider: LLMProvider) => {
 
   const send = sent.find((message) => message.type === 'chat.send');
   assert.ok(send, 'expected the composer to dispatch a chat.send');
+  // Delivery is intentionally pending until a server receipt arrives. Finish
+  // this fixture's send before the next provider uses the same conversation.
+  await act(async () => {
+    listener?.({ kind: 'run_accepted', requestId: send.requestId, sessionId: SESSION.id, runId: `run-${provider}` });
+  });
+  assert.equal(view.result.current.delivery, null);
+  view.unmount();
   return send.options ?? {};
 };
 
@@ -105,6 +120,7 @@ beforeEach(() => {
   // The preference store keeps its copy in memory, so clearing localStorage is
   // not enough to give each case a store with nothing in it.
   resetUserPreferences();
+  resetChatDrafts();
   localStorage.clear();
 });
 
@@ -112,6 +128,7 @@ afterEach(() => {
   // Also drops the debounced save the seeding queued, so no preference write
   // outlives the stubbed fetch.
   resetUserPreferences();
+  resetChatDrafts();
   vi.unstubAllGlobals();
   localStorage.clear();
 });

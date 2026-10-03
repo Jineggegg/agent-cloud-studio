@@ -62,20 +62,27 @@ export function createClientThrottle(options: ClientThrottleOptions) {
   }
 
   return {
-    /** True when the client or its door used up the window; check before doing the guarded work. */
-    isBlocked(client: StudioRequestClient): boolean {
+    /**
+     * True when the client or its door used up the window; check before doing the guarded work.
+     * With `{ door: false }` only the client's own count matters (see record).
+     */
+    isBlocked(client: StudioRequestClient, scope: { door?: boolean } = {}): boolean {
       const at = now();
       return current(clients.get(clientKey(client)), at) >= options.perClient
-        || current(doors.get(client.door), at) >= options.perDoor;
+        || (scope.door !== false && current(doors.get(client.door), at) >= options.perDoor);
     },
 
-    /** Counts one event (a wrong password, a redemption attempt) for the client and its door. */
-    record(client: StudioRequestClient): void {
+    /**
+     * Counts one event (a wrong password, a redemption attempt) for the client and its door. With
+     * `{ door: false }` it counts for the client only, for events that cannot be used to guess
+     * anything and so must not let a crowd of clients block a whole door.
+     */
+    record(client: StudioRequestClient, scope: { door?: boolean } = {}): void {
       const at = now();
       const key = clientKey(client);
       if (!clients.has(key)) makeRoomForClient(at);
       bump(clients, key, at);
-      bump(doors, client.door, at);
+      if (scope.door !== false) bump(doors, client.door, at);
     },
 
     /**

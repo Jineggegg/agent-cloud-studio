@@ -5,7 +5,7 @@ import {
 } from '@/shared/authToken';
 import { IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
-import type { HubAgentProvider, HubProjectInput, HubTaskInput, StudioChatSpace, StudioGitHubMergeInput, StudioIngressId, T212Env } from '@/shared/types';
+import type { HubAgentProvider, HubProjectInput, HubTaskInput, StudioChatSpace, StudioGitHubMergeInput, StudioIngressId, T212CapsInput, T212Env } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -158,7 +158,15 @@ const pluginAssetPath = (pluginName: string, assetFile: string) =>
 // import a named method instead of assembling URLs of their own.
 
 export const api = {
+  // Task recovery is read-only until a user explicitly resolves a record or sends a reviewed continuation.
+  taskRecovery: {
+    list: (projectPath: string, sessionId: string | null) => get(`/api/task-recovery${query({ projectPath, sessionId, unassigned: !sessionId })}`),
+    requestStatus: (requestId: string) => get(`/api/task-recovery/requests/${encodeURIComponent(requestId)}`),
+    resolve: (runId: string) => post(`/api/task-recovery/${encodeURIComponent(runId)}/resolve`, {}),
+  },
   studio: {
+    // Read-only build, checkout, GitHub and host identity; never invokes the updater.
+    runtime: (signal?: AbortSignal) => get('/api/studio/runtime', { signal, cache: 'no-store' }),
     projects: {
       list: () => get('/api/studio/projects'),
       get: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}`),
@@ -166,6 +174,7 @@ export const api = {
       update: (id: string, input: HubProjectInput) => put(`/api/studio/projects/${encodeURIComponent(id)}`, input),
       remove: (id: string) => del(`/api/studio/projects/${encodeURIComponent(id)}`),
       launch: (id: string, provider: HubAgentProvider) => post(`/api/studio/projects/${encodeURIComponent(id)}/launch`, { provider }),
+      launchWorkbench: (provider: HubAgentProvider) => post('/api/studio/projects/workbench/launch', { provider }),
       launchRemote: (id: string, agent: HubAgentProvider | 'shell') => post(`/api/studio/projects/${encodeURIComponent(id)}/remote-launch`, { agent }),
       linkStatus: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/links/status`),
       sessions: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/sessions`),
@@ -206,7 +215,8 @@ export const api = {
     }),
     // ── v4 track: orders — endpoints below this line ──
     // Trading 212 order placement (single-use previews confirmed by a passkey or a double confirmation) and passkeys.
-    // Passkey changes are stepped up with the Studio password (or, for a removal, that passkey's assertion).
+    // Passkey changes are stepped up with the Studio password (or, for a removal, that passkey's assertion); order caps
+    // are lowered with the session and raised only with Face ID / Touch ID.
     t212Trading: {
       config: () => get('/api/studio/trading212/trading'),
       preview: (input: {
@@ -220,6 +230,11 @@ export const api = {
       removalOptions: (id: string) => post(`/api/studio/trading212/passkey/${encodeURIComponent(id)}/remove/options`),
       removePasskey: (id: string, proof: { password: string } | { assertion: unknown }) =>
         post(`/api/studio/trading212/passkey/${encodeURIComponent(id)}/remove`, proof),
+      // Raising caps: a single-use 60 s Face ID / Touch ID challenge bound to exactly these values and this origin.
+      capsChallenge: (input: T212CapsInput) => post('/api/studio/trading212/caps/challenge', input),
+      // Lowering needs only the session; a raise carries the challenge id and the assertion over it.
+      updateCaps: (input: T212CapsInput, proof?: { challengeId: string; assertion: unknown }) =>
+        put('/api/studio/trading212/caps', proof ? { ...input, ...proof } : input),
     },
     // ── v4 track: mail — endpoints below this line ──
     // Per-user read-only mail accounts (Gmail IMAP, Outlook) and the unified inbox; secrets only travel in addImap's body.
@@ -300,8 +315,26 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
     }),
+    // "用面容 ID 登录": a fresh challenge for this door, then the passkey's assertion for a session.
+    passkeyOptions: () => fetch('/api/auth/passkey/options', { method: 'POST' }),
+    // The ceremony id from passkeyOptions names the challenge this assertion answers.
+    passkeySignIn: (ceremonyId: string, response: unknown) => fetch('/api/auth/passkey', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ceremonyId, response }),
+    }),
     refresh: () => post('/api/auth/refresh'),
     user: () => get('/api/auth/user'),
+    // Settings → 安全 (signed in). Adding or removing a sign-in passkey is stepped up with the password.
+    security: {
+      overview: () => get('/api/auth/security'),
+      passkeyOptions: (password: string) => post('/api/auth/security/passkeys/options', { password }),
+      registerPasskey: (response: unknown) => post('/api/auth/security/passkeys', { response }),
+      removePasskey: (id: string, password: string) =>
+        post(`/api/auth/security/passkeys/${encodeURIComponent(id)}/remove`, { password }),
+      // "退出所有设备": every session token so far stops working, this one included.
+      revokeAll: () => post('/api/auth/security/revoke-all'),
+    },
   },
 
   // Protected endpoints
@@ -615,7 +648,7 @@ export const api = {
     savePreferences: (updates: Record<string, unknown>) =>
       patch('/api/user/preferences', updates),
     drafts: () => get('/api/user/drafts'),
-    saveDraft: (scope: string, draft: { text: string; queuedMessage?: unknown }) =>
+    saveDraft: (scope: string, draft: { text: string; queuedMessage?: unknown; recoveryOfRunId?: string | null }) =>
       put('/api/user/drafts', { scope, ...draft }),
     deleteDraft: (scope: string) => del('/api/user/drafts', { scope }),
   },
@@ -623,10 +656,11 @@ export const api = {
   // Server-side settings: API keys, stored credentials, notifications, web push
   settings: {
     apiKeys: () => get('/api/settings/api-keys'),
-    createApiKey: (keyName: string) => post('/api/settings/api-keys', { keyName }),
+    // Creating a key, or turning a disabled one back on, needs the Studio login password.
+    createApiKey: (keyName: string, password: string) => post('/api/settings/api-keys', { keyName, password }),
     deleteApiKey: (keyId: string) => del(`/api/settings/api-keys/${keyId}`),
-    toggleApiKey: (keyId: string, isActive: boolean) =>
-      patch(`/api/settings/api-keys/${keyId}/toggle`, { isActive }),
+    toggleApiKey: (keyId: string, isActive: boolean, password?: string) =>
+      patch(`/api/settings/api-keys/${keyId}/toggle`, password === undefined ? { isActive } : { isActive, password }),
 
     credentials: (type: string) => get(`/api/settings/credentials${query({ type })}`),
     createCredential: (payload: {
@@ -645,7 +679,9 @@ export const api = {
 
     push: {
       vapidPublicKey: () => get('/api/settings/push/vapid-public-key'),
-      subscribe: (subscription: { endpoint?: string; keys?: unknown }) =>
+      // `resubscribe` re-registers a subscription this browser already has (after sign-in): the
+      // server stores it again without switching Web Push on or announcing it.
+      subscribe: (subscription: { endpoint?: string; keys?: unknown; resubscribe?: boolean }) =>
         post('/api/settings/push/subscribe', subscription),
       unsubscribe: (endpoint: string) => post('/api/settings/push/unsubscribe', { endpoint }),
     },

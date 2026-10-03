@@ -102,6 +102,17 @@ export const apiKeysDb = {
     return result.changes > 0;
   },
 
+  /**
+   * Disables every active API key of a user and returns how many were disabled. Used by the
+   * server entrypoint when "退出所有设备" revokes everything that outlives a session token.
+   */
+  deactivateAllForUser(userId: number): number {
+    const db = getConnection();
+    return db
+      .prepare('UPDATE api_keys SET is_active = 0 WHERE user_id = ? AND is_active = 1')
+      .run(userId).changes;
+  },
+
   /** Enables or disables an API key without deleting it. */
   toggleApiKey(
     userId: number,

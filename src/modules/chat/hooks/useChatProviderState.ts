@@ -11,6 +11,8 @@ import type { PendingPermissionRequest, PermissionMode,
   ProviderModelsDefinition } from '@/shared/types';
 import { DEFAULT_EFFORT_VALUE } from '@/shared/constants';
 import { readSelectedProvider, writeSelectedProvider } from '@/shared/selectedProvider';
+import { readModelDefaults, visibleModelCatalog } from '@/shared/modelDefaults';
+import { subscribeToUserPreferences } from '@/shared/userSettings';
 
 const FALLBACK_PROVIDER_EFFORT_VALUES: Partial<Record<LLMProvider, readonly string[]>> = {
   // Superset used only before the model catalog loads; `ultracode` belongs to the
@@ -136,14 +138,18 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   // that validates them arrives asynchronously per provider.
   const [providerModels, setProviderModels] = useState<Record<LLMProvider, string>>(() => {
     return PROVIDERS.reduce<Record<LLMProvider, string>>((acc, targetProvider) => {
+      // This device's last choice, else the default saved in Studio settings.
       acc[targetProvider] = localStorage.getItem(providerModelStorageKey(targetProvider))
+        || readModelDefaults()[targetProvider]?.model
         || FALLBACK_DEFAULT_MODEL[targetProvider];
       return acc;
     }, {} as Record<LLMProvider, string>);
   });
   const [providerEfforts, setProviderEfforts] = useState<Partial<Record<LLMProvider, string>>>(() => {
     return PROVIDERS.reduce<Partial<Record<LLMProvider, string>>>((acc, targetProvider) => {
-      acc[targetProvider] = localStorage.getItem(`${targetProvider}-effort`) || DEFAULT_EFFORT_VALUE;
+      acc[targetProvider] = localStorage.getItem(`${targetProvider}-effort`)
+        || readModelDefaults()[targetProvider]?.effort
+        || DEFAULT_EFFORT_VALUE;
       return acc;
     }, {});
   });
@@ -159,9 +165,20 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     Partial<Record<LLMProvider, ProviderCapabilities>> | null
   >(null);
 
-  const [providerModelCatalog, setProviderModelCatalog] = useState<
+  // The server's catalog; the menus see it through the user's hidden models and saved defaults (below).
+  const [serverModelCatalog, setProviderModelCatalog] = useState<
     Partial<Record<LLMProvider, ProviderModelsDefinition>>
   >({});
+  const [modelDefaults, setModelDefaults] = useState(readModelDefaults);
+  useEffect(() => subscribeToUserPreferences(() => setModelDefaults(readModelDefaults())), []);
+  const providerModelCatalog = useMemo(() => {
+    const visible: Partial<Record<LLMProvider, ProviderModelsDefinition>> = {};
+    for (const targetProvider of PROVIDERS) {
+      const catalog = serverModelCatalog[targetProvider];
+      if (catalog) visible[targetProvider] = visibleModelCatalog(catalog, modelDefaults[targetProvider]);
+    }
+    return visible;
+  }, [modelDefaults, serverModelCatalog]);
   const [providerModelsLoading, setProviderModelsLoading] = useState(true);
 
   const providerModelsRequestIdRef = useRef(0);

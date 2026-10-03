@@ -1,3 +1,4 @@
+import { readRequestClient, recordSecurityEvent, verifyStepUpPassword } from '@/modules/auth/index.js';
 import {
   apiKeysDb,
   credentialsDb,
@@ -13,7 +14,17 @@ import {
 import { createSettingsRouter } from './settings.routes.js';
 import { createSettingsService } from './settings.service.js';
 
+// Only the push service's host goes to the security log ("fcm.googleapis.com"), never the endpoint.
+function pushServiceHost(endpoint: string): string {
+  try {
+    return new URL(endpoint).host.slice(0, 100);
+  } catch {
+    return 'unknown';
+  }
+}
+
 const settingsService = createSettingsService({
+  verifyStepUp: ({ user, password, client }) => verifyStepUpPassword(user, password, client),
   apiKeys: {
     list: (userId) => apiKeysDb.getApiKeys(userId),
     create: (userId, keyName) => apiKeysDb.createApiKey(userId, keyName),
@@ -42,9 +53,11 @@ const settingsService = createSettingsService({
     save: (userId, endpoint, p256dh, auth) =>
       pushSubscriptionsDb.saveSubscription(userId, endpoint, p256dh, auth),
     remove: (endpoint) => pushSubscriptionsDb.removeSubscription(endpoint),
+    isKnown: (userId, endpoint) => pushSubscriptionsDb.isKnownEndpoint(userId, endpoint),
+    recordNew: (client, endpoint) => recordSecurityEvent({ type: 'push-subscribed', client, detail: pushServiceHost(endpoint) }),
   },
   getVapidPublicKey: getPublicKey,
 });
 
 /** Settings router assembled for the authenticated server mount. */
-export const settingsRoutes = createSettingsRouter(settingsService);
+export const settingsRoutes = createSettingsRouter(settingsService, (req) => readRequestClient(req));

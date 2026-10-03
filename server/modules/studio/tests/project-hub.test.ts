@@ -18,6 +18,7 @@ function fixture(pendingSchedules = 0) {
     pendingSchedules: () => pendingSchedules,
     schedule: input => { scheduled.push(input); return { id: 'scheduled-id' }; },
     forget: (_userId, id) => { forgotten.push(id); },
+    workbench: async () => '/home/me/studio-workbench',
   });
   const professor = (userId = 1) => service.list(userId).find(project => project.name === '超级教授')!;
   return { database, service, scheduled, registered, forgotten, professor };
@@ -79,7 +80,10 @@ test('any project, including SNR, can enable every model; invalid models, icons 
     await assert.rejects(f.service.launch(1, snr.id, 'deepseek'), /不在开发工具/);
     assert.equal((await f.service.launch(1, project.id, 'claude')).url, '/work/native-project?new=claude');
     assert.equal((await f.service.launch(1, snr.id, 'cursor')).url, '/work/native-project?new=cursor');
-    assert.deepEqual(f.registered, ['/projects/new', '/projects/snr3-lab']);
+    // Widgets open a new session in the workbench directory, outside any project.
+    assert.equal((await f.service.launchWorkbench('codex')).url, '/work/native-project?new=codex');
+    await assert.rejects(f.service.launchWorkbench('deepseek'), /不在开发工具/);
+    assert.deepEqual(f.registered, ['/projects/new', '/projects/snr3-lab', '/home/me/studio-workbench']);
   } finally { f.database.close(); }
 });
 

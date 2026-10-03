@@ -9,9 +9,13 @@ import {
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 import type Database from 'better-sqlite3';
 
-import { AppError } from '@/shared/utils.js';
-import type { StudioT212Environment, StudioT212OrderInput, StudioT212TrustedOrigin } from '@/shared/types.js';
+import { AppError, describePasskeyDevice } from '@/shared/utils.js';
+import type {
+  StudioRequestClient, StudioT212CapsInput, StudioT212CapsRequest, StudioT212Environment, StudioT212OrderInput,
+  StudioT212TrustedOrigin,
+} from '@/shared/types.js';
 
+import { createTrading212CapsService } from './trading212-caps.service.js';
 import type { createTrading212Service } from './trading212.service.js';
 
 type WebAuthn = {
@@ -26,16 +30,24 @@ type Dependencies = {
   trading212: Pick<Trading212, 'overview' | 'placeOrder' | 'lastCurrency' | 'instrumentCurrency'>;
   // STUDIO_T212_TRADING: off (default) | demo | live | both.
   trading?: string;
-  // STUDIO_T212_MAX_ORDER_VALUE: hard cap per order in the account currency (default 500).
+  // STUDIO_T212_MAX_ORDER_VALUE: default per-order cap in the account currency (default 500); users may edit theirs.
   maxOrderValue?: string;
+  // STUDIO_T212_MAX_DAILY_VALUE: default rolling-24-hour cap (default four times the per-order default).
+  maxDailyValue?: string;
+  // STUDIO_T212_CAP_CEILING: no cap, default or edited, may exceed this (default 10000).
+  capCeiling?: string;
   // STUDIO_T212_REQUIRE_PASSKEY: "1" removes the double confirmation entirely, so every order needs a passkey.
   requirePasskey?: string;
   // STUDIO_T212_ALLOW_LOCALHOST: "1" also trusts http://localhost, 127.0.0.1 and [::1] on any port (default off).
   allowLocalhost?: string;
   // Exact browser origins that may trade and own passkeys (STUDIO_PUBLIC_ORIGIN, STUDIO_TAILNET_ORIGIN).
   origins: (string | undefined)[];
-  // Checks the user's Studio account password: adding or removing a passkey always needs this step-up.
-  verifyPassword: (userId: number, password: string) => Promise<boolean>;
+  /**
+   * The auth module's password step-up (verifyStepUpPassword): adding or removing a passkey always
+   * needs it. It counts under the same per-session budget, per-user daily cap and security log as
+   * every other step-up, and throws an AppError (403 wrong, 429 throttled or capped, 400 missing).
+   */
+  verifyStepUp: (who: StepUpWho, password: string) => Promise<void>;
   // SimpleWebAuthn functions; injectable so tests never need a real authenticator.
   webauthn?: WebAuthn;
   now?: () => number;
@@ -55,7 +67,8 @@ type PasskeyRow = {
   id: string; user_id: number; rp_id: string; credential_id: string; public_key: Buffer; counter: number;
   transports: string; label: string | null; created_at: string; last_used_at: string | null;
 };
-type Attempt = { status: 'placed' | 'failed' | 'unknown'; brokerOrderId?: string | null; brokerStatus?: string | null; error?: string };
+// `pending`: written before the broker call and settled after it; a pending row left by a restart becomes `unknown`.
+type Attempt = { status: 'pending' | 'placed' | 'failed' | 'unknown'; brokerOrderId?: string | null; brokerStatus?: string | null; error?: string };
 // A WebAuthn ceremony waiting for the browser: its challenge and the origin that started it.
 type Pending = { challenge: string; origin: string; expiresAt: number };
 
@@ -64,15 +77,25 @@ const PREVIEW_TTL_MS = 60_000;
 const CEREMONY_TTL_MS = 5 * 60_000;
 // After an order whose outcome is unknown, an identical order is refused for this long unless acknowledged.
 const UNKNOWN_HOLD_MS = 5 * 60_000;
-// Password step-up: five wrong passwords in a row lock passkey changes for fifteen minutes.
-const MAX_PASSWORD_FAILURES = 5;
-const PASSWORD_LOCK_MS = 15 * 60_000;
+// The daily cap covers buys placed, in flight or with an unknown outcome in the last 24 hours.
+const DAILY_WINDOW_MS = 24 * 60 * 60_000;
+const INTERRUPTED_ORDER = 'Studio 在等待 Trading 212 回应时重启，这笔订单状态未知：请在 Trading 212 核对';
 const MAX_PASSWORD_LENGTH = 1024;
-const DEFAULT_MAX_ORDER_VALUE = 500;
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
 const ENV_LABEL: Record<StudioT212Environment, string> = { live: '实盘', demo: '模拟盘' };
 const SIDE_LABEL = { buy: '买入', sell: '卖出' } as const;
 const DEFAULT_WEBAUTHN: WebAuthn = { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse };
+
+/**
+ * Who asks for a password step-up: the signed-in user as authenticateToken attached it (with its
+ * session id) and the request client, so the auth module counts the attempt against the right session.
+ */
+type StepUpWho = { user: unknown; client: StudioRequestClient };
+
+// For callers without a request (tests): the user alone, from no particular client.
+function anonymousStepUp(userId: number): StepUpWho {
+  return { user: { id: userId }, client: { door: 'direct', address: 'unknown' } };
+}
 
 function fail(message: string, statusCode: number, code = 'T212_ORDER_REFUSED'): never {
   throw new AppError(message, { statusCode, code });
@@ -84,13 +107,6 @@ function allowedEnvironments(value: string | undefined): StudioT212Environment[]
   if (setting === 'live' || setting === 'demo') return [setting];
   if (setting && setting !== 'off') console.warn(`[studio] STUDIO_T212_TRADING="${setting}" is not off|demo|live|both; trading stays off`);
   return [];
-}
-function orderCap(value: string | undefined) {
-  if (value === undefined || value.trim() === '') return DEFAULT_MAX_ORDER_VALUE;
-  const parsed = Number(value);
-  if (Number.isFinite(parsed) && parsed > 0) return parsed;
-  console.warn(`[studio] STUDIO_T212_MAX_ORDER_VALUE is not a positive number; using ${DEFAULT_MAX_ORDER_VALUE}`);
-  return DEFAULT_MAX_ORDER_VALUE;
 }
 // Boolean env switches are on only for an explicit 1 / true / yes / on.
 function enabledFlag(value: string | undefined) {
@@ -117,16 +133,6 @@ function quoteUnit(code: string) {
   const upper = code.trim().toUpperCase();
   return upper === 'GBX' ? { currency: 'GBP', scale: 0.01 } : { currency: upper, scale: 1 };
 }
-// A rough device name so two passkeys on the same domain can be told apart; iPadOS Safari reports itself as a Mac.
-function deviceLabel(userAgent: string | undefined) {
-  const agent = userAgent ?? '';
-  if (/iPad/.test(agent)) return 'iPad';
-  if (/iPhone/.test(agent)) return 'iPhone';
-  if (/Android/.test(agent)) return 'Android';
-  if (/Windows/.test(agent)) return 'Windows';
-  if (/Macintosh/.test(agent)) return 'Mac / iPad';
-  return null;
-}
 function text(value: unknown) {
   return typeof value === 'string' || typeof value === 'number' ? String(value) : null;
 }
@@ -137,8 +143,10 @@ const round2 = (value: number) => Math.round(value * 100) / 100;
 
 /**
  * Used by studio.module (through trading212-orders.routes) to place Trading 212 orders safely: environment
- * gating, a hard per-order cap in the account currency, single-use 60-second previews, and a Face ID / Touch ID
- * passkey for the request's domain. A double confirmation is accepted only while the user has no passkey at all
+ * gating, per-user per-order and rolling-24-hour caps in the account currency (edited through the caps service;
+ * raising needs Face ID / Touch ID), single-use 60-second previews, and a Face ID / Touch ID passkey for the
+ * request's domain. The daily cap counts buys only; a confirmation is written as a pending row before the broker
+ * call, so parallel confirmations, a restart or a failed outcome write cannot exceed it. A double confirmation is accepted only while the user has no passkey at all
  * (and never with STUDIO_T212_REQUIRE_PASSKEY=1). Adding or removing a passkey needs the Studio password (removal
  * also accepts that passkey's own assertion). Every confirmation attempt is recorded in studio_t212_orders
  * without secrets; an unknown broker outcome holds back an identical order for a few minutes.
@@ -148,7 +156,6 @@ export function createTrading212OrdersService(deps: Dependencies) {
   const now = deps.now ?? Date.now;
   const webauthn = deps.webauthn ?? DEFAULT_WEBAUTHN;
   const allowedEnvs = allowedEnvironments(deps.trading);
-  const maxOrderValue = orderCap(deps.maxOrderValue);
   const requirePasskey = enabledFlag(deps.requirePasskey);
   const allowLocalhost = enabledFlag(deps.allowLocalhost);
   const origins = configuredOrigins(deps.origins);
@@ -157,8 +164,6 @@ export function createTrading212OrdersService(deps: Dependencies) {
   const registrations = new Map<string, Pending>();
   // Removal challenges per user and passkey id, for removals authorised by that passkey.
   const removals = new Map<string, Pending>();
-  // Consecutive wrong step-up passwords per user, and when a lock after too many of them ends.
-  const passwordFailures = new Map<number, { count: number; lockedUntil: number }>();
   db.exec(`
     CREATE TABLE IF NOT EXISTS studio_t212_passkeys (
       id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, rp_id TEXT NOT NULL, credential_id TEXT NOT NULL UNIQUE,
@@ -174,6 +179,26 @@ export function createTrading212OrdersService(deps: Dependencies) {
     );
     CREATE INDEX IF NOT EXISTS studio_t212_orders_user_time ON studio_t212_orders (user_id, created_at);
   `);
+  // A pending row outlived the process that was waiting for the broker: the order may have executed, so it keeps
+  // counting against the daily cap and holds back an identical order, like any other unknown outcome.
+  const interrupted = db.prepare(`UPDATE studio_t212_orders SET status = 'unknown', error = COALESCE(error, ?) WHERE status = 'pending'`)
+    .run(INTERRUPTED_ORDER).changes;
+  if (interrupted) console.warn(`[studio] ${interrupted} Trading 212 order(s) were still waiting for the broker at shutdown; marked unknown`);
+  // Caps are raised only with a passkey of the request's domain, verified here against the stored credential.
+  const caps = createTrading212CapsService({
+    database: db, now, maxOrderValue: deps.maxOrderValue, maxDailyValue: deps.maxDailyValue, ceiling: deps.capCeiling,
+    passkeys: {
+      rpIds: userId => [...new Set(passkeys(userId).map(row => row.rp_id))],
+      options: (userId, rpId, challenge, timeoutMs) => webauthn.generateAuthenticationOptions({
+        rpID: rpId, userVerification: 'required', timeout: timeoutMs, challenge,
+        allowCredentials: passkeys(userId, rpId).map(row => ({ id: row.credential_id, transports: transports(row) })),
+      }),
+      async verify(userId, rpId, assertion, challenge, origin) {
+        const row = passkeys(userId, rpId).find(item => item.credential_id === assertion.id);
+        return row && await verifyAssertion(row, assertion, challenge, origin) ? row.id : null;
+      },
+    },
+  });
 
   const isoNow = () => new Date(now()).toISOString();
   function passkeys(userId: number, rpId?: string) {
@@ -224,19 +249,16 @@ export function createTrading212OrdersService(deps: Dependencies) {
     const minutes = Math.max(1, Math.round((now() - Date.parse(row.created_at)) / 60_000));
     return `约 ${minutes} 分钟前一笔相同的订单（${SIDE_LABEL[order.side]} ${order.quantity} 股 ${order.ticker}）状态未知：请先在 Trading 212 核对它是否已经成交；确认没有成交后，再明确确认重新下单`;
   }
-  async function assertPassword(userId: number, password: string) {
-    const time = now();
-    const state = passwordFailures.get(userId);
-    if (state && state.lockedUntil > time) fail('Studio 密码错误次数过多，请 15 分钟后再试', 429, 'T212_STEP_UP_LOCKED');
-    // The attempt is counted before the (slow) password check, so concurrent guesses cannot all slip under
-    // the limit; a correct password clears the count. A lock that has run out starts a fresh count.
-    const count = (state && state.lockedUntil && state.lockedUntil <= time ? 0 : state?.count ?? 0) + 1;
-    passwordFailures.set(userId, { count, lockedUntil: count >= MAX_PASSWORD_FAILURES ? time + PASSWORD_LOCK_MS : 0 });
-    let correct = false;
-    try { correct = password.length > 0 && password.length <= MAX_PASSWORD_LENGTH && await deps.verifyPassword(userId, password); }
-    catch { correct = false; }
-    if (correct) { passwordFailures.delete(userId); return; }
-    fail('Studio 密码不正确', 403, 'T212_STEP_UP_FAILED');
+  // The password step-up goes through the auth module, whose limits and log apply; its refusals
+  // keep their meaning under this module's codes (429 stays a lock, with auth's own wording).
+  async function assertPassword(who: StepUpWho, password: string) {
+    if (!password || password.length > MAX_PASSWORD_LENGTH) fail('Studio 密码不正确', 403, 'T212_STEP_UP_FAILED');
+    try {
+      await deps.verifyStepUp(who, password);
+    } catch (error) {
+      if (error instanceof AppError && error.statusCode === 429) fail(error.message, 429, 'T212_STEP_UP_LOCKED');
+      fail('Studio 密码不正确', 403, 'T212_STEP_UP_FAILED');
+    }
   }
   // Verifies an assertion against one stored credential with user verification required, then advances its counter.
   async function verifyAssertion(row: PasskeyRow, assertion: AuthenticationResponseJSON, challenge: string, origin: string) {
@@ -273,34 +295,79 @@ export function createTrading212OrdersService(deps: Dependencies) {
     }
     fail(`${ticker} 以 ${quoted} 计价，账户货币是 ${overview.currency || '未知'}：账户里没有同币种的持仓可以推算汇率，Studio 不会按 1:1 估算，订单没有生成。可以直接在 Trading 212 里下这笔单`, 400, 'T212_FX_UNKNOWN');
   }
+  // Value of this user's buys in the last 24 hours that are in flight (pending), placed or of unknown outcome. Sells
+  // neither use nor are limited by the daily allowance; the per-order cap covers both sides.
+  function dailyUsed(userId: number, env: StudioT212Environment) {
+    const row = db.prepare(`SELECT COALESCE(SUM(estimated_value), 0) AS total FROM studio_t212_orders WHERE user_id = ? AND env = ?
+      AND side = 'buy' AND status IN ('pending', 'placed', 'unknown') AND created_at > ?`)
+      .get(userId, env, new Date(now() - DAILY_WINDOW_MS).toISOString()) as { total: number };
+    return round2(row.total);
+  }
+  function capsView(userId: number, env: StudioT212Environment) {
+    const limits = caps.limits(userId, env);
+    const used = dailyUsed(userId, env);
+    const currency = deps.trading212.lastCurrency(env);
+    return { ...limits, dailyUsed: used, dailyRemaining: Math.max(0, round2(limits.dailyLimit - used)), ...(currency ? { currency } : {}) };
+  }
+  function dailyCapMessage(used: number, value: number, limit: number, currency: string) {
+    const remaining = Math.max(0, round2(limit - used));
+    return `超过每日上限：过去 24 小时已下单 ${money(used, currency)}，这笔约 ${money(value, currency)}，每日上限 ${money(limit, currency)}`
+      + `（还剩 ${money(remaining, currency)}）。可以在「设置 → 交易安全」调整`;
+  }
+  function matchOrigin(header: string | undefined): StudioT212TrustedOrigin | null {
+    let url: URL | null = null;
+    try { url = header ? new URL(header) : null; } catch { url = null; }
+    // An Origin header is exactly scheme://host[:port]; anything else, including "null", is refused.
+    if (url && url.origin === header) {
+      if (origins.includes(url.origin)) return { origin: url.origin, rpId: url.hostname };
+      if (allowLocalhost && url.protocol === 'http:' && LOCAL_HOSTNAMES.has(url.hostname)) return { origin: url.origin, rpId: url.hostname };
+    }
+    return null;
+  }
+  // Inserts one confirmation attempt and returns its row id.
   function record(preview: Preview, method: Method, attempt: Attempt) {
-    db.prepare(`INSERT INTO studio_t212_orders (preview_id, user_id, env, ticker, side, type, quantity, limit_price, estimated_value,
+    return Number(db.prepare(`INSERT INTO studio_t212_orders (preview_id, user_id, env, ticker, side, type, quantity, limit_price, estimated_value,
       currency, method, rp_id, status, broker_order_id, broker_status, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       preview.id, preview.userId, preview.env, preview.ticker, preview.side, preview.type, preview.quantity, preview.limitPrice ?? null,
       preview.estimatedValue, preview.currency, method, preview.rpId, attempt.status, attempt.brokerOrderId ?? null,
       attempt.brokerStatus ?? null, attempt.error?.slice(0, 300) ?? null, isoNow(),
-    );
+    ).lastInsertRowid);
+  }
+  // Records the broker's outcome on the pending row. If that write fails the row stays pending, which still counts
+  // against the daily cap and becomes unknown at the next start, so the failure is logged rather than thrown.
+  function settle(rowId: number, attempt: Attempt) {
+    try {
+      db.prepare('UPDATE studio_t212_orders SET status = ?, broker_order_id = ?, broker_status = ?, error = ? WHERE row_id = ?').run(
+        attempt.status, attempt.brokerOrderId ?? null, attempt.brokerStatus ?? null, attempt.error?.slice(0, 300) ?? null, rowId,
+      );
+    } catch (error) {
+      console.error(`[studio] could not record the outcome of Trading 212 order row ${rowId}; it stays pending`, error);
+    }
   }
 
   return {
     // Matches the browser's Origin header against the configured origins; its hostname becomes the RP ID.
     trustedOrigin(header: string | undefined): StudioT212TrustedOrigin {
-      let url: URL | null = null;
-      try { url = header ? new URL(header) : null; } catch { url = null; }
-      // An Origin header is exactly scheme://host[:port]; anything else, including "null", is refused.
-      if (url && url.origin === header) {
-        if (origins.includes(url.origin)) return { origin: url.origin, rpId: url.hostname };
-        if (allowLocalhost && url.protocol === 'http:' && LOCAL_HOSTNAMES.has(url.hostname)) return { origin: url.origin, rpId: url.hostname };
-      }
+      const trusted = matchOrigin(header);
+      if (trusted) return trusted;
       fail('当前网址不在下单白名单：请在服务器 .env 把 STUDIO_PUBLIC_ORIGIN 或 STUDIO_TAILNET_ORIGIN 设为你打开 Studio 的地址', 403, 'T212_UNTRUSTED_ORIGIN');
+    },
+
+    // Like trustedOrigin, but null instead of a refusal: lowering caps does not need an allowlisted page.
+    optionalTrustedOrigin(header: string | undefined) {
+      return matchOrigin(header);
     },
 
     config(userId: number) {
       const currency = [...allowedEnvs, 'live', 'demo'].map(env => deps.trading212.lastCurrency(env as StudioT212Environment)).find(Boolean);
+      const history = caps.history(userId);
       return {
-        allowedEnvs, maxOrderValue, ...(currency ? { currency } : {}),
+        allowedEnvs, ...(currency ? { currency } : {}),
         passkeys: passkeys(userId).map(summary),
         trustedOrigins: origins, allowLocalhost, requirePasskey,
+        caps: { ceiling: caps.ceiling, defaults: caps.defaults, envs: { live: capsView(userId, 'live'), demo: capsView(userId, 'demo') } },
+        // Applied changes and refused raises apart, so refusals can never push an applied change out of view.
+        capChanges: history.applied, capRefusals: history.refused,
       };
     },
 
@@ -347,8 +414,15 @@ export function createTrading212OrdersService(deps: Dependencies) {
       if (input.type === 'limit' && input.timeValidity === 'GOOD_TILL_CANCEL') warnings.push('撤单前有效：未成交前订单会一直挂着，可以在 Trading 212 里撤单');
       const estimatedValue = round2(estimate);
       if (!(estimatedValue > 0)) fail('无法估算这笔订单的金额，请改用限价单', 400);
+      const limits = caps.limits(userId, input.env);
+      const maxOrderValue = limits.maxOrderValue;
       if (estimatedValue > maxOrderValue) {
-        fail(`预计金额 ${money(estimatedValue, currency)} 超过单笔上限 ${money(maxOrderValue, currency)}（STUDIO_T212_MAX_ORDER_VALUE）`, 400, 'T212_ORDER_CAP');
+        fail(`预计金额 ${money(estimatedValue, currency)} 超过单笔上限 ${money(maxOrderValue, currency)}（可在「设置 → 交易安全」调整）`, 400, 'T212_ORDER_CAP');
+      }
+      const used = dailyUsed(userId, input.env);
+      // Only buys spend the daily allowance.
+      if (input.side === 'buy' && round2(used + estimatedValue) > limits.dailyLimit) {
+        fail(dailyCapMessage(used, estimatedValue, limits.dailyLimit, currency), 400, 'T212_DAILY_CAP');
       }
       if (input.side === 'buy' && estimatedValue > overview.cash.available) warnings.push(`可用现金 ${money(overview.cash.available, currency)}，可能不足以成交`);
       if (acknowledgedUnknown) warnings.push('你已确认之前状态未知的相同订单没有成交');
@@ -366,7 +440,8 @@ export function createTrading212OrdersService(deps: Dependencies) {
       return {
         id: preview.id, env: preview.env, ticker: preview.ticker, side: preview.side, type: preview.type, quantity: preview.quantity,
         ...(preview.type === 'limit' ? { limitPrice: preview.limitPrice, timeValidity: preview.timeValidity } : {}),
-        estimatedValue, currency, maxOrderValue, warnings, expiresAt: new Date(preview.expiresAt).toISOString(),
+        estimatedValue, currency, maxOrderValue, dailyLimit: limits.dailyLimit, dailyUsed: used,
+        dailyRemaining: Math.max(0, round2(limits.dailyLimit - used)), warnings, expiresAt: new Date(preview.expiresAt).toISOString(),
         requires: preview.requires, ...(authentication ? { authentication } : {}),
       };
     },
@@ -402,6 +477,21 @@ export function createTrading212OrdersService(deps: Dependencies) {
         if (refusal) refuse(refusal, 403, 'T212_PASSKEY_REQUIRED');
       }
 
+      // Caps may have been lowered since the preview, and other buys may have used the daily allowance meanwhile.
+      // From the check to the pending row nothing awaits, so two parallel confirmations cannot both fit into the
+      // same room; the row is in the database, so the allowance stays spent even if the process dies mid-call.
+      const limits = caps.limits(userId, preview.env);
+      if (preview.estimatedValue > limits.maxOrderValue) {
+        refuse(`单笔上限已改为 ${money(limits.maxOrderValue, preview.currency)}，这笔约 ${money(preview.estimatedValue, preview.currency)}，订单没有提交`, 400, 'T212_ORDER_CAP');
+      }
+      if (preview.side === 'buy') {
+        const used = dailyUsed(userId, preview.env);
+        if (round2(used + preview.estimatedValue) > limits.dailyLimit) {
+          refuse(dailyCapMessage(used, preview.estimatedValue, limits.dailyLimit, preview.currency), 400, 'T212_DAILY_CAP');
+        }
+      }
+      const rowId = record(preview, method, { status: 'pending' });
+
       const quantity = preview.side === 'sell' ? -preview.quantity : preview.quantity;
       const body = preview.type === 'market'
         ? { ticker: preview.ticker, quantity }
@@ -410,9 +500,10 @@ export function createTrading212OrdersService(deps: Dependencies) {
       try {
         placed = await deps.trading212.placeOrder(preview.env, preview.type, body);
       } catch (error) {
-        // A timeout, 408 or 5xx may still have executed the order, so it is not recorded as a refusal.
+        // A timeout, 408 or 5xx may still have executed the order, so it is not recorded as a refusal; a definite
+        // refusal (failed) frees its share of the daily allowance again.
         const unknown = error instanceof AppError && error.code === 'T212_ORDER_UNKNOWN';
-        record(preview, method, { status: unknown ? 'unknown' : 'failed', error: error instanceof Error ? error.message : '下单失败' });
+        settle(rowId, { status: unknown ? 'unknown' : 'failed', error: error instanceof Error ? error.message : '下单失败' });
         throw error;
       }
       const order = {
@@ -420,14 +511,25 @@ export function createTrading212OrdersService(deps: Dependencies) {
         side: text(placed.side), type: text(placed.type), quantity: numberOrNull(placed.quantity),
         filledQuantity: numberOrNull(placed.filledQuantity), limitPrice: numberOrNull(placed.limitPrice), createdAt: text(placed.createdAt),
       };
-      record(preview, method, { status: 'placed', brokerOrderId: order.id, brokerStatus: order.status });
+      settle(rowId, { status: 'placed', brokerOrderId: order.id, brokerStatus: order.status });
       return { order, method, env: preview.env, estimatedValue: preview.estimatedValue, currency: preview.currency };
     },
 
+    // Issues the Face ID / Touch ID challenge for raising caps, bound to exactly these values.
+    capsChallenge(userId: number, origin: StudioT212TrustedOrigin, input: StudioT212CapsInput) {
+      return caps.challenge(userId, origin, input);
+    },
+
+    // Saves caps (lowering with the session alone, raising with the bound assertion) and returns them with usage.
+    async updateCaps(userId: number, origin: StudioT212TrustedOrigin | null, request: StudioT212CapsRequest) {
+      const result = await caps.update(userId, origin, request);
+      return { ...result, caps: capsView(userId, result.env) };
+    },
+
     // Starts adding a passkey for the request's domain; the password step-up comes before any challenge is issued.
-    async passkeyOptions(userId: number, userName: string | undefined, origin: StudioT212TrustedOrigin, password: string) {
+    async passkeyOptions(userId: number, userName: string | undefined, origin: StudioT212TrustedOrigin, password: string, who: StepUpWho = anonymousStepUp(userId)) {
       prune();
-      await assertPassword(userId, password);
+      await assertPassword(who, password);
       const options = await webauthn.generateRegistrationOptions({
         rpName: 'Agent Cloud Studio', rpID: origin.rpId,
         userName: userName?.trim() || `studio-${userId}`, userDisplayName: 'Studio 交易确认',
@@ -457,7 +559,7 @@ export function createTrading212OrdersService(deps: Dependencies) {
       if (db.prepare('SELECT 1 FROM studio_t212_passkeys WHERE credential_id = ?').get(credential.id)) fail('这把通行密钥已经登记过了', 409);
       const row: PasskeyRow = {
         id: randomUUID(), user_id: userId, rp_id: origin.rpId, credential_id: credential.id, public_key: Buffer.from(credential.publicKey),
-        counter: credential.counter, transports: JSON.stringify(credential.transports ?? []), label: deviceLabel(userAgent),
+        counter: credential.counter, transports: JSON.stringify(credential.transports ?? []), label: describePasskeyDevice(userAgent),
         created_at: isoNow(), last_used_at: null,
       };
       db.prepare(`INSERT INTO studio_t212_passkeys (id, user_id, rp_id, credential_id, public_key, counter, transports, label, created_at, last_used_at)
@@ -478,10 +580,10 @@ export function createTrading212OrdersService(deps: Dependencies) {
       return options;
     },
 
-    async removePasskey(userId: number, origin: StudioT212TrustedOrigin, id: string, stepUp: StepUp) {
+    async removePasskey(userId: number, origin: StudioT212TrustedOrigin, id: string, stepUp: StepUp, who: StepUpWho = anonymousStepUp(userId)) {
       const row = findPasskey(userId, id);
       if ('password' in stepUp) {
-        await assertPassword(userId, stepUp.password);
+        await assertPassword(who, stepUp.password);
       } else {
         const key = `${userId}:${id}`;
         const pending = removals.get(key);

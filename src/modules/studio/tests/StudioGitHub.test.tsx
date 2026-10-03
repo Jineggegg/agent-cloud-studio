@@ -188,18 +188,33 @@ test('failing checks that are not required must be acknowledged, and blockers di
   expect((within(blocked).getByRole('button', { name: '合并' }) as HTMLButtonElement).disabled).toBe(true);
 });
 
-test('the GitHub widget shows the open PR count and CI state when small, and the top three PRs when medium', async () => {
-  localStorage.setItem('studio-widgets-v1', JSON.stringify([{ id: 'w-gh-s', type: 'github', size: 'small' }, { id: 'w-gh-m', type: 'github', size: 'medium' }]));
-  render(<StudioWidgets editing={false} snr={null} onEnterEdit={vi.fn()} galleryOpen={false} onGalleryClose={vi.fn()} />);
-  const [small, medium] = await screen.findAllByRole('article', { name: 'GitHub' });
+test('the GitHub widget shows the open PR count and CI state when small, the top three PRs when medium, and both when large', async () => {
+  localStorage.setItem('studio-widgets-v1', JSON.stringify([
+    { id: 'w-gh-s', type: 'github', size: 'small' }, { id: 'w-gh-m', type: 'github', size: 'medium' }, { id: 'w-gh-l', type: 'github', size: 'large' },
+  ]));
+  render(<StudioWidgets editing={false} snr={null} onOpen={vi.fn()} onEnterEdit={vi.fn()} galleryOpen={false} onGalleryClose={vi.fn()} />);
+  const [small, medium, large] = await screen.findAllByRole('article', { name: 'GitHub' });
   await waitFor(() => expect(small.textContent).toContain('1 个 PR 检查失败'));
   expect(small.textContent).toContain('个 PR');
   expect(small.textContent).toContain('1 个待审');
   expect(medium.textContent).toContain('GitHub PR inbox');
   expect(medium.textContent).toContain('claudecodeui #512');
   expect(medium.textContent).toContain('共 3 个');
-  // One request feeds both widgets.
+  // Large keeps the count and CI summary above the PR list.
+  expect(large.textContent).toContain('1 个 PR 检查失败');
+  expect(large.textContent).toContain('GitHub PR inbox');
+  expect(large.textContent).toContain('claudecodeui #512');
+  // One request feeds every widget.
   expect(mocks.github.pulls).toHaveBeenCalledTimes(1);
+});
+
+test('a tap on the GitHub widget opens the PR inbox app from the card', async () => {
+  localStorage.setItem('studio-widgets-v1', JSON.stringify([{ id: 'w-gh-m', type: 'github', size: 'medium' }]));
+  const onOpen = vi.fn();
+  render(<StudioWidgets editing={false} snr={null} onOpen={onOpen} onEnterEdit={vi.fn()} galleryOpen={false} onGalleryClose={vi.fn()} />);
+  await screen.findByRole('article', { name: 'GitHub' });
+  fireEvent.click(screen.getByRole('button', { name: '打开 GitHub' }));
+  expect(onOpen).toHaveBeenCalledWith('github', expect.any(Object));
 });
 
 // ------------------------------------------------------------------ review fixes
@@ -209,7 +224,7 @@ test('a finished merge takes the PR out of the inbox and the home widget at once
   mocks.github.merge.mockImplementation(json({ outcome: 'merged', mergeCommitSha: null, message: '已压缩合并 #42 到 main' }));
   // GitHub's search keeps listing #42 for a while, so every later read still returns it.
   render(<>
-    <StudioWidgets editing={false} snr={null} onEnterEdit={vi.fn()} galleryOpen={false} onGalleryClose={vi.fn()} />
+    <StudioWidgets editing={false} snr={null} onOpen={vi.fn()} onEnterEdit={vi.fn()} galleryOpen={false} onGalleryClose={vi.fn()} />
     <StudioGitHub />
   </>);
   const card = await screen.findByRole('article', { name: 'GitHub' });
@@ -319,7 +334,7 @@ test('the merge log shows a request the server rejected', async () => {
 
 test('forgetting a merged PR updates a widget that is already showing it', async () => {
   localStorage.setItem('studio-widgets-v1', JSON.stringify([{ id: 'w-gh-m', type: 'github', size: 'medium' }]));
-  render(<StudioWidgets editing={false} snr={null} onEnterEdit={vi.fn()} galleryOpen={false} onGalleryClose={vi.fn()} />);
+  render(<StudioWidgets editing={false} snr={null} onOpen={vi.fn()} onEnterEdit={vi.fn()} galleryOpen={false} onGalleryClose={vi.fn()} />);
   const card = await screen.findByRole('article', { name: 'GitHub' });
   await waitFor(() => expect(card.textContent).toContain('Session export'));
   act(() => forgetMergedGitHubPull('siteboon/claudecodeui#512'));

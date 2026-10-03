@@ -296,7 +296,13 @@
     },
     "form": {
       "placeholder": "API 密钥名称（例如：生产服务器）",
+      "passwordPlaceholder": "Studio 登录密码",
+      "passwordHint": "API 密钥在会话之外也能用，所以创建或重新启用都需要输入登录密码。",
       "createButton": "创建",
+      "cancelButton": "取消"
+    },
+    "activate": {
+      "confirmButton": "启用",
       "cancelButton": "取消"
     },
     "newButton": "新建 API 密钥",

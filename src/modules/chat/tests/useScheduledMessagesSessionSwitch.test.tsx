@@ -7,7 +7,7 @@ import { api } from '@/shared/api';
 import { useScheduledMessages } from '@/modules/chat/composer/useScheduledMessages';
 
 function listResponse(data: unknown[]): Response {
-  return { json: async () => ({ data }) } as unknown as Response;
+  return { ok: true, json: async () => ({ data }) } as unknown as Response;
 }
 
 const MESSAGE_A = {

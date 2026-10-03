@@ -506,6 +506,8 @@ export const runMigrations = (db: Database) => {
     `);
     db.exec(USER_PREFERENCES_TABLE_SCHEMA_SQL);
     db.exec(SESSION_DRAFTS_TABLE_SCHEMA_SQL);
+    addColumnToTableIfNotExists(db, 'session_drafts',
+      getTableInfo(db, 'session_drafts').map((column) => column.name), 'recovery_of_run_id', 'TEXT');
     db.exec(SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL);
     addSupersededTranscriptPathColumn(db);
 

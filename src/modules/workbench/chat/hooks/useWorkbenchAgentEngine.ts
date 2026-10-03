@@ -6,6 +6,7 @@ import {
   useChatRealtimeHandlers,
   useChatSessionState,
   useSessionStore,
+  useTaskRecovery,
 } from '@/modules/chat';
 import { useWebSocket } from '@/shared/context/WebSocketContext';
 import { useProcessingSessions, useSessionProtectionActions } from '@/shared/context/SessionProtectionContext';
@@ -25,8 +26,9 @@ type UseWorkbenchAgentEngineArgs = {
 };
 
 /**
- * Used by WorkbenchAgentChat: the inherited chat engine (provider, session, realtime and composer hooks) wired
- * exactly as ChatInterface wires it, minus ChatInterface's presentation, palette registration and scheduling.
+ * Used by WorkbenchAgentChat: the inherited chat engine (provider, session, realtime and composer hooks, durable
+ * delivery and task recovery) wired exactly as ChatInterface wires it, minus ChatInterface's presentation, palette
+ * registration and scheduling.
  * Everything that talks to the WebSocket or the session store stays in those hooks; this only joins them.
  */
 export function useWorkbenchAgentEngine({
@@ -37,7 +39,7 @@ export function useWorkbenchAgentEngine({
   onSessionCreated,
   onOpenFile,
 }: UseWorkbenchAgentEngineArgs) {
-  const { ws, sendMessage, subscribe } = useWebSocket();
+  const { ws, sendMessage, subscribe, isConnected } = useWebSocket();
   const processingSessions = useProcessingSessions();
   const {
     markSessionProcessing,
@@ -50,6 +52,8 @@ export function useWorkbenchAgentEngine({
   const accumulatedStreamRef = useRef('');
   const statusCheckSentAtRef = useRef(new Map<string, number>());
   const lastSeqRef = useRef(new Map<string, number>());
+  // Sequence numbers restart with each run, so every replay subscription names the run its cursor belongs to.
+  const lastRunIdRef = useRef(new Map<string, string>());
 
   const resetStreamingState = useCallback(() => {
     if (streamTimerRef.current) {
@@ -81,6 +85,7 @@ export function useWorkbenchAgentEngine({
     resetStreamingState,
     statusCheckSentAtRef,
     lastSeqRef,
+    lastRunIdRef,
     sessionStore,
   });
   const { setCurrentSessionId, requestLatestMessages } = sessionState;
@@ -112,7 +117,12 @@ export function useWorkbenchAgentEngine({
     processingSessions,
     canAbortSession: sessionState.canAbortSession,
     tokenBudget: sessionState.tokenBudget,
+    // Sends are durable: the draft clears, the message shows and a new chat is routed only once the server's
+    // run receipt arrives over `subscribe` (useChatDelivery), never on WebSocket.send success alone.
     sendMessage,
+    subscribe,
+    isConnected,
+    onDeliveryReconciled: (reconciledSessionId) => { void requestLatestMessages(reconciledSessionId, true); },
     onSessionProcessing: markSessionProcessing,
     onSessionEstablished: handleSessionEstablished,
     onFileOpen: onOpenFile,
@@ -131,7 +141,7 @@ export function useWorkbenchAgentEngine({
     statusCheckSentAtRef.current.set(session.id, Date.now());
     sendMessage({
       type: 'chat.subscribe',
-      sessions: [{ sessionId: session.id, lastSeq: lastSeqRef.current.get(session.id) ?? 0 }],
+      sessions: [{ sessionId: session.id, lastSeq: lastSeqRef.current.get(session.id) ?? 0, runId: lastRunIdRef.current.get(session.id) }],
     });
   }, [requestLatestMessages, sendMessage, session]);
 
@@ -147,6 +157,7 @@ export function useWorkbenchAgentEngine({
     streamTimerRef,
     accumulatedStreamRef,
     lastSeqRef,
+    lastRunIdRef,
     statusCheckSentAtRef,
     onSessionProcessing: markSessionProcessing,
     onSessionIdle: markSessionIdle,
@@ -158,6 +169,13 @@ export function useWorkbenchAgentEngine({
   });
 
   useEffect(() => () => resetStreamingState(), [resetStreamingState]);
+
+  // Executions interrupted by a server restart (or failed) in this project or session, offered for reviewed continuation.
+  const recovery = useTaskRecovery({
+    projectPath: project.fullPath || project.path || '',
+    sessionId: session?.id || sessionState.currentSessionId || null,
+    subscribe,
+  });
 
   const sessionId = sessionState.currentSessionId || session?.id || null;
   const { selectProviderModel, selectProviderEffort } = providerState;
@@ -172,5 +190,5 @@ export function useWorkbenchAgentEngine({
   }, [provider, selectProviderEffort, sessionId]);
 
   // The three hook results are fresh objects every render, so memoising this bundle would buy nothing.
-  return { provider: providerState, session: sessionState, composer, sessionId, sendMessage, selectModel, selectEffort };
+  return { provider: providerState, session: sessionState, composer, recovery, isConnected, sessionId, sendMessage, selectModel, selectEffort };
 }

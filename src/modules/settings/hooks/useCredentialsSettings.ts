@@ -7,7 +7,8 @@ import { copyTextToClipboard } from '@/shared/utils';
 type ApiKeysResponse = {
   apiKeys?: ApiKeyItem[];
   success?: boolean;
-  error?: string;
+  // A plain message from older routes, or the AppError body ({ code, message }).
+  error?: string | { message?: string };
   apiKey?: CreatedApiKey;
 };
 
@@ -22,8 +23,8 @@ type UseCredentialsSettingsArgs = {
   confirmDeleteGithubCredentialText: string;
 };
 
-const getApiError = (payload: { error?: string } | undefined, fallback: string) => (
-  payload?.error || fallback
+const getApiError = (payload: { error?: string | { message?: string } } | undefined, fallback: string) => (
+  (typeof payload?.error === 'string' ? payload.error : payload?.error?.message) || fallback
 );
 
 export function useCredentialsSettings({
@@ -36,6 +37,13 @@ export function useCredentialsSettings({
 
   const [showNewKeyForm, setShowNewKeyForm] = useState(false);
   const [newKeyName, setNewKeyName] = useState('');
+  // The Studio password the server asks for before it creates a key; cleared after every attempt.
+  const [newKeyPassword, setNewKeyPassword] = useState('');
+  // The key whose re-activation waits for the password, and that password; null when none is open.
+  const [activatingKeyId, setActivatingKeyId] = useState<string | null>(null);
+  const [activationPassword, setActivationPassword] = useState('');
+  // The server's answer to the last create or re-activation (wrong password, too many attempts).
+  const [apiKeyError, setApiKeyError] = useState('');
 
   const [showNewGithubForm, setShowNewGithubForm] = useState(false);
   const [newGithubName, setNewGithubName] = useState('');
@@ -70,16 +78,18 @@ export function useCredentialsSettings({
   }, []);
 
   const createApiKey = useCallback(async () => {
-    if (!newKeyName.trim()) {
+    if (!newKeyName.trim() || !newKeyPassword) {
       return;
     }
 
+    setApiKeyError('');
     try {
-      const response = await api.settings.createApiKey(newKeyName.trim());
+      const response = await api.settings.createApiKey(newKeyName.trim(), newKeyPassword);
+      setNewKeyPassword('');
 
       const payload = await response.json() as ApiKeysResponse;
       if (!response.ok || !payload.success) {
-        console.error('Error creating API key:', getApiError(payload, 'Failed to create API key'));
+        setApiKeyError(getApiError(payload, 'Failed to create API key'));
         return;
       }
 
@@ -92,7 +102,7 @@ export function useCredentialsSettings({
     } catch (error) {
       console.error('Error creating API key:', error);
     }
-  }, [fetchData, newKeyName]);
+  }, [fetchData, newKeyName, newKeyPassword]);
 
   const deleteApiKey = useCallback(async (keyId: string) => {
     if (!window.confirm(confirmDeleteApiKeyText)) {
@@ -115,8 +125,16 @@ export function useCredentialsSettings({
   }, [confirmDeleteApiKeyText, fetchData]);
 
   const toggleApiKey = useCallback(async (keyId: string, isActive: boolean) => {
+    // Turning a key back on needs the password: open the field instead of asking the server.
+    if (!isActive) {
+      setApiKeyError('');
+      setActivationPassword('');
+      setActivatingKeyId(keyId);
+      return;
+    }
+
     try {
-      const response = await api.settings.toggleApiKey(keyId, !isActive);
+      const response = await api.settings.toggleApiKey(keyId, false);
 
       if (!response.ok) {
         const payload = await response.json() as ApiKeysResponse;
@@ -129,6 +147,35 @@ export function useCredentialsSettings({
       console.error('Error toggling API key:', error);
     }
   }, [fetchData]);
+
+  const confirmActivation = useCallback(async () => {
+    if (!activatingKeyId || !activationPassword) {
+      return;
+    }
+
+    setApiKeyError('');
+    try {
+      const response = await api.settings.toggleApiKey(activatingKeyId, true, activationPassword);
+      setActivationPassword('');
+
+      if (!response.ok) {
+        const payload = await response.json() as ApiKeysResponse;
+        setApiKeyError(getApiError(payload, 'Failed to turn the API key on'));
+        return;
+      }
+
+      setActivatingKeyId(null);
+      await fetchData();
+    } catch (error) {
+      console.error('Error toggling API key:', error);
+    }
+  }, [activatingKeyId, activationPassword, fetchData]);
+
+  const cancelActivation = useCallback(() => {
+    setActivatingKeyId(null);
+    setActivationPassword('');
+    setApiKeyError('');
+  }, []);
 
   const createGithubCredential = useCallback(async () => {
     if (!newGithubName.trim() || !newGithubToken.trim()) {
@@ -213,6 +260,8 @@ export function useCredentialsSettings({
   const cancelNewApiKeyForm = useCallback(() => {
     setShowNewKeyForm(false);
     setNewKeyName('');
+    setNewKeyPassword('');
+    setApiKeyError('');
   }, []);
 
   const cancelNewGithubForm = useCallback(() => {
@@ -239,6 +288,14 @@ export function useCredentialsSettings({
     setShowNewKeyForm,
     newKeyName,
     setNewKeyName,
+    newKeyPassword,
+    setNewKeyPassword,
+    activatingKeyId,
+    activationPassword,
+    setActivationPassword,
+    confirmActivation,
+    cancelActivation,
+    apiKeyError,
     showNewGithubForm,
     setShowNewGithubForm,
     newGithubName,

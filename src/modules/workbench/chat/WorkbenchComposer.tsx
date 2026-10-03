@@ -119,10 +119,15 @@ export function WorkbenchComposer({
     deleteQueuedDraft,
     editingAnchorId,
     cancelEditMessage,
+    delivery,
+    preparedRecovery,
   } = composer;
   const commandListRef = useRef<HTMLDivElement>(null);
   const hasContent = Boolean(input.trim()) || attachedFiles.length > 0;
   const sendMode = isProcessing ? (hasContent ? 'queue' : 'stop') : 'send';
+  // Until the server confirms (or refuses) the last send, the button stays off so one draft never runs twice; a
+  // prepared continuation must be sent explicitly once the current run ends, never queued (as in ChatComposer).
+  const sendBlocked = delivery?.state === 'sending' || delivery?.state === 'unknown' || (Boolean(preparedRecovery) && isProcessing);
   const modeCopy = permissionModeCopy(permissionMode);
   const modelName = modelShortLabel(model, modelOptions);
   const showEffort = effortOptions.length > 0;
@@ -348,7 +353,7 @@ export function WorkbenchComposer({
           <span className="wbc-composer-spacer" />
           <WorkbenchSendButton
             mode={sendMode}
-            disabled={sendMode === 'send' ? !hasContent : sendMode === 'stop' ? !canAbort : false}
+            disabled={sendBlocked || (sendMode === 'send' ? !hasContent : sendMode === 'stop' ? !canAbort : false)}
             onStop={onAbort}
           />
         </div>

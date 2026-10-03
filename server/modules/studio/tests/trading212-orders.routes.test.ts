@@ -17,7 +17,7 @@ import { createTrading212OrdersRouter } from '../trading212-orders.routes.js';
 
 const ORIGIN = 'https://studio.ajarche.com';
 
-type Call = (route: string, init?: { method?: string; body?: unknown; origin?: string | null; user?: number | null }) => Promise<{ status: number; body: any }>;
+type Call = (route: string, init?: { method?: string; body?: unknown; origin?: string | null; user?: number | null }) => Promise<{ status: number; body: any; headers: Headers }>;
 
 async function withApp(run: (call: Call, posts: () => string[], setOrderStatus: (status: number) => void) => Promise<void>) {
   const directory = mkdtempSync(path.join(os.tmpdir(), 't212-orders-routes-'));
@@ -40,7 +40,9 @@ async function withApp(run: (call: Call, posts: () => string[], setOrderStatus: 
   });
   const orders = createTrading212OrdersService({
     database, trading212, trading: 'demo', origins: [ORIGIN],
-    verifyPassword: async (_userId, password) => password === 'route-password',
+    verifyStepUp: async (_who, password) => {
+      if (password !== 'route-password') throw new AppError('密码不正确', { code: 'AUTH_STEP_UP_FAILED', statusCode: 403 });
+    },
   });
   const app = express();
   app.use(express.json());
@@ -51,7 +53,7 @@ async function withApp(run: (call: Call, posts: () => string[], setOrderStatus: 
   });
   // Mounted exactly like studio.module: the read-only router first, then the orders router on the same path.
   app.use('/trading212', createTrading212Router(trading212));
-  app.use('/trading212', createTrading212OrdersRouter(orders));
+  app.use('/trading212', createTrading212OrdersRouter(orders, (req) => ({ door: 'direct', address: req.socket.remoteAddress ?? 'unknown' })));
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(error instanceof AppError ? error.statusCode : 500).json({ error: error instanceof Error ? error.message : 'error' });
   });
@@ -64,7 +66,7 @@ async function withApp(run: (call: Call, posts: () => string[], setOrderStatus: 
       if (init.user !== null) headers['x-test-user'] = String(init.user ?? 1);
       if (init.origin !== null) headers.Origin = init.origin ?? ORIGIN;
       const response = await fetch(`${base}${route}`, { method: init.method ?? 'GET', headers, body: init.body === undefined ? undefined : JSON.stringify(init.body) });
-      return { status: response.status, body: await response.json() };
+      return { status: response.status, body: await response.json(), headers: response.headers };
     }, () => brokerPosts, status => { orderStatus = status; });
   } finally {
     server.close();
@@ -79,7 +81,9 @@ test('both routers share /trading212 and the orders routes require a signed-in u
     const config = await call('/trading212/trading');
     assert.equal(config.status, 200);
     assert.deepEqual(config.body.allowedEnvs, ['demo']);
-    assert.equal(config.body.maxOrderValue, 500);
+    assert.equal(config.body.caps.envs.demo.maxOrderValue, 500);
+    assert.equal(config.body.caps.envs.demo.dailyLimit, 2000);
+    assert.equal(config.body.caps.ceiling, 10000);
     assert.equal((await call('/trading212/trading', { user: null })).status, 401);
 
     const valid = { env: 'demo', ticker: 'AAPL_US_EQ', side: 'buy', type: 'market', quantity: 0.5 };
@@ -150,6 +154,69 @@ test('passkey changes need a step-up: a password to add, a password or that pass
     assert.equal((await call(`/trading212/passkey/${id}/remove`, { method: 'POST', body: { password: 'route-password' } })).status, 404);
     assert.equal((await call(`/trading212/passkey/${id}/remove/options`, { method: 'POST' })).status, 404);
     assert.equal((await call(`/trading212/passkey/${id}/remove`, { method: 'POST', body: { password: 'route-password' }, user: null })).status, 401);
+  });
+});
+
+test('cap edits are validated in the route; lowering works from any page, raising needs a trusted origin and a passkey', async () => {
+  await withApp(async (call) => {
+    const invalid = [
+      {}, { env: 'paper', maxOrderValue: 100, dailyLimit: 200 }, { env: 'demo', maxOrderValue: '100', dailyLimit: 200 },
+      { env: 'demo', maxOrderValue: 0, dailyLimit: 200 }, { env: 'demo', maxOrderValue: -1, dailyLimit: 200 },
+      { env: 'demo', maxOrderValue: 100.123, dailyLimit: 200 }, { env: 'demo', maxOrderValue: 100, dailyLimit: null },
+      { env: 'demo', maxOrderValue: 100, dailyLimit: 1e12 },
+      { env: 'demo', maxOrderValue: 100, dailyLimit: 200, challengeId: 'not-an-id', assertion: { id: 'x', rawId: 'x', response: { a: 1 } } },
+      { env: 'demo', maxOrderValue: 100, dailyLimit: 200, challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f' },
+    ];
+    for (const body of invalid) {
+      assert.equal((await call('/trading212/caps', { method: 'PUT', body })).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await call('/trading212/caps', { method: 'PUT', body: { env: 'demo', maxOrderValue: 100, dailyLimit: 200 }, user: null })).status, 401);
+
+    // Lowering needs neither a passkey nor an allowlisted page.
+    const lowered = await call('/trading212/caps', { method: 'PUT', body: { env: 'demo', maxOrderValue: 100, dailyLimit: 200 }, origin: null });
+    assert.equal(lowered.status, 200);
+    assert.equal(lowered.body.method, 'session');
+    assert.equal(lowered.body.caps.maxOrderValue, 100);
+    assert.equal(lowered.body.caps.dailyRemaining, 200);
+    const config = await call('/trading212/trading');
+    assert.equal(config.body.caps.envs.demo.dailyLimit, 200);
+    assert.equal(config.body.capChanges[0].direction, 'lower');
+
+    // Above the ceiling, from an untrusted page, or without any passkey, nothing is raised.
+    assert.equal((await call('/trading212/caps', { method: 'PUT', body: { env: 'demo', maxOrderValue: 100, dailyLimit: 10_001 } })).status, 400);
+    assert.equal((await call('/trading212/caps/challenge', { method: 'POST', body: { env: 'demo', maxOrderValue: 300, dailyLimit: 600 }, origin: 'https://evil.example' })).status, 403);
+    assert.equal((await call('/trading212/caps/challenge', { method: 'POST', body: { env: 'demo', maxOrderValue: 300, dailyLimit: 600 } })).status, 403);
+    assert.equal((await call('/trading212/caps', { method: 'PUT', body: { env: 'demo', maxOrderValue: 300, dailyLimit: 600 } })).status, 403);
+    const after = (await call('/trading212/trading')).body;
+    assert.equal(after.caps.envs.demo.maxOrderValue, 100);
+    // Applied changes and refused raises are listed apart.
+    assert.deepEqual(after.capChanges.map((item: { direction: string }) => item.direction), ['lower']);
+    assert.ok(after.capRefusals.length >= 2);
+  });
+});
+
+test('a malformed raise naming a challenge is still audited, and repeated refusals get 429 with Retry-After', async () => {
+  await withApp(async (call) => {
+    const id = '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f';
+    const malformed = await call('/trading212/caps', { method: 'PUT', body: { challengeId: id, env: 'demo', maxOrderValue: 'lots', dailyLimit: 600 } });
+    assert.equal(malformed.status, 400);
+    const [entry] = (await call('/trading212/trading')).body.capRefusals;
+    assert.equal(entry.method, 'passkey');
+    assert.equal(entry.reason, '上限必须是大于 0 的数字，最多 2 位小数');
+    // An assertion without a challenge id is a raise attempt as well.
+    assert.equal((await call('/trading212/caps', { method: 'PUT', body: { env: 'demo', maxOrderValue: 300, dailyLimit: 600, assertion: { id: 'x', rawId: 'x', response: { a: 1 } } } })).status, 400);
+    assert.equal((await call('/trading212/trading')).body.capRefusals.length, 2);
+
+    const raise = { env: 'demo', maxOrderValue: 900, dailyLimit: 2000 };
+    for (let index = 0; index < 8; index += 1) assert.equal((await call('/trading212/caps', { method: 'PUT', body: raise })).status, 403);
+    const limited = await call('/trading212/caps', { method: 'PUT', body: raise });
+    assert.equal(limited.status, 429);
+    assert.match(limited.body.error, /次数过多/);
+    const wait = Number(limited.headers.get('retry-after'));
+    assert.ok(wait > 3500 && wait <= 3600, String(wait));
+    assert.equal((await call('/trading212/trading')).body.capRefusals.length, 10);
+    // Lowering is never rate-limited.
+    assert.equal((await call('/trading212/caps', { method: 'PUT', body: { env: 'demo', maxOrderValue: 100, dailyLimit: 200 } })).status, 200);
   });
 });
 

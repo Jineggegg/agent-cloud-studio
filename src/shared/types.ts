@@ -61,7 +61,7 @@ export type ScheduledMessage = {
   options: Record<string, unknown>;
   /** ISO instant, so the schedule does not move when the user changes time zone. */
   scheduledFor: string;
-  status: 'pending' | 'sent' | 'failed' | 'cancelled';
+  status: 'pending' | 'claimed' | 'sent' | 'failed' | 'cancelled';
   /** Why it did not go, when `status` is `failed`. */
   failureReason: string | null;
   createdAt: string;
@@ -237,6 +237,49 @@ export type ServerEvent = {
   sessionId?: string;
   seq?: number;
   [key: string]: unknown;
+};
+
+//----------------- TASK RECOVERY AND DELIVERY ------------
+
+/** Durable interrupted execution shown only within its project and conversation. */
+export type TaskRecoveryRun = {
+  runId: string;
+  requestId: string;
+  sessionId: string | null;
+  projectPath: string;
+  provider: LLMProvider;
+  state: string;
+  content: string;
+  startedAt: string;
+  interruptedAt?: string | null;
+};
+
+/** Delivery feedback stays separate from execution progress until the server acknowledges the request. */
+export type ChatDeliveryState = {
+  requestId: string;
+  state: 'sending' | 'unknown' | 'failed';
+  error?: string;
+  errorCode?: string;
+};
+
+/** Exact send snapshot retained across reconnect and page reload; retries reuse its request id and payload. */
+export type PendingChatDelivery = {
+  requestId: string;
+  scope: string;
+  sessionId: string;
+  payload: Record<string, unknown>;
+  content: string;
+  attachments: ChatAttachment[];
+  inputRevision: number;
+  attachmentRevision: number;
+  editingAnchorId: string | null;
+  recoveryOfRunId?: string;
+  createdSession: boolean;
+  project: Project;
+  provider: LLMProvider;
+  summary: string | null;
+  /** Original send instant keeps delayed receipts from manufacturing a second transcript turn. */
+  submittedAt?: string;
 };
 
 
@@ -1957,12 +2000,40 @@ export type StudioNetworkInfo = {
 export type T212OrderSide = 'buy' | 'sell';
 /** A Face ID / Touch ID passkey registered for one Studio domain (its RP ID); a passkey never authorizes another domain. */
 export type T212Passkey = { id: string; rpId: string; label: string | null; createdAt: string; lastUsedAt: string | null };
-/** Server order-safety settings shared by the order sheet and Settings: tradable accounts, the per-order cap and passkeys. */
+/** A pair of order caps in the account currency: per order, and for all orders in any rolling 24 hours. */
+export type T212CapLimits = { maxOrderValue: number; dailyLimit: number };
+/**
+ * New caps for one account, as sent to POST /caps/challenge and PUT /caps (Settings → 交易安全). Values are positive
+ * with at most two decimals; the server also enforces the ceiling and that the per-order cap fits in the daily one.
+ */
+export type T212CapsInput = T212CapLimits & { env: T212Env };
+/**
+ * The caps in force for one account and how much of the daily cap is used: placed and unknown-outcome orders in
+ * the last 24 hours plus confirmations in flight. `custom` is false while the server defaults apply. Read by the
+ * order sheet (remaining allowance) and the cap editor in Settings.
+ */
+export type T212AccountCaps = T212CapLimits & {
+  custom: boolean; updatedAt: string | null; dailyUsed: number; dailyRemaining: number; currency?: string;
+};
+/**
+ * One audited cap entry in Settings → 交易安全, newest first. `applied`: a saved change (lowering with the session,
+ * raising with Face ID / Touch ID). `refused`: a raise attempt that was turned down, with its reason; `method` is
+ * 'passkey' when it named a challenge. Account and values are null only for a malformed attempt naming no challenge.
+ */
+export type T212CapChange = {
+  id: number; env: T212Env | null; direction: 'raise' | 'lower'; method: 'passkey' | 'session'; status: 'applied' | 'refused';
+  from: T212CapLimits | null; to: T212CapLimits | null; reason: string | null; origin: string | null; createdAt: string;
+};
+/** Server order-safety settings shared by the order sheet and Settings: tradable accounts, per-user caps and passkeys. */
 export type T212TradingConfig = {
   // Accounts STUDIO_T212_TRADING allows to trade; empty means trading is off.
   allowedEnvs: T212Env[];
-  // STUDIO_T212_MAX_ORDER_VALUE, in the account currency.
-  maxOrderValue: number;
+  // Per-account caps; `defaults` come from STUDIO_T212_MAX_ORDER_VALUE / _MAX_DAILY_VALUE, nothing exceeds `ceiling`.
+  caps: { ceiling: number; defaults: T212CapLimits; envs: Record<T212Env, T212AccountCaps> };
+  // This user's latest applied cap changes, newest first; refused raises are listed apart so they cannot crowd them out.
+  capChanges: T212CapChange[];
+  // This user's latest refused raise attempts, newest first.
+  capRefusals: T212CapChange[];
   // Account currency from the last stored balance snapshot; absent before the account was first read.
   currency?: string;
   // This user's passkeys on every domain; once there is one, a domain without its own passkey cannot trade.
@@ -2226,5 +2297,86 @@ export type StudioMemoryStatus = {
   reachable: boolean; slow: boolean; url: string; project: string | null; notesPath: string | null;
   agents: StudioMemoryAgentStatus[];
   deepseek: { enabled: boolean };
+};
+// ---------------------------
+
+//----------------- STUDIO RUNTIME IDENTITY ------------
+/** Build-time identity recorded by the build pipeline; null commit/dirty mean Git could not be verified. */
+export type StudioBuildInfo = {
+  schemaVersion: 1;
+  version: string;
+  commit: string | null;
+  builtAt: string;
+  dirty: boolean | null;
+};
+/**
+ * Authenticated, read-only runtime snapshot for Settings. The backend build is captured at module load;
+ * frontend is the currently served disk build; checkout is source state only, never a running version.
+ * GitHub identifies origin's default branch; unknown/failure states must not imply that Studio is current.
+ */
+export type StudioRuntimeInfo = {
+  checkedAt: string;
+  frontend: { state: 'recorded' | 'unknown'; build: StudioBuildInfo | null; reason: string | null };
+  backend: { state: 'recorded' | 'unknown'; build: StudioBuildInfo | null; reason: string | null };
+  checkout: {
+    state: 'available' | 'unavailable';
+    commit: string | null;
+    branch: string | null;
+    dirty: boolean | null;
+    reason: string | null;
+  };
+  github: {
+    state: 'available' | 'unavailable' | 'unconfigured';
+    repository: string | null;
+    defaultBranch: string | null;
+    commit: string | null;
+    checkedAt: string | null;
+    reason: string | null;
+  };
+  host: {
+    hostname: string;
+    platform: string;
+    bootedAt: string;
+    processStartedAt: string;
+    /** Elapsed process lifetime in seconds; not the host uptime. */
+    uptimeSeconds: number;
+  };
+};
+// ---------------------------
+
+//----------------- STUDIO ACCOUNT SECURITY ------------
+/** A Face ID / Touch ID passkey that signs in to the Studio account on one domain (its RP ID). */
+export type StudioSignInPasskey = { id: string; rpId: string; label: string | null; createdAt: string; lastUsedAt: string | null };
+/**
+ * One entry of the server's bounded security log: failed and successful sign-ins, password locks,
+ * passkey changes and "退出所有设备". `client` is already masked ("198.51.*.*"); `detail` is plain text.
+ */
+export type StudioSecurityEvent = {
+  id: number; at: string; type: string; door: string; client: string; detail: string | null;
+  // How many events this row stands for: repeated sign-ins of one session are folded together.
+  repeats?: number;
+};
+/** One password lock: whether it holds now and until when (ISO-8601). */
+export type StudioPasswordLock = { locked: boolean; lockedUntil: string | null };
+/** GET /api/auth/security: what Settings → 安全 shows for the signed-in account. */
+export type StudioSecurityOverview = {
+  // Origins whose pages may add and use sign-in passkeys (the configured front doors).
+  passkeyOrigins: string[];
+  passkeys: StudioSignInPasskey[];
+  // Newest first, every kind of event.
+  events: StudioSecurityEvent[];
+  // Newest first: locks, lock lifts, passkey changes and revocations, which a flood of failed
+  // sign-ins can never push out of the log.
+  importantEvents: StudioSecurityEvent[];
+  // Newest first: successful sign-ins (password, passkey, Tailscale, handoff), kept apart too.
+  signIns: StudioSecurityEvent[];
+  // Each door locks on its own: the public domain's password sign-in, the Tailscale address's, and
+  // the password a signed-in session re-enters in Settings. Passkeys and Tailscale sign-in still work.
+  passwordLocks: { public: StudioPasswordLock; tailnet: StudioPasswordLock; session: StudioPasswordLock };
+};
+/** POST /api/auth/security/revoke-all: what "退出所有设备" took away, for the confirmation toast. */
+export type StudioRevokeAllResult = {
+  success: boolean;
+  revoked: { sessions: boolean; webSockets: number; apiKeys: number; snrAccess: number; pushSubscriptions: number; handoffCodes: number };
 };
 // ---------------------------

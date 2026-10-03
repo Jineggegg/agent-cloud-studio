@@ -15,15 +15,17 @@ import { useTranslation } from 'react-i18next';
 import { api } from '@/shared/api';
 import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
 import { readUserPreference } from '@/shared/userSettings';
-import type { CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
+import type { PendingChatDelivery, ServerEvent, TaskRecoveryRun, CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
 import {
   clearQueuedMessage,
   hydrateChatDrafts,
   readDraftText,
+  readDraftRecovery,
   readQueuedMessage,
   subscribeToChatDrafts,
   writeDraftText,
+  writeDraftRecovery,
   writeQueuedMessage,
 } from '@/shared/chatDrafts';
 import { escapeRegExp } from '@/modules/chat/utils/chatFormatting';
@@ -31,6 +33,7 @@ import { describeBackgroundTask, ownBackgroundTasks } from '@/modules/chat/utils
 import { useFileMentions } from '@/modules/chat/hooks/useFileMentions';
 import { useInputHistory } from '@/modules/chat/hooks/useInputHistory';
 import { useSlashCommands } from '@/modules/chat/hooks/useSlashCommands';
+import { useChatDelivery } from '@/modules/chat/hooks/useChatDelivery';
 
 type UseChatComposerStateArgs = {
   selectedProject: Project | null;
@@ -50,7 +53,10 @@ type UseChatComposerStateArgs = {
   processingSessions?: SessionActivityMap;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: (message: unknown) => boolean | void;
+  subscribe?: (listener: (event: ServerEvent) => void) => () => void;
+  isConnected?: boolean;
+  onDeliveryReconciled?: (sessionId: string) => void;
   sendByCtrlEnter?: boolean;
   onSessionProcessing?: MarkSessionProcessing;
   /**
@@ -182,6 +188,9 @@ export function useChatComposerState({
   canAbortSession,
   tokenBudget,
   sendMessage,
+  subscribe,
+  isConnected,
+  onDeliveryReconciled,
   sendByCtrlEnter,
   onSessionProcessing,
   onSessionEstablished,
@@ -224,7 +233,20 @@ export function useChatComposerState({
     };
   });
   const input = inputState.value;
-  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const [attachedFiles, setAttachedFilesState] = useState<File[]>([]);
+  const inputRevisionRef = useRef(0);
+  const attachmentRevisionRef = useRef(0);
+  const submittingRef = useRef(false);
+  // A recovery remains explicit in the composer and travels only with a reviewed new request.
+  const [preparedRecovery, setPreparedRecovery] = useState<{ runId: string; scope: string } | null>(() => {
+    const scope = selectedSession?.id || currentSessionId || (selectedProject ? `project:${selectedProject.projectId}` : null);
+    const runId = scope ? readDraftRecovery(scope) : null;
+    return scope && runId ? { scope, runId } : null;
+  });
+  const setAttachedFiles = useCallback<Dispatch<SetStateAction<File[]>>>((next) => {
+    attachmentRevisionRef.current += 1;
+    setAttachedFilesState(next);
+  }, []);
   const [fileErrors, setFileErrors] = useState<Map<string, string>>(new Map());
   const [isTextareaExpanded, setIsTextareaExpanded] = useState(false);
   const [commandModalPayload, setCommandModalPayload] = useState<CommandModalPayload | null>(null);
@@ -280,6 +302,7 @@ export function useChatComposerState({
   }, []);
 
   const setInput = useCallback<Dispatch<SetStateAction<string>>>((next) => {
+    inputRevisionRef.current += 1;
     setInputState((previous) => ({
       scope: draftScopeRef.current,
       value: typeof next === 'function' ? next(previous.value) : next,
@@ -292,6 +315,7 @@ export function useChatComposerState({
   // (for the render) and inputValueRef (so an immediate Enter submits the
   // recalled text, not a stale value).
   const setInputFromHistory = useCallback((value: string) => {
+    if (draftScopeRef.current) writeDraftRecovery(draftScopeRef.current, null);
     setInput(value);
     inputValueRef.current = value;
   }, [setInput]);
@@ -408,7 +432,7 @@ export function useChatComposerState({
         handleSubmitRef.current(createFakeSubmitEvent());
       }
     }, 0);
-  }, [addMessage]);
+  }, [addMessage, setInput]);
 
   const executeCommand = useCallback(
     async (command: SlashCommand, rawInput?: string, options?: { preserveInput?: boolean }) => {
@@ -479,9 +503,10 @@ export function useChatComposerState({
       input,
       provider,
       selectedProject,
-      selectedSession?.id,
+      selectedSession,
       addMessage,
       tokenBudget,
+      setInput,
     ],
   );
 
@@ -587,7 +612,7 @@ export function useChatComposerState({
     if (validFiles.length > 0) {
       setAttachedFiles((previous) => [...previous, ...validFiles].slice(0, MAX_ATTACHMENT_COUNT));
     }
-  }, []);
+  }, [setAttachedFiles]);
 
   const handlePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -662,14 +687,95 @@ export function useChatComposerState({
     processingSessionsRef.current = processingSessions;
   }, [processingSessions]);
 
+  const handleDeliveryAccepted = useCallback((pending: PendingChatDelivery, event: ServerEvent) => {
+    if (readDraftRecovery(pending.scope) === pending.recoveryOfRunId) writeDraftRecovery(pending.scope, null);
+    const stillViewing = draftScopeRef.current === pending.scope;
+    const sameInput = stillViewing && inputValueRef.current === pending.content
+      && inputRevisionRef.current === pending.inputRevision;
+    if (sameInput) {
+      setInput('');
+      inputValueRef.current = '';
+      writeDraftText(pending.scope, '');
+      resetCommandMenuState();
+      setIsTextareaExpanded(false);
+      if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    }
+    if (stillViewing && attachmentRevisionRef.current === pending.attachmentRevision) {
+      setAttachedFiles([]);
+      setFileErrors(new Map());
+    }
+    if (stillViewing) {
+      if (!event.deliveryLookup && !event.duplicate && pending.submittedAt) addMessage({
+        type: 'user', content: pending.content,
+        images: pending.attachments.filter(isImageAttachment),
+        files: pending.attachments.filter((attachment) => !isImageAttachment(attachment)),
+        timestamp: new Date(pending.submittedAt),
+        ...(pending.editingAnchorId ? { replacesAnchorId: pending.editingAnchorId } : {}),
+      });
+      setEditingAnchorId((anchor) => anchor === pending.editingAnchorId ? null : anchor);
+      setIsUserScrolledUp(false);
+      setTimeout(() => scrollToBottom(), 100);
+      if (pending.createdSession) {
+        // A receipt may arrive after the user starts the next draft. Move that
+        // draft with the newly confirmed conversation instead of erasing it.
+        writeDraftText(pending.sessionId, sameInput ? '' : inputValueRef.current);
+        writeDraftText(pending.scope, '');
+        onSessionEstablished?.(pending.sessionId, {
+          provider: pending.provider, project: pending.project, summary: pending.summary,
+        });
+      }
+    }
+    if (event.deliveryLookup || event.duplicate || !pending.submittedAt) onDeliveryReconciled?.(pending.sessionId);
+    if (!event.state || event.state === 'accepted' || event.state === 'running') {
+      onSessionProcessing?.(pending.sessionId, { statusText: null, canInterrupt: true });
+    }
+    recordSentMessage(pending.content, pending.sessionId);
+  }, [addMessage, onDeliveryReconciled, onSessionEstablished, onSessionProcessing, recordSentMessage, resetCommandMenuState, scrollToBottom, setAttachedFiles, setInput, setIsUserScrolledUp]);
+
+  const { delivery, pendingContent, sendDelivery, checkDelivery, retryDelivery, hasPendingDelivery } = useChatDelivery({
+    scope: draftScope, subscribe, sendMessage, isConnected, onAccepted: handleDeliveryAccepted,
+    onRestore: (pending) => ({
+      ...pending,
+      inputRevision: inputRevisionRef.current,
+      // Browser File objects cannot survive reload; never clear newly picked files.
+      attachmentRevision: -1,
+    }),
+  });
+
+  const prepareRecovery = useCallback((run: TaskRecoveryRun) => {
+    if (!draftScopeRef.current) return;
+    const continuation = t('recovery.continuation', {
+      defaultValue: 'The previous execution was interrupted. First review the conversation, changed files and any external actions already completed. Report what succeeded and what remains before continuing; do not repeat completed actions or reuse previous approvals.\n\nOriginal request:\n{{content}}',
+      content: run.content,
+    });
+    setPreparedRecovery({ runId: run.runId, scope: draftScopeRef.current });
+    const previous = inputValueRef.current;
+    const next = previous.trim() ? `${previous}\n\n${continuation}` : continuation;
+    setInput(next);
+    inputValueRef.current = next;
+    // Persist the text and its claim reference together before changing devices.
+    writeDraftText(draftScopeRef.current, next);
+    writeDraftRecovery(draftScopeRef.current, run.runId);
+    setEditingAnchorId(null);
+    textareaRef.current?.focus();
+  }, [setInput, t]);
+
   const handleSubmit = useCallback(
     async (
       event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
       queuedSubmission?: QueuedDraft,
     ) => {
       event.preventDefault();
+      // This synchronous guard also covers uploads/session allocation before
+      // React renders, so two quick touches cannot create two executions.
+      if (submittingRef.current || hasPendingDelivery()) return;
+      submittingRef.current = true;
+      try {
       const currentInput = queuedSubmission?.content ?? inputValueRef.current;
       const currentAttachments = queuedSubmission?.attachments ?? attachedFiles;
+      const submittedInputRevision = inputRevisionRef.current;
+      const submittedAttachmentRevision = attachmentRevisionRef.current;
+      const submittedScope = draftScopeRef.current;
       const previouslyUploadedAttachments = queuedSubmission?.uploadedAttachments ?? [];
       if (
         (
@@ -681,11 +787,24 @@ export function useChatComposerState({
       ) {
         return;
       }
+      if (isConnected === false) {
+        // Avoid uploading or allocating a conversation while known offline.
+        sendDelivery({
+          requestId: crypto.randomUUID(), scope: submittedScope || '', sessionId: sessionKey || '',
+          content: currentInput, attachments: [], payload: {}, createdSession: false,
+          project: selectedProject, provider, summary: null, editingAnchorId,
+          inputRevision: submittedInputRevision, attachmentRevision: submittedAttachmentRevision,
+        });
+        return;
+      }
 
       // A turn is already in flight: stash this message instead of sending it.
       // Upload attached files now so the queued record contains durable image
       // descriptors that can be sent even if another session is open later.
       if (isLoading) {
+        // A recovery must claim its predecessor in an explicit send, not lose
+        // that relationship in the automatic queue dispatcher.
+        if (preparedRecovery?.scope === submittedScope) return;
         // A run can restart in the tiny gap between scheduling and flushing a
         // queued submission. Put the same durable draft back without uploading
         // its files again.
@@ -741,17 +860,19 @@ export function useChatComposerState({
 
         queuedDraftSessionRef.current = queuedSessionKey;
         setQueuedDraft(durableDraft);
-        setInput('');
-        inputValueRef.current = '';
-        setAttachedFiles([]);
-        setFileErrors(new Map());
+        if (inputRevisionRef.current === submittedInputRevision) {
+          setInput('');
+          inputValueRef.current = '';
+          if (submittedScope) writeDraftText(submittedScope, '');
+        }
+        if (attachmentRevisionRef.current === submittedAttachmentRevision) {
+          setAttachedFiles([]);
+          setFileErrors(new Map());
+        }
         resetCommandMenuState();
         setIsTextareaExpanded(false);
         if (textareaRef.current) {
           textareaRef.current.style.height = 'auto';
-        }
-        if (draftScopeRef.current) {
-          writeDraftText(draftScopeRef.current, '');
         }
         return;
       }
@@ -817,8 +938,9 @@ export function useChatComposerState({
       // via the session gateway. There is no client-visible session-id
       // handoff later — this id stays valid for the conversation's lifetime.
       let targetSessionId = selectedSession?.id || currentSessionId || null;
+      const createdSession = !targetSessionId;
+      let createdSessionName = sessionSummary;
       if (!targetSessionId) {
-        let createdSessionName = sessionSummary;
         try {
           const response = await api.providers.createSession({
             provider,
@@ -858,11 +980,6 @@ export function useChatComposerState({
           return;
         }
 
-        onSessionEstablished?.(targetSessionId, {
-          provider,
-          project: selectedProject,
-          summary: createdSessionName,
-        });
       }
 
       // A new turn replaces the CLI process a session's background work runs
@@ -883,67 +1000,31 @@ export function useChatComposerState({
         }
       }
 
-      const attachmentRecords = uploadedAttachments as ChatAttachment[];
-      const userMessage: ChatMessage = {
-        type: 'user',
-        content: currentInput,
-        images: attachmentRecords.filter(isImageAttachment),
-        files: attachmentRecords.filter((attachment) => !isImageAttachment(attachment)),
-        timestamp: new Date(),
-        // Tags this echo as the replacement, so the truncation the server
-        // broadcasts a moment later cuts the turns being replaced without
-        // taking the message the user just sent with them.
-        ...(editingAnchorId ? { replacesAnchorId: editingAnchorId } : {}),
-      };
-
-      addMessage(userMessage);
-      // Mark this request as processing in the per-session activity map (the
-      // single source of truth the indicator derives from). The id is always
-      // concrete at this point — no pending placeholder exists anymore.
-      onSessionProcessing?.(targetSessionId, {
-        statusText: null,
-        canInterrupt: true,
-      });
-
-      setIsUserScrolledUp(false);
-      setTimeout(() => scrollToBottom(), 100);
-
-      // One message shape for every provider. The backend resolves the
-      // provider, project path, and provider-native resume id from the
-      // session row; `options` only carries composer-level preferences.
-      sendMessage({
-        // Replacing an already-sent message is its own frame: it changes the
-        // shape of the conversation, so it gets validated separately and can
-        // report why it was refused.
+      if (!submittedScope || draftScopeRef.current !== submittedScope) return;
+      const requestId = crypto.randomUUID();
+      const recoveryOfRunId = preparedRecovery?.scope === submittedScope ? preparedRecovery.runId : undefined;
+      const payload = {
         type: editingAnchorId ? 'chat.edit-send' : 'chat.send',
+        requestId,
         sessionId: targetSessionId,
+        ...(recoveryOfRunId ? { recoveryOfRunId } : {}),
         ...(editingAnchorId ? { anchorId: editingAnchorId } : {}),
         content: messageContent,
         options: {
           ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
           attachments: uploadedAttachments,
         },
+      };
+      sendDelivery({
+        requestId, scope: submittedScope, sessionId: targetSessionId, payload,
+        content: currentInput, attachments: uploadedAttachments as ChatAttachment[],
+        inputRevision: submittedInputRevision, attachmentRevision: submittedAttachmentRevision,
+        editingAnchorId, recoveryOfRunId, createdSession,
+        project: selectedProject, provider, summary: createdSessionName,
+        submittedAt: new Date().toISOString(),
       });
-      setEditingAnchorId(null);
-
-      // Recorded under the (possibly just-allocated) session id, so the first
-      // message of a new chat lands in the history of the session the user is
-      // navigated to. Queued drafts were recorded when they were queued; the
-      // consecutive-duplicate check keeps this second call a no-op.
-      recordSentMessage(currentInput, targetSessionId);
-      setInput('');
-      inputValueRef.current = '';
-      resetCommandMenuState();
-      setAttachedFiles([]);
-      setFileErrors(new Map());
-      setIsTextareaExpanded(false);
-
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
-
-      if (draftScopeRef.current) {
-        writeDraftText(draftScopeRef.current, '');
+      } finally {
+        submittingRef.current = false;
       }
     },
     [
@@ -954,19 +1035,20 @@ export function useChatComposerState({
       editingAnchorId,
       executeCommand,
       isLoading,
-      onSessionProcessing,
-      onSessionEstablished,
       provider,
       recordSentMessage,
       resetCommandMenuState,
-      scrollToBottom,
       selectedProject,
-      sendMessage,
       sessionKey,
       addMessage,
-      setIsUserScrolledUp,
       slashCommands,
       t,
+      isConnected,
+      hasPendingDelivery,
+      sendDelivery,
+      preparedRecovery,
+      setInput,
+      setAttachedFiles,
     ],
   );
 
@@ -1004,7 +1086,7 @@ export function useChatComposerState({
     inputValueRef.current = queuedDraft.content;
     setAttachedFiles(queuedDraft.attachments);
     textareaRef.current?.focus();
-  }, [queuedDraft]);
+  }, [queuedDraft, setAttachedFiles, setInput]);
 
   const deleteQueuedDraft = useCallback(() => {
     setQueuedDraft(null);
@@ -1034,10 +1116,15 @@ export function useChatComposerState({
 
     const restoreDraft = () => {
       const savedInput = readDraftText(draftScope);
+      const recoveryRunId = readDraftRecovery(draftScope);
+      setPreparedRecovery((previous) => previous?.scope === draftScope && previous.runId === recoveryRunId
+        ? previous
+        : recoveryRunId ? { scope: draftScope, runId: recoveryRunId } : null);
       setInputState((previous) => {
         if (previous.scope === draftScope && previous.value === savedInput) {
           return previous;
         }
+        if (previous.scope === draftScope) inputRevisionRef.current += 1;
         inputValueRef.current = savedInput;
         return { scope: draftScope, value: savedInput };
       });
@@ -1129,7 +1216,7 @@ export function useChatComposerState({
 
       handleCommandInputChange(newValue, cursorPos);
     },
-    [handleCommandInputChange, resetCommandMenuState, setCursorPosition],
+    [handleCommandInputChange, resetCommandMenuState, setCursorPosition, setInput],
   );
 
   const handleKeyDown = useCallback(
@@ -1206,7 +1293,7 @@ export function useChatComposerState({
       textareaRef.current.focus();
     }
     setIsTextareaExpanded(false);
-  }, [resetCommandMenuState]);
+  }, [resetCommandMenuState, setInput]);
 
   const handleAbortSession = useCallback(() => {
     if (!canAbortSession) {
@@ -1278,6 +1365,7 @@ export function useChatComposerState({
   /** Loads an already-sent message back into the composer to be replaced. */
   const beginEditMessage = useCallback((message: ChatMessage) => {
     if (!message.transcriptAnchorId) return;
+    if (draftScopeRef.current) writeDraftRecovery(draftScopeRef.current, null);
     setEditingAnchorId(message.transcriptAnchorId);
     setInput(message.content || '');
     inputValueRef.current = message.content || '';
@@ -1291,6 +1379,16 @@ export function useChatComposerState({
   }, [setInput]);
 
   return {
+    delivery,
+    pendingContent,
+    checkDelivery,
+    retryDelivery,
+    prepareRecovery,
+    preparedRecovery: preparedRecovery?.scope === draftScope ? preparedRecovery : null,
+    cancelPreparedRecovery: () => {
+      if (draftScopeRef.current) writeDraftRecovery(draftScopeRef.current, null);
+      setPreparedRecovery(null);
+    },
     input,
     setInput,
     editingAnchorId,

@@ -1,5 +1,7 @@
 import express from 'express';
 
+import type { StudioRequestClient } from '@/shared/types.js';
+
 import type { createSettingsService } from './settings.service.js';
 
 type AuthenticatedRequest = express.Request & { user?: { id?: number | string } };
@@ -12,9 +14,13 @@ function queryString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-/** Creates thin Settings transport handlers around the application service. */
+/**
+ * Creates thin Settings transport handlers around the application service. `readClient` is the auth
+ * module's request classifier, so the API key step-up is counted like every other password check.
+ */
 export function createSettingsRouter(
   service: ReturnType<typeof createSettingsService>,
+  readClient: (req: express.Request) => StudioRequestClient,
 ): express.Router {
   const router = express.Router();
   const respond = (operation: (req: express.Request) => unknown | Promise<unknown>) =>
@@ -23,10 +29,15 @@ export function createSettingsRouter(
     };
 
   router.get('/api-keys', respond((req) => service.listApiKeys(userId(req))));
-  router.post('/api-keys', respond((req) => service.createApiKey(userId(req), req.body?.keyName)));
+  const stepUp = (req: express.Request) => ({
+    user: (req as AuthenticatedRequest).user,
+    password: req.body?.password,
+    client: readClient(req),
+  });
+  router.post('/api-keys', respond((req) => service.createApiKey(userId(req), req.body?.keyName, stepUp(req))));
   router.delete('/api-keys/:keyId', respond((req) => service.deleteApiKey(userId(req), Number(req.params.keyId))));
   router.patch('/api-keys/:keyId/toggle', respond((req) => service.toggleApiKey(
-    userId(req), Number(req.params.keyId), req.body?.isActive,
+    userId(req), Number(req.params.keyId), req.body?.isActive, stepUp(req),
   )));
   router.get('/credentials', respond((req) => service.listCredentials(
     userId(req), queryString(req.query.type),
@@ -43,7 +54,7 @@ export function createSettingsRouter(
     userId(req), req.body ?? {},
   )));
   router.get('/push/vapid-public-key', respond(() => service.getVapidPublicKey()));
-  router.post('/push/subscribe', respond((req) => service.subscribeToPush(userId(req), req.body ?? {})));
+  router.post('/push/subscribe', respond((req) => service.subscribeToPush(userId(req), req.body ?? {}, readClient(req))));
   router.post('/push/unsubscribe', respond((req) => service.unsubscribeFromPush(
     userId(req), req.body?.endpoint,
   )));

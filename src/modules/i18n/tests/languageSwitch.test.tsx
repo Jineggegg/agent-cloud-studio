@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useTranslation } from 'react-i18next';
-import { afterEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 // Keep language switches local: the real preference store would try to sync with the server.
 vi.mock('@/shared/userSettings', () => ({
@@ -10,6 +10,20 @@ vi.mock('@/shared/userSettings', () => ({
 }));
 
 const { i18n, LanguageSelector } = await import('@/modules/i18n');
+
+beforeEach(async () => {
+  // The mock has no saved preference, so startup loads Chinese asynchronously.
+  // These switch tests need a settled English screen, not a concurrent startup.
+  await act(async () => {
+    if (!i18n.isInitialized) {
+      await new Promise<void>((resolve) => {
+        const initialized = () => { i18n.off('initialized', initialized); resolve(); };
+        i18n.on('initialized', initialized);
+      });
+    }
+    await i18n.changeLanguage('en');
+  });
+});
 
 afterEach(async () => {
   cleanup();
@@ -24,6 +38,7 @@ function SettingsProbe() {
 test('a switch fetches the strings of the screens on display first, so they change in one step', async () => {
   // Rendered in English, which is bundled: nothing was fetched for `settings` yet.
   render(<SettingsProbe />);
+  expect(screen.getByText(i18n.t('settings:account.languageLabel'))).toBeTruthy();
   let settingsLoadedAtSwitch = false;
   const onLanguageChanged = () => { settingsLoadedAtSwitch = i18n.hasResourceBundle('de', 'settings'); };
   i18n.on('languageChanged', onLanguageChanged);

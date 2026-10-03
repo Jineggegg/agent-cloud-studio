@@ -138,6 +138,21 @@ html.dark .auth-studio-card { box-shadow: 0 2px 8px rgba(0, 0, 0, .35), 0 30px 7
 @media (hover: hover) { .auth-submit:not(:disabled):hover { filter: brightness(1.06); } }
 .auth-submit:disabled { opacity: .6; cursor: default; }
 .auth-submit:focus-visible { outline: 3px solid color-mix(in srgb, var(--auth-tint) 50%, transparent); outline-offset: 3px; }
+/* "或" between the password form and passkey sign-in: hairlines either side of a small label. */
+.auth-divider { display: flex; align-items: center; gap: 12px; margin: 2px 4px; color: var(--auth-label-3); font-size: 12px; }
+.auth-divider::before, .auth-divider::after { content: ""; flex: 1; height: .5px; background: var(--auth-separator); }
+/* "用面容 ID 登录": the secondary action, a tinted glass pill under the filled sign-in button. */
+.auth-passkey {
+  display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 50px;
+  border: .5px solid color-mix(in srgb, var(--auth-tint) 28%, transparent); border-radius: 999px;
+  background: color-mix(in srgb, var(--auth-tint) 9%, transparent); color: var(--auth-tint);
+  font: inherit; font-size: 17px; font-weight: 600; cursor: pointer;
+  transition: transform 560ms cubic-bezier(.34, 1.3, .64, 1), opacity 200ms ease, background-color 200ms ease;
+}
+.auth-passkey:not(:disabled):active { transform: scale(.96); transition-duration: 90ms; }
+@media (hover: hover) { .auth-passkey:not(:disabled):hover { background: color-mix(in srgb, var(--auth-tint) 14%, transparent); } }
+.auth-passkey:disabled { opacity: .6; cursor: default; }
+.auth-passkey:focus-visible { outline: 3px solid color-mix(in srgb, var(--auth-tint) 50%, transparent); outline-offset: 3px; }
 .auth-spinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid color-mix(in srgb, currentColor 30%, transparent); border-top-color: currentColor; animation: auth-spin .8s linear infinite; }
 @keyframes auth-spin { to { transform: rotate(360deg); } }
 
@@ -152,6 +167,6 @@ html.dark .auth-studio-card { box-shadow: 0 2px 8px rgba(0, 0, 0, .35), 0 30px 7
 }
 @media (prefers-reduced-motion: reduce) {
   .auth-studio-wallpaper span, .auth-studio-card, .auth-alert { animation: none; }
-  .auth-submit { transition: none; }
+  .auth-submit, .auth-passkey { transition: none; }
 }
 .auth-hint { display: flex; align-items: center; gap: 6px; margin: 0 4px; font-size: 12px; color: var(--auth-label-3); }

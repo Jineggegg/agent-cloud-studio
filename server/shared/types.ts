@@ -1,6 +1,8 @@
 import type { IncomingMessage } from 'node:http';
 import type { Readable } from 'node:stream';
 
+import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
+
 //----------------- HTTP RESPONSE SHAPES ------------
 /**
  * Canonical success envelope used by backend APIs that return a structured payload.
@@ -297,6 +299,8 @@ export type NormalizedMessage = {
    * the live events they missed across websocket reconnects.
    */
   seq?: number;
+  /** Stable execution id; live sequence numbers restart for each execution. */
+  runId?: string;
   role?: 'user' | 'assistant';
   content?: string;
   /**
@@ -1669,21 +1673,41 @@ export type StudioIngressOrigins = {
 };
 
 /**
- * Who sent a request, as the auth module's throttles count it (failed passwords, handoff
- * redemptions). Built by auth.routes from the request; consumed by the auth service and the
- * handoff code store through the auth module's client throttle.
- * - `door: 'cloudflare'` means Cloudflare's edge headers are present (the public tunnel door).
- *   Cloudflare overwrites CF-Connecting-IP, so `address` is the real client address there.
- * - `door: 'direct'` is everything else (Tailscale Serve, loopback, LAN); `address` is the raw
- *   socket peer. Serve and cloudflared both dial loopback, so every tailnet request shares one
- *   address, which is why throttles also keep a separate total per door: public traffic can then
- *   never use up the budget of the tailnet door.
- * `address` is 'unknown' when the value is missing; it is only a bucket key, never trusted for
- * authentication.
+ * Who sent a request, as the auth module's throttles, lockout and log and the request-guard rate
+ * limiter count it. Built by the auth module's readRequestClient from the socket and headers;
+ * consumed by the auth service, the handoff code store, the passkey ceremonies, the security event
+ * log and the request-guard module (token buckets, in-flight and WebSocket caps).
+ * - `door: 'cloudflare'`: the public tunnel door. With STUDIO_CLOUDFLARED_PORT set, exactly the
+ *   connections that arrived on that loopback port; without it, a loopback request carrying
+ *   Cloudflare's edge headers and no sign of Tailscale Serve. `address` is CF-Connecting-IP.
+ * - `door: 'tailnet'`: Tailscale Serve on this machine (loopback socket, *.ts.net Host, exactly one
+ *   tailnet address in X-Forwarded-For); `address` is that tailnet peer.
+ * - `door: 'direct'`: everything else (local programs, LAN, a request whose proxy headers do not
+ *   add up); `address` is the raw socket peer, so nobody picks another client's bucket by
+ *   forging CF-Connecting-IP.
+ * Public and direct IPv6 addresses are keyed by their /64 (written "2001:db8:1:2::/64"), so a
+ * client rotating through its own prefix stays one client. Every limit also keeps a separate total
+ * per door, so public traffic can never use up the budget of the tailnet door. `address` is
+ * 'unknown' when the value is missing; it is only a bucket key, never trusted for authentication.
  */
 export type StudioRequestClient = {
-  door: 'cloudflare' | 'direct';
+  door: 'cloudflare' | 'tailnet' | 'direct';
   address: string;
+};
+
+/**
+ * What "退出所有设备" took away besides the token version, so Settings can say so. Each
+ * listener of the auth module's onSessionsRevoked returns the parts it handled (the server
+ * entrypoint: open WebSockets, API keys, SNR gateway cookies, Web Push subscriptions); the auth
+ * module adds the pending
+ * handoff codes and merges them into the response of POST /api/auth/security/revoke-all.
+ */
+export type StudioSessionRevocation = {
+  webSockets?: number;
+  apiKeys?: number;
+  snrAccess?: number;
+  pushSubscriptions?: number;
+  handoffCodes?: number;
 };
 
 /**
@@ -1731,6 +1755,28 @@ export type StudioT212OrderInput = {
  * so passkeys registered on one domain never authorize orders on another.
  */
 export type StudioT212TrustedOrigin = { origin: string; rpId: string };
+
+/**
+ * New order caps for one Trading 212 account, in that account's currency, after the Studio router checked
+ * the transport shape (finite, positive, at most two decimals). `dailyLimit` is a rolling 24-hour cap on
+ * placed and unknown-outcome orders. The ceiling (STUDIO_T212_CAP_CEILING), per-order ≤ daily and whether
+ * the change is a raise (which needs a passkey) are checked by the caps service, not the router.
+ * Used by trading212-orders.routes, trading212-orders.service and trading212-caps.service.
+ */
+export type StudioT212CapsInput = { env: StudioT212Environment; maxOrderValue: number; dailyLimit: number };
+
+/**
+ * A PUT /caps request as the Studio router read it. `challengeId` is the string the body named for a raise (cut to
+ * 64 characters; '' when it was not a string or an assertion came without one) and is absent for a plain lowering.
+ * It is read before anything else so the caps service can spend that challenge and audit the attempt even when the
+ * rest of the body is malformed: then the request carries `invalid` (why) instead of the parsed caps. A raise carries
+ * the browser's WebAuthn assertion, verified cryptographically by the service against the stored passkey.
+ * Used by trading212-orders.routes, trading212-orders.service and trading212-caps.service.
+ */
+export type StudioT212CapsRequest = { challengeId?: string } & (
+  | { input: StudioT212CapsInput; assertion?: AuthenticationResponseJSON }
+  | { invalid: string }
+);
 // ── v4 track: mail — server types below this line ──
 //----------------- STUDIO MAIL CONTRACTS ------------
 /**
@@ -2101,5 +2147,117 @@ export type StudioDeepseekMemoryBridge = {
     complete: StudioDeepseekCompletion;
     signal: AbortSignal;
   }): Promise<string | null>;
+};
+// ---------------------------
+
+//----------------- STUDIO RUNTIME IDENTITY ------------
+/** Build-time identity recorded by the build pipeline; null commit/dirty mean Git could not be verified. */
+export type StudioBuildInfo = {
+  schemaVersion: 1;
+  version: string;
+  commit: string | null;
+  builtAt: string;
+  dirty: boolean | null;
+};
+/**
+ * Authenticated, read-only runtime snapshot for Settings. The backend build is captured at module load;
+ * frontend is the currently served disk build; checkout is source state only, never a running version.
+ * GitHub identifies origin's default branch; unknown/failure states must not imply that Studio is current.
+ */
+export type StudioRuntimeInfo = {
+  checkedAt: string;
+  frontend: { state: 'recorded' | 'unknown'; build: StudioBuildInfo | null; reason: string | null };
+  backend: { state: 'recorded' | 'unknown'; build: StudioBuildInfo | null; reason: string | null };
+  checkout: {
+    state: 'available' | 'unavailable';
+    commit: string | null;
+    branch: string | null;
+    dirty: boolean | null;
+    reason: string | null;
+  };
+  github: {
+    state: 'available' | 'unavailable' | 'unconfigured';
+    repository: string | null;
+    defaultBranch: string | null;
+    commit: string | null;
+    checkedAt: string | null;
+    reason: string | null;
+  };
+  host: {
+    hostname: string;
+    platform: string;
+    bootedAt: string;
+    processStartedAt: string;
+    /** Elapsed process lifetime in seconds; not the host uptime. */
+    uptimeSeconds: number;
+  };
+};
+// ---------------------------
+
+//----------------- DURABLE TASK EXECUTION ------------
+/**
+ * A persisted execution receipt shared by WebSocket, Database, and Task Recovery.
+ * Accepted/running receipts become interrupted on startup; they never replay automatically.
+ * Failed and interrupted receipts remain available for explicit recovery until acknowledged or claimed.
+ * User ids are normalized to strings; null is reserved for internal system work. Options
+ * include composer preferences and attachment descriptors only, never runtime credentials.
+ */
+export type TaskRunRecord = {
+  runId: string;
+  requestId: string;
+  userId: string | null;
+  sessionId: string;
+  provider: string;
+  projectPath: string | null;
+  content: string;
+  options: Record<string, unknown>;
+  source: 'interactive' | 'queued' | 'scheduled';
+  recoveryOfRunId: string | null;
+  state: 'accepted' | 'running' | 'completed' | 'failed' | 'aborted' | 'interrupted';
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  interruptedAt: string | null;
+  resolvedAt: string | null;
+  claimedByRunId: string | null;
+  error: string | null;
+};
+
+/**
+ * Filters shared by the Task Recovery service and Database. An unassigned request
+ * selects records without a session; combining it with a session matches no records.
+ * Limits are clamped to 1–100 so a recovery response remains bounded.
+ */
+export type TaskRecoveryFilters = {
+  projectPath?: string;
+  sessionId?: string;
+  unassigned?: boolean;
+  limit?: number;
+};
+// ---------------------------
+
+//----------------- PERSISTED COMPOSER DRAFTS ------------
+/**
+ * One user's unsent composer state, shared by Database and User services.
+ * recoveryOfRunId links an explicitly prepared continuation to its original
+ * interrupted/failed task. Saving the draft does not claim or execute that task.
+ */
+export type SessionDraftRecord = {
+  scope: string;
+  text: string;
+  queuedMessage: unknown | null;
+  recoveryOfRunId: string | null;
+  updatedAt: string;
+};
+
+/**
+ * Draft update accepted by Database and User. Omitted recoveryOfRunId preserves
+ * the existing association; null explicitly clears it. Empty text with no queued
+ * message deletes the whole draft, including any recovery association.
+ */
+export type SessionDraftInput = {
+  text: string;
+  queuedMessage: unknown | null;
+  recoveryOfRunId?: string | null;
 };
 // ---------------------------

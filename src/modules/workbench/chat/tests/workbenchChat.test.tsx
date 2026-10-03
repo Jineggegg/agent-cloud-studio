@@ -15,6 +15,12 @@ const engine = vi.hoisted(() => ({
   pending: [] as unknown[],
   selectModel: (() => Promise.resolve()) as (model: string) => Promise<void>,
   decide: (() => undefined) as (...args: unknown[]) => void,
+  // Durable delivery and task recovery, as the inherited composer and useTaskRecovery report them.
+  delivery: null as { requestId: string; state: 'sending' | 'unknown' | 'failed' } | null,
+  preparedRecovery: null as { runId: string; scope: string } | null,
+  recoveryRuns: [] as unknown[],
+  prepareRecovery: (() => undefined) as (run: unknown) => void,
+  cancelPreparedRecovery: (() => undefined) as () => void,
 }));
 
 vi.mock('@/modules/workbench/chat/hooks/useWorkbenchAgentEngine', () => ({
@@ -97,7 +103,16 @@ vi.mock('@/modules/workbench/chat/hooks/useWorkbenchAgentEngine', () => ({
         showCostModal: noop,
         commandModalPayload: null,
         closeCommandModal: noop,
+        delivery: engine.delivery,
+        pendingContent: engine.delivery ? '原消息' : null,
+        checkDelivery: () => Promise.resolve(),
+        retryDelivery: () => Promise.resolve(),
+        preparedRecovery: engine.preparedRecovery,
+        prepareRecovery: (run: unknown) => engine.prepareRecovery(run),
+        cancelPreparedRecovery: () => engine.cancelPreparedRecovery(),
       },
+      recovery: { runs: engine.recoveryRuns, error: false, refresh: noop, resolve: () => Promise.resolve() },
+      isConnected: true,
       sessionId: engine.sessionId,
       sendMessage: noop,
       selectModel: (model: string) => engine.selectModel(model),
@@ -132,6 +147,9 @@ afterEach(() => {
   engine.messages = [];
   engine.sessionId = null;
   engine.pending = [];
+  engine.delivery = null;
+  engine.preparedRecovery = null;
+  engine.recoveryRuns = [];
 });
 
 describe('provider switching', () => {
@@ -201,6 +219,34 @@ describe('permission flow in the column', () => {
     renderChat({ session: { id: 's1', kind: 'agent', provider: 'claude', title: 't', updatedAt: null } });
     expect(screen.getByRole('heading', { name: '继续吗？' })).toBeTruthy();
     expect(screen.queryByRole('textbox', { name: '消息' })).toBeNull();
+  });
+});
+
+describe('durable sends and task recovery', () => {
+  test('an unconfirmed send is shown above the composer and blocks another send until the receipt arrives', () => {
+    engine.delivery = { requestId: 'req-1', state: 'unknown' };
+    renderChat({ session: { id: 's1', kind: 'agent', provider: 'claude', title: 't', updatedAt: null } });
+    expect(screen.getByRole('button', { name: /Check delivery|核对送达/ })).toBeTruthy();
+    expect((screen.getByRole('button', { name: '发送' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  test('an interrupted run is offered for continuation, and a prepared continuation can drop its link', () => {
+    const prepare = vi.fn();
+    const cancel = vi.fn();
+    engine.prepareRecovery = prepare;
+    engine.cancelPreparedRecovery = cancel;
+    const run = { runId: 'run-1', requestId: 'req-0', sessionId: 's1', projectPath: '/repo', provider: 'claude', state: 'interrupted', content: '整理接口', startedAt: '2026-10-02T10:00:00Z' };
+    engine.recoveryRuns = [run];
+    const { unmount } = renderChat({ session: { id: 's1', kind: 'agent', provider: 'claude', title: 't', updatedAt: null } });
+    fireEvent.click(screen.getByRole('button', { name: /Prepare continuation|准备继续/ }));
+    expect(prepare).toHaveBeenCalledWith(run);
+    unmount();
+
+    engine.recoveryRuns = [];
+    engine.preparedRecovery = { runId: 'run-1', scope: 's1' };
+    renderChat({ session: { id: 's1', kind: 'agent', provider: 'claude', title: 't', updatedAt: null } });
+    fireEvent.click(screen.getByRole('button', { name: '取消续接关联' }));
+    expect(cancel).toHaveBeenCalled();
   });
 });
 
