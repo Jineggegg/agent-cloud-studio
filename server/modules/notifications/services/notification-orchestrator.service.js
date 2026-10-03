@@ -1,6 +1,6 @@
 import webPush from 'web-push';
 
-import { notificationPreferencesDb, pushSubscriptionsDb, sessionsDb } from '@/modules/database/index.js';
+import { notificationPreferencesDb, projectsDb, pushSubscriptionsDb, sessionsDb } from '@/modules/database/index.js';
 import { sendDesktopNotification as sendDesktopNotificationToClients } from '@/modules/notifications/services/desktop-notification-clients.service.js';
 
 const KIND_TO_PREF_KEY = {
@@ -148,6 +148,46 @@ function resolveSessionName(event) {
   return normalizeSessionName(sessionsDb.getSessionName(event.sessionId, event.provider));
 }
 
+// Longest path a notification may carry; anything longer is not one of the app's own pages.
+const MAX_NOTIFICATION_PATH_LENGTH = 2048;
+// Only used to parse a path: a value that resolves to any other origin was not a same-origin path.
+const PATH_PARSE_ORIGIN = 'https://studio.invalid';
+
+/**
+ * The page a notification tap opens: a same-origin path inside the app (`/projects/x?tab=y`), or '/' for anything
+ * else — an absolute or protocol-relative URL, a backslash trick, control characters or a non-string. The service
+ * worker applies the same rule again before it opens the page.
+ */
+function safeNotificationPath(value) {
+  if (typeof value !== 'string') return '/';
+  const candidate = value.trim();
+  if (!candidate.startsWith('/') || candidate.startsWith('//') || candidate.length > MAX_NOTIFICATION_PATH_LENGTH
+    // eslint-disable-next-line no-control-regex
+    || /[\u0000-\u001f\u007f\\]/.test(candidate)) {
+    return '/';
+  }
+  try {
+    const parsed = new URL(candidate, PATH_PARSE_ORIGIN);
+    return parsed.origin === PATH_PARSE_ORIGIN ? `${parsed.pathname}${parsed.search}${parsed.hash}` : '/';
+  } catch {
+    return '/';
+  }
+}
+
+/**
+ * Where tapping an agent-run notification leads: the session in the workbench of the project it ran in, the old
+ * `/session/:id` address (which the app resolves) when its project is unknown, or the home screen without a session.
+ */
+function sessionNotificationPath(event) {
+  if (!event.sessionId) return '/';
+  const row = event.provider && event.provider !== 'system' ? resolveSessionRow(event.sessionId, event.provider) : null;
+  const project = row?.project_path ? projectsDb.getProjectPath(row.project_path) : null;
+  if (project && !project.isArchived) {
+    return `/work/${encodeURIComponent(project.project_id)}/s/${encodeURIComponent(row.session_id)}`;
+  }
+  return `/session/${encodeURIComponent(event.sessionId)}`;
+}
+
 function buildNotificationPayload(event) {
   const normalizedEvent = normalizeNotificationSession(event);
   const CODE_MAP = {
@@ -172,6 +212,8 @@ function buildNotificationPayload(event) {
       code: normalizedEvent.code,
       provider: normalizedEvent.provider || null,
       sessionName,
+      // The page a tap opens (public/sw.js); always a same-origin path.
+      url: safeNotificationPath(sessionNotificationPath(normalizedEvent)),
       tag: `${normalizedEvent.provider || 'assistant'}:${normalizedEvent.sessionId || 'none'}:${normalizedEvent.code}`
     }
   };
@@ -223,6 +265,7 @@ function getStudioPushStatus(userId) {
 /**
  * Sends one Studio automation notification ({ title, body, tag, url }) to every Web Push subscription of the user,
  * as written: no provider prefix, no agent-event preferences or dedupe (the automation decides when to send).
+ * `url` is the page a tap opens; anything but a same-origin path is replaced by '/' (the home screen).
  * Nothing is sent while the Web Push channel is switched off. Subscriptions the push service reports gone are
  * removed, like agent notifications. Resolves with the status and how many browsers accepted the message.
  *
@@ -234,7 +277,7 @@ async function sendStudioPushNotification(userId, { title, body, tag, url }) {
     return { ...status, delivered: 0 };
   }
   const subscriptions = pushSubscriptionsDb.getSubscriptions(userId);
-  const payload = JSON.stringify({ title, body, data: { code: 'studio.automation', tag, url } });
+  const payload = JSON.stringify({ title, body, data: { code: 'studio.automation', tag, url: safeNotificationPath(url) } });
   const results = await Promise.allSettled(subscriptions.map((sub) => webPush.sendNotification(
     { endpoint: sub.endpoint, keys: { p256dh: sub.keys_p256dh, auth: sub.keys_auth } },
     payload

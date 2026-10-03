@@ -5,6 +5,7 @@ import { I18nextProvider } from 'react-i18next';
 import { ThemeProvider } from '@/shared/context/ThemeContext';
 import { UiPreferencesProvider } from '@/shared/context/UiPreferencesContext';
 import { useFrontendUpdateWatcher } from '@/shared/hooks/useFrontendUpdateWatcher';
+import { useNotificationNavigation } from '@/shared/hooks/useNotificationNavigation';
 import { LaunchErrorBoundary, LaunchScreen, LaunchSplashRelease } from '@/shared/ui/LaunchScreen';
 import { AuthProvider, ProtectedRoute } from '@/modules/auth';
 import { i18n } from '@/modules/i18n';
@@ -17,6 +18,12 @@ const WorkbenchRoute = lazy(() => import('@/modules/workbench').then(module => (
 const ProjectWorkspaceRoute = lazy(() => import('@/modules/project-workspace').then(module => ({ default: module.ProjectWorkspaceRoute })));
 
 const DEPLOYMENT_ASSET_DIRECTORIES = new Set(['assets', 'static', 'icons', 'images']);
+
+// Lives inside the router: a notification tapped while Studio is open navigates this window to its page.
+function NotificationNavigation() {
+  useNotificationNavigation();
+  return null;
+}
 
 /**
  * Detect the router basename from explicit runtime config or deployment hints.
@@ -157,6 +164,7 @@ export default function App() {
           <Suspense fallback={<LaunchScreen label="正在加载" />}>
             <ProtectedRoute>
               <Router basename={routerBasename}>
+                <NotificationNavigation />
                 <Routes>
                   <Route path="/" element={studioScreen} />
                   <Route path="/projects/:id" element={studioScreen} />

@@ -119,29 +119,68 @@ self.addEventListener('push', event => {
   );
 });
 
+// Longest path a notification may open; anything longer is not one of the app's own pages.
+const MAX_NOTIFICATION_PATH_LENGTH = 2048;
+// Only used to parse a path: a value that resolves to any other origin was not a same-origin path.
+const PATH_PARSE_ORIGIN = 'https://studio.invalid';
+
+// The page a notification opens, as an app path ('/projects/x?tab=automations'). Only a same-origin path is accepted
+// (the server applies the same rule); an absolute or protocol-relative URL, a backslash trick, control characters or
+// a non-string fall back to '/', the home screen. Payloads from before `url` existed name only a session.
+function notificationTargetPath(data) {
+  const value = data && data.url !== undefined ? data.url
+    : data && typeof data.sessionId === 'string' && data.sessionId ? `/session/${encodeURIComponent(data.sessionId)}` : '/';
+  if (typeof value !== 'string') return '/';
+  const candidate = value.trim();
+  // eslint-disable-next-line no-control-regex
+  if (!candidate.startsWith('/') || candidate.startsWith('//') || candidate.length > MAX_NOTIFICATION_PATH_LENGTH || /[\u0000-\u001f\u007f\\]/.test(candidate)) {
+    return '/';
+  }
+  try {
+    const parsed = new URL(candidate, PATH_PARSE_ORIGIN);
+    return parsed.origin === PATH_PARSE_ORIGIN ? `${parsed.pathname}${parsed.search}${parsed.hash}` : '/';
+  } catch {
+    return '/';
+  }
+}
+
+// Opens a notification's page. A Studio window that is already open (same origin, inside this worker's scope) is
+// focused and told to navigate in place (the app's router handles `notification:navigate`, keeping its state and
+// any path prefix); otherwise a new window opens at the page, resolved against the scope so a prefix is kept.
+// Resolves with what it did: 'focused' or 'opened'.
+async function openNotificationTarget(clients, scope, path, data) {
+  const scopeUrl = new URL(scope);
+  const windows = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+  const studio = windows.find(client => {
+    try {
+      const url = new URL(client.url);
+      return url.origin === scopeUrl.origin && url.pathname.startsWith(scopeUrl.pathname);
+    } catch {
+      return false;
+    }
+  });
+  if (studio) {
+    let target = studio;
+    try {
+      target = (await studio.focus()) || studio;
+    } catch {
+      // Focus can be refused (another app is in front); the window still navigates.
+    }
+    target.postMessage({
+      type: 'notification:navigate',
+      url: path,
+      sessionId: (data && typeof data.sessionId === 'string' && data.sessionId) || null,
+      provider: (data && data.provider) || null
+    });
+    return 'focused';
+  }
+  await clients.openWindow(new URL(path.slice(1), scopeUrl).href);
+  return 'opened';
+}
+
 // Notification click event
 self.addEventListener('notificationclick', event => {
   event.notification.close();
-
-  const sessionId = event.notification.data?.sessionId;
-  const provider = event.notification.data?.provider || null;
-  const urlPath = sessionId ? `/session/${sessionId}` : '/';
-
-  event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async clientList => {
-      for (const client of clientList) {
-        if (client.url.includes(self.location.origin)) {
-          await client.focus();
-          client.postMessage({
-            type: 'notification:navigate',
-            sessionId: sessionId || null,
-            provider,
-            urlPath
-          });
-          return;
-        }
-      }
-      return self.clients.openWindow(urlPath);
-    })
-  );
+  const data = event.notification.data || {};
+  event.waitUntil(openNotificationTarget(self.clients, self.registration.scope, notificationTargetPath(data), data));
 });

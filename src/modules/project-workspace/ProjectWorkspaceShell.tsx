@@ -37,7 +37,7 @@ function ProjectWorkspaceShell({
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <ProjectEffects navigate={navigate} />
+        <ProjectEffects />
         <ProjectSidebarRegion isMobile={isMobile} />
 
         <div className="flex min-w-0 flex-1 flex-col">

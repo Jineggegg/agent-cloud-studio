@@ -30,8 +30,7 @@ import { useWorkbenchSessions } from '@/modules/workbench/hooks/useWorkbenchSess
 import { useWorkbenchShortcuts } from '@/modules/workbench/hooks/useWorkbenchShortcuts';
 import { useWorkbenchViewport } from '@/modules/workbench/hooks/useWorkbenchViewport';
 import {
-  fetchAgentSession, fetchDeepSeekConversation, newChatChoices, parseNewProvider, providerMeta, resolveLegacySessionPath,
-  resolveNewChatProvider, workbenchPath,
+  fetchAgentSession, fetchDeepSeekConversation, newChatChoices, parseNewProvider, providerMeta, resolveNewChatProvider, workbenchPath,
 } from '@/modules/workbench/utils/workbenchRoutes';
 
 // Remembered on this device: the project /work opens and the agent a new chat starts with.
@@ -170,17 +169,7 @@ export function WorkbenchShell() {
   // Leaving the workbench gives the tab back the app's own title; the Studio home does not set one itself.
   useEffect(() => () => { document.title = getPageTitle(null, null); }, []);
 
-  // A notification tapped while the workbench is open names a session; open it here.
-  useEffect(() => {
-    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return undefined;
-    const onMessage = (event: MessageEvent) => {
-      const message = event.data as { type?: string; sessionId?: unknown } | null;
-      if (message?.type !== 'notification:navigate' || typeof message.sessionId !== 'string' || !message.sessionId) return;
-      void resolveLegacySessionPath(message.sessionId).then(path => { if (path) navigate(path); });
-    };
-    navigator.serviceWorker.addEventListener('message', onMessage);
-    return () => navigator.serviceWorker.removeEventListener('message', onMessage);
-  }, [navigate]);
+  // A tapped notification's page (often a session here) is opened by the app-wide useNotificationNavigation.
 
   // Files: the editor state, resolving bare names from chat links against the project tree.
   const { editingFile, handleFileOpen, handleCloseEditor, handleUnsavedChangesChange } = useEditorSidebar({ selectedProject: project, isMobile: viewport === 'phone' });
