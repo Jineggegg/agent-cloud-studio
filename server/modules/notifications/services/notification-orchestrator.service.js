@@ -47,6 +47,10 @@ function isDuplicate(event) {
   return false;
 }
 
+/**
+ * @param {{ provider: string, sessionId?: string | null, kind?: string, code?: string, meta?: Record<string, unknown>,
+ *   severity?: string, dedupeKey?: string | null, requiresUserAction?: boolean }} input
+ */
 function createNotificationEvent({
   provider,
   sessionId = null,
@@ -388,6 +392,9 @@ function notifyBackgroundWorkCompleted({ userId, provider, sessionId = null, ses
   });
 }
 
+/**
+ * @param {{ userId: unknown, provider: string, sessionId?: string | null, error: unknown, sessionName?: string | null }} input
+ */
 function notifyRunFailed({ userId, provider, sessionId = null, error, sessionName = null }) {
   const errorMessage = normalizeErrorMessage(error);
 
