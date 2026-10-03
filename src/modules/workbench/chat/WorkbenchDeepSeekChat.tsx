@@ -20,6 +20,7 @@ import { WorkbenchMicButton } from '@/modules/workbench/chat/WorkbenchMicButton'
 import { WorkbenchProviderMark } from '@/modules/workbench/WorkbenchProviderMark';
 import { WorkbenchSendButton } from '@/modules/workbench/chat/WorkbenchSendButton';
 import { WorkbenchSuggestedInput } from '@/modules/workbench/chat/WorkbenchSuggestedInput';
+import { WorkbenchSuggestionChip } from '@/modules/workbench/chat/WorkbenchSuggestionChip';
 import { WorkbenchSpinner } from '@/modules/workbench/chat/WorkbenchSpinner';
 import { menuProvidersFor, oneModelMenuSections } from '@/modules/workbench/chat/utils/workbenchModelMenu';
 
@@ -205,14 +206,18 @@ export function WorkbenchDeepSeekChat({
     turns: conversationTurns,
     ready: configured && !chat.sending && !chat.loading,
   });
-  // Typing hides the suggestion; clearing the field brings it back.
+  // Typing (or dictating) moves the suggestion from the field to a chip above it; clearing the field brings it back.
   const shownSuggestion = draft.trim() ? null : nextPrompt.suggestion;
+  const chipSuggestion = draft.trim() && !chat.sending ? nextPrompt.suggestion : null;
 
-  const submit = async () => {
-    const typed = draft;
-    const text = typed.trim() ? typed : shownSuggestion ?? '';
+  // `suggested`: the chip's suggestion, sent in place of the draft (which is left out).
+  const submit = async (suggested?: string) => {
+    const typed = suggested === undefined ? draft : '';
+    const text = suggested ?? (typed.trim() ? typed : shownSuggestion ?? '');
     if (!text.trim() || chat.sending) return;
     if (!typed.trim()) nextPrompt.dismiss();
+    // The microphone stops so no late words land in the emptied field.
+    if (dictation.listening) dictation.stop();
     setDraft('');
     let message = text;
     // A handoff's first message carries the summary; without one the send waits for the owner to retry.
@@ -226,6 +231,15 @@ export function WorkbenchDeepSeekChat({
       }
     }
     if (!await chat.send(message, activeModel, includeSnr)) setDraft(text);
+  };
+
+  // The chip's text replaces the draft (dictation stops first) for the owner to edit or send.
+  const fillSuggestion = () => {
+    if (!chipSuggestion) return;
+    if (dictation.listening) dictation.stop();
+    nextPrompt.dismiss();
+    setDraft(chipSuggestion);
+    inputRef.current?.focus();
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -301,6 +315,11 @@ export function WorkbenchDeepSeekChat({
         </AnimatePresence>
         <div className="wbc-composer-wrap">
           <form className="wbc-composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+            <WorkbenchSuggestionChip
+              suggestion={chipSuggestion}
+              onFill={fillSuggestion}
+              onSend={() => { if (chipSuggestion) void submit(chipSuggestion); }}
+            />
             <WorkbenchSuggestedInput suggestion={shownSuggestion}>
               <textarea
                 ref={inputRef}
