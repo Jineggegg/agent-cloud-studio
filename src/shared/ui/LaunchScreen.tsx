@@ -212,14 +212,15 @@ export function LaunchScreen({ label }: { label: string }) {
   );
 }
 
-/** The glass cloud mark: used here by the error screen, and by the auth module's sign-in layout. */
+/**
+ * The Studio's logo as its app icon shows it (public/studio-icon.svg): the four-pointed spark in its halo, drawing
+ * itself in on a dark tile. Used here by the error screen, by the auth module's sign-in layout and by the studio
+ * module's Settings → 关于本机 header.
+ */
 export function LaunchMark() {
   return (
     <span className="acs-launch-mark">
-      <svg viewBox="0 0 512 512" focusable="false">
-        <path className="acs-launch-cloud" d="M165 345h178c53 0 85-32 85-77s-34-80-80-80c-20-59-63-85-108-85-58 0-100 40-107 94-36 8-63 37-63 72 0 46 38 76 95 76Z" />
-        <path className="acs-launch-base" d="M198 397h116" />
-      </svg>
+      <StarSpark drawMs={900} />
     </span>
   );
 }

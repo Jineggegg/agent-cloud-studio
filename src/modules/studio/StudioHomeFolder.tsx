@@ -132,7 +132,6 @@ export function StudioHomeFolder({ folder, tiles, defaultNameOf, editing, iconSi
         </div>
       </div>
       <p className="studio-visually-hidden" aria-live="polite">{moveMessage}</p>
-      {editing && <p className="home-folder-hint">拖到面板外面，文件夹会合上，再把图标放到主屏幕上想要的位置</p>}
     </div>
   </div>;
 }

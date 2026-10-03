@@ -73,28 +73,39 @@ test('projects appear as home tiles and open on one AI 助手 page holding agent
   expect(screen.getByRole('navigation', { name: '应用' })).toBeTruthy();
 });
 
-test('an app opens from its icon behind the launch star, which announces it until the app is open', async () => {
+test('an app opens from its icon as a zoom of the whole view (no launch logo) and shrinks back into it', async () => {
   renderStudio();
   const apps = await screen.findByRole('navigation', { name: '应用' });
   fireEvent.click(within(apps).getByRole('button', { name: '超级教授' }));
   const professor = await screen.findByRole('region', { name: '超级教授' });
-  const launch = screen.getByRole('status', { name: '正在打开 超级教授' });
-  expect(launch.querySelector('svg.acs-star')).toBeTruthy();
-  // The home screen stays in view (and the app is rendered, unseen) while the star draws over the icon.
+  // The view itself grows out of the icon's centre while the home screen recedes behind it.
+  expect(professor.classList.contains('opening')).toBe(true);
+  expect(professor.style.getPropertyValue('--zoom-cx')).toMatch(/px$/);
+  expect(document.querySelector('.studio')?.getAttribute('data-transition')).toBe('opening');
+  expect(document.querySelector('.acs-star, .studio-app-launch')).toBeNull();
+  expect(screen.queryByRole('status', { name: /正在打开/ })).toBeNull();
   expect(document.querySelector('.home-layer')?.classList.contains('is-covered')).toBe(false);
-  await waitFor(() => expect(screen.queryByRole('status', { name: '正在打开 超级教授' })).toBeNull(), { timeout: 5000 });
-  expect(within(professor).getByRole('navigation', { name: '项目功能' })).toBeTruthy();
+  await waitFor(() => expect(professor.classList.contains('opening')).toBe(false));
   expect(document.querySelector('.home-layer')?.classList.contains('is-covered')).toBe(true);
+  expect(within(professor).getByRole('navigation', { name: '项目功能' })).toBeTruthy();
+
+  // Back home: the view shrinks towards its icon as the home screen comes back, then goes.
+  fireEvent.click(within(professor).getByRole('button', { name: '返回主屏幕' }));
+  expect(professor.classList.contains('closing')).toBe(true);
+  expect(document.querySelector('.home-layer')?.classList.contains('is-covered')).toBe(false);
+  await waitFor(() => expect(screen.queryByRole('region', { name: '超级教授' })).toBeNull());
 });
 
-test('under reduced motion an app simply appears, with no launch star', async () => {
+test('under reduced motion an app simply appears, with no zoom', async () => {
   vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduce'), media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }));
   try {
     renderStudio();
     const apps = await screen.findByRole('navigation', { name: '应用' });
     fireEvent.click(within(apps).getByRole('button', { name: '超级教授' }));
-    expect(await screen.findByRole('region', { name: '超级教授' })).toBeTruthy();
-    expect(screen.queryByRole('status', { name: '正在打开 超级教授' })).toBeNull();
+    const professor = await screen.findByRole('region', { name: '超级教授' });
+    expect(professor.classList.contains('opening')).toBe(false);
+    expect(document.querySelector('.studio')?.hasAttribute('data-transition')).toBe(false);
+    expect(document.querySelector('.home-layer')?.classList.contains('is-covered')).toBe(true);
   } finally { vi.unstubAllGlobals(); }
 });
 

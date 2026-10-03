@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
@@ -112,7 +112,7 @@ test('on a tailnet address 关 does not return to the page, which cannot load on
   expect(assign).toHaveBeenLastCalledWith(OFF);
 });
 
-test('in edit mode a tap opens the settings, which explain the label and can start the setup again', () => {
+test('in edit mode a tap opens the settings, which explain the label and can start the setup again', async () => {
   localStorage.setItem('studio-aj-exit-v1', JSON.stringify({ ready: true, on: true }));
   renderHome();
   fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
@@ -125,7 +125,9 @@ test('in edit mode a tap opens the settings, which explain the label and can sta
   expect(saved()).toEqual({ ready: false, on: false });
   expect(within(sheet).getByRole('button', { name: '已经建好，开启 AJ 出口' })).toBeTruthy();
   fireEvent.click(within(sheet).getByRole('button', { name: '以后再说' }));
-  expect(screen.queryByRole('dialog', { name: 'AJ 出口' })).toBeNull();
+  // The sheet sinks away first (taking no taps), then goes.
+  expect(sheet.closest('.studio-layer')?.classList.contains('closing')).toBe(true);
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'AJ 出口' })).toBeNull());
   // Edit mode is still on: the sheet is not empty space.
   expect(screen.getByRole('button', { name: '完成' })).toBeTruthy();
   expect(tile().getAttribute('aria-label')).toBe('AJ 出口，未开启');

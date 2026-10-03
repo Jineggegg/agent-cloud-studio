@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
-import type { MouseEvent, MutableRefObject, RefObject } from 'react';
+import type { MouseEvent, MutableRefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { DndContext, DragOverlay, MeasuringStrategy, useDndContext } from '@dnd-kit/core';
 import type { CollisionDetection, DragCancelEvent, DragEndEvent, DragMoveEvent, DragStartEvent } from '@dnd-kit/core';
 import { SortableContext, arrayMove } from '@dnd-kit/sortable';
 import { getEventCoordinates } from '@dnd-kit/utilities';
+import { m } from 'motion/react';
 
 import { IconAdjustmentsHorizontal, IconCheck, IconLayoutGrid, IconLogout, IconMoon, IconPlus, IconRefresh, IconSettings, IconSun } from '@/modules/studio/icons/tabler';
 import { useTheme } from '@/shared/context/ThemeContext';
-import { STUDIO_AJ_EXIT_TILE_ID } from '@/shared/constants';
+import { STUDIO_AJ_EXIT_TILE_ID, STUDIO_MOTION_OUT_MS } from '@/shared/constants';
 import type { StudioHomeTile, StudioSnr } from '@/shared/types';
 import { StudioAjExitSheet } from '@/modules/studio/StudioAjExitSheet';
 import { StudioFluidBackground } from '@/modules/studio/StudioFluidBackground';
@@ -22,6 +23,9 @@ import type { WidgetType } from '@/modules/studio/StudioWidgets';
 import { useAjExit } from '@/modules/studio/hooks/useAjExit';
 import { useHomePager } from '@/modules/studio/hooks/useHomePager';
 import { useHomeSortableList } from '@/modules/studio/hooks/useHomeSortable';
+import { useSheetClose } from '@/modules/studio/hooks/useSheetClose';
+import { dragIntentWakeAt, initialDragIntent, nextDragIntent, resolveDrop } from '@/modules/studio/utils/homeDragIntent';
+import type { DragRect, HomeDragInput, HomeDragIntent } from '@/modules/studio/utils/homeDragIntent';
 import { HOME_FOLDER_PREFIX, cleanHomeName, movePageBreaks, releasePageBreak, tidyPageBreaks, useHomeLayout, useHomeNames, writeHomeName } from '@/modules/studio/utils/homeLayout';
 import type { HomeFolder, HomeLayout } from '@/modules/studio/utils/homeLayout';
 import { gridCapacity, pageRanges } from '@/modules/studio/utils/homePaging';
@@ -41,14 +45,16 @@ const EDGE_ZONE_PX = 48;
 const EDGE_HOLD_MS = 500;
 // Held at the edge longer, the pages keep turning, one more each time the last turn has settled.
 const EDGE_REPEAT_MS = 900;
-// An icon held over the middle of another icon (or a folder) this long makes a folder of the two (or joins it).
-const MERGE_HOLD_MS = 420;
+// A folder just made from two icons settles from the merge target's enlarged size for this long.
+const FOLDER_FORM_MS = 520;
 // An icon dragged this far beyond an open folder's panel, and held there this long, closes the folder and carries on
 // as a drag on the home screen, as on iPadOS.
 const FOLDER_EXIT_MARGIN_PX = 10;
 const FOLDER_EXIT_HOLD_MS = 240;
-// The folder shrinks back into its icon for this long before it is unmounted (studio-home.css, .is-closing).
-const FOLDER_CLOSE_MS = 320;
+// The page dots gliding between the foot of the screen and the edit bar: the shared Studio timing (--motion-ease).
+const PAGE_CONTROL_MOVE = { type: 'tween', duration: 0.38, ease: [0.32, 0.72, 0, 1] } as const;
+// React 18 has no `inert` prop; an empty string sets the attribute (the edit bar, while it shrinks away).
+const LEAVING_INERT = { inert: '' } as Record<string, string>;
 // Pages move under a dragged icon, so dnd-kit measures where the icons are throughout, not just once per drag.
 const ICON_MEASURING = { droppable: { strategy: MeasuringStrategy.Always } };
 // A row that overflows the page by no more than this still counts as fitting: it only reaches into the space kept
@@ -57,6 +63,9 @@ const ICON_MEASURING = { droppable: { strategy: MeasuringStrategy.Always } };
 const FIT_TOLERANCE_PX = 12;
 // Viewports shorter than this are transitional (a backgrounded web app, a window being restored) and never measured.
 const MIN_MEASURABLE_HEIGHT_PX = 160;
+// Fewer icons per page counts only once the screen has stayed that much shorter for this long (a Spotlight search, a
+// keyboard or iOS settling after an app switch shrinks it only for a moment).
+const VIEWPORT_SETTLE_MS = 700;
 // After the page becomes visible again, iOS may still be settling the viewport; it is measured again after this.
 const SETTLE_REMEASURE_MS = 400;
 
@@ -98,6 +107,21 @@ function orderById<T extends { id: string }>(items: T[], order: string[] | undef
 }
 
 const NO_TILES: StudioHomeTile[] = [];
+const prefersReducedMotion = () => Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+
+/**
+ * Edit mode ending: every jiggling icon and widget eases from wherever its swing is to rest, instead of snapping
+ * there when the jiggle animation is taken off. A Web Animation outranks the CSS one, so it takes over seamlessly.
+ */
+function settleJiggle(root: HTMLElement | null) {
+  root?.querySelectorAll<HTMLElement>('.home-tile-slot[data-sort-id], .widget-slot > .widget').forEach(node => {
+    if (typeof node.animate !== 'function') return;
+    const { rotate, translate } = getComputedStyle(node);
+    if (!rotate || rotate === 'none') return;
+    node.animate([{ rotate, translate: translate === 'none' ? '0px 0px' : translate }, { rotate: '0deg', translate: '0px 0px' }],
+      { duration: STUDIO_MOTION_OUT_MS, easing: 'cubic-bezier(.32, .72, 0, 1)' });
+  });
+}
 // An id quoted in an attribute selector (CSS.escape where the browser has it; jsdom does not).
 const cssEscape = (value: string) => typeof CSS !== 'undefined' && typeof CSS.escape === 'function' ? CSS.escape(value) : value.replace(/["\\]/g, '\\$&');
 const folderEntryId = (folder: HomeFolder) => `${HOME_FOLDER_PREFIX}${folder.id}`;
@@ -159,11 +183,23 @@ function pointerOf({ activatorEvent, delta }: { activatorEvent: Event | null; de
   return start ? { x: start.x + delta.x, y: start.y + delta.y } : null;
 }
 
-// The middle of an icon's card (its slot also holds the name below it): holding there makes a folder; anywhere else
-// the icons make room as usual.
-function inMergeZone(point: { x: number; y: number }, rect: { left: number; top: number; width: number; height: number }) {
-  return point.x > rect.left + rect.width * 0.24 && point.x < rect.left + rect.width * 0.76
-    && point.y > rect.top + rect.height * 0.06 && point.y < rect.top + rect.height * 0.62;
+/**
+ * Where the icon card sits in a slot (the slot also holds the name below it), measured from the dragged icon: the
+ * middle of that card is where a held icon makes a folder (homeDragIntent.ts). Without layout to measure (tests), a
+ * square at the top of the slot stands in.
+ */
+function measureIconBox(slot: Element | null): (rect: DragRect) => DragRect {
+  const slotBox = slot?.getBoundingClientRect();
+  const iconBox = slot?.querySelector('.home-icon')?.getBoundingClientRect();
+  if (slotBox && iconBox && iconBox.width > 0 && slotBox.width > 0) {
+    const offsetX = iconBox.left - slotBox.left;
+    const offsetY = iconBox.top - slotBox.top;
+    return rect => ({ left: rect.left + offsetX, top: rect.top + offsetY, width: iconBox.width, height: iconBox.height });
+  }
+  return rect => {
+    const side = Math.min(rect.width, rect.height * 0.7);
+    return { left: rect.left + (rect.width - side) / 2, top: rect.top, width: side, height: side };
+  };
 }
 
 /**
@@ -171,8 +207,10 @@ function inMergeZone(point: { x: number; y: number }, rect: { left: number; top:
  * it stays under the finger while a held edge turns the page beneath it. It also lends the list its re-measure,
  * which the home screen calls whenever the pages come to rest.
  */
-function IconDragLayer({ entries, folderTiles, iconSize, switchStateOf, overlayRef, remeasureRef }: {
+function IconDragLayer({ entries, folderTiles, iconSize, merging, switchStateOf, overlayRef, remeasureRef }: {
   entries: Entry[];
+  // Held over an icon long enough to make a folder: the lifted icon eases down a little, ready to go in.
+  merging: boolean;
   // The open folder's apps, which are dragged in the same context until they leave it.
   folderTiles: StudioHomeTile[];
   iconSize: number;
@@ -189,7 +227,7 @@ function IconDragLayer({ entries, folderTiles, iconSize, switchStateOf, overlayR
   const entry: Entry | undefined = active ? entries.find(item => item.id === active.id) ?? (inFolder && { kind: 'tile', id: inFolder.id, tile: inFolder }) : undefined;
   // No dnd-kit drop animation: on drop the real icon glides from here into its slot (useHomeSortableList).
   return <DragOverlay dropAnimation={null} className="home-drag-overlay">
-    {entry && <div ref={overlayRef} className="home-tile-slot is-lifted" aria-hidden="true">
+    {entry && <div ref={overlayRef} className={`home-tile-slot is-lifted ${merging ? 'is-merging' : ''}`} aria-hidden="true">
       <span className="home-tile">{entry.kind === 'tile'
         ? <TileFace tile={entry.tile} editing={false} iconSize={iconSize} switchState={switchStateOf(entry.tile)} />
         : <FolderFace name={entry.folder.name} tiles={entry.tiles} iconSize={iconSize} />}</span>
@@ -229,6 +267,9 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
   const names = useHomeNames();
   // Edit mode jiggles tiles and widgets, lets them be dragged and exposes hide controls, as on the iPadOS home screen.
   const [editing, setEditing] = useState(false);
+  // Edit mode winding down after 完成 or a tap beside the icons: the badges and the edit bar shrink away and the page
+  // dots glide home before those controls unmount (STUDIO_MOTION_OUT_MS); never under reduced motion.
+  const [leavingEdit, setLeavingEdit] = useState(false);
   // The icon or folder whose name is being typed in place.
   const [renaming, setRenaming] = useState<string | null>(null);
   // The open folder and the rectangle of its icon, which it grows out of.
@@ -239,6 +280,11 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
   const [iconDrag, setIconDrag] = useState(false);
   // The icon a dragged icon is held over, and whether it has been held long enough to make a folder on drop.
   const [merge, setMerge] = useState<{ id: string; ready: boolean } | null>(null);
+  // The item whose slot the dragged icon has taken (the grid made room there). Kept as state, not only in the intent
+  // ref, so a change re-renders the drag context and dnd-kit picks up the new drop target from the collision check.
+  const [, setSortOver] = useState<string | null>(null);
+  // A folder just made by a drop: it settles from the merge target's enlarged size.
+  const [formedFolder, setFormedFolder] = useState<string | null>(null);
   // The app library sheet lists hidden apps and planned integrations.
   const [libraryOpen, setLibraryOpen] = useState(false);
   // The widget gallery, opened from the edit-mode toolbar (a toolbar button never shifts the grid mid-drag).
@@ -254,6 +300,8 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
   // A new home screen fills again (its icons render after this, so they see it); see setHomeFilling.
   useState(() => { setHomeFilling(true); });
   const ajExit = useAjExit();
+  // The library sheet plays its way out before it unmounts.
+  const library = useSheetClose(() => setLibraryOpen(false));
 
   const homeRef = useRef<HTMLDivElement | null>(null);
   const widgetsRef = useRef<HTMLDivElement | null>(null);
@@ -265,9 +313,20 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
   const edgeHold = useRef<{ direction: -1 | 1; timer: number } | null>(null);
   // A move button that was pressed; its icon may have moved to another page (a new node) and focus must follow.
   const pendingMoveFocus = useRef<{ id: string; step: -1 | 1 } | null>(null);
-  // The merge state for drag handlers, and the timer that makes it ready.
+  // The merge state for drag handlers.
   const mergeRef = useRef<{ id: string; ready: boolean } | null>(null);
-  const mergeTimer = useRef<number | undefined>(undefined);
+  // The home drag's intent (homeDragIntent.ts): which icon it is, where the pointer last was, what it means to do,
+  // where the icons' slots were last measured (dnd-kit's droppable rects), where the icon card sits in a slot, and the
+  // timer that re-evaluates when a dwell runs out with the pointer held still.
+  const intentActive = useRef<string | null>(null);
+  const intentPoint = useRef<{ x: number; y: number } | null>(null);
+  const intentRef = useRef<HomeDragIntent | null>(null);
+  const slotRects = useRef<ReadonlyMap<unknown, DragRect> | null>(null);
+  const iconBox = useRef<(rect: DragRect) => DragRect>(measureIconBox(null));
+  const intentTimer = useRef<number | undefined>(undefined);
+  // The latest evaluateIntent, for handlers and timers made before it.
+  const evaluateIntentRef = useRef<() => void>(() => {});
+  const formedTimer = useRef<number | undefined>(undefined);
   // Which list the dragged icon belongs to now: the open folder's, or the home grid's (after it left the folder).
   const dragSource = useRef<'home' | 'folder' | null>(null);
   // The open folder's panel, and the timer that takes an icon held beyond it out of the folder.
@@ -276,7 +335,17 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
   const folderCloseTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => { if (!loading) setHomeFilling(false); }, [loading]);
-  const endEditing = useCallback(() => { setEditing(false); setRenaming(null); }, []);
+  const leaveEditTimer = useRef<number | undefined>(undefined);
+  const endEditing = useCallback(() => {
+    setEditing(false);
+    setRenaming(null);
+    window.clearTimeout(leaveEditTimer.current);
+    if (prefersReducedMotion()) return;
+    settleJiggle(homeRef.current);
+    setLeavingEdit(true);
+    leaveEditTimer.current = window.setTimeout(() => setLeavingEdit(false), STUDIO_MOTION_OUT_MS);
+  }, []);
+  useEffect(() => () => window.clearTimeout(leaveEditTimer.current), []);
 
   const switchStateOf = useCallback((tile: StudioHomeTile): SwitchState | undefined => tile.id === STUDIO_AJ_EXIT_TILE_ID ? (ajExit.on ? 'on' : 'off') : undefined, [ajExit.on]);
   // Typed names replace the default ones; AJ 出口 shows what this device last asked for under its name.
@@ -325,7 +394,12 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
   const pageCount = ranges.length + (iconDrag ? 1 : 0);
   // An open folder (one that still exists) has the screen; the arrow keys leave the pages alone meanwhile.
   const folderShown = Boolean(openFolder && entries.some(entry => entry.id === openFolder.id));
-  const pager = useHomePager({ pageCount, keyboard: !covered && !folderShown, onSettle: () => remeasure.current?.() });
+  // Once the pages come to rest the icons are measured again, and a held drag looks again at what is under it now.
+  const onPagesSettle = () => {
+    remeasure.current?.();
+    requestAnimationFrame(() => { if (intentActive.current) evaluateIntentRef.current(); });
+  };
+  const pager = useHomePager({ pageCount, keyboard: !covered && !folderShown, onSettle: onPagesSettle });
   const { goTo, setGestureBlocked, turn, viewportRef } = pager;
 
   const setMergeState = useCallback((next: { id: string; ready: boolean } | null) => {
@@ -333,10 +407,12 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
     setMerge(next);
   }, []);
   const clearMerge = useCallback(() => {
-    window.clearTimeout(mergeTimer.current);
     if (mergeRef.current) setMergeState(null);
   }, [setMergeState]);
-  useEffect(() => () => window.clearTimeout(mergeTimer.current), []);
+  useEffect(() => () => {
+    window.clearTimeout(intentTimer.current);
+    window.clearTimeout(formedTimer.current);
+  }, []);
 
   const stopEdgeHold = useCallback(() => {
     if (edgeHold.current) window.clearTimeout(edgeHold.current.timer);
@@ -368,21 +444,70 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
     if (!viewport || !point) return;
     const box = viewport.getBoundingClientRect();
     if (box.width > 0) holdAtEdge(point.x < box.left + EDGE_ZONE_PX ? -1 : point.x > box.right - EDGE_ZONE_PX ? 1 : 0);
-    // An app held over the middle of another app or a folder; folders themselves never go into folders.
-    const activeId = String(event.active.id);
-    const over = event.over;
-    const target = over && String(over.id) !== activeId && !isFolderId(activeId) && inMergeZone(point, over.rect) ? String(over.id) : null;
-    if (target === (mergeRef.current?.id ?? null)) return;
-    window.clearTimeout(mergeTimer.current);
-    if (!target) { setMergeState(null); return; }
-    setMergeState({ id: target, ready: false });
-    mergeTimer.current = window.setTimeout(() => setMergeState({ id: target, ready: true }), MERGE_HOLD_MS);
-  }, [holdAtEdge, setMergeState, viewportRef]);
+    intentPoint.current = point;
+    evaluateIntentRef.current();
+  }, [holdAtEdge, viewportRef]);
   useEffect(() => stopEdgeHold, [stopEdgeHold]);
   const visibleArea = useCallback(() => viewportRef.current?.getBoundingClientRect() ?? null, [viewportRef]);
 
   const entryIds = useMemo(() => entries.map(entry => entry.id), [entries]);
-  const enterEdit = useCallback(() => setEditing(true), []);
+
+  // ---- The drag's intent: merge into the icon under it, or make room (homeDragIntent.ts) ----
+  // What the intent functions look at for `point` now: the grid's slots as dnd-kit last measured them, on the page in
+  // view. Null until there is something measured.
+  const intentInput = (activeId: string, point: { x: number; y: number }): HomeDragInput | null => {
+    const rects = slotRects.current;
+    if (!rects) return null;
+    const slots = new Map<string, DragRect>();
+    for (const id of entryIds) {
+      const rect = rects.get(id);
+      if (rect && rect.width > 0) slots.set(id, rect);
+    }
+    const bounds = visibleArea();
+    return {
+      now: Date.now(), point, activeId, ids: entryIds, slots, iconOf: iconBox.current,
+      inView: bounds && bounds.width > 0 ? slot => slot.left + slot.width / 2 >= bounds.left && slot.left + slot.width / 2 <= bounds.right : undefined,
+      // Apps go into apps and folders; folders themselves never go into anything.
+      canMerge: () => !isFolderId(activeId),
+    };
+  };
+  const startIntent = (activeId: string, slot: Element | null) => {
+    window.clearTimeout(intentTimer.current);
+    intentActive.current = activeId;
+    intentPoint.current = null;
+    intentRef.current = initialDragIntent(activeId);
+    iconBox.current = measureIconBox(slot);
+  };
+  const stopIntent = () => {
+    window.clearTimeout(intentTimer.current);
+    intentActive.current = null;
+    intentPoint.current = null;
+    intentRef.current = null;
+  };
+  // Moves the intent on from where the pointer is, shows what it means (the target holding still and growing a
+  // folder's backdrop, the grid making room) and comes back when a dwell runs out with the pointer held still.
+  const evaluateIntent = () => {
+    const activeId = intentActive.current;
+    const point = intentPoint.current;
+    window.clearTimeout(intentTimer.current);
+    if (!activeId || !point) return;
+    const previous = intentRef.current ?? initialDragIntent(activeId);
+    const input = intentInput(activeId, point);
+    if (!input) return;
+    const next = nextDragIntent(previous, input);
+    intentRef.current = next;
+    if (next.overId !== previous.overId) setSortOver(next.overId);
+    const shown = next.merge ? { id: next.merge.id, ready: next.merge.ready } : null;
+    if (shown?.id !== mergeRef.current?.id || shown?.ready !== mergeRef.current?.ready) setMergeState(shown);
+    const wakeAt = dragIntentWakeAt(next);
+    if (wakeAt !== null) intentTimer.current = window.setTimeout(() => evaluateIntentRef.current(), Math.max(0, wakeAt - Date.now()) + 1);
+  };
+  useLayoutEffect(() => { evaluateIntentRef.current = evaluateIntent; });
+  const enterEdit = useCallback(() => {
+    window.clearTimeout(leaveEditTimer.current);
+    setLeavingEdit(false);
+    setEditing(true);
+  }, []);
   // Names for the drag announcements: the home grid's entries, and the apps inside the open folder.
   const labelOf = useCallback((id: string) => {
     const entry = entries.find(item => item.id === id);
@@ -397,24 +522,30 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
 
   // An app dropped on another makes a folder of the two in the other's place; dropped on a folder, it joins it. A
   // page the dragged app began is begun by the app after it; a page its target began is begun by the new folder.
-  const mergeInto = useCallback((activeId: string, targetId: string) => updateLayout(previous => {
-    const order = topLevelOrder(previous, tiles);
-    const breaks = releasePageBreak(previous.pageBreaks, entryIds, activeId);
-    if (isFolderId(targetId)) {
-      const folderId = targetId.slice(HOME_FOLDER_PREFIX.length);
+  // The folder it went into settles from the merge target's enlarged size (studio-home.css, .is-folder-formed).
+  const mergeInto = (activeId: string, targetId: string) => {
+    const folderId = isFolderId(targetId) ? targetId.slice(HOME_FOLDER_PREFIX.length) : newFolderId();
+    window.clearTimeout(formedTimer.current);
+    setFormedFolder(`${HOME_FOLDER_PREFIX}${folderId}`);
+    formedTimer.current = window.setTimeout(() => setFormedFolder(null), FOLDER_FORM_MS);
+    updateLayout(previous => {
+      const order = topLevelOrder(previous, tiles);
+      const breaks = releasePageBreak(previous.pageBreaks, entryIds, activeId);
+      if (isFolderId(targetId)) {
+        return {
+          ...previous, order: order.filter(id => id !== activeId),
+          folders: previous.folders.map(folder => folder.id === folderId ? { ...folder, items: [...folder.items.filter(id => id !== activeId), activeId] } : folder),
+          pageBreaks: tidyPageBreaks(breaks, entryIds.filter(id => id !== activeId)),
+        };
+      }
+      const folder: HomeFolder = { id: folderId, name: folderNameFor([targetId, activeId]), items: [targetId, activeId] };
+      const inPlace = (id: string) => id === targetId ? [folderEntryId(folder)] : id === activeId ? [] : [id];
       return {
-        ...previous, order: order.filter(id => id !== activeId),
-        folders: previous.folders.map(folder => folder.id === folderId ? { ...folder, items: [...folder.items.filter(id => id !== activeId), activeId] } : folder),
-        pageBreaks: tidyPageBreaks(breaks, entryIds.filter(id => id !== activeId)),
+        ...previous, folders: [...previous.folders, folder], order: order.flatMap(inPlace),
+        pageBreaks: tidyPageBreaks(breaks.flatMap(inPlace), entryIds.flatMap(inPlace)),
       };
-    }
-    const folder: HomeFolder = { id: newFolderId(), name: folderNameFor([targetId, activeId]), items: [targetId, activeId] };
-    const inPlace = (id: string) => id === targetId ? [folderEntryId(folder)] : id === activeId ? [] : [id];
-    return {
-      ...previous, folders: [...previous.folders, folder], order: order.flatMap(inPlace),
-      pageBreaks: tidyPageBreaks(breaks.flatMap(inPlace), entryIds.flatMap(inPlace)),
-    };
-  }), [entryIds, tiles, updateLayout]);
+    });
+  };
   // Dropped on the empty page after the last, an icon goes to the end and begins that page, as on iPadOS.
   const placeOnNewPage = useCallback((activeId: string) => updateLayout(previous => {
     const breaks = releasePageBreak(previous.pageBreaks, entryIds, activeId);
@@ -424,29 +555,34 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
       pageBreaks: tidyPageBreaks([...breaks, activeId], [...entryIds.filter(id => id !== activeId), activeId]),
     };
   }), [entryIds, tiles, updateLayout]);
-  const interceptDrop = useCallback((event: DragEndEvent) => {
-    const target = mergeRef.current;
+  // A drop from a pointer lands where homeDragIntent says (into a folder, or where the finger is); a keyboard drop
+  // goes where dnd-kit moved it. Either way the pages' first icons follow a move.
+  const interceptDrop = (event: DragEndEvent) => {
     clearMerge();
     const activeId = String(event.active.id);
     if (newPageIndex !== null && pager.page === newPageIndex) { placeOnNewPage(activeId); return true; }
     const point = pointerOf(event);
-    if (target?.ready && point && event.over && String(event.over.id) === target.id && inMergeZone(point, event.over.rect)) {
-      mergeInto(activeId, target.id);
+    const intent = intentRef.current;
+    const input = point && intent ? intentInput(activeId, point) : null;
+    const drop = intent && input ? resolveDrop(intent, input) : null;
+    if (drop?.kind === 'merge') {
+      mergeInto(activeId, drop.id);
       return true;
     }
-    // A plain move, which the list makes itself: the pages' first icons follow it.
-    const overId = event.over ? String(event.over.id) : null;
+    const overId = drop ? drop.overId : event.over ? String(event.over.id) : null;
     const from = entryIds.indexOf(activeId);
     const to = overId ? entryIds.indexOf(overId) : -1;
-    if (overId && from >= 0 && to >= 0 && from !== to && layout.pageBreaks?.length) {
+    const moves = overId !== null && from >= 0 && to >= 0 && from !== to;
+    if (moves && layout.pageBreaks?.length) {
       updateLayout(previous => ({ ...previous, pageBreaks: tidyPageBreaks(movePageBreaks(previous.pageBreaks, entryIds, activeId, overId), arrayMove(entryIds, from, to)) }));
     }
-    return false;
-  }, [clearMerge, entryIds, layout.pageBreaks, mergeInto, newPageIndex, pager.page, placeOnNewPage, updateLayout]);
+    if (!drop) return false;
+    if (moves) reorder(arrayMove(entryIds, from, to));
+    return true;
+  };
 
   const { containerRef, overlayRef, glide, move, moveMessage, dndProps, sortableProps } = useHomeSortableList({
-    ids: entryIds, editing, onEnterEdit: enterEdit, onReorder: reorder, labelOf, onDragActiveChange: setDragActive, visibleArea,
-    holdStill: merge !== null, interceptDrop,
+    ids: entryIds, editing, onEnterEdit: enterEdit, onReorder: reorder, labelOf, onDragActiveChange: setDragActive, visibleArea, interceptDrop,
   });
   const moveEntry = (id: string, step: -1 | 1) => { pendingMoveFocus.current = { id, step }; move(id, step); };
   // The track holds every page, so it is both what slides and where the list's drop glide finds the icons.
@@ -466,7 +602,7 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
     const box = icon?.getBoundingClientRect();
     window.clearTimeout(folderCloseTimer.current);
     setClosingFolder({ folder: entry.folder, tiles: tilesLeft, origin: box && box.width > 0 ? box : openFolder?.origin ?? null });
-    folderCloseTimer.current = window.setTimeout(() => setClosingFolder(null), FOLDER_CLOSE_MS);
+    folderCloseTimer.current = window.setTimeout(() => setClosingFolder(null), STUDIO_MOTION_OUT_MS);
     setOpenFolder(null);
   }, [openFolder, viewportRef]);
   useEffect(() => () => window.clearTimeout(folderCloseTimer.current), []);
@@ -546,6 +682,7 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
     if (dragSource.current !== 'folder' || !entry) return;
     dragSource.current = 'home';
     setIconDrag(true);
+    startIntent(activeId, null);
     shrinkFolder(entry, entry.tiles.filter(tile => tile.id !== activeId));
     updateLayout(takeOutOfFolder(entry.id, activeId));
   };
@@ -563,34 +700,48 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
     folderExitTimer.current = window.setTimeout(() => leaveFolderRef.current(id), FOLDER_EXIT_HOLD_MS);
   }, [stopFolderExit]);
 
-  // Each list finds drop targets among its own icons only (the home grid's lie under an open folder).
+  // Each list finds drop targets among its own icons only (the home grid's lie under an open folder). A pointer drag
+  // on the home grid goes where its intent has made room (homeDragIntent.ts), so an icon under the finger never dodges
+  // aside before it is meant to; keyboard drags and the open folder use the nearest centre.
   const homeCollision = dndProps.collisionDetection;
   const folderCollision = folderList.dndProps.collisionDetection;
   const collisionDetection = useCallback<CollisionDetection>(args => {
     const inFolder = dragSource.current === 'folder';
     const scope = new Set(inFolder ? folderTileIds : entryIds);
     const droppableContainers = args.droppableContainers.filter(container => scope.has(String(container.id)));
-    return (inFolder ? folderCollision : homeCollision)({ ...args, droppableContainers });
+    if (inFolder) return folderCollision({ ...args, droppableContainers });
+    // The slots as dnd-kit measured them, for the intent (a ref, not state: this runs while the context renders).
+    slotRects.current = args.droppableRects;
+    const overId = args.pointerCoordinates ? intentRef.current?.overId : undefined;
+    const container = overId === undefined ? undefined : droppableContainers.find(item => String(item.id) === overId);
+    if (container) return [{ id: container.id, data: { droppableContainer: container, value: 0 } }];
+    return homeCollision({ ...args, droppableContainers });
   }, [entryIds, folderCollision, folderTileIds, homeCollision]);
   const endIconDrag = () => {
     dragSource.current = null;
     stopFolderExit();
+    stopIntent();
     setIconDrag(false);
   };
   const listOf = (source: typeof dragSource.current) => source === 'folder' ? folderList.dndProps : dndProps;
   const dndHandlers = {
     sensors: dndProps.sensors, autoScroll: dndProps.autoScroll, accessibility: dndProps.accessibility, collisionDetection,
     onDragStart: (event: DragStartEvent) => {
-      const fromFolder = folderTileIds.includes(String(event.active.id));
+      const activeId = String(event.active.id);
+      const fromFolder = folderTileIds.includes(activeId);
       dragSource.current = fromFolder ? 'folder' : 'home';
-      if (!fromFolder) setIconDrag(true);
+      if (!fromFolder) {
+        setIconDrag(true);
+        startIntent(activeId, viewportRef.current?.querySelector(`[data-sort-id="${cssEscape(activeId)}"]`) ?? null);
+      }
       listOf(dragSource.current).onDragStart(event);
     },
     onDragMove: (event: DragMoveEvent) => { if (dragSource.current === 'folder') watchFolderExit(event); else onDragMove(event); },
+    // The list's drop (and interceptDrop inside it) still reads the intent, so the drag's state is cleared after it.
     onDragEnd: (event: DragEndEvent) => {
       const source = dragSource.current;
-      endIconDrag();
       listOf(source).onDragEnd(event);
+      endIconDrag();
     },
     onDragCancel: (event: DragCancelEvent) => {
       const source = dragSource.current;
@@ -604,14 +755,37 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
   // observer below), the icon size and labels, or the icons themselves (a status line adds height). A screen that is
   // hidden or mid-transition (a web app sent to the background while Shortcuts runs) is not measured, and a reading
   // that finds nothing to measure never replaces a good one: either would put every icon on one scrolling page.
-  useLayoutEffect(() => {
+  // A screen that only briefly got shorter (Spotlight or a keyboard over the web app, iOS settling after an app
+  // switch) moves nothing: fewer icons per page counts only once the size has held for VIEWPORT_SETTLE_MS, so the
+  // icons stay mounted where they are and nothing flashes when it comes back. A change that does land (a real resize,
+  // larger icons) glides every icon from where it was to its new place, across pages too.
+  const measuredStyle = useRef(`${layout.large}|${layout.labels}`);
+  const shrinkTimer = useRef<number | undefined>(undefined);
+  const fitPages = (confirmed: boolean) => {
     const home = homeRef.current;
     const viewport = viewportRef.current;
+    window.clearTimeout(shrinkTimer.current);
     if (!home || !viewport || dragging.current) return;
     if (document.visibilityState === 'hidden' || viewport.clientHeight < MIN_MEASURABLE_HEIGHT_PX) return;
     const next = measureCapacity(home, viewport, widgetsRef.current);
-    setCapacity(previous => (next === null && previous !== null && entries.length > 0) || sameCapacity(previous, next) ? previous : next);
-  }, [layout.large, layout.labels, loading, resizeCount, viewportRef, entries]);
+    const current = capacity;
+    if ((next === null && current !== null && entries.length > 0) || sameCapacity(current, next)) return;
+    const style = `${layout.large}|${layout.labels}`;
+    const restyled = style !== measuredStyle.current;
+    measuredStyle.current = style;
+    const shrinks = current !== null && next !== null && (next.first < current.first || next.page < current.page);
+    if (shrinks && !restyled && !confirmed) {
+      shrinkTimer.current = window.setTimeout(() => fitPagesRef.current(true), VIEWPORT_SETTLE_MS);
+      return;
+    }
+    if (current === null) setCapacity(next);
+    else glide(() => setCapacity(next));
+  };
+  // The latest fitPages, for the settle timer.
+  const fitPagesRef = useRef<(confirmed: boolean) => void>(() => {});
+  useLayoutEffect(() => { fitPagesRef.current = fitPages; });
+  useLayoutEffect(() => { fitPages(false); }, [layout.large, layout.labels, loading, resizeCount, viewportRef, entries]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => window.clearTimeout(shrinkTimer.current), []);
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport || typeof ResizeObserver !== 'function') return;
@@ -685,17 +859,20 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
   // The glyph is half the card, as in the approved design (92 px card, 124 px large).
   const iconSize = layout.large ? 62 : 46;
 
-  const pageControl = pageCount > 1 && <div className={`home-page-control ${pager.lit ? 'is-lit' : ''}`} role="group" aria-label="主屏幕页面">
+  // One page control, which moves between the foot of the screen and the edit bar (a shared layout, so it glides).
+  const pageControl = pageCount > 1 && <m.div layoutId="home-page-control" layout="position" transition={PAGE_CONTROL_MOVE}
+    className={`home-page-control ${pager.lit ? 'is-lit' : ''}`} role="group" aria-label="主屏幕页面">
     {Array.from({ length: pageCount }, (_, index) => <button type="button" key={index} aria-label={`第 ${index + 1} 页`} aria-current={index === pager.page ? 'true' : undefined}
       onClick={() => goTo(index)}><i aria-hidden="true" /></button>)}
-  </div>;
+  </m.div>;
 
   const renderEntry = (entry: Entry, position: number) => {
     const merging = merge?.id === entry.id;
     const shared = {
-      id: entry.id, index: position, last: position === entries.length - 1, editing, renaming: renaming === entry.id,
-      // An icon another is held over grows a folder's backdrop once the hold is long enough.
-      slotClass: merging ? `is-merge-target ${merge.ready ? 'is-merge-ready' : ''}` : '',
+      id: entry.id, index: position, last: position === entries.length - 1, editing, leavingEdit, renaming: renaming === entry.id,
+      // An icon another is held over stops still, then grows a folder's backdrop once the hold is long enough; the
+      // folder a drop just made (or filled) settles back from that size.
+      slotClass: merging ? `is-merge-target ${merge.ready ? 'is-merge-ready' : ''}` : formedFolder === entry.id ? 'is-folder-formed' : '',
       onMove: (step: -1 | 1) => moveEntry(entry.id, step), onRenameStart: () => setRenaming(entry.id), onRename: (name: string | null) => renameEntry(entry, name),
     };
     if (entry.kind === 'folder') {
@@ -746,7 +923,7 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
     <div className="home-grid" />
   </section>;
 
-  return <div ref={homeRef} className={`home-screen ${layout.large ? 'large-icons' : ''} ${layout.labels ? '' : 'no-labels'} ${editing ? 'editing' : ''}`} onClick={leaveEditOnEmptyTap}>
+  return <div ref={homeRef} className={`home-screen ${layout.large ? 'large-icons' : ''} ${layout.labels ? '' : 'no-labels'} ${editing ? 'editing' : ''} ${leavingEdit ? 'edit-leaving' : ''}`} onClick={leaveEditOnEmptyTap}>
     <StudioFluidBackground dark={isDarkMode} paused={covered} />
     <header className="home-top">
       <div className="home-date">
@@ -763,7 +940,7 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
             onClick={event => revealTheme(() => setThemeMode(isDarkMode ? 'light' : 'dark'), event.currentTarget)}>
             {isDarkMode ? <IconSun size={18} aria-hidden="true" /> : <IconMoon size={18} aria-hidden="true" />}</button>
           <button type="button" className={`glass-icon ${refreshing ? 'refreshing' : ''}`} aria-label="刷新状态" title="刷新状态" disabled={refreshing} onClick={onRefresh}><IconRefresh size={18} className="refresh-icon" aria-hidden="true" /></button>
-          <button type="button" className="glass-icon" aria-label="编辑主屏幕" title="编辑主屏幕" onClick={() => setEditing(true)}><IconAdjustmentsHorizontal size={18} aria-hidden="true" /></button>
+          <button type="button" className="glass-icon" aria-label="编辑主屏幕" title="编辑主屏幕" onClick={enterEdit}><IconAdjustmentsHorizontal size={18} aria-hidden="true" /></button>
           <button type="button" className="glass-icon" aria-label="退出登录" title="退出登录" onClick={onSignOut}><IconLogout size={18} aria-hidden="true" /></button>
           {/* Settings, one size smaller, in the corner. */}
           <button type="button" className="glass-icon home-gear" aria-label="设置" title="设置" onClick={event => onOpenSettings(event.currentTarget.getBoundingClientRect())}><IconSettings size={17} aria-hidden="true" /></button>
@@ -787,35 +964,37 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
         onRenameTile={(id, name) => { if (name !== null) writeHomeName(id, name, defaultNameOf(id)); }}
         onRenameFolder={name => renameFolder(openFolderEntry.id, name)}
         onMoveOut={id => moveOutOfFolder(openFolderEntry.id, id)} />}
-      <IconDragLayer entries={entries} folderTiles={folderTiles} iconSize={iconSize} switchStateOf={switchStateOf} overlayRef={setOverlay} remeasureRef={remeasure} />
+      <IconDragLayer entries={entries} folderTiles={folderTiles} iconSize={iconSize} merging={Boolean(merge?.ready)} switchStateOf={switchStateOf} overlayRef={setOverlay} remeasureRef={remeasure} />
       <p className="studio-visually-hidden" aria-live="polite">{moveMessage}</p>
     </DndContext>
     <div ref={setDragHost} className="home-drag-host" />
-    {/* In edit mode the page control rides in the floating bar, which sits where it otherwise would. */}
-    {editing ? <div className="home-edit-bar" role="group" aria-label="主屏幕外观">
-      {pageControl}
+    {/* In edit mode the page control rides in the floating bar, which sits where it otherwise would. Leaving edit mode,
+        the bar shrinks away without it while the dots glide back to the foot of the screen. */}
+    {!editing && pageControl}
+    {(editing || leavingEdit) && <div className={`home-edit-bar ${editing ? '' : 'is-leaving'}`} role="group" aria-label="主屏幕外观" {...(editing ? {} : LEAVING_INERT)}>
+      {editing && pageControl}
       <label className="ios-switch-label">显示名称
         <input type="checkbox" role="switch" className="ios-switch" checked={layout.labels} onChange={event => updateLayout({ labels: event.target.checked })} />
       </label>
       <label className="ios-switch-label">大图标
         <input type="checkbox" role="switch" className="ios-switch" checked={layout.large} onChange={event => updateLayout({ large: event.target.checked })} />
       </label>
-    </div> : pageControl}
+    </div>}
 
     {ajExit.sheetOpen && <StudioAjExitSheet ready={ajExit.ready} on={ajExit.on} supported={ajExit.supported}
       onClose={ajExit.closeSheet} onFinishSetup={ajExit.finishSetup} onResetSetup={ajExit.resetSetup} />}
 
-    {libraryOpen && createPortal(<div className="studio-layer" onKeyDown={event => { if (event.key === 'Escape') setLibraryOpen(false); }}>
-      <div className="sheet-scrim" aria-hidden="true" onClick={() => setLibraryOpen(false)} />
+    {libraryOpen && createPortal(<div className={`studio-layer ${library.closing ? 'closing' : ''}`} onKeyDown={event => { if (event.key === 'Escape') library.close(); }}>
+      <div className="sheet-scrim" aria-hidden="true" onClick={library.close} />
       <div className="library-sheet" role="dialog" aria-modal="true" aria-labelledby="studio-library-title">
         <div className="library-grabber" aria-hidden="true" />
-        <header><h2 id="studio-library-title">App 资源库</h2><button type="button" className="ios-button tinted" autoFocus onClick={() => setLibraryOpen(false)}>完成</button></header>
+        <header><h2 id="studio-library-title">App 资源库</h2><button type="button" className="ios-button tinted" autoFocus onClick={library.close}>完成</button></header>
         <h3>已隐藏</h3>
         <div className="ios-list">
           {hidden.map(tile => <div className="ios-row" key={tile.id}>
             <StudioTileIcon tone={tile.tone} glyph={tile.glyph} product={tile.id} size={17} variant="small" />
             <span className="ios-row-body"><strong>{tile.name}</strong></span>
-            <button type="button" className="ios-button tinted" onClick={() => updateLayout(previous => ({ ...previous, hidden: previous.hidden.filter(id => id !== tile.id) }))}>添加到主屏幕</button>
+            <button type="button" className="ios-button tinted" onClick={() => glide(() => updateLayout(previous => ({ ...previous, hidden: previous.hidden.filter(id => id !== tile.id) })))}>添加到主屏幕</button>
           </div>)}
           {!hidden.length && <div className="ios-row no-icon"><span className="ios-row-body"><small>所有应用都在主屏幕上</small></span></div>}
         </div>
