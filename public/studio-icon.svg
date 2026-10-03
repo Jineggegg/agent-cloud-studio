@@ -1,5 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="96" fill="#163e45"/>
-  <path d="M165 345h178c53 0 85-32 85-77s-34-80-80-80c-20-59-63-85-108-85-58 0-100 40-107 94-36 8-63 37-63 72 0 46 38 76 95 76Z" fill="none" stroke="#b6f0e8" stroke-width="22" stroke-linejoin="round"/>
-  <path d="M198 397h116" stroke="#91d4ae" stroke-width="22" stroke-linecap="round"/>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#17191d"/>
+      <stop offset="1" stop-color="#060708"/>
+    </linearGradient>
+    <radialGradient id="glow" cx=".5" cy=".5" r=".5">
+      <stop offset="0" stop-color="#18c29c" stop-opacity=".22"/>
+      <stop offset="1" stop-color="#18c29c" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2f8cff"/>
+      <stop offset=".5" stop-color="#18c29c"/>
+      <stop offset="1" stop-color="#ff8a1f"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="114" fill="url(#bg)"/>
+  <circle cx="256" cy="256" r="170" fill="url(#glow)"/>
+  <!-- The four-pointed spark and its two halo arcs, drawn in the 0–100 box of the launch animation. -->
+  <g transform="translate(256 256) scale(3.9) translate(-50 -50)" fill="none" stroke="url(#ink)" stroke-linecap="round" stroke-linejoin="round" stroke-width="4.6">
+    <path d="M50 4 A46 46 0 0 1 96 50"/>
+    <path d="M50 96 A46 46 0 0 1 4 50"/>
+    <path d="M50 16 C53 40 60 47 84 50 C60 53 53 60 50 84 C47 60 40 53 16 50 C40 47 47 40 50 16 Z"/>
+  </g>
 </svg>

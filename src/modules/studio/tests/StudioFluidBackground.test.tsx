@@ -3,14 +3,15 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import { StudioFluidBackground } from '@/modules/studio/StudioFluidBackground';
 
-// A 2D context that records what is drawn; `filter` is kept only when this "browser" supports canvas filters.
+// A 2D context that records what is drawn (each frame: one base fill, one fill per blob); `filter` is kept only when this "browser" supports canvas filters.
 function fakeContext({ filters }: { filters: boolean }) {
-  const drawn = { clears: 0, beams: 0, filters: [] as string[] };
+  const drawn = { bases: 0, blobs: 0, filters: [] as string[] };
+  const gradient = () => ({ addColorStop: vi.fn() });
   const context = {
-    setTransform: vi.fn(), save: vi.fn(), restore: vi.fn(), translate: vi.fn(), rotate: vi.fn(),
-    clearRect: vi.fn(() => { drawn.clears += 1; }),
-    fillRect: vi.fn(() => { drawn.beams += 1; }),
-    createLinearGradient: vi.fn(() => ({ addColorStop: vi.fn() })),
+    setTransform: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), quadraticCurveTo: vi.fn(), closePath: vi.fn(),
+    fillRect: vi.fn(() => { drawn.bases += 1; }),
+    fill: vi.fn(() => { drawn.blobs += 1; }),
+    createLinearGradient: vi.fn(gradient), createRadialGradient: vi.fn(gradient),
     fillStyle: '' as unknown,
   } as Record<string, unknown>;
   if (filters) {
@@ -51,17 +52,21 @@ function nextFrame(at: number) {
   act(() => { for (const callback of pending) callback(at); });
 }
 
-test('draws thirty beams and keeps them moving, frame after frame', () => {
+test('draws the plain base and three bubbles and keeps them moving, frame after frame', () => {
   const drawn = withContext({ filters: true });
   const { container } = render(<StudioFluidBackground dark paused={false} />);
-  expect(container.querySelector('.home-wallpaper canvas.home-beams')).not.toBeNull();
-  expect(drawn.beams).toBe(30);
+  expect(container.querySelector('.home-wallpaper canvas.home-blobs')).not.toBeNull();
+  expect(container.querySelector('.home-wallpaper .home-blobs-veil')).not.toBeNull();
+  expect(drawn.bases).toBe(1);
+  expect(drawn.blobs).toBe(3);
   expect(frames).toHaveLength(1);
   nextFrame(performance.now() + 40);
-  expect(drawn.beams).toBe(60);
+  expect(drawn.bases).toBe(2);
+  expect(drawn.blobs).toBe(6);
   expect(frames).toHaveLength(1);
-  // The canvas blurs the beams itself, at its reduced scale (35 px × 0.35).
-  expect(drawn.filters.at(-1)).toMatch(/^blur\(12\.\dpx\)$/);
+  // The base is drawn sharp; the canvas blurs the blobs itself, at its reduced scale (90 px × 0.25).
+  expect(drawn.filters.at(-2)).toBe('none');
+  expect(drawn.filters.at(-1)).toMatch(/^blur\(22\.\dpx\)$/);
   expect(container.querySelector('canvas')?.dataset.blur).toBe('canvas');
 });
 
@@ -69,7 +74,7 @@ test('under reduced motion it draws one still frame and never animates', () => {
   reducedMotion = true;
   const drawn = withContext({ filters: true });
   render(<StudioFluidBackground dark paused={false} />);
-  expect(drawn.beams).toBe(30);
+  expect(drawn.blobs).toBe(3);
   expect(frames).toHaveLength(0);
 });
 
@@ -83,7 +88,7 @@ test('stops while an app covers the home screen and carries on when it is uncove
   expect(container.querySelector('.home-wallpaper')?.classList.contains('is-paused')).toBe(false);
   rerender(<StudioFluidBackground dark paused />);
   expect(frames).toHaveLength(0);
-  expect(drawn.beams).toBeGreaterThan(0);
+  expect(drawn.blobs).toBeGreaterThan(0);
 });
 
 test('stops while the page is hidden', () => {

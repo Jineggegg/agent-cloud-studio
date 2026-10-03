@@ -1,13 +1,21 @@
 import { Component, useEffect } from 'react';
 import type { ReactNode } from 'react';
 
-// The `.acs-launch*` styles live inline in index.html so the very first paint needs no stylesheet;
+import { StarSpark } from '@/shared/ui/StarSpark';
+import { STAR_TIP, freezeStarHalo, placeStarOutline, runStarZoom, starCoverRadius, starTurnRemaining, starWindowHole } from '@/shared/ui/starSpark';
+
+// The `.acs-launch*` and `.acs-star` styles live inline in index.html so the very first paint needs no stylesheet;
 // the components below reuse them, which keeps every loading state pixel-identical to the splash
 // and lets the error screen work even when the app's stylesheet never arrived.
 
-// Matches the #launch-splash opacity transition in index.html; the cleanup waits a little longer.
-const SPLASH_FADE_MS = 420;
-const SPLASH_CLEANUP_MS = SPLASH_FADE_MS + 180;
+// The splash star's draw-in (--star-draw in index.html); it starts turning right after. A fast start lets the draw-in
+// finish before the splash leaves instead of cutting it short; a slow one is never held back, it is long over by then.
+const SPLASH_DRAW_MS = 1100;
+// The star's size on the splash (.acs-launch-star in index.html), for when the browser cannot measure it.
+const SPLASH_STAR_PX = 132;
+// Under reduced motion the splash just fades (#launch-splash[data-phase="fade"]); the cleanup waits a little longer.
+const SPLASH_FADE_MS = 200;
+const SPLASH_FADE_CLEANUP_MS = SPLASH_FADE_MS + 60;
 
 // The production build loads the entry stylesheet without blocking the first paint and marks its
 // link with this attribute (vite.config.js); the dev server injects styles from JavaScript instead.
@@ -17,31 +25,74 @@ const STYLESHEET_POLL_MS = 100;
 // How long the splash waits for the two animation frames before it leaves anyway.
 const FRAME_FALLBACK_MS = 400;
 
+const prefersReducedMotion = () => Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+
+// When the splash first showed (index.html stamps it), in performance.now() time; NaN without a stamp (as in tests).
+function splashShownAt(): number {
+  const stamp = document.getElementById('launch-splash')?.getAttribute('data-shown-at');
+  return stamp ? Number(stamp) : Number.NaN;
+}
+
+// How long the splash star has been turning by the stamp, for browsers that cannot report their animations.
+function splashTurnElapsed(): number {
+  const shownAt = splashShownAt();
+  return Number.isFinite(shownAt) ? performance.now() - shownAt - SPLASH_DRAW_MS : 0;
+}
+
 /**
- * Crossfades the index.html launch screen into the screen React just painted.
- * The splash fades and the app settles from 0.985 to 1 (`html.acs-app-entering`),
- * then both the node and the class are removed so no transform lingers on #root
- * (a transformed ancestor would re-anchor every `position: fixed` sheet).
+ * The splash's way out once the app has painted underneath: the star comes to rest upright at the end of its quarter
+ * turn, then grows into a star-shaped window cut out of the splash backdrop (starSpark.ts), its outline riding the
+ * window's edge as a thin line and fading, while the app seen through it settles from slightly larger and blurred
+ * (`html.acs-app-entering`). Then the node and the class are removed, so no transform lingers on #root (a transformed
+ * ancestor would re-anchor every `position: fixed` sheet). `instant` (a hidden tab, or a page starved of animation
+ * frames) just removes it; under reduced motion it fades.
  */
-function releaseLaunchSplash() {
+function releaseLaunchSplash(exit: 'animate' | 'instant') {
   const splash = document.getElementById('launch-splash');
   if (!splash || splash.dataset.state === 'leaving') return;
-  const root = document.documentElement;
   splash.dataset.state = 'leaving';
   splash.setAttribute('aria-hidden', 'true');
-  root.classList.add('acs-app-entering');
-  let finished = false;
-  const finish = () => {
-    if (finished) return;
-    finished = true;
+  const star = splash.querySelector<SVGSVGElement>('.acs-star');
+  if (exit === 'instant') {
     splash.remove();
-    root.classList.remove('acs-app-entering');
-  };
-  splash.addEventListener('transitionend', event => {
-    if (event.target === splash && event.propertyName === 'opacity') finish();
+    return;
+  }
+  if (!star || prefersReducedMotion()) {
+    splash.dataset.phase = 'fade';
+    window.setTimeout(() => splash.remove(), SPLASH_FADE_CLEANUP_MS);
+    return;
+  }
+  const wait = starTurnRemaining(star, splashTurnElapsed());
+  if (wait > 0) window.setTimeout(() => zoomThroughSplash(splash, star), wait);
+  else zoomThroughSplash(splash, star);
+}
+
+function zoomThroughSplash(splash: HTMLElement, star: SVGSVGElement) {
+  if (!splash.isConnected) return;
+  const root = document.documentElement;
+  const backdrop = splash.querySelector<HTMLElement>('.acs-launch-backdrop') ?? splash;
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  const box = star.getBoundingClientRect();
+  const x = box.width ? box.left + box.width / 2 : width / 2;
+  const y = box.height ? box.top + box.height / 2 : height / 2;
+  freezeStarHalo(star, splashTurnElapsed());
+  star.classList.remove('is-turning');
+  star.classList.add('is-zooming');
+  splash.dataset.phase = 'zoom';
+  root.classList.add('acs-app-entering');
+  runStarZoom({
+    from: ((box.width || SPLASH_STAR_PX) * STAR_TIP) / 100,
+    to: starCoverRadius(x, y, width, height),
+    onFrame: (radius, progress) => {
+      backdrop.style.clipPath = starWindowHole(x, y, radius, width, height);
+      placeStarOutline(star, x, y, radius, progress);
+    },
+    onDone: () => {
+      splash.remove();
+      root.classList.remove('acs-app-entering');
+    },
   });
-  // transitionend never fires when the tab is hidden or transitions are disabled.
-  window.setTimeout(finish, SPLASH_CLEANUP_MS);
 }
 
 /**
@@ -75,21 +126,22 @@ function whenEntryStylesApplied(onApplied: () => void): () => void {
 }
 
 // Two frames: the first lets the browser paint the new screen under the splash, the second starts
-// the fade from that painted frame, so the crossfade never reveals a blank page. Returns a canceller.
+// the zoom from that painted frame, so the star window never opens onto a blank page. Returns a canceller.
 function releaseAfterNextPaint(): () => void {
-  // A hidden tab gets no animation frames until it is shown, and there is no fade to see, so the
+  // A hidden tab gets no animation frames until it is shown, and there is no zoom to see, so the
   // splash goes at once instead of waiting (and later claiming the network is slow).
   if (document.visibilityState === 'hidden') {
-    releaseLaunchSplash();
+    releaseLaunchSplash('instant');
     return () => {};
   }
   let secondFrame = 0;
   const firstFrame = window.requestAnimationFrame(() => {
-    secondFrame = window.requestAnimationFrame(releaseLaunchSplash);
+    secondFrame = window.requestAnimationFrame(() => releaseLaunchSplash('animate'));
   });
   // A visible page can still be starved of frames (a throttled or freshly restored tab); the screen is
-  // already rendered, so after a short wait the splash goes without the two-frame handshake.
-  const fallback = window.setTimeout(releaseLaunchSplash, FRAME_FALLBACK_MS);
+  // already rendered, so after a short wait the splash goes without the handshake (and without a zoom,
+  // which would need those frames too).
+  const fallback = window.setTimeout(() => releaseLaunchSplash('instant'), FRAME_FALLBACK_MS);
   return () => {
     window.cancelAnimationFrame(firstFrame);
     window.cancelAnimationFrame(secondFrame);
@@ -98,16 +150,43 @@ function releaseAfterNextPaint(): () => void {
 }
 
 /**
+ * How much longer the index.html splash should stay so its star can finish drawing in: what is left of SPLASH_DRAW_MS
+ * since the `data-shown-at` stamp. 0 without a stamp (as in tests) or once the draw-in is over, and never more than
+ * SPLASH_DRAW_MS whatever the stamp says.
+ */
+function splashIntroRemaining(): number {
+  const shownAt = splashShownAt();
+  if (!Number.isFinite(shownAt)) return 0;
+  return Math.min(SPLASH_DRAW_MS, Math.max(0, shownAt + SPLASH_DRAW_MS - performance.now()));
+}
+
+// Runs `start` (which returns its own canceller) once the splash star has drawn in; at once in a hidden tab, where
+// nothing is seen and timers are throttled. Returns a canceller for both the wait and whatever `start` began.
+function afterSplashIntro(start: () => () => void): () => void {
+  const wait = document.visibilityState === 'hidden' ? 0 : splashIntroRemaining();
+  if (wait <= 0) return start();
+  let cancelStarted = () => {};
+  const timer = window.setTimeout(() => { cancelStarted = start(); }, wait);
+  return () => {
+    window.clearTimeout(timer);
+    cancelStarted();
+  };
+}
+
+/**
  * Used by App (Studio and IDE routes) and the auth module's ProtectedRoute (setup, login and
  * onboarding screens). Rendering it next to a screen marks that screen as the first real paint,
  * so the launch screen leaves only once there is something to reveal — never earlier, never later —
- * and only once the app's stylesheet is applied, so nothing is ever revealed unstyled.
+ * and only once the app's stylesheet is applied, so nothing is ever revealed unstyled. On a fast
+ * start it also lets the splash star finish drawing in (at most SPLASH_DRAW_MS after its first paint),
+ * so the launch never just flashes; a slow start is not held back by that at all. Leaving, a star that
+ * is mid-turn first comes to rest upright (under STAR_TURN_MS), then the app opens through the star window.
  * Place it inside the same Suspense boundary as lazily loaded content so it waits for that content.
  */
 export function LaunchSplashRelease() {
   useEffect(() => {
     let cancelRelease = () => {};
-    const cancelStyleWait = whenEntryStylesApplied(() => { cancelRelease = releaseAfterNextPaint(); });
+    const cancelStyleWait = whenEntryStylesApplied(() => { cancelRelease = afterSplashIntro(releaseAfterNextPaint); });
     return () => {
       cancelStyleWait();
       cancelRelease();
@@ -117,18 +196,14 @@ export function LaunchSplashRelease() {
 }
 
 /**
- * Used by App while the IDE chunk loads and by the auth module's AuthLoadingScreen while the
- * session check runs: the launch screen's emblem and hairline, so a later loading state looks
- * exactly like the splash it replaces instead of flashing a different spinner.
+ * Used by App while the workbench or IDE chunk loads and by the auth module's AuthLoadingScreen while the
+ * session check runs: the launch screen's star, drawing in and then turning, so a later loading state
+ * looks exactly like the splash it replaces instead of flashing a different spinner.
  */
 export function LaunchScreen({ label }: { label: string }) {
   return (
     <div className="acs-launch" role="status" aria-live="polite" aria-label={label}>
-      <div className="acs-launch-emblem" aria-hidden="true">
-        <span className="acs-launch-halo" />
-        <LaunchMark />
-      </div>
-      <div className="acs-launch-line" aria-hidden="true" />
+      <StarSpark className="acs-launch-star" turning turnAfterDraw />
       <p className="acs-launch-hint">
         网络较慢，仍在加载…
         <button type="button" onClick={() => window.location.reload()}>重新加载</button>
@@ -137,7 +212,7 @@ export function LaunchScreen({ label }: { label: string }) {
   );
 }
 
-/** The glass cloud mark of the splash: used here by the loading and error screens, and by the auth module's sign-in layout. */
+/** The glass cloud mark: used here by the error screen, and by the auth module's sign-in layout. */
 export function LaunchMark() {
   return (
     <span className="acs-launch-mark">

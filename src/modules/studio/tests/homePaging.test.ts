@@ -110,4 +110,13 @@ describe('page capacity', () => {
     expect(pageRanges(6, 8, 12)).toEqual([{ start: 0, end: 6 }]);
     expect(pageRanges(40, null, 12)).toEqual([{ start: 0, end: 40 }]);
   });
+
+  test('starts a page at each break, and a full page still flows on', () => {
+    // An icon dropped on a new page begins it, though the first page had room.
+    expect(pageRanges(6, 8, 12, [4])).toEqual([{ start: 0, end: 4 }, { start: 4, end: 6 }]);
+    expect(pageRanges(6, null, 12, [4])).toEqual([{ start: 0, end: 4 }, { start: 4, end: 6 }]);
+    expect(pageRanges(20, 4, 6, [2, 9])).toEqual([{ start: 0, end: 2 }, { start: 2, end: 8 }, { start: 8, end: 9 }, { start: 9, end: 15 }, { start: 15, end: 20 }]);
+    // Breaks at the first item or past the end change nothing.
+    expect(pageRanges(6, 8, 12, [0, 6, 9])).toEqual([{ start: 0, end: 6 }]);
+  });
 });

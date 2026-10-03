@@ -42,6 +42,6 @@ export function StudioSettingsHome() {
     {confirm === 'names' && <StudioConfirmSheet title="恢复默认名称？" message="所有改过的图标名字都会恢复原名，所有设备上一起生效。文件夹名字不受影响。" confirmLabel="恢复"
       onCancel={() => setConfirm(null)} onConfirm={() => { setConfirm(null); clearHomeNames(); }} />}
     {confirm === 'layout' && <StudioConfirmSheet title="重置主屏幕布局？" message="这台设备上的图标顺序、文件夹和隐藏的应用都会恢复默认；名字、小组件和项目本身不受影响。" confirmLabel="重置"
-      onCancel={() => setConfirm(null)} onConfirm={() => { setConfirm(null); updateLayout(previous => ({ ...previous, hidden: [], order: undefined, folders: [] })); }} />}
+      onCancel={() => setConfirm(null)} onConfirm={() => { setConfirm(null); updateLayout(previous => ({ ...previous, hidden: [], order: undefined, folders: [], pageBreaks: undefined })); }} />}
   </>;
 }

@@ -1,0 +1,17 @@
+/*
+ * Opening and loading inside the Studio, with the launch screen's four-pointed star (StarSpark; its `.acs-star`
+ * styles are inline in index.html so the launch splash has them before any stylesheet).
+ * Everything that moves is a stroke offset, a transform or opacity, cheap for an iPad.
+ */
+
+/* An app opening from its icon (StudioAppLaunch): the star is drawn over the icon in a layer above the home screen and
+   the app, which never takes a tap; the app itself is revealed through the star window (clip-path, set per frame). */
+.studio-app-launch { position: fixed; inset: 0; z-index: 30; pointer-events: none; }
+.studio-app-launch .acs-star { position: absolute; }
+
+/* Where a sub-app is still loading inside an open app (StudioPanelPending): the star, small and turning, at the centre
+   of the space the sub-app will fill. It appears only if the load takes a moment, so a quick one never flashes it;
+   while the app is still opening from its icon it sits unseen behind the star window. */
+.studio-panel-pending { flex: 1; min-height: 40vh; display: grid; place-items: center; }
+.studio-panel-star { width: 56px; height: 56px; opacity: 0; animation: studio-pending-in 240ms ease 160ms forwards; }
+@keyframes studio-pending-in { to { opacity: 1; } }

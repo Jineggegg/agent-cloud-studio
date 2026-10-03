@@ -82,11 +82,23 @@ export function gridCapacity({ available, rowHeight, rowGap, columns }: { availa
 /**
  * Splits `itemCount` items into pages: the first page holds `firstCapacity` (it shares the screen with the widgets,
  * and may hold none), every later one `pageCapacity`. Without a measured capacity everything stays on one page.
+ * `breaks` are the indexes of items that begin a page of their own (an icon dropped on a new page, as on iPadOS); a
+ * full page still flows on to the next one.
  */
-export function pageRanges(itemCount: number, firstCapacity: number | null, pageCapacity: number): PageRange[] {
-  if (firstCapacity === null || itemCount <= firstCapacity) return [{ start: 0, end: itemCount }];
-  const ranges: PageRange[] = [{ start: 0, end: Math.max(0, firstCapacity) }];
+export function pageRanges(itemCount: number, firstCapacity: number | null, pageCapacity: number, breaks: readonly number[] = []): PageRange[] {
+  const starts = [...new Set(breaks)].filter(index => index > 0 && index < itemCount).sort((a, b) => a - b);
+  if (!starts.length && (firstCapacity === null || itemCount <= firstCapacity)) return [{ start: 0, end: itemCount }];
   const perPage = Math.max(1, pageCapacity);
-  for (let start = ranges[0].end; start < itemCount; start += perPage) ranges.push({ start, end: Math.min(itemCount, start + perPage) });
+  const ranges: PageRange[] = [];
+  let start = 0;
+  // Unmeasured, a page holds everything up to the next break.
+  let capacity = firstCapacity === null ? itemCount : Math.max(0, firstCapacity);
+  while (start < itemCount || !ranges.length) {
+    const nextBreak = starts.find(index => index > start) ?? itemCount;
+    const end = Math.min(itemCount, start + capacity, nextBreak);
+    ranges.push({ start, end });
+    start = end;
+    capacity = firstCapacity === null ? itemCount : perPage;
+  }
   return ranges;
 }

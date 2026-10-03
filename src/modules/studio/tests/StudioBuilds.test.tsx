@@ -119,7 +119,12 @@ test('让 AI 开发 starts a build: the icon appears at once, fills as the plan 
   const sheet = await screen.findByRole('dialog', { name: '新建项目' });
   expect(within(sheet).getByRole('radio', { name: '让 AI 开发' }).getAttribute('aria-checked')).toBe('true');
   const start = await within(sheet).findByRole('button', { name: '开始开发' });
-  expect((start as HTMLButtonElement).disabled).toBe(true);
+  // Never greyed out: pressed with nothing written, it asks for the description instead of starting.
+  expect((start as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(start);
+  expect(within(sheet).getByText('先用一句话写下想做什么')).toBeTruthy();
+  expect(document.activeElement).toBe(within(sheet).getByRole('textbox', { name: '想做什么' }));
+  expect(mocks.builds.create).not.toHaveBeenCalled();
   // The manual form stays mounted (hidden) beside this one, so fields are found by their accessible role.
   fireEvent.change(within(sheet).getByRole('textbox', { name: '名称' }), { target: { value: '喝水打卡' } });
   fireEvent.change(within(sheet).getByRole('textbox', { name: '想做什么' }), { target: { value: '记录每天喝水，能设目标' } });
@@ -165,6 +170,9 @@ test('an unsent description survives closing the sheet', async () => {
   const prompt = await within(sheet).findByRole('textbox', { name: '想做什么' });
   expect((prompt as HTMLTextAreaElement).value).toBe('一个番茄钟，25 分钟一轮');
   expect(mocks.builds.create).not.toHaveBeenCalled();
+  // The header's close button closes it too.
+  fireEvent.click(within(sheet).getByRole('button', { name: '关闭' }));
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建项目' })).toBeNull());
 });
 
 test('a build that does not finish says so and offers to continue; the manual form is one tap away', async () => {
@@ -346,7 +354,49 @@ test('the description comes first and is named once typing pauses for 700 ms; th
   // A description cut back to almost nothing drops the suggestion.
   fireEvent.change(prompt, { target: { value: '喝' } });
   expect(name.placeholder).toBe('比如：喝水打卡');
-  expect(start.disabled).toBe(true);
+  // With no name to use, 开始开发 asks for one rather than starting.
+  fireEvent.click(start);
+  expect(screen.getByText('给它起个名字')).toBeTruthy();
+  expect(document.activeElement).toBe(name);
+  expect(name.getAttribute('aria-invalid')).toBe('true');
+  expect(mocks.builds.create).not.toHaveBeenCalled();
+});
+
+test('开始开发 is always pressable: without a description it focuses the field and asks for one, even with a name', async () => {
+  mocks.builds.create.mockImplementation(() => json({ build: build(), project: PROJECT }, 201));
+  const { prompt, name, start } = renderComposer();
+  expect(start.disabled).toBe(false);
+  // The example is a placeholder, not text in the field.
+  expect(prompt.value).toBe('');
+  expect(prompt.placeholder).toMatch(/^比如：/);
+
+  fireEvent.click(start);
+  const hint = screen.getByText('先用一句话写下想做什么');
+  expect(hint.getAttribute('aria-live')).toBe('polite');
+  expect(document.activeElement).toBe(prompt);
+  expect(prompt.getAttribute('aria-invalid')).toBe('true');
+  expect(prompt.getAttribute('aria-describedby')).toContain(hint.id);
+  // Writing answers it.
+  fireEvent.change(prompt, { target: { value: '喝' } });
+  expect(screen.queryByText('先用一句话写下想做什么')).toBeNull();
+  expect(prompt.getAttribute('aria-invalid')).toBeNull();
+  fireEvent.change(prompt, { target: { value: '' } });
+
+  // A name alone is not enough, from the button, from Return in the name field or from ⌘↩ in the description.
+  fireEvent.change(name, { target: { value: '我的打卡' } });
+  fireEvent.click(start);
+  expect(screen.getByText('先用一句话写下想做什么')).toBeTruthy();
+  expect(document.activeElement).toBe(prompt);
+  fireEvent.change(prompt, { target: { value: '   ' } });
+  fireEvent.keyDown(name, { key: 'Enter' });
+  expect(document.activeElement).toBe(prompt);
+  fireEvent.keyDown(prompt, { key: 'Enter', metaKey: true });
+  expect(screen.getByText('先用一句话写下想做什么')).toBeTruthy();
+  expect(mocks.builds.create).not.toHaveBeenCalled();
+
+  fireEvent.change(prompt, { target: { value: '记录每天喝水的网页' } });
+  fireEvent.click(start);
+  await waitFor(() => expect(mocks.builds.create).toHaveBeenCalledWith({ name: '我的打卡', tone: 'slate', glyph: 'sparkles', prompt: '记录每天喝水的网页' }));
 });
 
 test('Return in the empty name field takes the suggestion without starting; Return again starts the build', async () => {
@@ -440,7 +490,7 @@ test('newer input aborts the pending suggestion and a late answer for the old de
   await waitFor(() => expect(mocks.builds.create).toHaveBeenCalledWith(expect.objectContaining({ name: '番茄钟', prompt: '一个番茄钟，25 分钟一轮' })));
 });
 
-test('without a suggestion an empty name cannot start, and a failed suggestion leaves the field as it was', async () => {
+test('without a suggestion an empty name cannot start (开始开发 asks for one), and a failed suggestion leaves the field as it was', async () => {
   mocks.builds.suggestName.mockImplementation(() => json({ error: 'unavailable' }, 500));
   const { prompt, name, start } = renderComposer();
   fireEvent.change(prompt, { target: { value: '记录每天喝水的网页' } });
@@ -448,7 +498,10 @@ test('without a suggestion an empty name cannot start, and a failed suggestion l
   await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
   expect(name.placeholder).toBe('比如：喝水打卡');
   expect(screen.queryByRole('button', { name: /^采用/ })).toBeNull();
-  expect(start.disabled).toBe(true);
+  fireEvent.click(start);
+  expect(screen.getByText('给它起个名字')).toBeTruthy();
+  expect(document.activeElement).toBe(name);
+  expect(mocks.builds.create).not.toHaveBeenCalled();
   // Return in the empty name field does nothing then.
   expect(fireEvent.keyDown(name, { key: 'Enter' })).toBe(false);
   expect(mocks.builds.create).not.toHaveBeenCalled();
