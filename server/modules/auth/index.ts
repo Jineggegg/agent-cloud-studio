@@ -16,6 +16,8 @@ export { onSessionsRevoked } from './auth.module.js';
 // verifyStepUpPassword: used by the settings module to ask for the password before an API key is
 // created or re-activated.
 export { verifyStepUpPassword } from './auth.module.js';
+// recordSecurityEvent: used by the settings module to log a new Web Push endpoint.
+export { recordSecurityEvent } from './auth.module.js';
 // readRequestClient: used by the request-guard module to key its rate limits and WebSocket
 // connection caps by the same real client (and door) the auth throttles use.
 export { readRequestClient } from './request-client.service.js';

@@ -121,6 +121,14 @@ export function onSessionsRevoked(listener: SessionsRevokedListener): () => void
 }
 
 /**
+ * Used by the settings module to record a security event it detects itself (a new Web Push
+ * endpoint), so it appears in Settings → 安全 next to the auth module's own events.
+ */
+export function recordSecurityEvent(event: Parameters<typeof securityEvents.record>[0]): void {
+  securityEvents.record(event);
+}
+
+/**
  * Used by the settings module to step up sensitive changes (creating or re-activating an API key)
  * with the current password, under the session's own per-user budget. Throws 403 for a wrong
  * password and 429 while the budget is used up.

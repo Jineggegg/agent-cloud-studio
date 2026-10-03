@@ -31,6 +31,7 @@ const EVENT_LABELS: Record<string, string> = {
   'passkey-removed': '移除了登录通行密钥',
   'sessions-revoked': '退出了所有设备',
   'api-keys-revoked': '停用了 API 密钥',
+  'push-subscribed': '新的推送订阅',
   'step-up-failed': '设置里输错了密码',
 };
 const DOOR_LABELS: Record<string, string> = { cloudflare: '公网', tailnet: 'Tailscale', direct: '本机 / 局域网' };

@@ -43,6 +43,10 @@ type SettingsDependencies = {
   pushSubscriptions: {
     save(userId: number, endpoint: string, p256dh: string, auth: string): void;
     remove(endpoint: string): void;
+    /** Subscribed now, or removed by "退出所有设备" not long ago (a tombstone). */
+    isKnown(userId: number, endpoint: string): boolean;
+    /** Records a genuinely new endpoint in the security log (auth module), with the masked client. */
+    recordNew(client: StudioRequestClient, endpoint: string): void;
   };
   getVapidPublicKey(): string | null;
 };
@@ -165,19 +169,30 @@ export function createSettingsService(dependencies: SettingsDependencies) {
     getVapidPublicKey() {
       return { publicKey: dependencies.getVapidPublicKey() };
     },
-    subscribeToPush(userId: number, input: Record<string, unknown>) {
+    /**
+     * Stores a browser's push subscription (an upsert by endpoint). A re-registration
+     * (`resubscribe`) of an endpoint already known for this user is silent; any genuinely new
+     * endpoint, re-registration or not, is a new subscription: it switches Web Push on, sends the
+     * "enabled" notification and is recorded as a security event, so a stolen token cannot add a
+     * push endpoint unnoticed.
+     */
+    subscribeToPush(userId: number, input: Record<string, unknown>, client: StudioRequestClient = { door: 'direct', address: 'unknown' }) {
       const endpoint = requiredString(input.endpoint, 'Endpoint', 'PUSH_SUBSCRIPTION_REQUIRED');
       const keys = typeof input.keys === 'object' && input.keys !== null
         ? input.keys as Record<string, unknown>
         : {};
       const p256dh = requiredString(keys.p256dh, 'p256dh', 'PUSH_SUBSCRIPTION_REQUIRED');
       const auth = requiredString(keys.auth, 'auth', 'PUSH_SUBSCRIPTION_REQUIRED');
+      const known = dependencies.pushSubscriptions.isKnown(userId, endpoint);
       // An upsert by endpoint, so sending the same subscription again changes nothing.
       dependencies.pushSubscriptions.save(userId, endpoint, p256dh, auth);
-      // A page re-registering its existing subscription after sign-in (e.g. after "退出所有设备"
-      // removed it) must not switch Web Push back on or send the "enabled" notification.
-      if (input.resubscribe === true) {
+      // A page re-registering its own subscription after sign-in (e.g. after "退出所有设备" removed
+      // it) must not switch Web Push back on or send the "enabled" notification.
+      if (input.resubscribe === true && known) {
         return { success: true };
+      }
+      if (!known) {
+        dependencies.pushSubscriptions.recordNew(client, endpoint);
       }
 
       const currentPreferences = dependencies.notifications.getPreferences(userId);

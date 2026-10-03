@@ -18,6 +18,7 @@ type SecurityEventType =
   | 'passkey-removed'
   | 'sessions-revoked'
   | 'api-keys-revoked'
+  | 'push-subscribed'
   | 'step-up-failed';
 
 type SecurityEventInput = {
@@ -49,6 +50,7 @@ const EVENT_CLASSES: Partial<Record<SecurityEventType, number>> = {
   'passkey-removed': IMPORTANT,
   'sessions-revoked': IMPORTANT,
   'api-keys-revoked': IMPORTANT,
+  'push-subscribed': IMPORTANT,
   'login-succeeded': SIGN_IN,
   'passkey-signin': SIGN_IN,
   'tailscale-signin': SIGN_IN,

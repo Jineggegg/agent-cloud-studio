@@ -350,6 +350,22 @@ test('退出所有设备 through the real app revokes tokens, API keys and live 
   assert.equal(await closed, 1006);
   assert.equal(database.apiKeysDb.validateApiKey(apiKey), undefined);
   assert.equal((await request(port, '/api/auth/user', { headers })).status, 401);
+
+  // Signed in again: the device's own (removed) endpoint re-registers silently; a never-seen one is
+  // a new subscription that shows up as a security event.
+  const fresh = jwt.sign({ userId: ownerId, username: 'andrew', ver: 1 }, 'route-audit-test-secret', { expiresIn: '1h' });
+  const freshHeaders = { ...SERVE_HEADERS, authorization: `Bearer ${fresh}`, 'content-type': 'application/json' };
+  const subscribe = (endpoint: string) => request(port, '/api/settings/push/subscribe', {
+    method: 'POST', headers: freshHeaders, body: JSON.stringify({ endpoint, keys: { p256dh: 'key', auth: 'auth' }, resubscribe: true }),
+  });
+  const pushEvents = async () => {
+    const overview = JSON.parse((await request(port, '/api/auth/security', { headers: freshHeaders })).body) as { importantEvents: { type: string; detail: string }[] };
+    return overview.importantEvents.filter((event) => event.type === 'push-subscribed');
+  };
+  assert.equal((await subscribe('https://push.example.test/1')).status, 200);
+  assert.deepEqual(await pushEvents(), []);
+  assert.equal((await subscribe('https://attacker.example/push')).status, 200);
+  assert.deepEqual((await pushEvents()).map((event) => event.detail), ['attacker.example']);
 });
 
 test('with STUDIO_CLOUDFLARED_PORT set, the cloudflared listener is the public door and nothing else is', async () => {
