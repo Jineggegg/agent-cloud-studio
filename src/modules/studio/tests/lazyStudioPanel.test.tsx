@@ -1,7 +1,10 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { useCallback, useState } from 'react';
+import type { ReactNode } from 'react';
 import { afterEach, expect, test, vi } from 'vitest';
 
 import { lazyStudioPanel } from '@/modules/studio/lazyStudioPanel';
+import { StudioPanelLoadContext } from '@/modules/studio/StudioPanelFallback';
 
 afterEach(() => {
   cleanup();
@@ -105,4 +108,33 @@ test('the idle warm-up starts once the splash is gone, without waiting for the w
   splash.remove();
   await vi.advanceTimersByTimeAsync(1200);
   expect(load).toHaveBeenCalledTimes(1);
+});
+
+// Inside an open app (StudioPage), placeholders report their load (the app's launch star waits on it) and show the
+// turning star in their place instead of a skeleton.
+function OpenApp({ children }: { children?: ReactNode }) {
+  const [pending, setPending] = useState(0);
+  const track = useCallback(() => {
+    setPending(count => count + 1);
+    return () => setPending(count => count - 1);
+  }, []);
+  return <StudioPanelLoadContext.Provider value={track}>
+    <main data-pending={pending}>{children}</main>
+  </StudioPanelLoadContext.Provider>;
+}
+
+test('inside an open app a cold sub-app reports its load and shows the launch star instead of a skeleton', async () => {
+  let finish: (component: typeof Greeting) => void = () => {};
+  const Panel = lazyStudioPanel(() => new Promise<typeof Greeting>(resolve => { finish = resolve; }), 'list');
+  const { container } = render(<OpenApp><Panel name="AJ" /></OpenApp>);
+
+  const pending = screen.getByRole('status', { name: '正在加载' });
+  expect(pending.querySelector('svg.acs-star.is-turning')).toBeTruthy();
+  expect(container.querySelector('.studio-skeleton')).toBeNull();
+  expect(container.querySelector('main')?.dataset.pending).toBe('1');
+
+  finish(Greeting);
+  expect(await screen.findByText('你好，AJ')).toBeTruthy();
+  expect(screen.queryByRole('status', { name: '正在加载' })).toBeNull();
+  expect(container.querySelector('main')?.dataset.pending).toBe('0');
 });

@@ -328,6 +328,8 @@ test('an icon dragged to the side of the screen and held there turns the page, a
   expect(currentPage()).toBe(1);
   act(() => { vi.advanceTimersByTime(150); });
   expect(currentPage()).toBe(2);
+  // Away from the edge again before the next turn (held there, it would go on to the empty page after the last).
+  fireEvent.pointerMove(document, { pointerId: 1, pointerType: 'mouse', clientX: 600, clientY: 150 });
   settle();
   expect(trackOffset()).toBe(-PAGE_WIDTH);
   // Back from the edge, over the second page's first icon, and let go.
@@ -338,5 +340,69 @@ test('an icon dragged to the side of the screen and held there turns the page, a
   const order = JSON.parse(localStorage.getItem('studio-home-layout-v1') ?? '{}').order as string[];
   expect(order.indexOf('project:p1')).toBe(8);
   expect(within(screen.getByRole('navigation', { name: '应用（第 2 页）' })).getAllByRole('button', { name: /^App / })[0].getAttribute('aria-label')).toBe('App 1');
+  expect(screen.getByRole('button', { name: '完成' })).toBeTruthy();
+});
+
+test('an icon held at the side of the last page makes a new page and begins it when dropped there', () => {
+  renderHome(5);
+  fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
+  // One page only: no page control until a drag offers the empty page after it.
+  expect(screen.queryByRole('group', { name: '主屏幕页面' })).toBeNull();
+  const icon = screen.getByRole('button', { name: 'App 2' });
+  fireEvent.pointerDown(icon, { pointerId: 1, pointerType: 'mouse', button: 0, isPrimary: true, clientX: 375, clientY: 150 });
+  fireEvent.pointerMove(document, { pointerId: 1, pointerType: 'mouse', clientX: 390, clientY: 150 });
+  expect(dots().getAllByRole('button')).toHaveLength(2);
+  fireEvent.pointerMove(document, { pointerId: 1, pointerType: 'mouse', clientX: 985, clientY: 150 });
+  act(() => { vi.advanceTimersByTime(550); });
+  expect(currentPage()).toBe(2);
+  fireEvent.pointerMove(document, { pointerId: 1, pointerType: 'mouse', clientX: 500, clientY: 150 });
+  settle();
+  fireEvent.pointerUp(document, { pointerId: 1, pointerType: 'mouse', clientX: 500, clientY: 150 });
+  settle();
+  // The icon went to the end and begins the second page, with + after it; the rest stay on the first.
+  expect(within(screen.getByRole('navigation', { name: '应用' })).getAllByRole('button', { name: /^App / }).map(button => button.getAttribute('aria-label'))).toEqual(['App 1', 'App 3', 'App 4', 'App 5']);
+  const secondPage = within(screen.getByRole('navigation', { name: '应用（第 2 页）' })).getAllByRole('button').map(button => button.getAttribute('aria-label'));
+  expect(secondPage.filter(label => /^App \d+$|^新建项目$/.test(label ?? ''))).toEqual(['App 2', '新建项目']);
+  expect(currentPage()).toBe(2);
+  const saved = JSON.parse(localStorage.getItem('studio-home-layout-v1') ?? '{}');
+  expect(saved.order.at(-1)).toBe('project:p2');
+  expect(saved.pageBreaks).toEqual(['project:p2']);
+});
+
+test('an icon dragged out of an open folder closes it and carries on as a drag on the home screen', () => {
+  localStorage.setItem('studio-home-layout-v1', JSON.stringify({
+    hidden: [], labels: true, large: false, order: ['folder:tools', 'project:p3', 'project:p4'],
+    folders: [{ id: 'tools', name: '工具', items: ['project:p1', 'project:p2'] }],
+  }));
+  const rect = Element.prototype.getBoundingClientRect as unknown as { getMockImplementation: () => (this: Element) => DOMRect };
+  const laidOut = rect.getMockImplementation();
+  // The open folder's panel sits in the middle of the screen, its icons in a row inside it.
+  vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+    const panel = this.closest('.home-folder-panel');
+    if (this === panel) return box(300, 120, 400, 200);
+    if (panel && this instanceof HTMLElement && this.dataset.sortId) return box(350 + Array.from(panel.querySelectorAll('[data-sort-id]')).indexOf(this) * 100, 150, 100, 100);
+    return laidOut.call(this);
+  });
+  renderHome(4);
+  fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
+  fireEvent.click(screen.getByRole('button', { name: '文件夹「工具」，2 个应用' }));
+  const folder = screen.getByRole('dialog');
+  const icon = within(folder).getByRole('button', { name: 'App 1' });
+  fireEvent.pointerDown(icon, { pointerId: 1, pointerType: 'mouse', button: 0, isPrimary: true, clientX: 400, clientY: 200 });
+  fireEvent.pointerMove(document, { pointerId: 1, pointerType: 'mouse', clientX: 410, clientY: 200 });
+  // Still over the panel: the folder stays, however long the icon is held.
+  act(() => { vi.advanceTimersByTime(600); });
+  expect(screen.getByRole('dialog')).toBeTruthy();
+  // Beyond it and held a moment: the folder closes and the icon is on the home screen, still lifted.
+  fireEvent.pointerMove(document, { pointerId: 1, pointerType: 'mouse', clientX: 880, clientY: 190 });
+  act(() => { vi.advanceTimersByTime(300); });
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(JSON.parse(localStorage.getItem('studio-home-layout-v1') ?? '{}').folders).toEqual([{ id: 'tools', name: '工具', items: ['project:p2'] }]);
+  expect(document.querySelector('.home-drag-overlay .is-lifted')).not.toBeNull();
+  // Dropped over the last icon, it takes that place.
+  fireEvent.pointerMove(document, { pointerId: 1, pointerType: 'mouse', clientX: 870, clientY: 190 });
+  fireEvent.pointerUp(document, { pointerId: 1, pointerType: 'mouse', clientX: 870, clientY: 190 });
+  settle();
+  expect(JSON.parse(localStorage.getItem('studio-home-layout-v1') ?? '{}').order).toEqual(['folder:tools', 'project:p3', 'project:p4', 'project:p1']);
   expect(screen.getByRole('button', { name: '完成' })).toBeTruthy();
 });

@@ -73,6 +73,31 @@ test('projects appear as home tiles and open on one AI 助手 page holding agent
   expect(screen.getByRole('navigation', { name: '应用' })).toBeTruthy();
 });
 
+test('an app opens from its icon behind the launch star, which announces it until the app is open', async () => {
+  renderStudio();
+  const apps = await screen.findByRole('navigation', { name: '应用' });
+  fireEvent.click(within(apps).getByRole('button', { name: '超级教授' }));
+  const professor = await screen.findByRole('region', { name: '超级教授' });
+  const launch = screen.getByRole('status', { name: '正在打开 超级教授' });
+  expect(launch.querySelector('svg.acs-star')).toBeTruthy();
+  // The home screen stays in view (and the app is rendered, unseen) while the star draws over the icon.
+  expect(document.querySelector('.home-layer')?.classList.contains('is-covered')).toBe(false);
+  await waitFor(() => expect(screen.queryByRole('status', { name: '正在打开 超级教授' })).toBeNull(), { timeout: 5000 });
+  expect(within(professor).getByRole('navigation', { name: '项目功能' })).toBeTruthy();
+  expect(document.querySelector('.home-layer')?.classList.contains('is-covered')).toBe(true);
+});
+
+test('under reduced motion an app simply appears, with no launch star', async () => {
+  vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduce'), media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }));
+  try {
+    renderStudio();
+    const apps = await screen.findByRole('navigation', { name: '应用' });
+    fireEvent.click(within(apps).getByRole('button', { name: '超级教授' }));
+    expect(await screen.findByRole('region', { name: '超级教授' })).toBeTruthy();
+    expect(screen.queryByRole('status', { name: '正在打开 超级教授' })).toBeNull();
+  } finally { vi.unstubAllGlobals(); }
+});
+
 test('the gear in the home screen corner opens the settings app; AJ 出口 sits among the system tiles', async () => {
   renderStudio();
   const apps = await screen.findByRole('navigation', { name: '应用' });

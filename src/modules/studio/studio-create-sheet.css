@@ -1,0 +1,198 @@
+/*
+ * The new-project sheet (StudioCreateSheet) and its 让 AI 开发 form (StudioBuildComposer): an iOS form sheet in the
+ * home screen's frosted glass. A fixed header (grabber on a phone, centred title, close button, the 创建方式 switch
+ * on its own row), each form scrolling on its own underneath, and the form's buttons pinned to the bottom edge.
+ *
+ * StudioPage imports this sheet before studio.css, so the rules here win by specificity (`.studio-layer .create-sheet
+ * …`), not by order. The manual form (StudioProjectEditor) is also the project settings page; it is only restyled
+ * inside this sheet.
+ */
+
+/* ---------- Sheet ---------- */
+.studio-layer .library-sheet.create-sheet {
+  --sheet-pad: 24px;
+  display: flex; flex-direction: column; overflow: hidden;
+  width: min(640px, calc(100% - 48px)); height: min(820px, calc(100dvh - 48px)); max-height: none; padding: 0;
+  border-radius: 30px; border: 1px solid var(--home-glass-edge);
+  /* The widgets' glass: a soft sheen from the top-left over a frosted, mostly opaque fill, so the dimmed home
+     screen glows through without hurting the form's contrast. */
+  background:
+    radial-gradient(120% 60% at 10% -10%, var(--home-glass-sheen), transparent 60%),
+    color-mix(in srgb, var(--ios-bg) 86%, transparent);
+  -webkit-backdrop-filter: blur(40px) saturate(170%); backdrop-filter: blur(40px) saturate(170%);
+  box-shadow: inset 0 1px 0 var(--home-glass-rim), var(--ios-shadow-float);
+}
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .studio-layer .library-sheet.create-sheet { background: var(--ios-bg); }
+}
+
+/* ---------- Header ---------- */
+.studio-layer .create-sheet .create-sheet-header {
+  /* `normal` undoes .library-sheet header's flex alignment, which would shrink the grid's column to its content. */
+  position: relative; z-index: 2; flex-shrink: 0; display: grid; gap: 14px; justify-content: normal; align-items: normal;
+  padding: 16px var(--sheet-pad) 14px; border-bottom: .5px solid transparent;
+  transition: border-color var(--dur-fast) ease;
+}
+/* A hairline appears once the form has scrolled under the header, the way a navigation bar does. */
+.studio-layer .create-sheet[data-scrolled] .create-sheet-header { border-bottom-color: var(--ios-separator); }
+.studio-layer .create-sheet .create-sheet-titlebar {
+  display: grid; grid-template-columns: 32px minmax(0, 1fr) 32px; align-items: center; gap: 8px; min-height: 32px;
+}
+.studio-layer .create-sheet .create-sheet-title {
+  overflow: hidden; text-align: center; text-overflow: ellipsis; white-space: nowrap;
+  font-family: inherit; font-size: 17px; font-weight: 600; letter-spacing: -.01em;
+}
+.studio-layer .create-sheet-close {
+  position: relative; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%;
+  background: var(--ios-fill); color: var(--ios-label-2);
+  transition: background-color var(--dur-fast) ease, color var(--dur-fast) ease, transform var(--dur-slow) var(--ease-spring);
+}
+/* The 32px button gets a 44px hit area. */
+.studio-layer .create-sheet-close::before { content: ""; position: absolute; inset: -6px; }
+.studio-layer .create-sheet-close:active { transform: scale(.9); transition-duration: var(--dur-press); }
+@media (hover: hover) {
+  .studio-layer .create-sheet-close:hover { background: var(--ios-fill-pressed); color: var(--ios-label); }
+}
+/* The 创建方式 switch spans the row, two equal halves like a system segmented control in a sheet. */
+.studio-layer .create-sheet .create-sheet-mode {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; padding: 3px; border-radius: 12px;
+}
+.studio-layer .create-sheet .create-sheet-mode button { min-height: 34px; padding: 4px 12px; border-radius: 9px; font-size: 14px; }
+/* In the dark the selected half is lifted lighter than its track, as on iOS, rather than sunk into the sheet colour. */
+.dark .studio-layer .create-sheet .create-sheet-mode button[aria-checked="true"] {
+  background: color-mix(in srgb, var(--ios-label) 16%, var(--ios-surface)); box-shadow: 0 1px 3px rgba(0, 0, 0, .3);
+}
+
+/* ---------- Body: each form scrolls on its own ---------- */
+.studio-layer .create-sheet .create-sheet-body {
+  flex: 1; min-height: 0; padding: 0 var(--sheet-pad); overflow-y: auto; overscroll-behavior: contain;
+  /* A quiet scrollbar that stays inside the sheet's rounded edge instead of the platform's boxed one. */
+  scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ios-label) 22%, transparent) transparent;
+}
+.studio-layer .create-sheet .create-sheet-body:not([hidden]) {
+  display: flex; flex-direction: column; animation: studio-rise var(--dur-base) var(--ease-out) backwards;
+}
+/* The form fills the body, so its buttons sit on the sheet's bottom edge even when the form is short. */
+.studio-layer .create-sheet .project-form { flex: 1 0 auto; display: flex; flex-direction: column; padding: 4px 0 0; }
+.studio-layer .create-sheet .project-form > :has(+ .project-form-actions) { margin-bottom: 24px; }
+
+/* Grouped sections with the sheet's own rhythm: compact headers, glassy cards with a hairline edge. */
+.studio-layer .create-sheet .ios-section { margin-top: 26px; }
+.studio-layer .create-sheet .project-form > .ios-section:first-child,
+.studio-layer .create-sheet .build-composer-fields > .ios-section:first-child { margin-top: 6px; }
+.studio-layer .create-sheet .ios-section-header { min-height: 0; padding: 0 4px 8px; }
+/* `inherit` undoes .library-sheet h2's serif, which is for a sheet's large title. */
+.studio-layer .create-sheet .ios-section-header h2 { font-family: inherit; font-size: 15px; font-weight: 600; letter-spacing: 0; }
+.studio-layer .create-sheet .ios-section-footer { padding: 8px 4px 0; font-size: 13px; line-height: 1.5; }
+.studio-layer .create-sheet .ios-list {
+  border-radius: 20px; background: color-mix(in srgb, var(--ios-surface) 88%, transparent);
+  box-shadow: inset 0 0 0 .5px var(--ios-separator);
+  transition: box-shadow var(--dur-fast) ease;
+}
+
+/* ---------- Action bar, pinned to the bottom edge ---------- */
+.studio-layer .create-sheet .project-form-actions {
+  position: sticky; bottom: 0; z-index: 3; display: flex; justify-content: flex-end; gap: 12px;
+  margin: auto calc(-1 * var(--sheet-pad)) 0; padding: 14px var(--sheet-pad) calc(16px + env(safe-area-inset-bottom));
+  border-top: .5px solid var(--ios-separator);
+  /* Nearly opaque: inside the sheet's own backdrop filter, browsers do not always blur what scrolls underneath. */
+  background: color-mix(in srgb, var(--ios-bg) 92%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(160%); backdrop-filter: blur(24px) saturate(160%);
+}
+.studio-layer .create-sheet .project-form-actions .ios-button { min-height: 50px; padding: 0 22px; font-size: 16px; }
+.studio-layer .create-sheet .project-form-actions .ios-button:not(.filled) { flex: 0 0 auto; min-width: 96px; }
+.studio-layer .create-sheet .project-form-actions .ios-button.filled { flex: 0 1 260px; }
+/* While the server prepares, 开始开发 keeps its colour and spinner but takes no further presses. */
+.studio-layer .create-sheet .build-start[aria-disabled="true"] { cursor: progress; }
+@media (hover: hover) {
+  .studio-layer .create-sheet .project-form-actions .ios-button.filled:not(:disabled):not([aria-disabled="true"]):hover {
+    background: color-mix(in srgb, var(--ios-tint) 88%, var(--ios-label));
+  }
+}
+
+/* ---------- 让 AI 开发: 想做什么 ---------- */
+.studio-layer .build-composer-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
+.studio-layer .build-composer-fields:disabled { opacity: .6; transition: opacity var(--dur-fast) ease; }
+/* index.css paints every dark-mode textarea, and with it its placeholder (through -webkit-text-fill-color), in a
+   near-white with !important, which made the example look like text already written. The description takes the
+   sheet's own colours back: label for what is typed, the tertiary label for the example, the same as 名称's. */
+:is(.studio, .studio-layer) .build-composer textarea.build-prompt {
+  display: block; width: 100%; min-height: 156px; margin: 0; padding: 14px 16px; border: 0; outline: none; resize: vertical;
+  overflow-x: hidden; overflow-y: auto; scrollbar-width: thin;
+  background: transparent !important; color: var(--ios-label) !important; -webkit-text-fill-color: var(--ios-label) !important;
+  caret-color: var(--ios-tint) !important; font-size: 17px; line-height: 1.5;
+}
+:is(.studio, .studio-layer) .build-composer textarea.build-prompt::placeholder {
+  color: var(--ios-label-3) !important; -webkit-text-fill-color: var(--ios-label-3) !important; opacity: 1 !important;
+}
+/* The card clips an outline, so focus rings the whole card instead; a missing description rings it in red. */
+.studio-layer .create-sheet .build-prompt-card:focus-within {
+  box-shadow: inset 0 0 0 .5px var(--ios-separator), 0 0 0 3px color-mix(in srgb, var(--ios-tint) 40%, transparent);
+}
+.studio-layer .create-sheet .build-prompt-card[data-missing] {
+  box-shadow: inset 0 0 0 .5px var(--ios-separator), 0 0 0 3px color-mix(in srgb, var(--ios-red) 42%, transparent);
+}
+.build-counter { font-variant-numeric: tabular-nums; }
+/* What 开始开发 found missing. Empty (and so taking no room) until then; it stays mounted as a live region. */
+.studio-layer .build-missing { padding: 0 4px; font-size: 13px; font-weight: 600; line-height: 1.5; color: var(--ios-red); }
+.studio-layer .build-missing:not(:empty) { padding-top: 8px; animation: studio-rise var(--dur-base) var(--ease-out) backwards; }
+
+/* ---------- 让 AI 开发: 名称和图标 ---------- */
+/* The preview (the home-screen icon and its label) beside the name field, the pickers below a hairline. */
+.studio-layer .build-look-top { display: flex; align-items: flex-start; gap: 18px; padding: 16px; }
+.studio-layer .build-composer-hero { display: flex; flex-direction: column; align-items: center; gap: 8px; flex-shrink: 0; width: 80px; }
+.studio-layer .build-composer-hero .home-icon { --icon: 64px; }
+.studio-layer .build-composer-name {
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; font-weight: 500; text-align: center;
+}
+.studio-layer .build-look-name { display: grid; gap: 6px; flex: 1; min-width: 0; padding-top: 2px; }
+.studio-layer .build-look-label { padding-left: 4px; font-size: 13px; font-weight: 600; color: var(--ios-label-2); }
+.studio-layer .build-name-field {
+  display: flex; align-items: center; min-height: 46px; padding: 0 6px 0 14px; border-radius: 14px;
+  background: var(--ios-fill); transition: box-shadow var(--dur-fast) ease;
+}
+.studio-layer .build-name-field:focus-within { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ios-tint) 40%, transparent); }
+.studio-layer .build-look-name[data-missing] .build-name-field { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ios-red) 42%, transparent); }
+.studio-layer .build-name-field input {
+  flex: 1; min-width: 0; min-height: 44px; border: 0; outline: none; background: transparent;
+  color: var(--ios-label); font-size: 17px;
+}
+.studio-layer .build-name-field input::placeholder { color: var(--ios-label-3); -webkit-text-fill-color: var(--ios-label-3); opacity: 1; }
+.studio-layer .build-look-hint { padding-left: 4px; font-size: 12.5px; line-height: 1.45; color: var(--ios-label-2); }
+.studio-layer .build-look-picker { position: relative; }
+.studio-layer .build-look-picker::before { content: ""; position: absolute; top: 0; right: 0; left: 16px; height: .5px; background: var(--ios-separator); }
+.studio-layer .picker-list.is-inset { padding: 14px 16px 16px; gap: 14px; }
+.studio-layer .build-composer-note { margin-top: 22px; padding: 0 4px; font-size: 13px; line-height: 1.55; color: var(--ios-label-2); }
+
+/* ---------- 手动创建 ---------- */
+.studio-layer .create-sheet .project-form-preview { gap: 8px; padding: 8px 0 2px; font-size: 13px; font-weight: 500; }
+.studio-layer .create-sheet .project-form-preview .home-icon { --icon: 64px; }
+.studio-layer .create-sheet .project-form-preview + .ios-section { margin-top: 18px; }
+
+/* ---------- Phone: a bottom sheet ---------- */
+@media (max-width: 699px) {
+  .studio-layer .library-sheet.create-sheet {
+    --sheet-pad: 16px;
+    width: 100%; height: min(94dvh, calc(100dvh - env(safe-area-inset-top) - 10px));
+    border-radius: 28px 28px 0 0; border-bottom: 0;
+  }
+  .studio-layer .create-sheet .create-sheet-header { gap: 12px; padding-top: 6px; }
+  .studio-layer .create-sheet .library-grabber { margin: 0 auto -4px; }
+  :is(.studio, .studio-layer) .build-composer textarea.build-prompt { min-height: 132px; }
+  .studio-layer .create-sheet .project-form-actions { gap: 10px; }
+  .studio-layer .create-sheet .project-form-actions .ios-button.filled { flex: 1 1 auto; }
+  .studio-layer .build-look-top { gap: 14px; padding: 14px; }
+  .studio-layer .build-composer-hero { width: 68px; }
+  .studio-layer .build-composer-hero .home-icon { --icon: 56px; }
+  .studio-layer .picker-list.is-inset { padding: 12px 14px 14px; }
+  /* Even rows instead of one colour wrapping alone: the eight colours in one row, the ten symbols in two. */
+  .studio-layer .picker-list.is-inset .tone-picker { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); justify-items: center; gap: 0; }
+  .studio-layer .picker-list.is-inset .tone-swatch { width: min(34px, 100%); height: auto; aspect-ratio: 1; }
+  .studio-layer .picker-list.is-inset .glyph-picker { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); justify-items: center; gap: 6px 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-layer .create-sheet .create-sheet-body:not([hidden]), .studio-layer .build-missing:not(:empty) { animation: none; }
+  .studio-layer .create-sheet-close:active { transform: none; }
+}

@@ -1,13 +1,37 @@
-import { Component } from 'react';
+import { Component, createContext, useContext, useEffect } from 'react';
 import type { ReactNode } from 'react';
 
+import { StarSpark } from '@/shared/ui/StarSpark';
 import '@/modules/studio/studio-perf.css';
+import '@/modules/studio/studio-loading.css';
 
 /**
- * Used by lazyStudioPanel (studio module) as the Suspense fallback of a cold sub-app: an iOS-style
+ * Provided by StudioPage around an open app: called by every placeholder of a sub-app still loading there, it
+ * reports one pending load and returns the function that ends it. While an app opens from its icon, its launch star
+ * (StudioAppLaunch) keeps turning until no load is pending. Outside an app (the new-project sheet, tests) there is
+ * none, and the placeholder draws its skeleton as before.
+ */
+export const StudioPanelLoadContext = createContext<(() => () => void) | null>(null);
+
+/**
+ * Used by StudioPage while the project list loads, and by StudioPanelPlaceholder inside an open app: the launch star,
+ * small and turning, in the space the content will fill, shown only if loading takes a moment.
+ */
+export function StudioPanelPending() {
+  return <div className="studio-panel-pending" role="status" aria-label="正在加载">
+    <StarSpark className="studio-panel-star" drawMs={650} turning turnAfterDraw />
+  </div>;
+}
+
+/**
+ * Used by lazyStudioPanel (studio module) as the Suspense fallback of a cold sub-app. Inside an open app it reports
+ * the load (the app's launch waits for it) and shows the launch star in its place; elsewhere it is an iOS-style
  * shimmer sketch of the screen it stands in for, so the layout does not jump when the app arrives.
  */
 export function StudioPanelPlaceholder({ variant }: { variant: 'list' | 'form' | 'dashboard' | 'chat' }) {
+  const trackLoad = useContext(StudioPanelLoadContext);
+  useEffect(() => trackLoad?.(), [trackLoad]);
+  if (trackLoad) return <StudioPanelPending />;
   if (variant === 'chat') {
     return <div className="studio-chat-layout studio-perf-fade" role="status" aria-label="正在打开对话">
       <aside className="studio-chat-list" aria-hidden="true">

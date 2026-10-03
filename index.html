@@ -58,36 +58,34 @@
     </script>
 
     <!-- Launch screen. Pure inline CSS/SVG so it paints before any script runs and before the app
-         stylesheet arrives (the build loads that without blocking: vite.config.js). It mirrors the
-         Studio home wallpaper (same paper background and blurred mineral colour fields), so the
-         crossfade into the home screen reads as the wallpaper staying put while the icons arrive.
-         React removes it (LaunchSplashRelease in src/shared/ui/LaunchScreen.tsx) once the first real
-         screen has painted with the app stylesheet applied; LaunchScreen and the error screen in the
-         same file reuse these `.acs-launch` styles. -->
+         stylesheet arrives (the build loads that without blocking: vite.config.js). On a plain white (or, at night,
+         near-black) backdrop, the base of the Studio home wallpaper, the Studio's mark, a four-pointed spark in a
+         halo, draws itself in (the halo first, then the star in one stroke, about 1.1 s) and then turns in quarter
+         turns, the halo the other way, for as long as loading lasts. Every moving part is a CSS animation of a
+         stroke offset or a transform, which the browser runs off the main thread, so it stays smooth while the app's
+         JavaScript downloads and parses.
+         React releases it (LaunchSplashRelease in src/shared/ui/LaunchScreen.tsx) once the first real screen has
+         painted with the app stylesheet applied, and not before the draw-in has played (the `data-shown-at` stamp
+         below): the star comes to rest upright at the end of its quarter turn and grows into a star-shaped window
+         through which the app, already rendered underneath, settles into place. LaunchScreen and the error screen in
+         the same file reuse these `.acs-launch` and `.acs-star` styles, as does the studio module when an app opens
+         from its icon (StudioAppLaunch). -->
     <style>
       .acs-launch {
-        --launch-bg: #efede8;
-        --launch-wall-a: rgba(143, 168, 154, .5);
-        --launch-wall-b: rgba(196, 160, 136, .38);
-        --launch-wall-c: rgba(142, 159, 184, .42);
-        --launch-glass-top: rgba(255, 255, 255, .82);
-        --launch-glass-bottom: rgba(255, 255, 255, .38);
-        --launch-edge: rgba(255, 255, 255, .9);
-        --launch-ink: #3b5b7a;
-        --launch-ink-2: #5d7b6a;
-        --launch-glow: rgba(142, 159, 184, .62);
-        --launch-track: rgba(110, 104, 92, .14);
-        --launch-shine: #3b5b7a;
-        --launch-label: #66635d;
+        /* Backdrop: the wallpaper's plain base (utils/wallpaperBlobs, wallpaperBase), with no colour of its own. */
+        --launch-bg: #f8fafb;
+        --launch-bg-2: #f4f6f7;
+        --launch-glass-top: rgba(255, 255, 255, .8);
+        --launch-glass-bottom: rgba(255, 255, 255, .36);
+        --launch-edge: rgba(255, 255, 255, .92);
+        --launch-ink: #1f6fd1;
+        --launch-ink-2: #2a9d4f;
+        --launch-label: #5d6670;
         --launch-ease: cubic-bezier(.22, .8, .2, 1);
         position: fixed;
         inset: 0;
         overflow: hidden;
-        background:
-          radial-gradient(circle calc(31vmax + 70px) at 13vmax 9vmax, var(--launch-wall-a) calc(31vmax - 70px), transparent),
-          radial-gradient(circle calc(31vmax + 70px) at calc(100vw - 9vmax) calc(18vh + 31vmax), var(--launch-wall-b) calc(31vmax - 70px), transparent),
-          radial-gradient(circle calc(31vmax + 70px) at calc(12vw + 31vmax) calc(100vh + 3vmax), var(--launch-wall-c) calc(31vmax - 70px), transparent),
-          var(--launch-bg);
+        background: linear-gradient(180deg, var(--launch-bg), var(--launch-bg-2));
         color: var(--launch-label);
         font: 500 13px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", "Segoe UI", sans-serif;
         letter-spacing: .02em;
@@ -96,36 +94,57 @@
         -webkit-tap-highlight-color: transparent;
       }
       html.dark .acs-launch {
-        --launch-bg: #121315;
-        --launch-wall-a: rgba(83, 112, 96, .42);
-        --launch-wall-b: rgba(128, 96, 78, .32);
-        --launch-wall-c: rgba(78, 94, 122, .4);
+        --launch-bg: #101112;
+        --launch-bg-2: #09090a;
         --launch-glass-top: rgba(255, 255, 255, .17);
         --launch-glass-bottom: rgba(255, 255, 255, .05);
-        --launch-edge: rgba(255, 255, 255, .24);
-        --launch-ink: #9db4cc;
-        --launch-ink-2: #8cc2a2;
-        --launch-glow: rgba(157, 180, 204, .38);
-        --launch-track: rgba(200, 195, 185, .14);
-        --launch-shine: #9db4cc;
-        --launch-label: #a7a39b;
+        --launch-edge: rgba(255, 255, 255, .26);
+        --launch-ink: #7cc0ff;
+        --launch-ink-2: #6fdc8c;
+        --launch-label: #9aa3ad;
       }
-      /* The emblem sits at the exact centre, like an iOS launch screen; the hairline and hint hang below it. */
-      .acs-launch-emblem {
+      /* The mark sits at the exact centre, like an iOS launch screen; the slow-network hint hangs below it. */
+      .acs-launch-star {
         position: absolute;
         left: 50%;
         top: 50%;
-        width: 92px;
-        height: 92px;
-        margin: -46px 0 0 -46px;
+        width: 132px;
+        height: 132px;
+        margin: -66px 0 0 -66px;
       }
-      .acs-launch-halo {
-        position: absolute;
-        inset: -55%;
-        border-radius: 50%;
-        background: radial-gradient(closest-side, var(--launch-glow), transparent);
-        animation: acs-launch-breathe 2.8s ease-in-out infinite alternate;
+
+      /* The four-pointed spark (src/shared/ui/StarSpark.tsx draws the same markup; the geometry is in starSpark.ts).
+         Its lines draw in through a dash the length of each path (pathLength="1"): the halo's two arcs first, the
+         star in one stroke a moment later. `is-turning` turns it a quarter turn at a time and the halo backwards;
+         `is-zooming` (the star window) sends the halo off and makes the star a thin line of constant width however
+         large it grows. Variables: --star-draw (draw-in length), --star-turn-delay, --star-stroke (viewBox units). */
+      .acs-star {
+        --star-draw: 1100ms;
+        --star-turn-delay: 0ms;
+        --star-stroke: 4.5;
+        overflow: visible;
+        pointer-events: none;
       }
+      .acs-star path {
+        fill: none;
+        stroke-width: var(--star-stroke);
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-dasharray: 1 1;
+        animation: acs-star-draw calc(var(--star-draw) * .55) cubic-bezier(.6, 0, .25, 1) both;
+      }
+      .acs-star-arc + .acs-star-arc { animation-delay: calc(var(--star-draw) * .1); }
+      .acs-star-spark path { animation-duration: calc(var(--star-draw) * .75); animation-delay: calc(var(--star-draw) * .25); }
+      .acs-star-halo, .acs-star-spark { transform-origin: 50px 50px; }
+      .acs-star.is-turning .acs-star-spark { animation: acs-star-turn 900ms cubic-bezier(.6, 0, .3, 1) var(--star-turn-delay) infinite; }
+      .acs-star.is-turning .acs-star-halo { animation: acs-star-halo 1800ms linear var(--star-turn-delay) infinite; }
+      .acs-star.is-zooming .acs-star-halo { opacity: 0; scale: 1.35; transition: opacity 220ms ease-out, scale 220ms ease-out; }
+      .acs-star.is-zooming .acs-star-spark path { animation: none; stroke-dasharray: none; stroke-width: 3px; vector-effect: non-scaling-stroke; }
+      @keyframes acs-star-draw { from { stroke-dashoffset: 1; opacity: 0; } 4% { opacity: 1; } to { stroke-dashoffset: 0; opacity: 1; } }
+      @keyframes acs-star-turn { to { transform: rotate(90deg); } }
+      @keyframes acs-star-halo { to { transform: rotate(-360deg); } }
+
+      /* The glass cloud mark of the error screen and the sign-in screens (LaunchMark). */
       .acs-launch-mark {
         position: relative;
         display: grid;
@@ -138,10 +157,10 @@
         box-shadow:
           inset 0 1px 0 var(--launch-edge),
           inset 0 0 0 .5px var(--launch-edge),
-          0 1px 2px rgba(40, 35, 25, .05),
-          0 22px 48px -18px rgba(40, 35, 25, .34);
-        -webkit-backdrop-filter: blur(18px) saturate(150%);
-        backdrop-filter: blur(18px) saturate(150%);
+          0 1px 2px rgba(20, 35, 55, .05),
+          0 22px 48px -18px rgba(20, 35, 55, .34);
+        -webkit-backdrop-filter: blur(18px) saturate(160%);
+        backdrop-filter: blur(18px) saturate(160%);
         animation: acs-launch-in 560ms var(--launch-ease) both;
       }
       /* Soft top light, the same highlight the home-screen icons carry. */
@@ -155,38 +174,12 @@
       .acs-launch-mark svg { position: relative; z-index: 1; width: 70%; height: 70%; fill: none; stroke-width: 26; stroke-linecap: round; stroke-linejoin: round; }
       .acs-launch-cloud { stroke: var(--launch-ink); }
       .acs-launch-base { stroke: var(--launch-ink-2); }
-      /* A slim progress hairline; it only fades in when loading takes longer than a blink. */
-      .acs-launch-line {
-        position: absolute;
-        left: 50%;
-        top: calc(50% + 86px);
-        width: 112px;
-        height: 2px;
-        margin-left: -56px;
-        overflow: hidden;
-        border-radius: 1px;
-        background: var(--launch-track);
-        opacity: 0;
-        animation: acs-launch-show 420ms ease 600ms forwards;
-      }
-      .acs-launch-line::before {
-        content: "";
-        position: absolute;
-        top: 0;
-        bottom: 0;
-        left: 0;
-        width: 42%;
-        border-radius: inherit;
-        background: linear-gradient(90deg, transparent, var(--launch-shine), transparent);
-        transform: translateX(-100%);
-        animation: acs-launch-sweep 1.5s var(--launch-ease) infinite;
-      }
       /* Only when the network is genuinely slow: an honest note and a way to retry. */
       .acs-launch-hint {
         position: absolute;
         left: 16px;
         right: 16px;
-        top: calc(50% + 104px);
+        top: calc(50% + 96px);
         margin: 0;
         text-align: center;
         opacity: 0;
@@ -206,11 +199,7 @@
         cursor: pointer;
       }
       @keyframes acs-launch-in { from { opacity: 0; transform: scale(.94); } }
-      @keyframes acs-launch-breathe { from { opacity: .32; transform: scale(.9); } to { opacity: .95; transform: scale(1.06); } }
-      @keyframes acs-launch-show { to { opacity: 1; } }
-      @keyframes acs-launch-sweep { from { transform: translateX(-100%); } to { transform: translateX(240%); } }
       @keyframes acs-launch-reveal { to { opacity: 1; visibility: visible; } }
-      @keyframes acs-launch-pulse { from { opacity: .35; } to { opacity: .9; } }
 
       /* Error screen (LaunchErrorBoundary in src/shared/ui/LaunchScreen.tsx): the same backdrop with the
          mark held still, an honest message and two ways out. Styled here so it works without the app CSS. */
@@ -237,7 +226,7 @@
         border: 0;
         border-radius: 22px;
         background: var(--launch-glass-top);
-        box-shadow: inset 0 0 0 .5px var(--launch-edge), 0 8px 20px -14px rgba(40, 35, 25, .4);
+        box-shadow: inset 0 0 0 .5px var(--launch-edge), 0 8px 20px -14px rgba(20, 35, 55, .4);
         color: var(--launch-ink);
         font: inherit;
         font-weight: 600;
@@ -245,12 +234,15 @@
         cursor: pointer;
       }
 
-      /* Leaving: the splash fades while the emblem drifts forward and the app settles from 0.985 to 1. */
-      #launch-splash {
-        z-index: 2147483000;
-        transition: opacity 420ms cubic-bezier(.4, 0, .2, 1), visibility 0s linear 420ms;
-      }
-      #launch-splash[data-state="leaving"] { opacity: 0; visibility: hidden; pointer-events: none; }
+      /* The splash keeps its backdrop in a layer of its own: leaving, the star window is cut out of that layer as a
+         hole (clip-path, set every frame by LaunchSplashRelease) while the star's outline rides the hole's edge above
+         it, unclipped. `data-phase="zoom"` is that zoom; `data-phase="fade"` is the plain fade used under reduced
+         motion. */
+      #launch-splash { z-index: 2147483000; background: none; }
+      .acs-launch-backdrop { position: absolute; inset: 0; background: linear-gradient(180deg, var(--launch-bg), var(--launch-bg-2)); }
+      #launch-splash[data-phase] { pointer-events: none; }
+      #launch-splash[data-phase] .acs-launch-hint { display: none; }
+      #launch-splash[data-phase="fade"] { opacity: 0; visibility: hidden; transition: opacity 200ms ease, visibility 0s linear 200ms; }
       /* While the app stylesheet still downloads (the build preloads it and turns it into a stylesheet on
          load), React may already have rendered: keep that unstyled tree (and any portal) out of layout so it
          cannot add scrollbars or reflow behind the splash. Screens drawn with these inline `.acs-launch`
@@ -259,18 +251,16 @@
       html:has(link[data-acs-entry-style][rel="preload"]) :is(#root > :not(.acs-launch), body > :not(#root, #launch-splash)) {
         display: none;
       }
-      #launch-splash[data-state="leaving"] .acs-launch-emblem { transform: scale(1.08); transition: transform 420ms var(--launch-ease); }
-      /* #root sits outside .acs-launch, so its easing is spelled out; it matches the fade so the settle
-         stays visible while the splash dissolves instead of finishing underneath it. */
-      html.acs-app-entering #root { animation: acs-app-enter 420ms cubic-bezier(.4, 0, .2, 1); }
-      @keyframes acs-app-enter { from { transform: scale(.985); } }
+      /* Seen through the growing window, the app settles from slightly larger and out of focus. #root sits outside
+         .acs-launch, so the easing is spelled out; LaunchSplashRelease removes the class afterwards, as a transformed
+         #root would re-anchor every `position: fixed` sheet. */
+      html.acs-app-entering #root { transform-origin: 50vw 50vh; animation: acs-app-enter 1000ms cubic-bezier(.2, .8, .2, 1); }
+      @keyframes acs-app-enter { from { transform: scale(1.1); filter: blur(6px); } }
 
+      /* Reduced motion: the mark is simply there, drawn and still, and the splash fades. */
       @media (prefers-reduced-motion: reduce) {
-        .acs-launch-mark, .acs-launch-halo { animation: none; }
-        .acs-launch-halo { opacity: .6; }
-        .acs-launch-line::before { width: 100%; transform: none; animation: acs-launch-pulse 1.4s ease-in-out infinite alternate; }
-        #launch-splash { transition-duration: 200ms, 0s; transition-delay: 0s, 200ms; }
-        #launch-splash[data-state="leaving"] .acs-launch-emblem { transform: none; }
+        .acs-launch-mark, .acs-star path, .acs-star.is-turning :is(.acs-star-halo, .acs-star-spark) { animation: none; }
+        .acs-star path { stroke-dasharray: none; }
         html.acs-app-entering #root { animation: none; }
       }
     </style>
@@ -278,18 +268,24 @@
   <body>
     <div id="root"></div>
     <div id="launch-splash" class="acs-launch" role="status" aria-live="polite" aria-label="正在启动 Agent Cloud Studio">
-      <div class="acs-launch-emblem" aria-hidden="true">
-        <span class="acs-launch-halo"></span>
-        <span class="acs-launch-mark">
-          <svg viewBox="0 0 512 512" focusable="false">
-            <path class="acs-launch-cloud" d="M165 345h178c53 0 85-32 85-77s-34-80-80-80c-20-59-63-85-108-85-58 0-100 40-107 94-36 8-63 37-63 72 0 46 38 76 95 76Z" />
-            <path class="acs-launch-base" d="M198 397h116" />
-          </svg>
-        </span>
-      </div>
-      <div class="acs-launch-line" aria-hidden="true"></div>
+      <div class="acs-launch-backdrop"></div>
+      <!-- The same markup as StarSpark (src/shared/ui/StarSpark.tsx); it starts turning once its draw-in is over. -->
+      <svg class="acs-star acs-launch-star is-turning" style="--star-turn-delay: var(--star-draw)" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+        <defs>
+          <linearGradient id="acs-star-splash" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#2f8cff" /><stop offset=".5" stop-color="#18c29c" /><stop offset="1" stop-color="#ff8a1f" />
+          </linearGradient>
+        </defs>
+        <g class="acs-star-halo">
+          <path class="acs-star-arc" d="M50 4 A46 46 0 0 1 96 50" pathLength="1" stroke="url(#acs-star-splash)" />
+          <path class="acs-star-arc" d="M50 96 A46 46 0 0 1 4 50" pathLength="1" stroke="url(#acs-star-splash)" />
+        </g>
+        <g class="acs-star-spark"><path d="M50 16 C53 40 60 47 84 50 C60 53 53 60 50 84 C47 60 40 53 16 50 C40 47 47 40 50 16 Z" pathLength="1" stroke="url(#acs-star-splash)" /></g>
+      </svg>
       <p class="acs-launch-hint">网络较慢，仍在加载…<a href="">重新加载</a></p>
     </div>
+    <!-- When the splash first showed, so LaunchSplashRelease lets the draw-in finish before it leaves. -->
+    <script>document.getElementById('launch-splash').setAttribute('data-shown-at', String(Math.round(performance.now())));</script>
     <!-- src/main.tsx also registers the service worker, as soon as it runs. (A second registration
          here waited for window `load`, which a blocked Google Fonts request can hold back for long.) -->
     <script type="module" src="/src/main.tsx"></script>

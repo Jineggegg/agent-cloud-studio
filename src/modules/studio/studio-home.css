@@ -266,6 +266,14 @@
   box-shadow: inset 0 1px 0 var(--home-glass-rim), var(--ios-shadow-float);
 }
 .home-folder-panel .home-grid.home-folder-grid-open { margin: 0 auto; gap: 24px 22px; }
+/* Closing: the panel shrinks back into the folder icon while the wallpaper clears, and takes no taps meanwhile. */
+.home-folder-layer.is-closing { pointer-events: none; }
+.home-folder-layer.is-closing .home-folder-scrim { animation: home-folder-scrim-out 300ms ease forwards; }
+.home-folder-layer.is-closing .home-folder { animation: home-folder-close 300ms cubic-bezier(.4, 0, .7, .2) forwards; }
+@keyframes home-folder-close {
+  to { opacity: 0; transform: translate(var(--folder-from-x, 0), var(--folder-from-y, 0)) scale(.18); }
+}
+@keyframes home-folder-scrim-out { to { opacity: 0; } }
 .home-folder-hint { font-size: 13px; color: var(--ios-label-2); text-shadow: var(--home-label-shadow); }
 @media (max-width: 699px) {
   .home-folder-title { font-size: 28px; }
@@ -274,6 +282,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .home-folder { animation: none; }
+  .home-folder-layer.is-closing { display: none; }
   .home-screen.editing .home-tile-slot[data-sort-id], .widget-grid.editing .widget-slot > .widget { animation: none !important; }
   .home-drag-overlay > .home-tile-slot.is-lifted, .widget-drag-overlay > .widget.is-lifted { scale: 1.02; animation: none; }
 }

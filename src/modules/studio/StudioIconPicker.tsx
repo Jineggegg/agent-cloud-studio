@@ -7,12 +7,16 @@ const GLYPHS: Record<StudioGlyph, string> = {
   folder: '文件夹', activity: '波形', graduation: '学位帽', candles: 'K 线', chart: '折线', mail: '邮件', terminal: '终端', sparkles: '星芒', book: '书', globe: '地球',
 };
 
-/** Used by StudioProjectEditor and StudioBuildComposer to choose a home-screen icon's colour family and glyph. */
-export function StudioIconPicker({ tone, glyph, onChange }: {
+/**
+ * Used by StudioProjectEditor and StudioBuildComposer to choose a home-screen icon's colour family and glyph.
+ * `inset` leaves out the picker's own card, for a picker inside another card (the composer's 名称和图标 card).
+ */
+export function StudioIconPicker({ tone, glyph, onChange, inset = false }: {
   tone: string; glyph: string;
   onChange: (patch: { tone: string } | { glyph: StudioGlyph }) => void;
+  inset?: boolean;
 }) {
-  return <div className="ios-list picker-list">
+  return <div className={inset ? 'picker-list is-inset' : 'ios-list picker-list'}>
     <div className="tone-picker" role="radiogroup" aria-label="图标颜色">
       {Object.entries(TONES).map(([value, label]) => <button key={value} type="button" role="radio" aria-checked={tone === value} aria-label={label}
         className={`tone-swatch tone-${value}`} onClick={() => onChange({ tone: value })} />)}

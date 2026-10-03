@@ -11,7 +11,8 @@ export const HOME_NAME_MAX = 24;
 
 export type HomeFolder = { id: string; name: string; items: string[] };
 // `order` is absent until the icons are first rearranged on this device; layouts saved before folders still load.
-export type HomeLayout = { hidden: string[]; labels: boolean; large: boolean; order?: string[]; folders: HomeFolder[] };
+// `pageBreaks` lists the icons and folders that begin a page of their own (one dropped on a new page, as on iPadOS).
+export type HomeLayout = { hidden: string[]; labels: boolean; large: boolean; order?: string[]; folders: HomeFolder[]; pageBreaks?: string[] };
 export const DEFAULT_HOME_LAYOUT: HomeLayout = { hidden: [], labels: true, large: false, folders: [] };
 
 const FOLDER_ID = /^[a-z0-9-]{1,40}$/;
@@ -49,6 +50,7 @@ function parseLayout(raw: string | null): HomeLayout {
       large: saved.large === true,
       ...(Array.isArray(saved.order) ? { order: strings(saved.order) } : {}),
       folders: readFolders(saved.folders),
+      ...(Array.isArray(saved.pageBreaks) && saved.pageBreaks.length ? { pageBreaks: strings(saved.pageBreaks) } : {}),
     };
   } catch { return DEFAULT_HOME_LAYOUT; }
 }
@@ -95,6 +97,37 @@ export function useHomeLayout() {
     updateHomeLayout(previous => typeof patch === 'function' ? patch(previous) : { ...previous, ...patch });
   }, []);
   return [layout, update] as const;
+}
+
+// ---- Page breaks: icons that begin a page of their own. ----
+
+/**
+ * The breaks once `id` no longer begins its page (it moved, was hidden or went into a folder): the icon after it in
+ * `shown` (the home screen's visible order) begins the page instead, so the rest of that page stays where it was.
+ */
+export function releasePageBreak(breaks: readonly string[] | undefined, shown: readonly string[], id: string): string[] {
+  const kept = (breaks ?? []).filter(item => item !== id);
+  if (!breaks?.includes(id)) return kept;
+  const follower = shown[shown.indexOf(id) + 1];
+  return follower && !kept.includes(follower) ? [...kept, follower] : kept;
+}
+
+/**
+ * The breaks after `active` is dropped in `over`'s place (shown = the visible order before the drop). Dropped
+ * backwards onto an icon that begins a page, it takes that icon's place at the start of the page.
+ */
+export function movePageBreaks(breaks: readonly string[] | undefined, shown: readonly string[], active: string, over: string): string[] {
+  const from = shown.indexOf(active);
+  const to = shown.indexOf(over);
+  if (from < 0 || to < 0 || from === to) return [...(breaks ?? [])];
+  const next = releasePageBreak(breaks, shown, active);
+  return from > to && next.includes(over) ? next.map(item => item === over ? active : item) : next;
+}
+
+/** Without breaks that name nothing on the home screen, or the order's first icon; undefined when none are left. */
+export function tidyPageBreaks(breaks: readonly string[], shown: readonly string[]): string[] | undefined {
+  const kept = [...new Set(breaks)].filter(id => shown.indexOf(id) > 0);
+  return kept.length ? kept : undefined;
 }
 
 // ---- Names typed under icons: synced through the user's preferences, so every device shows the same names. ----

@@ -1,16 +1,14 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 
-import { BEAM_COUNT, beamFamilyAt, beamFrameInterval, beamStops, spawnBeam, stepBeam } from '@/modules/studio/utils/wallpaperBeams';
+import { WALLPAPER_BLOBS, blobFrameInterval, blobOutline, blobStops, wallpaperBase, wallpaperColourAt } from '@/modules/studio/utils/wallpaperBlobs';
 
-// The beams are drawn at about a third of the screen's CSS resolution and a CSS blur softens the upscale: they look
-// the same as at full resolution for a fraction of the work, which keeps an iPad cool.
-const CANVAS_SCALE = 0.35;
-// How much the beams are blurred, in CSS px (scaled to the canvas where the 2D canvas applies filters).
-const BEAM_BLUR_PX = 35;
-// Beam strength on each wallpaper: full on the near-black, about half on the near-white so they read as soft pastel.
-const DARK_STRENGTH = 1;
-const LIGHT_STRENGTH = 0.55;
-// A frame later than this (a stalled tab, a slow device) moves the beams no further, so they never jump.
+// The blobs are drawn at a quarter of the screen's CSS resolution and a CSS blur softens the upscale: for shapes this
+// soft it looks the same as full resolution for a sixteenth of the pixels, which keeps an iPad cool.
+const CANVAS_SCALE = 0.25;
+// How much the blobs are blurred, in CSS px (scaled to the canvas where the 2D canvas applies filters): heavy, so
+// they read as glowing light rather than shapes, while their slow wobble still shows.
+const BLOB_BLUR_PX = 90;
+// A frame later than this (a stalled tab, a slow device) moves the blobs no further, so they never jump.
 const MAX_STEP_MS = 100;
 
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
@@ -43,16 +41,17 @@ function devicePrefersLess() {
 }
 
 /**
- * Used by StudioHomeScreen as the home wallpaper: blurred diagonal light beams rising slowly over a calm gradient,
- * their colours one family at a time (utils/wallpaperBeams). The gradient and grain are CSS (studio.css,
- * .home-wallpaper), so the wallpaper still looks right where the 2D canvas fails; there is no WebGL. The beams stop
- * while the page is hidden or an app covers the home screen (`paused`), and hold one still frame under reduced motion.
+ * Used by StudioHomeScreen as the home wallpaper: three heavily blurred liquid bubbles that drift, breathe and wobble
+ * over a plain white or black base, one fresh colour at a time, changing slowly (utils/wallpaperBlobs).
+ * A calm CSS gradient and grain sit under and over the canvas (studio.css, .home-wallpaper), so the wallpaper still
+ * looks right where the 2D canvas fails; there is no WebGL. The blobs stop while the page is hidden or an app covers
+ * the home screen (`paused`), and hold one still frame under reduced motion.
  */
 export function StudioFluidBackground({ dark, paused }: { dark: boolean; paused: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  // The beams and how long they have run (which picks the colour family) outlive a pause, so the wallpaper resumes
-  // where it stopped instead of starting over.
-  const scene = useRef<{ beams: ReturnType<typeof spawnBeam>[]; elapsed: number; width: number; height: number } | null>(null);
+  // How long the blobs have run: their places, shapes and colour all follow from it. It outlives a pause, so the
+  // wallpaper resumes where it stopped instead of starting over.
+  const elapsed = useRef(0);
   const hidden = useSyncExternalStore(subscribeVisibility, readHidden, readStill);
   const reduced = useSyncExternalStore(subscribeReducedMotion, readReducedMotion, readStill);
 
@@ -61,39 +60,46 @@ export function StudioFluidBackground({ dark, paused }: { dark: boolean; paused:
     const context = canvas?.getContext('2d') ?? null;
     if (!canvas || !context) return undefined;
     const filters = canvasAppliesFilters(context);
-    // The CSS blur is stronger where the canvas cannot blur the beams itself.
+    // The CSS blur is stronger where the canvas cannot blur the blobs itself.
     canvas.dataset.blur = filters ? 'canvas' : 'css';
-    const strength = dark ? DARK_STRENGTH : LIGHT_STRENGTH;
+    let width = 1;
+    let height = 1;
 
-    // Sizes the canvas to its box (a new size scatters a fresh set of beams over it, in the current family).
+    // Sizes the canvas to its box (in CSS px; the canvas itself holds a quarter of that).
     const fit = () => {
-      const width = canvas.clientWidth || window.innerWidth;
-      const height = canvas.clientHeight || window.innerHeight;
+      width = canvas.clientWidth || window.innerWidth;
+      height = canvas.clientHeight || window.innerHeight;
       canvas.width = Math.max(1, Math.round(width * CANVAS_SCALE));
       canvas.height = Math.max(1, Math.round(height * CANVAS_SCALE));
-      const current = scene.current;
-      if (current && Math.abs(current.width - width) < 1 && Math.abs(current.height - height) < 1) return current;
-      const elapsed = current?.elapsed ?? 0;
-      const hue = beamFamilyAt(elapsed).hue;
-      scene.current = { beams: Array.from({ length: BEAM_COUNT }, () => spawnBeam(width, height, hue)), elapsed, width, height };
-      return scene.current;
     };
     const draw = () => {
-      const { beams, width } = scene.current ?? fit();
+      const colour = wallpaperColourAt(elapsed.current);
       const scale = canvas.width / width;
-      context.setTransform(1, 0, 0, 1, 0, 0);
-      context.clearRect(0, 0, canvas.width, canvas.height);
       context.setTransform(scale, 0, 0, scale, 0, 0);
-      if (filters) context.filter = `blur(${(BEAM_BLUR_PX * scale).toFixed(1)}px)`;
-      for (const beam of beams) {
-        context.save();
-        context.translate(beam.x, beam.y);
-        context.rotate((beam.angle * Math.PI) / 180);
-        const gradient = context.createLinearGradient(0, 0, 0, beam.length);
-        for (const [offset, color] of beamStops(beam, strength)) gradient.addColorStop(offset, color);
-        context.fillStyle = gradient;
-        context.fillRect(-beam.width / 2, 0, beam.width, beam.length);
-        context.restore();
+      // The base: the scene colour, deep at night and airy by day, fills the whole canvas (no blur needed).
+      if (filters) context.filter = 'none';
+      const [top, bottom] = wallpaperBase(colour, dark);
+      const base = context.createLinearGradient(0, 0, 0, height);
+      base.addColorStop(0, top);
+      base.addColorStop(1, bottom);
+      context.fillStyle = base;
+      context.fillRect(0, 0, width, height);
+      // The blobs: each rim traced through its points with curves via the midpoints, so it stays round and smooth.
+      if (filters) context.filter = `blur(${(BLOB_BLUR_PX * scale).toFixed(1)}px)`;
+      for (const blob of WALLPAPER_BLOBS) {
+        const { x, y, radius, points } = blobOutline(blob, elapsed.current, width, height);
+        const fill = context.createRadialGradient(x, y, 0, x, y, radius * 1.15);
+        for (const [offset, color] of blobStops(colour, blob, dark)) fill.addColorStop(offset, color);
+        context.fillStyle = fill;
+        context.beginPath();
+        const last = points[points.length - 1];
+        context.moveTo((last[0] + points[0][0]) / 2, (last[1] + points[0][1]) / 2);
+        points.forEach((point, index) => {
+          const next = points[(index + 1) % points.length];
+          context.quadraticCurveTo(point[0], point[1], (point[0] + next[0]) / 2, (point[1] + next[1]) / 2);
+        });
+        context.closePath();
+        context.fill();
       }
     };
     const refit = () => { fit(); draw(); };
@@ -102,19 +108,15 @@ export function StudioFluidBackground({ dark, paused }: { dark: boolean; paused:
     // Still: one frame (reduced motion), or nothing more until the home screen is seen again.
     if (reduced || paused || hidden) return () => window.removeEventListener('resize', refit);
 
-    const interval = beamFrameInterval({ devicePixelRatio: window.devicePixelRatio || 1, prefersLess: devicePrefersLess() });
+    const interval = blobFrameInterval({ devicePixelRatio: window.devicePixelRatio || 1, prefersLess: devicePrefersLess() });
     let last = performance.now();
     let frame = 0;
     const tick = (now: number) => {
       frame = requestAnimationFrame(tick);
       // A millisecond of slack keeps a 60 Hz display at a steady 30 fps when capped.
       if (now - last < interval - 1) return;
-      const step = Math.min(now - last, MAX_STEP_MS);
+      elapsed.current += Math.min(Math.max(0, now - last), MAX_STEP_MS);
       last = now;
-      const current = scene.current ?? fit();
-      current.elapsed += step;
-      const hue = beamFamilyAt(current.elapsed).hue;
-      current.beams = current.beams.map((beam, index) => stepBeam(beam, index, current.beams.length, current.width, current.height, hue, step));
       draw();
     };
     frame = requestAnimationFrame(tick);
@@ -125,7 +127,7 @@ export function StudioFluidBackground({ dark, paused }: { dark: boolean; paused:
   }, [dark, hidden, paused, reduced]);
 
   return <div className={`home-wallpaper ${paused || hidden ? 'is-paused' : ''}`} aria-hidden="true">
-    <canvas ref={canvasRef} className="home-beams" />
-    <span className="home-beams-dim" />
+    <canvas ref={canvasRef} className="home-blobs" />
+    <span className="home-blobs-veil" />
   </div>;
 }

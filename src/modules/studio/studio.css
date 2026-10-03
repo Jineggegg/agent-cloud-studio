@@ -29,8 +29,8 @@
   --ios-shadow: 0 1px 2px rgba(40, 35, 25, .04), 0 10px 30px rgba(40, 35, 25, .05);
   --ios-shadow-float: 0 2px 6px rgba(40, 35, 25, .06), 0 18px 48px rgba(40, 35, 25, .14);
   --ios-scrim: rgba(20, 18, 14, .28);
-  /* Home wallpaper: near-white, cool mist at the top easing to warm paper at the bottom, under the light beams
-     (StudioFluidBackground); the dim layer breathes in the base colour. */
+  /* Home wallpaper: near-white, cool mist at the top easing to warm paper at the bottom, shown where the canvas of
+     two blurred colour blobs (StudioFluidBackground) cannot draw; the veil (--beam-dim) calms the blobs under glass. */
   --wall: linear-gradient(165deg, #e6ecf3 0%, #f7f7f5 48%, #f2ece4 100%);
   --wall-base: #f4f4f1;
   --beam-dim: #f4f4f1;
@@ -209,15 +209,14 @@
 }
 .home-screen.large-icons { --icon: 124px; --tile: 156px; }
 .home-wallpaper { position: fixed; inset: 0; z-index: -1; overflow: hidden; background: var(--wall-base) var(--wall); pointer-events: none; }
-/* The light beams: a low-resolution canvas, overscanned so the blur never shows its edges, softened by a CSS blur
-   (stronger where the canvas cannot blur the beams itself). */
-.home-beams { position: absolute; top: -6%; left: -6%; width: 112%; height: 112%; filter: blur(8px); }
-.home-beams[data-blur="css"] { filter: blur(20px); }
-/* A slow 10 s breath that dims the beams a little and lets them back. */
-.home-beams-dim { position: absolute; inset: 0; background: var(--beam-dim); opacity: .05; animation: home-beams-dim 10s ease-in-out infinite; }
-@keyframes home-beams-dim { 50% { opacity: .15; } }
-.home-wallpaper.is-paused .home-beams-dim { animation-play-state: paused; }
-@media (prefers-reduced-motion: reduce) { .home-beams-dim { animation: none; opacity: .1; } }
+/* The liquid colour blobs: a low-resolution canvas (base tint and two blobs), overscanned so the blur never shows its
+   edges, softened by a CSS blur (much stronger where the canvas cannot blur the blobs itself). The CSS gradient
+   above only shows if the canvas fails. */
+.home-blobs { position: absolute; top: -8%; left: -8%; width: 116%; height: 116%; filter: blur(10px); }
+.home-blobs[data-blur="css"] { filter: blur(48px); }
+/* A still veil in the base colour calms the glow, so white labels at night and dark labels by day stay easy to read. */
+.home-blobs-veil { position: absolute; inset: 0; background: var(--beam-dim); opacity: .14; }
+.dark .home-blobs-veil { opacity: .22; }
 /* Film grain keeps the gradient from looking digital (and the large soft areas from banding). */
 .home-wallpaper::after {
   content: ""; position: absolute; inset: 0; opacity: var(--grain-opacity); mix-blend-mode: var(--grain-blend);
@@ -370,10 +369,11 @@
 .library-sheet .ios-row[aria-disabled] .home-icon { filter: saturate(.6); opacity: .8; }
 .library-sheet .ios-section-footer { padding: 12px 4px 0; }
 
-/* ---------- Apps: grow out of the tapped icon ----------
- * With an icon (`has-origin`) the app is revealed through a clip that starts as the icon's
- * exact rounded rectangle, the content settles from a slight scale, and the icon's own
- * gradient dissolves on top — the iOS launch. Without an icon (deep link) it fades up. */
+/* ---------- Apps: open from the tapped icon, close back into it ----------
+ * Tapped from an icon, the app opens through the launch star's window (StudioAppLaunch,
+ * studio-loading.css); without one (a new project) it fades up. Closing, an app opened from an
+ * icon (`has-origin`) shrinks back through a clip down to the icon's exact rounded rectangle,
+ * the content settling to a slight scale under the card's neutral surface; otherwise it fades. */
 .studio-app {
   position: absolute; inset: 0; z-index: 2; display: flex; overflow: hidden; background: var(--ios-bg);
   transform-origin: var(--zoom-cx, 50%) var(--zoom-cy, 50%);
@@ -382,22 +382,16 @@
 .studio-app.closing { animation: app-close 420ms cubic-bezier(.4, 0, .2, 1) forwards; pointer-events: none; }
 @keyframes app-open { from { transform: scale(.92); opacity: 0; } }
 @keyframes app-close { to { transform: scale(.92); opacity: 0; } }
-.studio-app.has-origin.opening { animation: app-reveal var(--dur-slow) cubic-bezier(.2, .9, .2, 1) both; }
 .studio-app.has-origin.closing { animation: app-conceal 420ms cubic-bezier(.4, 0, .2, 1) forwards; }
-.studio-app.has-origin.opening > * { animation: app-content-in var(--dur-slow) cubic-bezier(.2, .9, .2, 1) both; transform-origin: var(--zoom-cx) var(--zoom-cy); }
 .studio-app.has-origin.closing > * { animation: app-content-out 420ms cubic-bezier(.4, 0, .2, 1) forwards; transform-origin: var(--zoom-cx) var(--zoom-cy); }
 .studio-app.has-origin::after {
   content: ""; position: absolute; inset: 0; z-index: 40; pointer-events: none; opacity: 0;
-  /* The card it grows out of is neutral, so the app dissolves in from its own surface colour. */
+  /* The card it shrinks into is neutral, so the app dissolves into that surface colour. */
   background: var(--ios-surface);
 }
-.studio-app.has-origin.opening::after { animation: app-tone-out var(--dur-slow) ease-out both; }
 .studio-app.has-origin.closing::after { animation: app-tone-in 420ms ease-in forwards; }
-@keyframes app-reveal { from { clip-path: var(--zoom-clip); } to { clip-path: inset(0 0 0 0 round 0px); } }
 @keyframes app-conceal { from { clip-path: inset(0 0 0 0 round 0px); } to { clip-path: var(--zoom-clip); } }
-@keyframes app-content-in { from { transform: scale(.86); } }
 @keyframes app-content-out { to { transform: scale(.86); } }
-@keyframes app-tone-out { from { opacity: 1; } 55%, to { opacity: 0; } }
 @keyframes app-tone-in { 0%, 35% { opacity: 0; } to { opacity: 1; } }
 
 /* --chrome-top is the height of the glass chrome (navigation bar, plus the tab bar in projects). */
