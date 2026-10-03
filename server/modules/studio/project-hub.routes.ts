@@ -65,7 +65,10 @@ export function createProjectHubRouter(hub: ReturnType<typeof createProjectHubSe
   router.get('/:id', asyncHandler(async (req, res) => { res.json(hub.get(user(req), String(req.params.id))); }));
   router.put('/:id', asyncHandler(async (req, res) => { res.json(hub.update(user(req), String(req.params.id), projectInput(req.body ?? {}))); }));
   router.delete('/:id', asyncHandler(async (req, res) => { res.json(hub.remove(user(req), String(req.params.id))); }));
-  router.post('/:id/launch', asyncHandler(async (req, res) => { res.json(await hub.launch(user(req), String(req.params.id), text(req.body?.provider))); }));
+  // The provider is optional: without one the workbench starts the agent the device used last.
+  router.post('/:id/launch', asyncHandler(async (req, res) => {
+    res.json(await hub.launch(user(req), String(req.params.id), req.body?.provider === undefined ? '' : text(req.body.provider)));
+  }));
   router.post('/:id/remote-launch', asyncHandler(async (req, res) => { res.json(hub.launchRemote(user(req), String(req.params.id), text(req.body?.agent))); }));
   router.get('/:id/links/status', asyncHandler(async (req, res) => { res.json(await hub.linkStatus(user(req), String(req.params.id))); }));
   router.get('/:id/sessions', asyncHandler(async (req, res) => { res.json(hub.sessions(user(req), String(req.params.id))); }));

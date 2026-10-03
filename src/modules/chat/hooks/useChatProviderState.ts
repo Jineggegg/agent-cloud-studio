@@ -9,7 +9,7 @@ import type { PendingPermissionRequest, PermissionMode,
   ProviderModelActions,
   ProviderModelOption,
   ProviderModelsDefinition } from '@/shared/types';
-import { DEFAULT_EFFORT_VALUE } from '@/shared/constants';
+import { DEFAULT_EFFORT_VALUE, OFFERED_AGENT_PROVIDERS } from '@/shared/constants';
 import { readSelectedProvider, writeSelectedProvider } from '@/shared/selectedProvider';
 import { readModelDefaults, visibleModelCatalog } from '@/shared/modelDefaults';
 import { clampEffortLevel, resolveModelChoice } from '@/shared/utils';
@@ -211,8 +211,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setProviderModelsLoading(true);
 
     try {
+      // Only the offered agents' catalogs: Cursor's and OpenCode's model lists are never shown (OpenCode's runs past a hundred rows).
       const results = await Promise.all(
-        PROVIDERS.map(async (p) => {
+        OFFERED_AGENT_PROVIDERS.map(async (p) => {
           const response = await api.providers.models(p);
           const body = (await response.json()) as ProviderModelsApiResponse;
           if (!body.success || !body.data?.models) {
@@ -229,7 +230,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
       const nextCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>> = {};
 
-      PROVIDERS.forEach((p, i) => {
+      OFFERED_AGENT_PROVIDERS.forEach((p, i) => {
         const entry = results[i];
         if (!entry) {
           return;

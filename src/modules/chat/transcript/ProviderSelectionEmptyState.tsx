@@ -26,11 +26,10 @@ import ModelGroupList, { type ModelGroup } from "@/modules/chat/composer/ModelGr
 import ModelLibraryPanel from "@/modules/chat/modals/ModelLibraryPanel";
 import { writeSelectedProvider } from '@/shared/selectedProvider';
 
+// The offered agents only (OFFERED_AGENT_PROVIDERS): Cursor and OpenCode are hidden everywhere.
 const PROVIDER_META: { id: LLMProvider; name: string }[] = [
   { id: "claude", name: "Anthropic" },
   { id: "codex", name: "OpenAI" },
-  { id: "cursor", name: "Cursor" },
-  { id: "opencode", name: "OpenCode" },
 ];
 
 const MOD_KEY =

@@ -4,6 +4,7 @@ import { access } from 'node:fs/promises';
 import { scanStateDb, sessionsDb } from '@/modules/database/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import type { LLMProvider } from '@/shared/types.js';
+import { isOfferedAgentProvider } from '@/shared/utils.js';
 
 type SessionSynchronizeResult = {
   processedByProvider: Record<LLMProvider, number>;
@@ -88,7 +89,8 @@ async function runSessionSynchronization(): Promise<SessionSynchronizeResult> {
   const failures: string[] = [];
 
   const results = await Promise.allSettled(
-    providerRegistry.listProviders().map(async (provider) => ({
+    // Hidden agents (Cursor, OpenCode) are not scanned, so none of their sessions get indexed or listed.
+    providerRegistry.listProviders().filter((provider) => isOfferedAgentProvider(provider.id)).map(async (provider) => ({
       provider: provider.id,
       processed: await provider.sessionSynchronizer.synchronize(lastScanAt ?? undefined),
     }))

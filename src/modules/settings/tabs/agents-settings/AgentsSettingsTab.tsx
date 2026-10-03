@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
+import { OFFERED_AGENT_PROVIDERS } from '@/shared/constants';
 import type { AgentCategory, AgentContextByProvider, AgentProvider, AgentSettingsProject, ClaudePermissionsState, CodexPermissionMode, CursorPermissionsState, ProviderAuthStatus } from '@/shared/types';
 import AgentCategoryContentSection from '@/modules/settings/tabs/agents-settings/sections/AgentCategoryContentSection';
 import AgentCategoryTabsSection from '@/modules/settings/tabs/agents-settings/sections/AgentCategoryTabsSection';
@@ -39,9 +40,8 @@ export default function AgentsSettingsTab({
       : ['account', 'permissions', 'mcp', 'skills']
   ), [selectedAgent]);
 
-  const visibleAgents = useMemo<AgentProvider[]>(() => {
-    return ['claude', 'cursor', 'codex', 'opencode'];
-  }, []);
+  // Only the offered agents: Cursor and OpenCode are hidden everywhere.
+  const visibleAgents = useMemo<AgentProvider[]>(() => [...OFFERED_AGENT_PROVIDERS], []);
 
   const agentContextById = useMemo<AgentContextByProvider>(() => ({
     claude: {

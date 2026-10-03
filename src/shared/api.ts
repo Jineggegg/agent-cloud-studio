@@ -175,7 +175,8 @@ export const api = {
       create: (input: HubProjectInput) => post('/api/studio/projects', input),
       update: (id: string, input: HubProjectInput) => put(`/api/studio/projects/${encodeURIComponent(id)}`, input),
       remove: (id: string) => del(`/api/studio/projects/${encodeURIComponent(id)}`),
-      launch: (id: string, provider: HubAgentProvider) => post(`/api/studio/projects/${encodeURIComponent(id)}/launch`, { provider }),
+      // Without a provider the workbench opens a new chat with the agent this device used last.
+      launch: (id: string, provider?: HubAgentProvider) => post(`/api/studio/projects/${encodeURIComponent(id)}/launch`, provider ? { provider } : {}),
       launchWorkbench: (provider: HubAgentProvider) => post('/api/studio/projects/workbench/launch', { provider }),
       launchRemote: (id: string, agent: HubAgentProvider | 'shell') => post(`/api/studio/projects/${encodeURIComponent(id)}/remote-launch`, { agent }),
       linkStatus: (id: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/links/status`),

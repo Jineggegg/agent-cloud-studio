@@ -1,12 +1,13 @@
 import { useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
+import { OFFERED_AGENT_PROVIDERS } from '@/shared/constants';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
 import type { LLMProvider } from '@/shared/types';
 import { useProjectSidebarState, useProjectCommandState } from '@/modules/project-workspace/context/ProjectsStateContext';
 
-// Every agent the IDE can run; Studio may deep-link to any of them.
-const AGENTS: LLMProvider[] = ['claude', 'codex', 'cursor', 'opencode'];
+// The agents Studio offers; a deep link naming Cursor or OpenCode (both hidden) is ignored.
+const AGENTS: readonly LLMProvider[] = OFFERED_AGENT_PROVIDERS;
 
 /** Used by ProjectWorkspaceRoute to consume Studio's explicit project/provider deep link once native projects are loaded. */
 export function WorkspaceProjectIntent() {

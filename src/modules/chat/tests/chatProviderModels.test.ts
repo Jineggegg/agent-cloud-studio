@@ -143,15 +143,28 @@ test('setting the same model twice keeps the record identity stable', async () =
 test('the active provider’s model is what currentProviderModel reports', async () => {
   // The provider selection is a stored preference; the per-provider model is
   // still a plain localStorage key.
-  writeUserPreference('selectedProvider', 'cursor');
-  localStorage.setItem('cursor-model', 'cursor-active');
+  writeUserPreference('selectedProvider', 'codex');
+  localStorage.setItem('codex-model', 'codex-active');
 
   const { result } = await renderProviderState();
 
   await waitFor(() => {
-    assert.equal(result.current.provider, 'cursor');
+    assert.equal(result.current.provider, 'codex');
   });
-  assert.equal(result.current.currentProviderModel, 'cursor-active');
+  assert.equal(result.current.currentProviderModel, 'codex-active');
+});
+
+test('a saved Cursor selection falls back to Claude Code, and only the offered agents’ catalogs are read', async () => {
+  writeUserPreference('selectedProvider', 'cursor');
+  const catalog = { DEFAULT: 'm', OPTIONS: [{ value: 'm', label: 'M' }] };
+  served.catalogs = { claude: catalog, codex: catalog, cursor: catalog, opencode: catalog };
+
+  const { result } = await renderProviderState();
+
+  await waitFor(() => {
+    assert.deepEqual(Object.keys(result.current.providerModelCatalog).sort(), ['claude', 'codex']);
+  });
+  assert.equal(result.current.provider, 'claude');
 });
 
 const EFFORT = { default: 'high', values: [{ value: 'low' }, { value: 'high' }, { value: 'max' }] };
