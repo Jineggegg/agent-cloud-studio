@@ -24,6 +24,7 @@ import { WorkbenchMenu } from '@/modules/workbench/chat/WorkbenchMenu';
 import { WorkbenchMicButton } from '@/modules/workbench/chat/WorkbenchMicButton';
 import { WorkbenchSendButton } from '@/modules/workbench/chat/WorkbenchSendButton';
 import { WorkbenchSuggestedInput } from '@/modules/workbench/chat/WorkbenchSuggestedInput';
+import { WorkbenchSuggestionChip } from '@/modules/workbench/chat/WorkbenchSuggestionChip';
 import { modelShortLabel, permissionModeCopy, providerLabel } from '@/modules/workbench/chat/utils/workbenchChatCopy';
 
 type ComposerState = ReturnType<typeof useWorkbenchAgentEngine>['composer'];
@@ -44,7 +45,7 @@ type WorkbenchComposerProps = {
   isProcessing: boolean;
   canAbort: boolean;
   onAbort: () => void;
-  // The suggested next message (useSuggestedPrompt), shown faintly while the field is empty; Send sends it.
+  // The suggested next message (useSuggestedPrompt): faint in the empty field (Send sends it), a chip once it has text.
   suggestion?: string | null;
   // Called when the suggestion is sent or filled in, so it does not show again before the next answer.
   onSuggestionUsed?: () => void;
@@ -81,7 +82,8 @@ function AttachmentTile({ file, error, onRemove }: { file: File; error?: string;
  * image attachments by drop, paste or picker, dictation where the browser has speech recognition, typed slash
  * commands and @ file mentions, the permission-mode and model chips, the reasoning-effort control, and the spring
  * send/stop disc. All sending behaviour comes from the inherited composer hook. With the field empty, a suggested
- * next message shows faintly: Send (or Enter) sends it as it is; typing hides it and clearing the field restores it.
+ * next message shows faintly: Send (or Enter) sends it as it is. Once the field has text (typed or dictated) it moves to
+ * a chip above the field, which fills it in or sends it; clearing the field brings back the faint one.
  */
 export function WorkbenchComposer({
   composer,
@@ -143,14 +145,23 @@ export function WorkbenchComposer({
   // Until the server confirms (or refuses) the last send, the button stays off so one draft never runs twice; a
   // prepared continuation must be sent explicitly once the current run ends, never queued (as in ChatComposer).
   const sendBlocked = delivery?.state === 'sending' || delivery?.state === 'unknown' || (Boolean(preparedRecovery) && isProcessing);
-  // The suggestion only stands in for an empty field between runs; editing a sent message or a recovery draft hides it.
-  const shownSuggestion = suggestion && !hasContent && !isProcessing && !editingAnchorId && !preparedRecovery ? suggestion : null;
+  // The suggestion is offered only between runs; editing a sent message or a recovery draft hides it.
+  const offeredSuggestion = suggestion && !isProcessing && !editingAnchorId && !preparedRecovery ? suggestion : null;
+  // An empty field shows it faintly in place; once the field has content (typed or dictated) it moves to a chip.
+  const shownSuggestion = offeredSuggestion && !hasContent ? offeredSuggestion : null;
+  const chipSuggestion = offeredSuggestion && hasContent ? offeredSuggestion : null;
+  // Dictation writes into the same draft the keyboard does.
+  const dictation = useSpeechDictation({ text: input, onText: setInput, onError: (message) => toast.error(message) });
   // The transcript hook mirrors the text into the composer's ref, so submitting reads it at once (as dictation does).
-  const sendSuggestion = () => {
-    if (!shownSuggestion || sendBlocked) return;
+  // A suggestion stands in for the whole draft, so the microphone stops first and its late words are dropped.
+  const takeSuggestion = (text: string | null, send: boolean) => {
+    if (!text || (send && sendBlocked)) return;
+    if (dictation.listening) dictation.stop();
     onSuggestionUsed?.();
-    handleVoiceTranscript(shownSuggestion, true);
+    handleVoiceTranscript(text, send, { replace: true });
+    if (!send) textareaRef.current?.focus();
   };
+  const sendSuggestion = () => takeSuggestion(shownSuggestion, true);
   const modeCopy = permissionModeCopy(permissionMode);
   const modelName = modelShortLabel(model, modelOptions);
   // The effort control's stops: the levels this model accepts (the `default` sentinel is not a stop).
@@ -161,8 +172,6 @@ export function WorkbenchComposer({
   const recommendedEffort = resolveModelChoice(modelOptions, model)?.option.effort?.default;
   // Whether the model menu is open; held here because the effort popover's model row opens it too.
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  // Dictation writes into the same draft the keyboard does.
-  const dictation = useSpeechDictation({ text: input, onText: setInput, onError: (message) => toast.error(message) });
 
   // Keep the highlighted slash command in view while arrowing through a long list.
   useEffect(() => {
@@ -284,6 +293,13 @@ export function WorkbenchComposer({
             </AnimatePresence>
           </ul>
         )}
+
+        <WorkbenchSuggestionChip
+          suggestion={chipSuggestion}
+          sendDisabled={sendBlocked}
+          onFill={() => takeSuggestion(chipSuggestion, false)}
+          onSend={() => takeSuggestion(chipSuggestion, true)}
+        />
 
         <WorkbenchSuggestedInput suggestion={shownSuggestion}>
           <textarea

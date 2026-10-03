@@ -842,6 +842,26 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
   color: color-mix(in srgb, var(--wbc-tint) 62%, var(--wbc-label-3)); pointer-events: none;
 }
 .wbc .wbc-input-wrap.has-suggestion .wbc-input { position: absolute; inset: 0; height: 100% !important; min-height: 0; }
+/* Once the field has text, the suggestion waits in a one-line chip above it: its text fills the field, 发送 sends it.
+   The wrapper's height is animated (it clips while it grows), the chip itself keeps its padding. */
+.wbc-suggestion-chip-wrap { overflow: hidden; }
+.wbc-suggestion-chip {
+  display: flex; align-items: center; gap: 4px; min-width: 0; margin: 8px 8px 0; padding: 3px; border-radius: 18px;
+  background: color-mix(in srgb, var(--wbc-tint) 8%, transparent); box-shadow: inset 0 0 0 .5px color-mix(in srgb, var(--wbc-tint) 18%, transparent);
+}
+.wbc-suggestion-chip-fill {
+  display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; height: 32px; padding: 0 8px 0 10px; border-radius: 15px;
+  font-size: 13.5px; text-align: left; color: var(--wbc-tint);
+}
+.wbc-suggestion-chip-fill:hover { background: color-mix(in srgb, var(--wbc-tint) 8%, transparent); }
+.wbc-suggestion-chip :focus-visible { outline-offset: -3px; }
+.wbc-suggestion-chip-label { flex-shrink: 0; font-weight: 600; }
+.wbc-suggestion-chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--wbc-label-2); }
+.wbc-suggestion-chip-send {
+  flex-shrink: 0; height: 32px; padding: 0 14px; border-radius: 15px;
+  background: var(--wbc-tint); color: var(--wbc-on-tint); font-size: 13px; font-weight: 600;
+}
+.wbc-suggestion-chip-send:hover { background: color-mix(in srgb, var(--wbc-tint) 88%, var(--wbc-label)); }
 .wbc-composer-bar { display: flex; align-items: center; gap: 6px; padding: 4px 8px 8px; min-width: 0; }
 /* The attachment and microphone buttons sit together like an iOS toolbar pair. */
 .wbc-composer-bar > .wbc-tool-button + .wbc-tool-button { margin-left: -4px; }
