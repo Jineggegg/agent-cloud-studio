@@ -8,6 +8,7 @@ import type { WorkbenchSessionItem } from '@/shared/types';
 import { StudioSpinner } from '@/modules/studio';
 import { WorkbenchPopover } from '@/modules/workbench/WorkbenchPopover';
 import { WorkbenchProviderMark } from '@/modules/workbench/WorkbenchProviderMark';
+import { WorkbenchSwipeRow } from '@/modules/workbench/WorkbenchSwipeRow';
 import { filterSessions, formatSessionTime, groupSessionsByDay } from '@/modules/workbench/utils/workbenchSessionGroups';
 import { providerMeta, workbenchPath } from '@/modules/workbench/utils/workbenchRoutes';
 
@@ -19,9 +20,15 @@ const rowVariants = {
 // The active-row highlight glides between rows like an iPadOS sidebar selection.
 const HIGHLIGHT_SPRING = { type: 'spring', stiffness: 520, damping: 42 } as const;
 
+// A conversation handed between providers is archived only when every one of its sessions is an agent's (DeepSeek
+// conversations cannot be archived).
+function canArchive(item: WorkbenchSessionItem) {
+  return item.thread ? item.thread.segments.every(segment => segment.kind === 'agent') : item.kind === 'agent';
+}
+
 type WorkbenchSessionListProps = {
   projectId: string;
-  // Rows with their running flag; null while the project's history loads.
+  // Rows with their running and attention flags; null while the project's history loads.
   items: WorkbenchSessionItem[] | null;
   activeId: string | null;
   query: string;
@@ -73,8 +80,9 @@ function RenameField({ item, onDone, onRename }: {
 
 /**
  * Used by the workbench sidebar for the project's history: rows grouped 今天 / 昨天 / 本周 / 更早, filtered by the
- * search field, with a breathing badge on running sessions, a gliding highlight on the open one and a menu per
- * row (rename, archive, delete). Honest loading, empty, no-match and error states.
+ * search field, with a breathing badge on running sessions, a red dot on sessions that need the owner, a gliding
+ * highlight on the open one, a menu per row (rename, archive, delete) and the same archive / delete on a swipe to
+ * the left. Honest loading, empty, no-match and error states.
  */
 export function WorkbenchSessionList({
   projectId, items, activeId, query, error, hasMore, loadingMore,
@@ -86,6 +94,8 @@ export function WorkbenchSessionList({
   const [menuOpen, setMenuOpen] = useState(false);
   // The row whose title is being edited in place.
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  // The row whose swipe actions are showing (kind:id); one at a time, like iOS Mail.
+  const [swipedKey, setSwipedKey] = useState<string | null>(null);
   // Whether the rows rise in one after another when the list mounts: on when a project's rows first replace the
   // skeleton, off once the list has given way to a no-match or empty state, so clearing a search does not replay it.
   // Adjusted during render, so the very render that mounts the list (and its AnimatePresence) already sees it.
@@ -137,24 +147,37 @@ export function WorkbenchSessionList({
             const active = item.id === activeId;
             const index = rowIndex++;
             const meta = providerMeta(item.provider);
-            return <m.li key={`${item.kind}:${item.id}`} className="wb-row" data-active={active || undefined} data-running={item.running || undefined}
+            const rowKey = `${item.kind}:${item.id}`;
+            const renaming = renamingId === item.id;
+            return <m.li key={rowKey} className="wb-row" data-active={active || undefined} data-running={item.running || undefined}
+              data-attention={item.attention || undefined}
               custom={index} variants={rowVariants} initial="hidden" animate="show" layout="position"
               exit={{ opacity: 0, height: 0, transition: { duration: 0.2 } }}>
-              {active && <m.span layoutId="wb-active-row" className="wb-row-highlight" transition={HIGHLIGHT_SPRING} aria-hidden="true" />}
-              {renamingId === item.id
-                ? <RenameField item={item} onRename={onRename} onDone={() => setRenamingId(null)} />
-                : <Link to={workbenchPath(projectId, item)} className="wb-row-link" aria-current={active ? 'page' : undefined} onClick={onNavigate}
-                  aria-label={`${item.title}，${meta.name}${item.thread ? `，交接过 ${item.thread.segments.length - 1} 次` : ''}${item.running ? '，运行中' : ''}`}>
-                  <WorkbenchProviderMark provider={item.provider} running={item.running} />
-                  <span className="wb-row-title">{item.title}</span>
-                  {item.running
-                    ? <span className="wb-row-live">运行中</span>
-                    : <time className="wb-row-time" dateTime={item.updatedAt ?? undefined}>{formatSessionTime(item.updatedAt, now)}</time>}
-                </Link>}
-              {renamingId !== item.id && <button type="button" className="wb-row-more" aria-label={`「${item.title}」的更多操作`} aria-haspopup="menu"
-                aria-expanded={menuOpen && menu?.item.id === item.id} onClick={event => { setMenu({ item, anchor: event.currentTarget }); setMenuOpen(true); }}>
-                <MoreHorizontal size={17} aria-hidden="true" />
-              </button>}
+              <WorkbenchSwipeRow open={swipedKey === rowKey} disabled={renaming}
+                onOpenChange={next => setSwipedKey(previous => (next ? rowKey : previous === rowKey ? null : previous))}
+                actions={[
+                  ...(canArchive(item) ? [{ label: '归档', icon: Archive, onSelect: () => onArchive(item) }] : []),
+                  { label: '删除', icon: Trash2, destructive: true, onSelect: () => onDelete(item) },
+                ]}>
+                {active && <m.span layoutId="wb-active-row" className="wb-row-highlight" transition={HIGHLIGHT_SPRING} aria-hidden="true" />}
+                {renaming
+                  ? <RenameField item={item} onRename={onRename} onDone={() => setRenamingId(null)} />
+                  : <Link to={workbenchPath(projectId, item)} className="wb-row-link" aria-current={active ? 'page' : undefined} onClick={onNavigate}
+                    aria-label={`${item.title}，${meta.name}${item.thread ? `，交接过 ${item.thread.segments.length - 1} 次` : ''}${item.running ? '，运行中' : ''}${item.attention ? '，需要查看' : ''}`}>
+                    <span className="wb-row-mark">
+                      <WorkbenchProviderMark provider={item.provider} running={item.running} />
+                      {item.attention && <span className="wb-attention-dot" aria-hidden="true" />}
+                    </span>
+                    <span className="wb-row-title">{item.title}</span>
+                    {item.running
+                      ? <span className="wb-row-live">运行中</span>
+                      : <time className="wb-row-time" dateTime={item.updatedAt ?? undefined}>{formatSessionTime(item.updatedAt, now)}</time>}
+                  </Link>}
+                {!renaming && <button type="button" className="wb-row-more" aria-label={`「${item.title}」的更多操作`} aria-haspopup="menu"
+                  aria-expanded={menuOpen && menu?.item.id === item.id} onClick={event => { setMenu({ item, anchor: event.currentTarget }); setMenuOpen(true); }}>
+                  <MoreHorizontal size={17} aria-hidden="true" />
+                </button>}
+              </WorkbenchSwipeRow>
             </m.li>;
           })}
         </AnimatePresence>
@@ -165,13 +188,12 @@ export function WorkbenchSessionList({
     </button>}
 
     <WorkbenchPopover open={menuOpen && menu !== null} anchor={menu?.anchor ?? null} onClose={() => setMenuOpen(false)} label="会话操作" align="end" width={200}>
-      {/* A conversation handed between providers is renamed as a whole, and archived only when every one of its
-          sessions is an agent's (DeepSeek conversations cannot be archived). */}
+      {/* A conversation handed between providers is renamed as a whole (DeepSeek conversations alone cannot be). */}
       {menu && (menu.item.thread || menu.item.kind === 'agent') && <button type="button" role="menuitem" className="wb-popover-item is-compact"
         onClick={() => { const target = menu.item; setMenuOpen(false); setRenamingId(target.id); }}>
         <Pencil size={16} aria-hidden="true" />重命名
       </button>}
-      {menu && (menu.item.thread ? menu.item.thread.segments.every(segment => segment.kind === 'agent') : menu.item.kind === 'agent')
+      {menu && canArchive(menu.item)
         && <button type="button" role="menuitem" className="wb-popover-item is-compact" onClick={() => { const target = menu.item; setMenuOpen(false); onArchive(target); }}>
           <Archive size={16} aria-hidden="true" />归档
         </button>}

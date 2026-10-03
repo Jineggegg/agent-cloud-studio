@@ -1,11 +1,12 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { LazyMotion, domMax } from 'motion/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
-import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest';
 
 // Type-only, so it is erased before vi.mock's hoisted factory runs.
 import type * as SharedApi from '@/shared/api';
 import type { ServerEvent, WorkbenchChatChrome, WorkbenchChatProps } from '@/shared/types';
+import { installPointerEvent, swipe } from '@/modules/workbench/tests/swipeTestHelpers';
 
 // Fakes for every external service: the workbench only talks to these through @/shared/api and the websocket.
 const NOW = Date.now();
@@ -31,6 +32,9 @@ const CHAIN = {
   ],
 };
 const mocks = vi.hoisted(() => ({
+  projects: vi.fn(),
+  deleteProject: vi.fn(),
+  restoreProject: vi.fn(),
   projectSessions: vi.fn(),
   sessionDetails: vi.fn(),
   deleteSession: vi.fn(),
@@ -45,6 +49,7 @@ const mocks = vi.hoisted(() => ({
   listeners: [] as ((event: ServerEvent) => void)[],
   busy: new Set<string>(),
   chatMounts: 0,
+  toast: vi.fn(),
   toastError: vi.fn(),
 }));
 const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }));
@@ -52,7 +57,9 @@ const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.
 vi.mock('@/shared/api', async original => ({
   ...(await original<typeof SharedApi>()),
   api: {
-    projects: () => json(PROJECTS),
+    projects: () => mocks.projects(),
+    deleteProject: (...args: unknown[]) => mocks.deleteProject(...args),
+    restoreProject: (id: string) => mocks.restoreProject(id),
     projectSessions: (...args: unknown[]) => mocks.projectSessions(...args),
     sessionDetails: (id: string) => mocks.sessionDetails(id),
     deleteSession: (...args: unknown[]) => mocks.deleteSession(...args),
@@ -83,7 +90,9 @@ vi.mock('@/shared/context/WebSocketContext', () => ({
 }));
 vi.mock('@/shared/context/SessionProtectionContext', () => ({ useBusySessionIdSet: () => mocks.busy }));
 vi.mock('@/modules/command-palette', () => ({ usePaletteOpsRegister: () => {} }));
-vi.mock('sonner', () => ({ toast: Object.assign(() => undefined, { error: (...args: unknown[]) => mocks.toastError(...args) }) }));
+vi.mock('sonner', () => ({
+  toast: Object.assign((...args: unknown[]) => mocks.toast(...args), { error: (...args: unknown[]) => mocks.toastError(...args) }),
+}));
 vi.mock('@/modules/code-editor', () => ({
   useEditorSidebar: () => ({ editingFile: null, handleFileOpen: vi.fn(), handleCloseEditor: vi.fn(), handleUnsavedChangesChange: vi.fn() }),
   CodeEditor: () => null,
@@ -159,12 +168,23 @@ function renderShell(path: string) {
 const location = () => screen.getByTestId('location').textContent;
 const chatState = () => screen.getByTestId('chat-state').textContent;
 
+beforeAll(installPointerEvent);
+
 beforeEach(() => {
   localStorage.clear();
   mocks.listeners = [];
   mocks.busy = new Set();
   mocks.chatMounts = 0;
+  mocks.toast.mockClear();
   mocks.toastError.mockClear();
+  // The server's project list: archiving or deleting takes a project out of it, restoring puts it back.
+  let projectRows = [...PROJECTS];
+  mocks.projects.mockImplementation(() => json(projectRows));
+  mocks.deleteProject.mockImplementation((id: string) => { projectRows = projectRows.filter(row => row.projectId !== id); return json({ success: true }); });
+  mocks.restoreProject.mockImplementation((id: string) => {
+    projectRows = PROJECTS.filter(row => row.projectId === id || projectRows.includes(row));
+    return json({ success: true, data: { projectId: id, isArchived: false } });
+  });
   mocks.projectSessions.mockImplementation((projectId: string) => json(projectId === 'p1' ? {
     projectId,
     sessions: [
@@ -578,6 +598,104 @@ test('the workbench follows the iOS soft keyboard through the visual viewport', 
   } finally {
     Reflect.deleteProperty(window, 'visualViewport');
   }
+});
+
+test('archiving the open project from the switcher moves to the next one, and 撤销 brings back the project and the session', async () => {
+  renderShell('/work/p1/s/s1');
+  await waitFor(() => expect(chatState()).toContain('agent:s1'));
+  fireEvent.click(screen.getByRole('button', { name: '当前项目：超级教授，切换项目' }));
+  const popover = await screen.findByRole('dialog', { name: '切换项目' });
+  // Names only: no directory path anywhere in the trigger or the list.
+  expect(document.body.textContent).not.toContain('/home/me');
+
+  swipe(within(popover).getByRole('button', { name: '超级教授' }), { dx: -160 });
+  fireEvent.click(within(popover).getByRole('button', { name: '归档' }));
+  await waitFor(() => expect(mocks.deleteProject).toHaveBeenCalledWith('p1'));
+  await waitFor(() => expect(location()).toBe('/work/p2'));
+  // The switcher stays open on the new current project while the archived row leaves.
+  await waitFor(() => expect(within(popover).queryByRole('button', { name: '超级教授' })).toBeNull());
+  expect(popover.isConnected).toBe(true);
+  expect(within(popover).getByRole('button', { name: 'snr3-lab' }).getAttribute('aria-current')).toBe('true');
+
+  expect(mocks.toast).toHaveBeenCalledWith('已归档「超级教授」', expect.objectContaining({ action: expect.objectContaining({ label: '撤销' }) }));
+  const [, options] = mocks.toast.mock.calls[0] as [string, { action: { onClick: () => void } }];
+  act(() => options.action.onClick());
+  await waitFor(() => expect(mocks.restoreProject).toHaveBeenCalledWith('p1'));
+  await waitFor(() => expect(location()).toBe('/work/p1/s/s1'));
+  expect(await within(popover).findByRole('button', { name: '超级教授' })).toBeTruthy();
+});
+
+test('deleting a project from the switcher asks first, then deletes it for good', async () => {
+  renderShell('/work/p1');
+  await waitFor(() => expect(chatState()).toBe('p1|new|claude|professor'));
+  fireEvent.click(screen.getByRole('button', { name: '当前项目：超级教授，切换项目' }));
+  const popover = await screen.findByRole('dialog', { name: '切换项目' });
+
+  swipe(within(popover).getByRole('button', { name: 'snr3-lab' }), { dx: -160 });
+  fireEvent.click(within(popover).getByRole('button', { name: '删除' }));
+  const confirm = screen.getByRole('alertdialog', { name: '删除「snr3-lab」？' });
+  expect(mocks.deleteProject).not.toHaveBeenCalled();
+  fireEvent.click(within(confirm).getByRole('button', { name: '取消' }));
+  expect(mocks.deleteProject).not.toHaveBeenCalled();
+
+  fireEvent.click(within(popover).getByRole('button', { name: '「snr3-lab」的更多操作' }));
+  fireEvent.click(within(popover).getByRole('button', { name: '删除' }));
+  fireEvent.click(within(screen.getByRole('alertdialog', { name: '删除「snr3-lab」？' })).getByRole('button', { name: '删除' }));
+  await waitFor(() => expect(mocks.deleteProject).toHaveBeenCalledWith('p2', true));
+  await waitFor(() => expect(within(popover).queryByRole('button', { name: 'snr3-lab' })).toBeNull());
+  // Another project went; the open one stays.
+  expect(location()).toBe('/work/p1');
+  expect(mocks.toast).toHaveBeenCalledWith('已删除「snr3-lab」');
+});
+
+test('a history row swipes to the same archive and delete as its menu; DeepSeek rows only delete', async () => {
+  renderShell('/work/p1');
+  const history = await screen.findByRole('navigation', { name: '会话历史' });
+  const row = await within(history).findByRole('link', { name: /修复登录/ });
+
+  swipe(within(history).getByRole('link', { name: /课程大纲/ }), { dx: -160 });
+  expect(within(history).queryByRole('button', { name: '归档' })).toBeNull();
+  expect(within(history).getByRole('button', { name: '删除' })).toBeTruthy();
+
+  swipe(row, { dx: -160, pointerType: 'mouse' });
+  // The click that ends a mouse swipe does not open the session.
+  fireEvent.click(row);
+  expect(location()).toBe('/work/p1');
+  fireEvent.click(within(history).getByRole('button', { name: '删除' }));
+  fireEvent.click(within(screen.getByRole('alertdialog', { name: '删除这个会话？' })).getByRole('button', { name: '删除' }));
+  await waitFor(() => expect(mocks.deleteSession).toHaveBeenCalledWith('s1', true));
+
+  swipe(within(history).getByRole('link', { name: /重构侧栏/ }), { dx: -160 });
+  fireEvent.click(within(history).getByRole('button', { name: '归档' }));
+  await waitFor(() => expect(mocks.deleteSession).toHaveBeenCalledWith('s2', false));
+  await waitFor(() => expect(within(history).queryByRole('link', { name: /重构侧栏/ })).toBeNull());
+});
+
+test('sessions that finish or ask for permission while another is open get a red dot until opened, also on the hidden history button', async () => {
+  mocks.busy = new Set(['s2']);
+  renderShell('/work/p1/s/s1');
+  const history = await screen.findByRole('navigation', { name: '会话历史' });
+  await within(history).findByRole('link', { name: '重构侧栏，Codex，运行中' });
+
+  // s2's run ends (the busy set changes on the next render) and s3 asks for permission; the open s1 asking does not count.
+  mocks.busy = new Set();
+  act(() => mocks.listeners.forEach(listener => listener({ kind: 'permission_request', sessionId: 's3', requestId: 'r1' })));
+  act(() => mocks.listeners.forEach(listener => listener({ kind: 'permission_request', sessionId: 's1', requestId: 'r2' })));
+  const finished = await within(history).findByRole('link', { name: '重构侧栏，Codex，需要查看' });
+  expect(finished.closest('li')?.getAttribute('data-attention')).toBe('true');
+  expect(within(history).getByRole('link', { name: '整理旧接口，Claude Code，需要查看' })).toBeTruthy();
+  expect(within(history).getByRole('link', { name: '修复登录，Claude Code' }).closest('li')?.getAttribute('data-attention')).toBeNull();
+  expect(JSON.parse(localStorage.getItem('acs-workbench-attention-v1') ?? '[]')).toEqual(expect.arrayContaining(['s2', 's3']));
+
+  // With the history hidden, its button carries the dot.
+  fireEvent.keyDown(window, { key: '\\', ctrlKey: true });
+  fireEvent.click(await screen.findByRole('button', { name: '显示会话列表，有会话需要查看' }));
+
+  // Opening a session clears its dot; the other stays.
+  fireEvent.click(await within(history).findByRole('link', { name: /重构侧栏/ }));
+  await waitFor(() => expect(location()).toBe('/work/p1/s/s2'));
+  expect(within(history).getByRole('link', { name: '重构侧栏，Codex' })).toBeTruthy();
+  expect(within(history).getByRole('link', { name: '整理旧接口，Claude Code，需要查看' })).toBeTruthy();
 });
 
 test('leaving the workbench gives the tab back the app title', async () => {

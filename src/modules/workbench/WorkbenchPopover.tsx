@@ -59,7 +59,7 @@ export function WorkbenchPopover({ open, anchor, onClose, label, role = 'menu', 
     const frame = window.requestAnimationFrame(() => {
       const target = hasPreciseInput()
         ? panel.current?.querySelector<HTMLElement>('[data-autofocus], [role="menuitem"], button, input, a[href]')
-        : panel.current?.querySelector<HTMLElement>('[role="menuitem"], [role="option"], button, a[href]') ?? panel.current;
+        : panel.current?.querySelector<HTMLElement>('[role="menuitem"], [role="option"], [data-popover-item], button, a[href]') ?? panel.current;
       target?.focus();
     });
     return () => window.cancelAnimationFrame(frame);
@@ -72,7 +72,8 @@ export function WorkbenchPopover({ open, anchor, onClose, label, role = 'menu', 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); return; }
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-    const items = Array.from(panel.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"]), [role="option"]') ?? []);
+    // Menu items, options and the rows of a plain list that opt in (the project switcher's, which hold buttons).
+    const items = Array.from(panel.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"]), [role="option"], [data-popover-item]') ?? []);
     if (!items.length) return;
     event.preventDefault();
     const index = items.indexOf(document.activeElement as HTMLElement);

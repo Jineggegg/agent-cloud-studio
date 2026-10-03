@@ -23,6 +23,9 @@ type WorkbenchSidebarProps = {
   list: Omit<ComponentProps<typeof WorkbenchSessionList>, 'query' | 'onClearQuery'> | null;
   onQueryChange: (query: string) => void;
   onSelectProject: (projectId: string) => void;
+  // A switcher row's swipe actions: archive at once (undoable), delete after the shell's confirmation.
+  onArchiveProject: (entry: WorkbenchProjectEntry) => void;
+  onDeleteProject: (entry: WorkbenchProjectEntry) => void;
   onNewChat: (provider: WorkbenchNewProvider) => void;
   onHome: () => void;
   onHide: () => void;
@@ -35,7 +38,7 @@ type WorkbenchSidebarProps = {
  */
 export function WorkbenchSidebar({
   viewport, modifier, entries, current, newChatChoices, lastProvider, query, searchRef, quota, list,
-  onQueryChange, onSelectProject, onNewChat, onHome, onHide, onOpenSettings,
+  onQueryChange, onSelectProject, onArchiveProject, onDeleteProject, onNewChat, onHome, onHide, onOpenSettings,
 }: WorkbenchSidebarProps) {
   return <div className="wb-sidebar">
     <header className="wb-sidebar-head">
@@ -50,7 +53,7 @@ export function WorkbenchSidebar({
     </header>
 
     <div className="wb-sidebar-top">
-      <WorkbenchProjectSwitcher entries={entries} current={current} onSelect={onSelectProject} />
+      <WorkbenchProjectSwitcher entries={entries} current={current} onSelect={onSelectProject} onArchive={onArchiveProject} onDelete={onDeleteProject} />
       {current && <WorkbenchNewSession choices={newChatChoices} lastProvider={lastProvider} onStart={onNewChat}
         shortcut={modifier ? `${modifier}N` : null} />}
       {current && <label className="ios-search wb-search">

@@ -11,7 +11,7 @@ function exitDelay() {
 
 /**
  * Used by StudioPage, StudioConnections, StudioSettingsMail (removing a mail
- * account), the workbench module (deleting a session, handing a conversation to another model) and StudioMemory
+ * account), the workbench module (deleting a session or a project, handing a conversation to another model) and StudioMemory
  * (deleting a note) in place of window.confirm, which cannot be styled and blocks the iOS
  * standalone web app. Rendered through a portal so animated ancestors never
  * become the containing block. The confirm action reads as destructive (red) unless `destructive` is false.

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
-import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AnimatePresence, m } from 'motion/react';
 import { toast } from 'sonner';
 import { FileCode2, FolderSearch, FolderX, GitBranch, Globe, LayoutGrid, MessageSquareOff, PanelLeft, PanelRight, SquareTerminal } from 'lucide-react';
@@ -15,7 +15,8 @@ import { useFileOpenResolver } from '@/shared/hooks/useFileOpenResolver';
 import { useVisualViewportKeyboardOffset } from '@/shared/hooks/useVisualViewportKeyboardOffset';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
 import type {
-  DirectoryRevealRequest, FileOpenHandler, Project, WorkbenchChatChrome, WorkbenchInspectorTab, WorkbenchNewProvider, WorkbenchSessionItem,
+  DirectoryRevealRequest, FileOpenHandler, Project, WorkbenchChatChrome, WorkbenchInspectorTab, WorkbenchNewProvider, WorkbenchProjectEntry,
+  WorkbenchSessionItem,
 } from '@/shared/types';
 import { getPageTitle } from '@/shared/utils';
 import { WorkbenchChat } from '@/modules/workbench/chat/WorkbenchChat';
@@ -24,6 +25,7 @@ import { WorkbenchInspector } from '@/modules/workbench/WorkbenchInspector';
 import { WorkbenchProviderMark } from '@/modules/workbench/WorkbenchProviderMark';
 import { WorkbenchPullChip } from '@/modules/workbench/WorkbenchPullChip';
 import { WorkbenchSidebar } from '@/modules/workbench/WorkbenchSidebar';
+import { useWorkbenchAttention } from '@/modules/workbench/hooks/useWorkbenchAttention';
 import { useWorkbenchLayout } from '@/modules/workbench/hooks/useWorkbenchLayout';
 import { useWorkbenchProjects } from '@/modules/workbench/hooks/useWorkbenchProjects';
 import { useWorkbenchQuota } from '@/modules/workbench/hooks/useWorkbenchQuota';
@@ -77,8 +79,11 @@ export function WorkbenchShell() {
   const params = useParams<{ projectId?: string; sessionId?: string; conversationId?: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const routerLocation = useLocation();
   const viewport = useWorkbenchViewport();
-  const { entries, error: projectsError, refresh: refreshProjects } = useWorkbenchProjects();
+  const {
+    entries, error: projectsError, refresh: refreshProjects, archive: archiveProjectById, restore: restoreProjectById, remove: removeProjectById,
+  } = useWorkbenchProjects();
   const quota = useWorkbenchQuota();
   const { layout, toggleSidebar, setSidebarCollapsed, toggleInspector, closeInspector, showInspectorTab, setInspectorWidth } = useWorkbenchLayout();
   const busy = useBusySessionIdSet();
@@ -112,14 +117,25 @@ export function WorkbenchShell() {
   const [fetched, setFetched] = useState<{ key: string; item: WorkbenchSessionItem | null } | null>(null);
   // The row waiting for the delete confirmation.
   const [pendingDelete, setPendingDelete] = useState<WorkbenchSessionItem | null>(null);
+  // The project (from the switcher) waiting for the delete confirmation.
+  const [pendingProjectDelete, setPendingProjectDelete] = useState<WorkbenchProjectEntry | null>(null);
   // A folder a chat link asked the file tree to reveal; an object so the same folder can be asked for twice.
   const [revealDirectory, setRevealDirectory] = useState<DirectoryRevealRequest | null>(null);
 
-  // Running sessions (GET /api/providers/sessions/running plus live chat frames) breathe in the history.
-  const historyItems = useMemo(
-    () => sessions.items?.map(item => (busy.has(item.id) ? { ...item, running: true } : item)) ?? null,
-    [sessions.items, busy],
-  );
+  // Sessions that finished or asked for permission while another was open get a red dot until opened. The open one is
+  // read from the URL (with every stretch of the handed-over conversation it continues), as the history row is below.
+  const viewedThread = target
+    ? sessions.threads.find(item => item.segments.some(segment => segment.kind === target.kind && segment.sessionId === target.id)) : undefined;
+  const attention = useWorkbenchAttention(!target ? [] : viewedThread ? viewedThread.segments.map(segment => segment.sessionId) : [target.id]);
+
+  // Running sessions (GET /api/providers/sessions/running plus live chat frames) breathe in the history; a row needs
+  // the owner when any of its sessions does.
+  const historyItems = useMemo(() => sessions.items?.map(item => {
+    const running = busy.has(item.id);
+    const needsOwner = item.thread ? item.thread.segments.some(segment => attention.has(segment.sessionId)) : attention.has(item.id);
+    return running || needsOwner ? { ...item, running: running || item.running, attention: needsOwner || undefined } : item;
+  }) ?? null, [sessions.items, busy, attention]);
+  const historyNeedsOwner = Boolean(historyItems?.some(item => item.attention));
   const listed = target && historyItems ? historyItems.find(item => item.kind === target.kind && item.id === target.id) ?? null : null;
   const historyLoaded = historyItems !== null;
 
@@ -244,6 +260,41 @@ export function WorkbenchShell() {
       toast(`已删除「${item.title}」`);
     } catch (failure) { toast.error(failure instanceof Error ? failure.message : '删除失败'); }
   };
+  // The open project went away: go straight to the next one by the /work rule (a Studio project first), so the shell
+  // stays mounted, or to /work's empty state when none is left.
+  const leaveProjectIfOpen = (entry: WorkbenchProjectEntry) => {
+    if (entry.project.projectId !== projectId) return;
+    const others = entries?.filter(other => other.project.projectId !== entry.project.projectId) ?? [];
+    const next = others.find(other => other.hub) ?? others[0];
+    setQuery('');
+    navigate(next ? workbenchPath(next.project.projectId) : '/work', { replace: true });
+  };
+  const archiveProject = async (entry: WorkbenchProjectEntry) => {
+    const archivedId = entry.project.projectId;
+    // Undo goes back to where the owner was when the archived project was the open one.
+    const returnTo = archivedId === projectId ? `${routerLocation.pathname}${routerLocation.search}` : null;
+    try {
+      await archiveProjectById(archivedId);
+      leaveProjectIfOpen(entry);
+      toast(`已归档「${entry.hub?.name ?? entry.project.displayName}」`, {
+        action: {
+          label: '撤销',
+          onClick: () => {
+            void restoreProjectById(archivedId)
+              .then(() => { if (returnTo) navigate(returnTo); })
+              .catch(failure => toast.error(failure instanceof Error ? failure.message : '恢复失败'));
+          },
+        },
+      });
+    } catch (failure) { toast.error(failure instanceof Error ? failure.message : '归档失败'); }
+  };
+  const deleteProject = async (entry: WorkbenchProjectEntry) => {
+    try {
+      await removeProjectById(entry.project.projectId);
+      leaveProjectIfOpen(entry);
+      toast(`已删除「${entry.hub?.name ?? entry.project.displayName}」`);
+    } catch (failure) { toast.error(failure instanceof Error ? failure.message : '删除失败'); }
+  };
   // An older page that fails says so; the button stays, so another tap retries.
   const loadOlderSessions = async () => {
     try { await loadMore(); } catch (failure) { toast.error(failure instanceof Error ? failure.message : '更早的会话加载失败'); }
@@ -288,6 +339,8 @@ export function WorkbenchShell() {
     } : null}
     onQueryChange={setQuery}
     onSelectProject={id => { setQuery(''); navigate(workbenchPath(id)); }}
+    onArchiveProject={entry => void archiveProject(entry)}
+    onDeleteProject={setPendingProjectDelete}
     onNewChat={startNewChat}
     onHome={() => navigate('/')}
     onHide={() => { if (sidebarDocked) setSidebarCollapsed(true); else setSheetOpen(false); }}
@@ -300,9 +353,13 @@ export function WorkbenchShell() {
   // carrying these same controls, so the shell's own bar steps aside.
   const showsChat = entries !== null && Boolean(projectId) && Boolean(project) && resolved !== 'loading' && resolved !== 'missing';
 
+  // With the history out of sight (a collapsed column, the phone's closed sheet) its button carries the red dot.
   const barLeading = sidebarVisible ? null : <>
-    <button type="button" className="icon-button plain" onClick={showSidebar} aria-label="显示会话列表"
-      title={`显示会话列表${modifier ? `（${modifier}\\）` : ''}`}><PanelLeft size={19} aria-hidden="true" /></button>
+    <button type="button" className="icon-button plain wb-sidebar-toggle" onClick={showSidebar}
+      aria-label={historyNeedsOwner ? '显示会话列表，有会话需要查看' : '显示会话列表'} title={`显示会话列表${modifier ? `（${modifier}\\）` : ''}`}>
+      <PanelLeft size={19} aria-hidden="true" />
+      {historyNeedsOwner && <span className="wb-attention-dot" aria-hidden="true" />}
+    </button>
     {sidebarDocked && <button type="button" className="icon-button plain" onClick={() => navigate('/')} aria-label="返回 Studio 主屏幕">
       <LayoutGrid size={18} aria-hidden="true" /></button>}
   </>;
@@ -411,5 +468,12 @@ export function WorkbenchShell() {
       confirmLabel="删除"
       onCancel={() => setPendingDelete(null)}
       onConfirm={() => { const item = pendingDelete; setPendingDelete(null); void deleteSession(item); }} />}
+
+    {pendingProjectDelete && <StudioConfirmSheet
+      title={`删除「${pendingProjectDelete.hub?.name ?? pendingProjectDelete.project.displayName}」？`}
+      message="这个项目在工作台里的会话记录会被永久删除，包括 Claude Code 和 Codex 保存的对话文件；电脑上的项目文件不受影响。只想收起它可以选择「归档」。"
+      confirmLabel="删除"
+      onCancel={() => setPendingProjectDelete(null)}
+      onConfirm={() => { const entry = pendingProjectDelete; setPendingProjectDelete(null); void deleteProject(entry); }} />}
   </div>;
 }
