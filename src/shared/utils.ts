@@ -505,6 +505,25 @@ export function quotaEndText(endsAt: string | null, now: number, endKind: 'reset
   return weekly ? `${parts.weekday} ${clock} ${verb}` : `${Number(parts.month)}月${Number(parts.day)}日 ${clock} ${verb}`;
 }
 
+// A reading younger than this is a fresh read (the server caches five minutes, the widget polls every minute) and needs no age.
+const QUOTA_AGE_HINT_MINUTES = 10;
+
+/**
+ * How long ago a quota reading was taken, once that is worth saying: "12 分钟前", "3 小时前", "2 天前". Null for a
+ * reading under five minutes old (a fresh read) or an unknown time. Used by the home quota widgets, which show it in
+ * place of the source badge for figures served from an earlier read (the last good Claude reading standing in while
+ * its API is rate limited, a statusLine snapshot, Codex session logs).
+ */
+export function quotaAgeText(observedAt: string | null, now: number): string | null {
+  const at = observedAt ? Date.parse(observedAt) : Number.NaN;
+  if (!Number.isFinite(at)) return null;
+  const minutes = Math.floor((now - at) / 60_000);
+  if (minutes < QUOTA_AGE_HINT_MINUTES) return null;
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 48 ? `${hours} 小时前` : `${Math.floor(hours / 24)} 天前`;
+}
+
 /**
  * The money figure of a credit or balance item, or null when it has none. A balance is its amount ("¥253.99");
  * a credit with a cap reads "剩余 $229 / $250" or "已用 $21 / $250" by `mode`, one without a cap "已用 $19.99",

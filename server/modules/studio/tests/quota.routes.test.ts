@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -17,6 +17,19 @@ import { createQuotaRouter } from '../quota/quota.routes.js';
 const START = Date.parse('2026-10-02T12:00:00.000Z');
 // No test may read this machine's real Claude login: every service gets a credentials path that does not exist.
 const MISSING_CREDENTIALS = path.join(os.tmpdir(), `quota-test-no-login-${randomUUID()}`, '.credentials.json');
+// Nor the real last Claude reading: services without a temp directory of their own get a path that does not exist.
+const MISSING_LAST_READING = path.join(os.tmpdir(), `quota-test-no-last-reading-${randomUUID()}`, 'claude-usage-last.json');
+
+// Waits (up to two seconds) for a background write such as the saved Claude reading.
+async function waitFor(condition: () => boolean) {
+  for (let attempt = 0; attempt < 200 && !condition(); attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.ok(condition(), 'timed out waiting');
+}
+
+// A JSON file's contents, or null while it is missing or unreadable.
+function readJson(file: string): Record<string, unknown> | null {
+  try { return JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>; } catch { return null; }
+}
 
 function fixture() {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'quota-service-test-'));
@@ -41,7 +54,10 @@ function fixture() {
       await new Promise<void>(resolve => { releaseCodex = resolve; });
       return { rateLimits: { primary: { usedPercent: 7, windowDurationMins: 300, resetsAt: null }, secondary: null } };
     },
-    files: { claudeSnapshot, claudeCredentials: MISSING_CREDENTIALS, codexSessionDirectories: [path.join(directory, 'sessions')] },
+    files: {
+      claudeSnapshot, claudeCredentials: MISSING_CREDENTIALS, claudeUsageLast: path.join(directory, 'claude-usage-last.json'),
+      codexSessionDirectories: [path.join(directory, 'sessions')],
+    },
   });
   return { directory, service, counts, keys, advance: (ms: number) => { clock += ms; }, release: () => releaseCodex() };
 }
@@ -89,7 +105,10 @@ test('a throwing key lookup degrades to an unavailable DeepSeek snapshot', async
   const service = createQuotaService({
     deepseekKey: () => { throw new Error('bad master key'); },
     codexRateLimits: null,
-    files: { claudeSnapshot: path.join(os.tmpdir(), 'quota-missing-snapshot.json'), claudeCredentials: MISSING_CREDENTIALS, codexSessionDirectories: [] },
+    files: {
+      claudeSnapshot: path.join(os.tmpdir(), 'quota-missing-snapshot.json'), claudeCredentials: MISSING_CREDENTIALS,
+      claudeUsageLast: MISSING_LAST_READING, codexSessionDirectories: [],
+    },
   });
   const [claude, codex, deepseek] = await service.snapshots(1);
   assert.equal(claude.available, false);
@@ -108,7 +127,10 @@ test('a load that never settles times out, is cached like a failure and is retri
     // Ignores its abort signal and never answers, like a read blocked on a FIFO.
     request: (() => { requests++; return new Promise<Response>(() => {}); }) as unknown as typeof fetch,
     codexRateLimits: null,
-    files: { claudeSnapshot: path.join(os.tmpdir(), 'quota-missing-snapshot.json'), claudeCredentials: MISSING_CREDENTIALS, codexSessionDirectories: [] },
+    files: {
+      claudeSnapshot: path.join(os.tmpdir(), 'quota-missing-snapshot.json'), claudeCredentials: MISSING_CREDENTIALS,
+      claudeUsageLast: MISSING_LAST_READING, codexSessionDirectories: [],
+    },
   });
   const [claude, , first] = await service.snapshots(1);
   assert.equal(claude.available, false, 'the other providers are not held up');
@@ -185,7 +207,10 @@ test('GET /api/studio/quota serves all three providers through the real service 
       return { rateLimits: { primary: { usedPercent: 9, windowDurationMins: 300, resetsAt: null }, secondary: null } };
     },
     request: (async () => Response.json({ is_available: true, balance_infos: [{ currency: 'USD', total_balance: '2.50' }] })) as unknown as typeof fetch,
-    files: { claudeSnapshot, claudeCredentials: MISSING_CREDENTIALS, codexSessionDirectories: [path.join(directory, 'sessions')] },
+    files: {
+      claudeSnapshot, claudeCredentials: MISSING_CREDENTIALS, claudeUsageLast: path.join(directory, 'claude-usage-last.json'),
+      codexSessionDirectories: [path.join(directory, 'sessions')],
+    },
   })));
   const app = appWithTestUser(target => { target.use('/api/studio', routes); });
   try {
@@ -225,7 +250,7 @@ test('the service reads Claude from the usage API first, through its own fetch, 
   }) as unknown as typeof fetch;
   const create = (claudeUsageApi?: boolean) => createQuotaService({
     now: () => clock, deepseekKey: () => null, codexRateLimits: null, request, claudeUsageApi,
-    files: { claudeSnapshot, claudeCredentials, codexSessionDirectories: [] },
+    files: { claudeSnapshot, claudeCredentials, claudeUsageLast: path.join(directory, 'claude-usage-last.json'), codexSessionDirectories: [] },
   });
   try {
     const service = create();
@@ -235,10 +260,71 @@ test('the service reads Claude from the usage API first, through its own fetch, 
     assert.deepEqual(usageCalls, ['https://api.anthropic.com/api/oauth/usage']);
     clock += 61_000;
     await service.snapshots(1);
+    assert.equal(usageCalls.length, 1, 'the service cache expired, but the reader still holds the answer for five minutes');
+    clock += 240_000;
+    await service.snapshots(1);
     assert.equal(usageCalls.length, 2, 'refreshed once the service cache and the reader cache have both expired');
+    // That answer was also copied into the snapshot file, over the statusLine figures.
+    const copiedAt = new Date(clock).toISOString();
+    await waitFor(() => readJson(claudeSnapshot)?.observedAt === copiedAt);
 
     const off = await create(false).snapshots(1);
-    assert.equal(off[0].source, 'statusline', 'STUDIO_CLAUDE_USAGE_API=off keeps the snapshot path');
+    assert.equal(off[0].source, 'usage-api', 'STUDIO_CLAUDE_USAGE_API=off keeps the snapshot path, which now holds the copy');
+    assert.match(off[0].note ?? '', /STUDIO_CLAUDE_USAGE_API=off/);
+    assert.deepEqual(off[0].windows.map(window => [window.id, window.usedPercent]), [['five_hour', 33]]);
     assert.equal(usageCalls.length, 2);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('the service keeps the last Claude reading next to the snapshot, and after a restart shows it while the usage API is rate limited', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'quota-last-reading-test-'));
+  const claudeSnapshot = path.join(directory, 'studio-rate-limits.json');
+  const claudeCredentials = path.join(directory, '.credentials.json');
+  const lastReading = path.join(directory, 'claude-usage-last.json');
+  writeFileSync(claudeCredentials, JSON.stringify({ claudeAiOauth: { accessToken: 'last-reading-test-token', expiresAt: START + 3 * 3_600_000 } }));
+  let clock = START;
+  let usageStatus = 200;
+  const request = (async (url: string | URL) => {
+    if (String(url).includes('api.anthropic.com')) {
+      return usageStatus === 200
+        ? Response.json({ five_hour: { utilization: 33, resets_at: new Date(START + 3_600_000).toISOString() }, seven_day: null })
+        : new Response('busy', { status: usageStatus });
+    }
+    return Response.json({ is_available: true, balance_infos: [] });
+  }) as unknown as typeof fetch;
+  // The default location is what this test checks, so a STUDIO_CLAUDE_USAGE_LAST_FILE in the environment must not apply.
+  const configured = process.env.STUDIO_CLAUDE_USAGE_LAST_FILE;
+  delete process.env.STUDIO_CLAUDE_USAGE_LAST_FILE;
+  const create = () => createQuotaService({
+    now: () => clock, deepseekKey: () => null, codexRateLimits: null, request,
+    files: { claudeSnapshot, claudeCredentials, codexSessionDirectories: [] },
+  });
+  try {
+    const [live] = await create().snapshots(1);
+    assert.equal(live.source, 'usage-api');
+    await waitFor(() => existsSync(lastReading) && readJson(claudeSnapshot)?.source === 'usage-api');
+    for (const file of [lastReading, claudeSnapshot]) {
+      assert.ok(!readFileSync(file, 'utf8').includes('last-reading-test-token'), `the token is never written to ${path.basename(file)}`);
+    }
+    // The snapshot file gets the plan windows in the statusLine format, for the owner's local tools.
+    assert.deepEqual(readJson(claudeSnapshot), {
+      observedAt: new Date(START).toISOString(), source: 'usage-api',
+      five_hour: { used_percentage: 33, resets_at: Math.round((START + 3_600_000) / 1000), observed_at: new Date(START).toISOString() },
+    });
+
+    // A deploy restarts the process, and the first request after it is rate limited.
+    clock += 10 * 60_000;
+    usageStatus = 429;
+    const [limited] = await create().snapshots(1);
+    assert.equal(limited.source, 'usage-api');
+    assert.equal(limited.available, true);
+    assert.equal(limited.observedAt, new Date(START).toISOString());
+    assert.equal(limited.stale, false);
+    assert.equal(limited.note, 'Claude 用量接口暂时限流，显示 10 分钟前的读数。');
+    assert.deepEqual(limited.windows.map(window => [window.id, window.usedPercent]), [['five_hour', 33]]);
+  } finally {
+    if (configured === undefined) delete process.env.STUDIO_CLAUDE_USAGE_LAST_FILE;
+    else process.env.STUDIO_CLAUDE_USAGE_LAST_FILE = configured;
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

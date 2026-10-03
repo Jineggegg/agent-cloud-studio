@@ -27,8 +27,9 @@ type QuotaDependencies = {
   now?: () => number;
   // Per-load deadline, mainly for tests.
   loadTimeoutMs?: number;
-  // Overrides for STUDIO_CLAUDE_RATE_FILE, STUDIO_CLAUDE_CREDENTIALS_FILE and STUDIO_CODEX_SESSIONS_DIRS, mainly for tests.
-  files?: { claudeSnapshot?: string; claudeCredentials?: string; codexSessionDirectories?: string[] };
+  // Overrides for STUDIO_CLAUDE_RATE_FILE, STUDIO_CLAUDE_CREDENTIALS_FILE, STUDIO_CLAUDE_USAGE_LAST_FILE and
+  // STUDIO_CODEX_SESSIONS_DIRS, mainly for tests.
+  files?: { claudeSnapshot?: string; claudeCredentials?: string; claudeUsageLast?: string; codexSessionDirectories?: string[] };
   // Override for STUDIO_CLAUDE_USAGE_API (false is "off"), mainly for tests.
   claudeUsageApi?: boolean;
 };
@@ -55,6 +56,14 @@ function claudeCredentialsFileFromEnv() {
   return path.join(configDirectory ? resolveHomeRelativePath(configDirectory) : path.join(os.homedir(), '.claude'), '.credentials.json');
 }
 
+// Where the last good Claude usage reading survives a restart: STUDIO_CLAUDE_USAGE_LAST_FILE (`~` and relative paths
+// are home-based), else claude-usage-last.json next to the snapshot file (normally ~/.claude). It holds the figures the
+// widgets show (percentages, reset times, credit amounts), never the token.
+function claudeUsageLastFileFromEnv(snapshotFile: string) {
+  const configured = process.env.STUDIO_CLAUDE_USAGE_LAST_FILE?.trim();
+  return configured ? resolveHomeRelativePath(configured) : path.join(path.dirname(snapshotFile), 'claude-usage-last.json');
+}
+
 // STUDIO_CLAUDE_USAGE_API=off (or 0 / false / no) stops Studio from calling Claude's usage API at all.
 function claudeUsageApiEnabledFromEnv() {
   return !/^(off|0|false|no)$/i.test(process.env.STUDIO_CLAUDE_USAGE_API?.trim() ?? '');
@@ -69,9 +78,11 @@ function claudeUsageApiEnabledFromEnv() {
  * (concurrent callers share the pending load). A load that has not settled after 20 s resolves to
  * an unavailable snapshot, which is cached like any other result, so a stuck source cannot hold
  * the endpoint. A changed DeepSeek key invalidates its entry. Claude is read live from Claude's
- * usage API with the machine's Claude login first and falls back to the statusLine / SDK snapshot
- * (claude-quota.adapter). File locations and STUDIO_CLAUDE_USAGE_API come from the environment
- * once, when the service is created.
+ * usage API with the machine's Claude login first (each answer kept for five minutes, its plan
+ * windows also copied into the snapshot file); while that API is rate limited or down, the last
+ * good reading (kept in claude-usage-last.json next to the snapshot, so it survives a restart)
+ * stands in, and otherwise the snapshot (claude-quota.adapter). File locations and
+ * STUDIO_CLAUDE_USAGE_API come from the environment once, when the service is created.
  */
 export function createQuotaService(deps: QuotaDependencies) {
   const now = deps.now ?? Date.now;
@@ -79,10 +90,14 @@ export function createQuotaService(deps: QuotaDependencies) {
   const loadTimeoutMs = deps.loadTimeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS;
   const claudeSnapshot = deps.files?.claudeSnapshot ?? resolveClaudeRateSnapshotPath();
   const codexSessionDirectories = deps.files?.codexSessionDirectories ?? codexSessionDirectoriesFromEnv();
-  // One reader for the service's lifetime, so its own answer cache, in-flight guard and backoff hold across loads.
+  // One reader for the service's lifetime, so its own answer cache, in-flight guard, backoff and last good reading
+  // hold across loads; it reads the saved reading back as it is created, and copies each successful answer's
+  // 5-hour and weekly windows into the snapshot file for local tools.
   const claudeUsage = createClaudeUsageReader({
     credentialsFile: deps.files?.claudeCredentials ?? claudeCredentialsFileFromEnv(),
     enabled: deps.claudeUsageApi ?? claudeUsageApiEnabledFromEnv(),
+    lastReadingFile: deps.files?.claudeUsageLast ?? claudeUsageLastFileFromEnv(claudeSnapshot),
+    snapshotFile: claudeSnapshot,
     request,
     now,
   });
