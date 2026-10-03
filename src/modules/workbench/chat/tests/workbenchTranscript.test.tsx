@@ -58,7 +58,6 @@ function renderTranscript(overrides: Partial<Parameters<typeof WorkbenchTranscri
       onScrollIntent={vi.fn()}
       isLoading={false}
       runActive={false}
-      showTyping={false}
       hiddenCount={0}
       onShowEarlier={vi.fn()}
       hasMoreHistory={false}
@@ -128,19 +127,20 @@ describe('WorkbenchTranscript', () => {
     expect(onDecision).toHaveBeenLastCalledWith('plan-1', { allow: false, message: '先别动数据库' });
   });
 
-  test('loading shows a skeleton, an empty new chat shows its empty state, a run shows the typing dots', () => {
+  test('loading shows a skeleton and an empty new chat shows its empty state; a run adds no typing dots of its own', () => {
     const { rerender } = renderTranscript({ messages: [], isLoading: true });
     expect(screen.getByRole('status', { name: '正在载入对话' })).toBeTruthy();
     rerender(
       <WorkbenchTranscript
         sessionKey="new-0" isNewChat messages={[]} provider="claude" project={project}
-        scrollRef={createRef<HTMLDivElement>()} onScrollIntent={vi.fn()} isLoading={false} runActive showTyping
+        scrollRef={createRef<HTMLDivElement>()} onScrollIntent={vi.fn()} isLoading={false} runActive
         hiddenCount={0} onShowEarlier={vi.fn()} hasMoreHistory={false} isLoadingHistory={false} onLoadAllHistory={vi.fn()}
         createDiff={createDiff} onOpenFile={vi.fn()} pendingPlanRequest={null} onDecision={vi.fn()} emptyState={<p>空</p>}
       />,
     );
     expect(screen.getByText('空')).toBeTruthy();
-    expect(screen.getByRole('status', { name: '正在回复' })).toBeTruthy();
+    // The run's state (typing dots included) lives in the run status row above the composer, not in the transcript.
+    expect(screen.queryByRole('status', { name: '正在回复' })).toBeNull();
   });
 
   test('older rows outside the window are one tap away', () => {

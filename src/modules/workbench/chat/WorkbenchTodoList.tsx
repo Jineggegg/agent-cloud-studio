@@ -4,7 +4,7 @@ import { Check } from 'lucide-react';
 import type { WorkbenchTodoItem } from '@/shared/types';
 
 /**
- * Used by the workbench chat's run island and checklist tool cards: the agent's checklist as iOS-style rows. The
+ * Used by the workbench chat's run status row and checklist tool cards: the agent's checklist as iOS-style rows. The
  * tick draws itself with a spring when a step completes; the step in flight carries a soft pulse.
  */
 export function WorkbenchTodoList({ todos }: { todos: WorkbenchTodoItem[] }) {

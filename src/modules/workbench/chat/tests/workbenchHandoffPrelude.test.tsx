@@ -71,7 +71,7 @@ function renderPrelude(segments = SEGMENTS) {
 function renderTranscriptWithPrelude(overrides: { hasMoreHistory?: boolean; messages?: ChatMessage[] } = {}) {
   const props = {
     sessionKey: 's3', isNewChat: false, provider: 'claude', project, scrollRef: createRef<HTMLDivElement>(), onScrollIntent: vi.fn(),
-    isLoading: false, runActive: false, showTyping: false, hiddenCount: 0, onShowEarlier: vi.fn(), isLoadingHistory: false,
+    isLoading: false, runActive: false, hiddenCount: 0, onShowEarlier: vi.fn(), isLoadingHistory: false,
     onLoadAllHistory: vi.fn(), createDiff: () => [], onOpenFile: vi.fn(), pendingPlanRequest: null, onDecision: vi.fn(), emptyState: null,
     messages: overrides.messages ?? [{ type: 'user', id: 'n1', content: '现在的会话', timestamp: at(6) } satisfies ChatMessage],
     prelude: <WorkbenchHandoffPrelude project={project} segments={SEGMENTS} next={NEXT} onOpenFile={vi.fn()} />,

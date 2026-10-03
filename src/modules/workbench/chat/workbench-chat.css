@@ -2,7 +2,7 @@
  * Workbench chat column — the centre of the v6 workbench.
  * Studio's paper-and-mineral language carried into a working surface: warm paper for reading, slate for the
  * owner's voice, grouped inset lists for the agent's process, glass only where something floats over content
- * (header, run island, menus, sheets). Theme follows the app's `html.dark` class.
+ * (header, menus, sheets). Theme follows the app's `html.dark` class.
  *
  * Everything is scoped to `.wbc`; the app-wide Tailwind HSL variables are re-pointed inside it so the inherited
  * renderers this column wraps (subagent and workflow panels, code blocks) pick up the same palette. `.wbc-layer` is
@@ -266,6 +266,39 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
 .wbc-menu-switch.is-on { background: var(--wbc-green); }
 .wbc-menu-switch.is-on::after { transform: translateX(14px); }
 
+/* ---------- Context usage card (the header's token ring) ----------
+ * Blooms out of the ring under the header, flush with its right edge; a sheet on a phone. */
+.wbc-ring[aria-expanded="true"] { background: var(--wbc-fill-pressed); }
+.wbc-menu.wbc-usage { padding: 14px 16px 12px; outline: none; }
+.wbc-menu.wbc-usage.is-sheet { padding: 18px 20px calc(16px + env(safe-area-inset-bottom, 0px)); }
+.wbc-usage-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.wbc-usage-title { font-size: 13px; font-weight: 600; color: var(--wbc-label-2); }
+.wbc-usage-percent {
+  font-size: 24px; font-weight: 650; letter-spacing: -.02em; line-height: 30px; color: var(--wbc-label); font-variant-numeric: tabular-nums;
+}
+.wbc-usage.is-high .wbc-usage-percent { color: var(--wbc-orange); }
+.wbc-usage.is-critical .wbc-usage-percent { color: var(--wbc-red); }
+.wbc-usage-figure { font-size: 13px; color: var(--wbc-label-2); font-variant-numeric: tabular-nums; }
+.wbc-usage-meter { height: 6px; margin: 10px 0 12px; border-radius: 6px; background: var(--wbc-fill-pressed); overflow: hidden; }
+.wbc-usage-meter span { display: block; height: 100%; border-radius: inherit; background: var(--wbc-tint); transform-origin: left center; }
+.wbc-usage.is-high .wbc-usage-meter span { background: var(--wbc-orange); }
+.wbc-usage.is-critical .wbc-usage-meter span { background: var(--wbc-red); }
+.wbc-usage-rows { display: flex; flex-direction: column; margin: 0; border-top: .5px solid var(--wbc-separator); }
+.wbc-usage-rows > div {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: .5px solid var(--wbc-separator);
+}
+.wbc-usage-rows dt { flex-shrink: 0; font-size: 13.5px; color: var(--wbc-label-2); }
+.wbc-usage-rows dd {
+  min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13.5px; font-weight: 500; font-variant-numeric: tabular-nums;
+}
+.wbc-usage-note { margin-top: 8px; font-size: 12px; color: var(--wbc-label-3); }
+.wbc-usage-hint {
+  margin-top: 8px; padding: 8px 10px; border-radius: 10px; font-size: 12.5px; line-height: 1.45;
+  background: var(--wbc-orange-soft); color: var(--wbc-orange);
+}
+.wbc-usage.is-critical .wbc-usage-hint { background: var(--wbc-red-soft); color: var(--wbc-red); }
+
 /* ---------- Reasoning effort popover (composer chip) ----------
  * The level as the title, the model under it (opens the model menu), reset and help top-right, then a discrete
  * slider: 更快 … 更聪明, one dot per level, a filled track up to a white round thumb that springs onto a stop. */
@@ -325,43 +358,54 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
 .wbc-menu-hint { font-size: 12.5px; line-height: 1.35; color: var(--wbc-label-2); }
 .wbc-menu-note { padding: 4px 12px 8px 34px; font-size: 12.5px; line-height: 1.4; color: var(--wbc-label-3); }
 
-/* ---------- Run island: the column's signature ---------- */
-.wbc-island {
-  position: absolute; z-index: 7; top: calc(var(--wbc-header-h) + 10px); left: 0; right: 0;
-  width: fit-content; max-width: min(560px, calc(100% - 32px)); margin: 0 auto;
-  overflow: hidden;
-  background: var(--wbc-glass-strong);
-  -webkit-backdrop-filter: saturate(180%) blur(24px); backdrop-filter: saturate(180%) blur(24px);
-  border: .5px solid var(--wbc-glass-edge);
-  box-shadow: var(--wbc-shadow-float);
+/* ---------- Run status: the transcript's last line, above the composer ----------
+ * The first thing in the dock, so it stays put while the transcript scrolls and never covers a message. The slot's
+ * height is animated (carrying the dock and the transcript's bottom edge); the row inside springs in from below. */
+.wbc-run-slot { overflow: hidden; }
+.wbc-run {
+  width: fit-content; max-width: 100%; margin: 2px 0 8px; overflow: hidden;
+  background: var(--wbc-surface-2);
+  border: .5px solid var(--wbc-separator);
 }
-.wbc-island.is-expanded { width: min(560px, calc(100% - 32px)); }
-.wbc-island-bar { display: flex; align-items: center; gap: 2px; padding: 4px; }
-.wbc-island-main {
-  display: flex; align-items: center; gap: 10px; min-width: 0; min-height: 40px; padding: 0 12px 0 10px; border-radius: 18px;
-  font-size: 14px; font-weight: 600; text-align: left;
+.wbc-run.is-expanded { width: 100%; }
+.wbc-run-bar { display: flex; align-items: center; gap: 2px; padding: 3px; }
+.wbc-run-main {
+  display: flex; align-items: center; gap: 10px; flex: 0 1 auto; min-width: 0; min-height: 38px; padding: 0 12px 0 10px;
+  border-radius: 17px; font-size: 14px; font-weight: 600; text-align: left; color: var(--wbc-label);
 }
-.wbc-island-main:disabled { opacity: 1; cursor: default; }
-.wbc-island-main:not(:disabled):hover { background: var(--wbc-fill); }
-.wbc-island-glyph { display: grid; place-items: center; width: 18px; color: var(--wbc-label-2); }
-.wbc-island.is-finished .wbc-island-glyph { color: var(--wbc-green); }
-.wbc-island-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wbc-island-count, .wbc-island-time { flex-shrink: 0; font-size: 12.5px; font-weight: 500; color: var(--wbc-label-2); font-variant-numeric: tabular-nums; }
-.wbc-island-count { padding: 2px 7px; border-radius: 999px; background: var(--wbc-fill); color: var(--wbc-label); font-weight: 600; }
-.wbc-island-chevron { color: var(--wbc-label-3); transition: transform 300ms var(--wbc-ease-out); }
-.wbc-island-main[aria-expanded="true"] .wbc-island-chevron { transform: rotate(180deg); }
-.wbc-island-stop {
-  position: relative; display: grid; place-items: center; flex-shrink: 0; width: 34px; height: 34px; margin-left: 2px; border-radius: 50%;
-  background: var(--wbc-label); color: var(--wbc-surface);
+.wbc-run.is-expanded .wbc-run-main { flex: 1; }
+.wbc-run-main:disabled { opacity: 1; cursor: default; }
+.wbc-run-main:not(:disabled):hover { background: var(--wbc-fill); }
+.wbc-run-glyph { display: grid; place-items: center; flex-shrink: 0; width: 22px; color: var(--wbc-label-2); }
+.wbc-run.is-finished .wbc-run-glyph { color: var(--wbc-green); }
+.wbc-run.is-waiting .wbc-run-glyph { color: var(--wbc-orange); }
+.wbc-run-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wbc-run.is-composing .wbc-run-text, .wbc-run.is-finished .wbc-run-text { color: var(--wbc-label-2); }
+.wbc-run-count, .wbc-run-time {
+  flex-shrink: 0; font-size: 12.5px; font-weight: 500; color: var(--wbc-label-2); font-variant-numeric: tabular-nums;
 }
-.wbc-island-stop::before { content: ""; position: absolute; inset: -5px; }
-.wbc-island-stop:active { transform: scale(.86); transition-duration: 90ms; }
-.wbc-island-progress { height: 3px; margin: 0 14px 6px; border-radius: 3px; background: var(--wbc-fill); overflow: hidden; }
-.wbc-island-progress span { display: block; height: 100%; border-radius: inherit; background: var(--wbc-tint); transform-origin: left center; }
-.wbc-island-todos { padding: 0 8px; }
-.wbc-island-todos .wbc-todos { padding: 4px 0 10px; max-height: 46vh; overflow-y: auto; }
+.wbc-run-count { padding: 2px 7px; border-radius: 999px; background: var(--wbc-fill); color: var(--wbc-label); font-weight: 600; }
+/* The steps unfold upwards, so the chevron points up while they are folded away and down once they are open. */
+.wbc-run-chevron { flex-shrink: 0; color: var(--wbc-label-3); transform: rotate(180deg); transition: transform 300ms var(--wbc-ease-out); }
+.wbc-run-main[aria-expanded="true"] .wbc-run-chevron { transform: rotate(0deg); }
+.wbc-run-stop {
+  position: relative; display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; margin: 0 1px 0 2px;
+  border-radius: 50%; background: var(--wbc-label); color: var(--wbc-surface);
+}
+.wbc-run-stop::before { content: ""; position: absolute; inset: -6px; }
+.wbc-run-stop:active { transform: scale(.86); transition-duration: 90ms; }
+.wbc-run-progress { height: 3px; margin: 0 14px 5px; border-radius: 3px; background: var(--wbc-fill); overflow: hidden; }
+.wbc-run-progress span { display: block; height: 100%; border-radius: inherit; background: var(--wbc-tint); transform-origin: left center; }
+.wbc-run-todos { padding: 0 8px; }
+.wbc-run-todos .wbc-todos { padding: 8px 0 4px; max-height: 40vh; overflow-y: auto; overscroll-behavior: contain; }
+/* The model composing: the three dots that used to stand alone at the transcript's end, now the row's glyph. */
+.wbc-run-dots { display: inline-flex; align-items: center; gap: 3px; height: 16px; }
+.wbc-run-dots i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: wbc-typing 1.3s ease-in-out infinite; }
+.wbc-run-dots i:nth-child(2) { animation-delay: .16s; }
+.wbc-run-dots i:nth-child(3) { animation-delay: .32s; }
+@keyframes wbc-typing { 0%, 60%, 100% { transform: translateY(0); opacity: .4; } 30% { transform: translateY(-3px); opacity: 1; } }
 
-/* Checklist rows (island and checklist cards). */
+/* Checklist rows (run status and checklist cards). */
 .wbc-todos { display: flex; flex-direction: column; }
 .wbc-todo { display: flex; align-items: flex-start; gap: 10px; padding: 7px 8px; font-size: 14px; line-height: 1.45; }
 .wbc-todo-mark {
@@ -386,8 +430,6 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
   scrollbar-width: thin; scrollbar-color: var(--wbc-fill-pressed) transparent;
   -webkit-overflow-scrolling: touch;
 }
-/* Room for the run island, so the first message is never hidden under it when scrolled to the top. */
-.wbc-scroll.is-agent { padding-top: calc(var(--wbc-header-h) + 72px); }
 .wbc-scroll::-webkit-scrollbar { width: 10px; }
 .wbc-scroll::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 10px; background: var(--wbc-fill-pressed) padding-box; }
 .wbc-thread { display: flex; flex-direction: column; gap: 20px; width: 100%; max-width: var(--wbc-measure); min-height: 100%; margin: 0 auto; }
@@ -626,15 +668,7 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
 .wbc-legacy .font-serif { font-family: inherit; }
 .wbc-legacy :where(.rounded-lg, .rounded-md, .rounded-xl) { border-radius: 14px; }
 
-/* Typing dots, history pager, skeleton, empty state. */
-.wbc-typing {
-  display: inline-flex; align-self: flex-start; align-items: center; gap: 5px; padding: 12px 16px; border-radius: 20px 20px 20px 6px;
-  background: var(--wbc-surface-2);
-}
-.wbc-typing span { width: 7px; height: 7px; border-radius: 50%; background: var(--wbc-label-3); animation: wbc-typing 1.3s ease-in-out infinite; }
-.wbc-typing span:nth-child(2) { animation-delay: .16s; }
-.wbc-typing span:nth-child(3) { animation-delay: .32s; }
-@keyframes wbc-typing { 0%, 60%, 100% { transform: translateY(0); opacity: .4; } 30% { transform: translateY(-4px); opacity: 1; } }
+/* History pager, skeleton, empty state. */
 .wbc-history { display: flex; justify-content: center; }
 .wbc-history-button, .wbc-history-loading {
   display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 14px; border-radius: 999px;
@@ -900,7 +934,7 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
   .wbc-sheet-actions:not(.is-two) .wbc-sheet-action + .wbc-sheet-action { border-left: 0; border-top: .5px solid var(--wbc-separator); }
   .wbc-sheet-actions:not(.is-two) .wbc-sheet-action.is-primary { order: -1; }
   .wbc-chip { padding: 0 9px; }
-  .wbc-island-time { display: none; }
+  .wbc-run-main { gap: 8px; padding: 0 10px 0 8px; }
 }
 /* ---------- Reduced motion: keep state changes, drop travel ---------- */
 @media (prefers-reduced-motion: reduce) {

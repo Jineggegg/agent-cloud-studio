@@ -2,7 +2,7 @@ import type { ChatMessage, WorkbenchTodoItem, WorkbenchToolSummary } from '@/sha
 
 /*
  * Reads tool calls the way the workbench chat column shows them: one verb, one target, one status. Shared by the
- * tool cards, the run island and the permission sheet, which must describe the same call in the same words.
+ * tool cards, the run status row and the permission sheet, which must describe the same call in the same words.
  */
 
 // Exact denial texts from the Claude runtime adapter; other providers cannot signal a denial reliably.
