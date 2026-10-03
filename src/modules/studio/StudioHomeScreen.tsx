@@ -9,7 +9,7 @@ import { m } from 'motion/react';
 
 import { IconAdjustmentsHorizontal, IconCheck, IconLayoutGrid, IconLogout, IconMoon, IconPlus, IconRefresh, IconSettings, IconSun } from '@/modules/studio/icons/tabler';
 import { useTheme } from '@/shared/context/ThemeContext';
-import { STUDIO_AJ_EXIT_TILE_ID, STUDIO_MOTION_OUT_MS } from '@/shared/constants';
+import { STUDIO_AJ_EXIT_TILE_ID, STUDIO_HOME_ROTATION_LATE_REMEASURE_MS, STUDIO_HOME_ROTATION_REMEASURE_MS, STUDIO_MOTION_OUT_MS } from '@/shared/constants';
 import type { StudioHomeTile, StudioSnr } from '@/shared/types';
 import { StudioAjExitSheet } from '@/modules/studio/StudioAjExitSheet';
 import { StudioFluidBackground } from '@/modules/studio/StudioFluidBackground';
@@ -68,6 +68,9 @@ const MIN_MEASURABLE_HEIGHT_PX = 160;
 const VIEWPORT_SETTLE_MS = 700;
 // After the page becomes visible again, iOS may still be settling the viewport; it is measured again after this.
 const SETTLE_REMEASURE_MS = 400;
+// A rotation (or split view, or a resized window) changes the pages' width: the split that follows is a new layout, not a
+// passing shrink, so for this long after one every measurement applies at once, however the size settles.
+const REFLOW_SETTLE_MS = 1500;
 
 // How many icons fit on the first page (beside the widgets) and on each later one.
 type Capacity = { first: number; page: number };
@@ -760,14 +763,24 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
   // switch) moves nothing: fewer icons per page counts only once the size has held for VIEWPORT_SETTLE_MS, so the
   // icons stay mounted where they are and nothing flashes when it comes back. A change that does land (a real resize,
   // larger icons) glides every icon from where it was to its new place, across pages too.
+  // A rotation is such a change even when it leaves fewer icons per page: a new width (or an orientation change, see
+  // below) opens a REFLOW_SETTLE_MS window in which every measurement applies at once. Holding back the shrink there
+  // would leave the page in view carrying the old orientation's icons, overflowing and scrolling up and down.
   const measuredStyle = useRef(`${layout.large}|${layout.labels}`);
   const shrinkTimer = useRef<number | undefined>(undefined);
+  // The pages' width at the last measurement, and until when (Date.now) a change of layout is still settling.
+  const measuredWidth = useRef<number | null>(null);
+  const reflowUntil = useRef(0);
   const fitPages = (confirmed: boolean) => {
     const home = homeRef.current;
     const viewport = viewportRef.current;
     window.clearTimeout(shrinkTimer.current);
     if (!home || !viewport || dragging.current) return;
     if (document.visibilityState === 'hidden' || viewport.clientHeight < MIN_MEASURABLE_HEIGHT_PX) return;
+    const width = viewport.clientWidth;
+    if (measuredWidth.current !== null && width !== measuredWidth.current) reflowUntil.current = Date.now() + REFLOW_SETTLE_MS;
+    measuredWidth.current = width;
+    const reflowing = Date.now() < reflowUntil.current;
     const next = measureCapacity(home, viewport, widgetsRef.current);
     const current = capacity;
     if ((next === null && current !== null && entries.length > 0) || sameCapacity(current, next)) return;
@@ -775,7 +788,7 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
     const restyled = style !== measuredStyle.current;
     measuredStyle.current = style;
     const shrinks = current !== null && next !== null && (next.first < current.first || next.page < current.page);
-    if (shrinks && !restyled && !confirmed) {
+    if (shrinks && !restyled && !confirmed && !reflowing) {
       shrinkTimer.current = window.setTimeout(() => fitPagesRef.current(true), VIEWPORT_SETTLE_MS);
       return;
     }
@@ -789,29 +802,60 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
   useEffect(() => () => window.clearTimeout(shrinkTimer.current), []);
   useEffect(() => {
     const viewport = viewportRef.current;
-    if (!viewport || typeof ResizeObserver !== 'function') return;
+    if (!viewport) return;
+    // Without ResizeObserver (old browsers, jsdom) the window's resizes stand in for the pages' and widgets'.
+    if (typeof ResizeObserver !== 'function') {
+      const onResize = () => countResize();
+      window.addEventListener('resize', onResize);
+      return () => window.removeEventListener('resize', onResize);
+    }
     const observer = new ResizeObserver(() => countResize());
     observer.observe(viewport);
     if (widgetsRef.current) observer.observe(widgetsRef.current);
     return () => observer.disconnect();
   }, [viewportRef]);
   // Coming back to the page (from Shortcuts, another app, a locked screen) re-measures once the viewport has settled.
+  // A rotation does too, and opens the reflow window first: iOS reports the new orientation before (and while) the
+  // layout follows, so the pages are measured again once it has, and once more after the rotation animation ends. The
+  // visual viewport's width changing (a rotation where `orientationchange` is missing) counts as a rotation.
   useEffect(() => {
     let timer: number | undefined;
+    let rotationTimers: number[] = [];
     const settle = () => {
       if (document.visibilityState === 'hidden') return;
       requestAnimationFrame(() => requestAnimationFrame(() => countResize()));
       window.clearTimeout(timer);
       timer = window.setTimeout(() => countResize(), SETTLE_REMEASURE_MS);
     };
+    const rotate = () => {
+      reflowUntil.current = Date.now() + REFLOW_SETTLE_MS;
+      if (document.visibilityState === 'hidden') return;
+      requestAnimationFrame(() => requestAnimationFrame(() => countResize()));
+      rotationTimers.forEach(pending => window.clearTimeout(pending));
+      rotationTimers = [STUDIO_HOME_ROTATION_REMEASURE_MS, STUDIO_HOME_ROTATION_LATE_REMEASURE_MS]
+        .map(delay => window.setTimeout(() => countResize(), delay));
+    };
+    const visual = window.visualViewport;
+    let visualWidth = visual?.width;
+    const onVisualResize = () => {
+      if (!visual || visual.width === visualWidth) return;
+      visualWidth = visual.width;
+      rotate();
+    };
+    const orientation = typeof screen !== 'undefined' ? screen.orientation : undefined;
     document.addEventListener('visibilitychange', settle);
     window.addEventListener('pageshow', settle);
-    window.addEventListener('orientationchange', settle);
+    window.addEventListener('orientationchange', rotate);
+    orientation?.addEventListener?.('change', rotate);
+    visual?.addEventListener('resize', onVisualResize);
     return () => {
       window.clearTimeout(timer);
+      rotationTimers.forEach(pending => window.clearTimeout(pending));
       document.removeEventListener('visibilitychange', settle);
       window.removeEventListener('pageshow', settle);
-      window.removeEventListener('orientationchange', settle);
+      window.removeEventListener('orientationchange', rotate);
+      orientation?.removeEventListener?.('change', rotate);
+      visual?.removeEventListener('resize', onVisualResize);
     };
   }, []);
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FocusEvent, MouseEvent, PointerEvent } from 'react';
 
+import { STUDIO_HOME_ROTATION_LATE_REMEASURE_MS, STUDIO_HOME_ROTATION_REMEASURE_MS } from '@/shared/constants';
 import { PAGING_SPRING, applyRubberBand, springAtRest, springStep, targetPage } from '@/modules/studio/utils/homePaging';
 
 // Movement before a touch commits to an axis; until then it may still be a tap, a long press or a vertical scroll.
@@ -292,26 +293,45 @@ export function useHomePager({ pageCount, keyboard, onSettle }: {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [goTo, keyboard, light]);
 
-  // A new width (rotation, split view, a resized window) keeps the same page in view.
+  // A new width (rotation, split view, a resized window) keeps the same page in view. A rotation is also checked again
+  // once it has settled (iOS reports it before the layout follows): by then the track must sit exactly on the current
+  // page at the new width, even if a turn was under way or the width was read mid-rotation.
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
     const measure = () => {
       const next = viewport.clientWidth;
-      if (next === widthRef.current) return;
+      if (next <= 0) return;
+      const resting = frame.current === null && !drag.current;
+      const offPage = Math.abs(motion.current.x + pageRef.current * next) > 0.5;
+      if (next === widthRef.current && !(resting && offPage)) return;
       widthRef.current = next;
       stop();
       drag.current = null;
       motion.current = { x: -pageRef.current * next, velocity: 0 };
       render();
     };
-    if (typeof ResizeObserver === 'function') {
-      const observer = new ResizeObserver(measure);
-      observer.observe(viewport);
-      return () => observer.disconnect();
-    }
-    window.addEventListener('resize', measure);
-    return () => window.removeEventListener('resize', measure);
+    const timers: number[] = [];
+    const afterRotation = () => {
+      timers.splice(0).forEach(timer => window.clearTimeout(timer));
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => requestAnimationFrame(measure));
+      timers.push(window.setTimeout(measure, STUDIO_HOME_ROTATION_REMEASURE_MS), window.setTimeout(measure, STUDIO_HOME_ROTATION_LATE_REMEASURE_MS));
+    };
+    const orientation = typeof screen !== 'undefined' ? screen.orientation : undefined;
+    window.addEventListener('orientationchange', afterRotation);
+    orientation?.addEventListener?.('change', afterRotation);
+    window.visualViewport?.addEventListener('resize', measure);
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
+    if (observer) observer.observe(viewport);
+    else window.addEventListener('resize', measure);
+    return () => {
+      timers.forEach(timer => window.clearTimeout(timer));
+      window.removeEventListener('orientationchange', afterRotation);
+      orientation?.removeEventListener?.('change', afterRotation);
+      window.visualViewport?.removeEventListener('resize', measure);
+      observer?.disconnect();
+      window.removeEventListener('resize', measure);
+    };
   }, [render, stop]);
 
   useLayoutEffect(() => {

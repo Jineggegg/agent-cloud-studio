@@ -21,11 +21,14 @@ const PAGE_HEIGHT = 230;
 const CELL = { width: 250, height: 100 };
 // The pager's current height: a test shrinks it the way Spotlight or a keyboard briefly shrinks the web app.
 let pagerHeight = PAGE_HEIGHT;
+// The pager's current width: a test turns the iPad to portrait and back.
+let pagerWidth = PAGE_WIDTH;
 
 beforeAll(installPointerEvent);
 beforeEach(() => {
   localStorage.clear();
   pagerHeight = PAGE_HEIGHT;
+  pagerWidth = PAGE_WIDTH;
   vi.useFakeTimers();
   layOutPages();
 });
@@ -53,7 +56,7 @@ function trackOffset() {
  */
 function layOutPages() {
   vi.spyOn(Element.prototype, 'clientWidth', 'get').mockImplementation(function (this: Element) {
-    return this.classList.contains('home-pager') || this.classList.contains('home-grid') ? PAGE_WIDTH : 0;
+    return this.classList.contains('home-pager') || this.classList.contains('home-grid') ? pagerWidth : 0;
   });
   vi.spyOn(Element.prototype, 'clientHeight', 'get').mockImplementation(function (this: Element) {
     return this.classList.contains('home-pager') ? pagerHeight : 0;
@@ -134,6 +137,66 @@ test('a screen shortened only for a moment (a search, a keyboard) moves no icon;
   act(() => { vi.advanceTimersByTime(450); });
   act(() => { vi.advanceTimersByTime(1000); });
   expect(first()).toEqual(['App 1', 'App 2', 'App 3', 'App 4']);
+});
+
+// Turns the iPad: the window resizes, then iOS reports the new orientation (the order iOS uses varies; both arrive).
+function rotateTo(width: number, height: number) {
+  pagerWidth = width;
+  pagerHeight = height;
+  act(() => { window.dispatchEvent(new Event('resize')); });
+  act(() => { window.dispatchEvent(new Event('orientationchange')); });
+}
+const appsOnPage = (index: number) => within(screen.getByRole('navigation', { name: index === 0 ? '应用' : `应用（第 ${index + 1} 页）` }))
+  .getAllByRole('button').map(button => button.getAttribute('aria-label')).filter(label => /^App \d+$|^新建项目$/.test(label ?? ''));
+
+test('turned to portrait and back to landscape, the pages fit again at once and the track rests on the same page', () => {
+  renderHome(20);
+  // Landscape: 4 columns × 2 rows a page.
+  expect([0, 1, 2].map(index => appsOnPage(index).length)).toEqual([8, 8, 5]);
+  fireEvent.click(dots().getByRole('button', { name: '第 2 页' }));
+  settle();
+  expect(currentPage()).toBe(2);
+  expect(trackOffset()).toBe(-PAGE_WIDTH);
+
+  // Portrait: narrower and taller, 3 columns × 4 rows. The track follows the new width at once.
+  rotateTo(750, 450);
+  expect(trackOffset()).toBe(-750);
+  act(() => { vi.advanceTimersByTime(450); });
+  expect([0, 1].map(index => appsOnPage(index).length)).toEqual([12, 9]);
+  expect(dots().getAllByRole('button')).toHaveLength(2);
+  expect(currentPage()).toBe(2);
+  expect(trackOffset()).toBe(-750);
+  settle();
+
+  // Back to landscape: fewer icons a page, applied straight away, not held back like a passing shrink. Had it waited,
+  // the page in view would carry portrait's 9 icons in room for 8 and scroll up and down instead of paging.
+  rotateTo(PAGE_WIDTH, PAGE_HEIGHT);
+  act(() => { vi.advanceTimersByTime(50); });
+  expect([0, 1, 2].map(index => appsOnPage(index).length)).toEqual([8, 8, 5]);
+  expect(currentPage()).toBe(2);
+  expect(trackOffset()).toBe(-PAGE_WIDTH);
+  // And it stays that way once the rotation has fully settled.
+  settle();
+  expect([0, 1, 2].map(index => appsOnPage(index).length)).toEqual([8, 8, 5]);
+  expect(trackOffset()).toBe(-PAGE_WIDTH);
+});
+
+test('an orientation change reported before the layout follows still re-fits the pages once it has', () => {
+  renderHome(20);
+  fireEvent.click(dots().getByRole('button', { name: '第 2 页' }));
+  settle();
+  rotateTo(750, 450);
+  settle();
+  expect([0, 1].map(index => appsOnPage(index).length)).toEqual([12, 9]);
+
+  // iOS: the orientation event first, the new size only later (no resize event for the pages to hear).
+  act(() => { window.dispatchEvent(new Event('orientationchange')); });
+  pagerWidth = PAGE_WIDTH;
+  pagerHeight = PAGE_HEIGHT;
+  act(() => { vi.advanceTimersByTime(450); });
+  expect([0, 1, 2].map(index => appsOnPage(index).length)).toEqual([8, 8, 5]);
+  expect(currentPage()).toBe(2);
+  expect(trackOffset()).toBe(-PAGE_WIDTH);
 });
 
 test('leaving edit mode winds down: the badges and the edit bar play out before they unmount, the dots go home', () => {
