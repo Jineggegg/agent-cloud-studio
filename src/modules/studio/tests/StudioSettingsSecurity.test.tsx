@@ -35,7 +35,7 @@ const OVERVIEW = {
   events: EVENTS,
   importantEvents: [EVENTS[0], { id: 4, at: '2026-10-02T09:40:00Z', type: 'lockout-cleared', door: 'tailnet', client: '100.101.*.*', detail: 'Tailscale · Tailscale 密码登录' }],
   passwordLocks: { public: { locked: true, lockedUntil: '2026-10-02T09:45:00Z' }, tailnet: UNLOCKED, session: UNLOCKED },
-  signIns: [{ id: 5, at: '2026-10-02T09:50:00Z', type: 'tailscale-signin', door: 'tailnet', client: '100.101.*.*', detail: 'ow***@example.com' }],
+  signIns: [{ id: 5, at: '2026-10-02T09:50:00Z', type: 'tailscale-signin', door: 'tailnet', client: '100.101.*.*', detail: 'ow***@example.com', repeats: 3 }],
 };
 
 beforeEach(() => {
@@ -58,6 +58,7 @@ test('shows each door\'s lock, the passkeys by domain and the events in plain wo
   expect(screen.getByText('重要事件')).toBeTruthy();
   expect(screen.getByText('最近登录')).toBeTruthy();
   expect(screen.getByText('Tailscale 登录')).toBeTruthy();
+  expect(screen.getByText(/ow\*\*\*@example\.com · 3 次/)).toBeTruthy();
   expect(screen.getByText(/由 Tailscale 登录解除 · Tailscale 密码登录/)).toBeTruthy();
   expect(screen.getByText('studio.ajarche.com')).toBeTruthy();
   expect(screen.getAllByText('密码登录已锁定').length).toBe(2);

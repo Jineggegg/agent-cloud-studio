@@ -5,7 +5,7 @@
 //   node scripts/clear-login-lock.mjs <username>   # clears one typed username only (every door)
 //
 // Locks are kept per door ("public:<name>", "tailnet:<name>", "session:<name>"); both forms clear
-// all three.
+// all three, and the daily count of wrong step-up passwords too.
 //
 // It needs no running server and no password: whoever can run it already controls this machine.
 // The database is DATABASE_PATH (from the environment, else from the app's .env), else
@@ -56,9 +56,20 @@ if (!hasTable) {
 }
 
 const removed = username
-  ? db.prepare('DELETE FROM auth_login_lockouts WHERE account_key IN (?, ?, ?)')
-    .run(`public:${username}`, `tailnet:${username}`, `session:${username}`).changes
+  // Per-session step-up rows are "session:<name>#<session id>"; substr keeps the match exact.
+  ? db.prepare(`DELETE FROM auth_login_lockouts WHERE account_key IN (?, ?, ?)
+      OR substr(account_key, 1, length(?)) = ?`)
+    .run(`public:${username}`, `tailnet:${username}`, `session:${username}`, `session:${username}#`, `session:${username}#`).changes
   : db.prepare('DELETE FROM auth_login_lockouts').run().changes;
+// The per-user daily cap on step-up passwords (sign-ins never reset it; this script and
+// "退出所有设备" do).
+const hasStepUp = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auth_step_up_failures'").get();
+if (hasStepUp) {
+  const cleared = username
+    ? db.prepare('DELETE FROM auth_step_up_failures WHERE username = ?').run(username).changes
+    : db.prepare('DELETE FROM auth_step_up_failures').run().changes;
+  if (cleared > 0) console.log(`Step-up password count reset (${cleared} record${cleared === 1 ? '' : 's'}).`);
+}
 const eventColumns = db.prepare("SELECT name FROM pragma_table_info('auth_security_events')").all().map((column) => column.name);
 if (eventColumns.length > 0 && removed > 0) {
   // Kept with the important events, so a flood of failed sign-ins cannot push it out of the log.

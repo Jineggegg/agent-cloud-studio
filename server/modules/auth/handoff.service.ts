@@ -37,6 +37,8 @@ type HandoffGrant = {
    * present when the source session had one and the auth service allowed it to move.
    */
   tailscaleSession?: { login: string; node: string };
+  /** The source session's id, which the redeemed token keeps (one session, one step-up budget). */
+  sessionId?: string;
 };
 
 type HandoffStoreOptions = {

@@ -2124,7 +2124,11 @@ export type StudioSignInPasskey = { id: string; rpId: string; label: string | nu
  * One entry of the server's bounded security log: failed and successful sign-ins, password locks,
  * passkey changes and "退出所有设备". `client` is already masked ("198.51.*.*"); `detail` is plain text.
  */
-export type StudioSecurityEvent = { id: number; at: string; type: string; door: string; client: string; detail: string | null };
+export type StudioSecurityEvent = {
+  id: number; at: string; type: string; door: string; client: string; detail: string | null;
+  // How many events this row stands for: repeated sign-ins of one session are folded together.
+  repeats?: number;
+};
 /** One password lock: whether it holds now and until when (ISO-8601). */
 export type StudioPasswordLock = { locked: boolean; lockedUntil: string | null };
 /** GET /api/auth/security: what Settings → 安全 shows for the signed-in account. */

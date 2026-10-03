@@ -50,7 +50,8 @@ function createHarness(options: { env?: Record<string, string | undefined> } = {
     hashPassword: async () => 'hash',
     comparePassword: async (password) => password === PASSWORD,
     generateToken: (user, session) => {
-      issuedFor.push({ user, session });
+      // The session id is random per sign-in; the tests compare who and which claim.
+      issuedFor.push({ user: { id: user.id, username: user.username }, session });
       return `token-${issuedFor.length}`;
     },
     tailscaleSignIn: () => parseTailscaleSignInConfig(env),

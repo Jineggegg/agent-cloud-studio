@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import type { StudioRequestClient } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
-import { createAccountLockout } from '../account-lockout.service.js';
+import { createAccountLockout, createStepUpFailureCap } from '../account-lockout.service.js';
 import { createAccountSecurityService } from '../account-security.service.js';
 import { createAuthSecurityStore } from '../auth-security.store.js';
 import { createAuthService } from '../auth.service.js';
@@ -80,6 +80,7 @@ function createHarness(limits: { maxUsedChallenges?: number } = {}) {
   });
   const lockout = createAccountLockout({ store: store.lockouts, isAccount: (username) => username === OWNER.username, now: () => clock.now });
   const events = createSecurityEventLog({ store: store.events, now: () => clock.now });
+  const stepUpCap = createStepUpFailureCap({ store: store.stepUpFailures, now: () => clock.now });
   const issued: unknown[] = [];
   const service = createAuthService({
     users: {
@@ -103,6 +104,7 @@ function createHarness(limits: { maxUsedChallenges?: number } = {}) {
     logInfo: (message) => logs.push(message),
     now: () => clock.now,
     accountLockout: lockout,
+    stepUpFailureCap: stepUpCap,
     securityEvents: events,
     passkeys,
     findUserById: (userId) => (userId === OWNER.id ? OWNER : undefined),
@@ -113,6 +115,7 @@ function createHarness(limits: { maxUsedChallenges?: number } = {}) {
     passkeys,
     events,
     lockout,
+    stepUpCap,
     sessionVersions: store.sessionVersions,
     onSessionsRevoked: (userId) => {
       revoked.push(userId);
@@ -162,7 +165,9 @@ test('a verified assertion signs in, stores the new counter and is checked with 
   const { start, finish, store, calls, issued } = createHarness();
   const session = await finish(PUBLIC_ORIGIN, await start(PUBLIC_ORIGIN), 'cred-public');
   assert.equal(session.token, 'passkey-token');
-  assert.deepEqual(issued, [OWNER]);
+  assert.deepEqual((issued as { id: number; username: string; sessionId?: string }[]).map(({ id, username }) => ({ id, username })), [OWNER]);
+  // A new sign-in starts a new session.
+  assert.ok((issued[0] as { sessionId?: string }).sessionId);
   const verifyOptions = calls.verifyAuthentication[0] as { requireUserVerification: boolean; expectedOrigin: string; expectedRPID: string; credential: { counter: number } };
   assert.equal(verifyOptions.requireUserVerification, true);
   assert.equal(verifyOptions.expectedOrigin, PUBLIC_ORIGIN);
@@ -342,13 +347,16 @@ test('the event log keeps important events apart from a flood of noise', () => {
   assert.deepEqual(events.recentImportant(5).map((event) => event.detail), ['studio.ajarche.com']);
 });
 
-test('sign out everywhere also forgets every session\'s step-up lock', async () => {
-  const { service, security, lockout } = createHarness();
+test('sign out everywhere also forgets every session\'s step-up lock and the daily count', async () => {
+  const { service, security, lockout, store } = createHarness();
   const stolen = Object.defineProperty({ ...OWNER }, 'sessionId', { value: 'stolen-session' });
   for (let attempt = 0; attempt < 5; attempt += 1) {
     assert.equal(await codeOf(service.verifyStepUpPassword(stolen, 'guess', CLIENT)), '403 AUTH_STEP_UP_FAILED');
   }
   assert.equal(lockout.status(OWNER.username, 'session', 'stolen-session').locked, true);
+  assert.equal(store.stepUpFailures.countSince(OWNER.username, 0).count, 5);
   security.revokeAllSessions(OWNER, CLIENT);
   assert.equal(lockout.status(OWNER.username, 'session', 'stolen-session').locked, false);
+  // The per-user daily count is reset only here (and by the local script).
+  assert.equal(store.stepUpFailures.countSince(OWNER.username, 0).count, 0);
 });

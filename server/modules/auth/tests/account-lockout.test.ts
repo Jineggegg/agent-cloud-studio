@@ -9,7 +9,7 @@ import Database from 'better-sqlite3';
 import type { StudioRequestClient } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
-import { createAccountLockout, lockDurationMs } from '../account-lockout.service.js';
+import { createAccountLockout, createStepUpFailureCap, lockDurationMs } from '../account-lockout.service.js';
 import { createAuthSecurityStore } from '../auth-security.store.js';
 import { createAuthService } from '../auth.service.js';
 import { createHandoffCodeStore } from '../handoff.service.js';
@@ -35,13 +35,15 @@ function createLockout(database = new Database(':memory:'), clock = { now: 1_000
     now: () => clock.now,
     maxTrackedUnknown: 8,
   });
-  return { store, lockout, clock };
+  const stepUpCap = createStepUpFailureCap({ store: store.stepUpFailures, now: () => clock.now });
+  return { store, lockout, stepUpCap, clock };
 }
 
 // The real lockout and event log on an in-memory database behind the real auth service; only
 // bcrypt, users and tokens are faked.
 function createHarness(database = new Database(':memory:'), clock = { now: 1_000_000 }) {
-  const { store, lockout } = createLockout(database, clock);
+  const { store, lockout, stepUpCap } = createLockout(database, clock);
+  const issuedUsers: { sessionId?: string }[] = [];
   const events = createSecurityEventLog({ store: store.events, now: () => clock.now });
   const compared: string[] = [];
   const env = { STUDIO_TAILSCALE_LOGINS: 'owner@example.com', STUDIO_TAILNET_ORIGIN: TAILNET_ORIGIN, STUDIO_PUBLIC_ORIGIN: PUBLIC_ORIGIN };
@@ -60,17 +62,21 @@ function createHarness(database = new Database(':memory:'), clock = { now: 1_000
       compared.push(hash);
       return hash === 'owner-hash' && password === PASSWORD;
     },
-    generateToken: () => 'token',
+    generateToken: (user) => {
+      issuedUsers.push({ sessionId: user.sessionId });
+      return 'token';
+    },
     tailscaleSignIn: () => parseTailscaleSignInConfig(env),
     handoffCodes: createHandoffCodeStore({ now: () => clock.now }),
     ingressOrigins: () => ({ public: PUBLIC_ORIGIN, tailnet: TAILNET_ORIGIN, invalid: [] }),
     logInfo: () => undefined,
     now: () => clock.now,
     accountLockout: lockout,
+    stepUpFailureCap: stepUpCap,
     securityEvents: events,
     timingHash: TIMING_HASH,
   });
-  return { service, lockout, events, store, clock, compared };
+  return { service, lockout, stepUpCap, events, store, clock, compared, issuedUsers };
 }
 
 async function refusal(promise: Promise<unknown>) {
@@ -300,31 +306,37 @@ test('a database created by the first security build opens: columns are added an
   const insert = database.prepare('INSERT INTO auth_login_lockouts VALUES (?, ?, ?, ?, ?)');
   insert.run('andrew', 0, 2, 1_000_000 + 30 * MINUTE, 1_000_000);
   insert.run('mallory', 3, 0, 0, 1_000_000);
-  // A name that already has a scoped row keeps the scoped one.
+  // Every legacy row is one typed name, even one that looks scoped, in any case.
   insert.run('public:eve', 1, 0, 0, 1_000_000);
   insert.run('eve', 4, 0, 0, 1_000_000);
+  insert.run('PUBLIC:bob', 2, 0, 0, 1_000_000);
 
   const { lockout, store } = createLockout(database);
   assert.deepEqual(lockout.status('andrew', 'public'), { locked: true, lockedUntil: 1_000_000 + 30 * MINUTE, failures: 0, level: 2 });
   assert.equal(lockout.status('mallory', 'public').failures, 3);
-  assert.equal(lockout.status('eve', 'public').failures, 1);
+  assert.equal(lockout.status('eve', 'public').failures, 4);
+  assert.equal(lockout.status('public:eve', 'public').failures, 1);
+  assert.equal(lockout.status('PUBLIC:bob', 'public').failures, 2);
   assert.equal(store.lockouts.get('public:andrew')?.is_account, 1);
   assert.equal(store.lockouts.get('public:mallory')?.is_account, 0);
-  assert.equal(store.lockouts.countUnknown(), 2);
+  assert.equal(store.lockouts.countUnknown(), 4);
   const keys = (database.prepare('SELECT account_key FROM auth_login_lockouts ORDER BY account_key').all() as { account_key: string }[]).map((row) => row.account_key);
-  assert.deepEqual(keys, ['public:andrew', 'public:eve', 'public:mallory']);
+  assert.deepEqual(keys, ['public:PUBLIC:bob', 'public:andrew', 'public:eve', 'public:mallory', 'public:public:eve']);
   // Events: the old row counts as an ordinary event, and new ones are recorded with classes.
   const events = createSecurityEventLog({ store: store.events });
   events.record({ type: 'passkey-added', detail: 'new' });
   assert.deepEqual(events.recentImportant(5).map((event) => event.detail), ['new']);
   assert.equal(events.recent(5).length, 2);
-  // Opening it again changes nothing.
+  // Opening it again changes nothing: the table now has is_account, so nothing is re-scoped.
+  database.prepare('INSERT INTO auth_login_lockouts (account_key, failures, level, locked_until, updated_at) VALUES (?, 0, 0, 0, 1)').run('legacy-looking');
   createLockout(database);
-  assert.equal(store.lockouts.countUnknown(), 2);
+  assert.equal(store.lockouts.countUnknown(), 5);
+  assert.ok(store.lockouts.get('legacy-looking'));
+  assert.ok(store.lockouts.get('public:public:eve'));
 });
 
-test('a stolen token can only lock its own step-ups; a sign-in or revoke-all forgets those locks', async () => {
-  const { service, lockout } = createHarness();
+test('a stolen token can only lock its own step-ups, and a sign-in leaves other sessions\' locks alone', async () => {
+  const { service, lockout, store } = createHarness();
   const stolen = Object.defineProperty({ ...OWNER }, 'sessionId', { value: 'stolen-session' });
   const owners = Object.defineProperty({ ...OWNER }, 'sessionId', { value: 'owner-session' });
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -335,10 +347,65 @@ test('a stolen token can only lock its own step-ups; a sign-in or revoke-all for
   // The owner's own session is untouched.
   await service.verifyStepUpPassword(owners, PASSWORD, OWNER_DEVICE);
   assert.equal(lockout.status(OWNER.username, 'session', 'owner-session').locked, false);
-  // A sign-in that proves the owner forgets every session's step-up lock.
+  // The automatic Tailscale sign-in and a password sign-in clear nothing of other sessions.
   await service.login(OWNER.username, PASSWORD, OWNER_DEVICE);
-  assert.equal(lockout.status(OWNER.username, 'session', 'stolen-session').locked, false);
-  assert.equal(lockout.clearScope(OWNER.username, 'session'), 0);
+  const level = lockout.status(OWNER.username, 'session', 'stolen-session');
+  assert.equal(level.locked, true);
+  assert.equal(level.level, 1);
+  // Per-session rows are not account rows: they may be evicted, the per-user cap still holds.
+  assert.equal(store.lockouts.get('session:andrew#stolen-session')?.is_account, 0);
+});
+
+test('reproduction: minting sessions by self-handoff buys no extra step-up guesses', async () => {
+  const { service, events, issuedUsers, clock } = createHarness();
+  const claim = undefined;
+  let guesses = 0;
+  let refusedByCap = 0;
+  // 8 sessions x 5 guesses = 40 in one window; the per-user cap allows 20.
+  for (let session = 0; session < 8; session += 1) {
+    const user = Object.defineProperty({ ...OWNER }, 'sessionId', { value: `minted-${session}` });
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const result = await refusal(service.verifyStepUpPassword(user, 'guess', publicClient(session)));
+      if (result.code === 'AUTH_STEP_UP_FAILED') guesses += 1;
+      else if (result.code === 'AUTH_STEP_UP_RATE_LIMITED') refusedByCap += 1;
+    }
+  }
+  assert.equal(guesses, 20);
+  assert.equal(refusedByCap, 20);
+  // Even the right password is refused now, from any session, and a sign-in does not reset it.
+  await service.login(OWNER.username, PASSWORD, OWNER_DEVICE);
+  const fresh = Object.defineProperty({ ...OWNER }, 'sessionId', { value: 'fresh' });
+  assert.equal((await refusal(service.verifyStepUpPassword(fresh, PASSWORD, OWNER_DEVICE))).code, 'AUTH_STEP_UP_RATE_LIMITED');
+  clock.now += 24 * 60 * MINUTE + 1;
+  await service.verifyStepUpPassword(fresh, PASSWORD, OWNER_DEVICE);
+
+  // A handoff keeps the source session's id, so it is the same session for step-up budgets.
+  const source = Object.defineProperty({ ...OWNER }, 'sessionId', { value: 'source-session' });
+  issuedUsers.length = 0;
+  for (let round = 0; round < 50; round += 1) {
+    // A minute apart: inside the hour the rows fold over, outside the per-client redeem window.
+    clock.now += 61_000;
+    const ticket = await service.issueHandoff(source, claim, { target: 'public', password: undefined, client: OWNER_DEVICE });
+    service.redeemHandoff({ code: ticket.code, origin: PUBLIC_ORIGIN, client: publicClient(70) });
+  }
+  assert.ok(issuedUsers.every((user) => user.sessionId === 'source-session'));
+  // ...and those 50 self-handoffs take one sign-in row, not fifty.
+  const handoffs = events.recentSignIns(100).filter((event) => event.type === 'handoff-signin');
+  assert.equal(handoffs.length, 1);
+  assert.equal(handoffs[0].repeats, 50);
+});
+
+test('repeated sign-ins of one session collapse, other sessions\' sign-ins stay', async () => {
+  const { service, events } = createHarness();
+  await service.login(OWNER.username, PASSWORD, publicClient(1));
+  for (let round = 0; round < 3; round += 1) {
+    service.signInWithTailscale({
+      remoteAddress: '127.0.0.1', host: 'laptop-acgghbuq.tail6e45f0.ts.net:8443', origin: TAILNET_ORIGIN,
+      fetchSite: 'same-origin', forwardedFor: '100.101.102.103', userLogin: 'owner@example.com', funnelRequest: undefined,
+    });
+  }
+  const signIns = events.recentSignIns(10);
+  assert.deepEqual(signIns.map((event) => [event.type, event.repeats]), [['tailscale-signin', 3], ['login-succeeded', 1]]);
 });
 
 test('successful Tailscale and handoff sign-ins are recorded and kept apart from failed attempts', async () => {

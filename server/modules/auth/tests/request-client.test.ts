@@ -161,3 +161,20 @@ test('the cloudflared listener is never the Tailscale door, not for sign-in and 
   assert.equal(isTailnetDoorRequest(doorRequest(3002), config), true);
   assert.equal(isTailnetDoorRequest(doorRequest(3012), config), false);
 });
+
+test('Tailscale Funnel traffic is the public door, keyed by the client Serve reports', () => {
+  const funnel = (forwardedFor: string, extra: Record<string, string> = {}) => readRequestClient({
+    headers: { host: TAILNET_HOST, 'tailscale-funnel-request': '?1', 'x-forwarded-for': forwardedFor, ...extra },
+    socket: { remoteAddress: '127.0.0.1' },
+  }, ENV);
+  assert.deepEqual(funnel('198.51.100.30'), { door: 'cloudflare', address: '198.51.100.30' });
+  assert.deepEqual(funnel('2001:db8:1:2:3:4:5:6'), { door: 'cloudflare', address: '2001:db8:1:2::/64' });
+  // Never the direct door, whatever else the request says.
+  assert.equal(funnel('100.101.102.103').door, 'cloudflare');
+  assert.deepEqual(funnel('garbage'), { door: 'cloudflare', address: 'unknown' });
+  // The same with the cloudflared listener configured.
+  assert.equal(readRequestClient({
+    headers: { host: TAILNET_HOST, 'tailscale-funnel-request': '?1', 'x-forwarded-for': '198.51.100.30' },
+    socket: { remoteAddress: '127.0.0.1', localPort: 3002 },
+  }, { ...ENV, STUDIO_CLOUDFLARED_PORT: '3012', SERVER_PORT: '3002' }).door, 'cloudflare');
+});

@@ -1,7 +1,7 @@
 import type { StudioRequestClient, StudioSessionRevocation } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
-import type { createAccountLockout } from './account-lockout.service.js';
+import type { createAccountLockout, createStepUpFailureCap } from './account-lockout.service.js';
 import type { createAuthSecurityStore } from './auth-security.store.js';
 import type { createAuthService } from './auth.service.js';
 import type { createPasskeyCeremonies } from './passkey-signin.service.js';
@@ -18,6 +18,8 @@ type AccountSecurityDependencies = {
   >;
   events: ReturnType<typeof createSecurityEventLog>;
   lockout: Pick<ReturnType<typeof createAccountLockout>, 'status' | 'clearScope'>;
+  /** The per-user daily step-up cap, which only "退出所有设备" (or the local script) resets. */
+  stepUpCap: Pick<ReturnType<typeof createStepUpFailureCap>, 'reset'>;
   sessionVersions: ReturnType<typeof createAuthSecurityStore>['sessionVersions'];
   /**
    * Called after "sign out everywhere" bumped the user's token version: auth.module discards the
@@ -141,8 +143,9 @@ export function createAccountSecurityService(dependencies: AccountSecurityDepend
       const sessionUser = sessionUserOf(user);
       const version = dependencies.sessionVersions.bump(sessionUser.id);
       const revoked = dependencies.onSessionsRevoked(sessionUser.id);
-      // Every session is gone, so are their step-up locks.
+      // Every session is gone, so are their step-up locks and the user's daily step-up count.
       dependencies.lockout.clearScope(sessionUser.username, 'session');
+      dependencies.stepUpCap.reset(sessionUser.username);
       dependencies.events.record({ type: 'sessions-revoked', client, detail: describeRevocation(revoked) });
       if ((revoked.apiKeys ?? 0) > 0) {
         dependencies.events.record({ type: 'api-keys-revoked', client, detail: `${revoked.apiKeys} 个` });

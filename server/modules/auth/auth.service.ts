@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto';
+
 import type { StudioIngressId, StudioIngressOrigins, StudioRequestClient } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
-import type { createAccountLockout } from './account-lockout.service.js';
+import type { createAccountLockout, createStepUpFailureCap } from './account-lockout.service.js';
 import { createClientThrottle } from './client-throttle.service.js';
 import type { createHandoffCodeStore } from './handoff.service.js';
 import type { createPasskeyCeremonies } from './passkey-signin.service.js';
@@ -15,6 +17,11 @@ import {
 type AuthUser = {
   id: number | bigint;
   username: string;
+  /**
+   * The session id a new token carries (see auth.middleware): set for new sign-ins and carried by
+   * handoffs and refreshes, so a moved or refreshed session keeps its step-up budget.
+   */
+  sessionId?: string;
 };
 
 type AuthLoginUser = AuthUser & { password_hash: string };
@@ -74,6 +81,11 @@ type AuthDependencies = {
    * checks. Production always injects it; without it only the throttles apply.
    */
   accountLockout?: ReturnType<typeof createAccountLockout>;
+  /**
+   * The per-user cap on step-up and handoff passwords across all sessions (20 per 24 h), so new
+   * sessions cannot buy more guesses. Production always injects it.
+   */
+  stepUpFailureCap?: ReturnType<typeof createStepUpFailureCap>;
   /** Security event log (Settings → 安全); events are dropped when it is not injected. */
   securityEvents?: Pick<ReturnType<typeof createSecurityEventLog>, 'record'>;
   /** Passkey sign-in ceremonies; passkey sign-in answers 403 when they are not injected. */
@@ -267,10 +279,9 @@ export function createAuthService(dependencies: AuthDependencies) {
   const noisyPasskeyFailures = createMinuteGate(dependencies.now ?? Date.now);
 
   // Forgets counted failures in one scope after a success that proved the owner there, and logs
-  // it when that lifted a lock. A sign-in proves the owner outright, so it also forgets every
-  // session's step-up lock (a stolen token's included).
+  // it when that lifted a lock. For the session scope that is only this session's own budget:
+  // other sessions' step-up locks stay (only "退出所有设备" clears them), as do their levels.
   function clearLockout(username: string, scope: LockScope, client: StudioRequestClient, method: string, sessionId?: string) {
-    if (scope !== 'session') dependencies.accountLockout?.clearScope(username, 'session');
     const cleared = dependencies.accountLockout?.clear(username, scope, scope === 'session' ? sessionId : undefined);
     if (cleared?.wasLocked) {
       recordEvent({ type: 'lockout-cleared', client, detail: `${method} · ${SCOPE_LABELS[scope]}` });
@@ -307,6 +318,12 @@ export function createAuthService(dependencies: AuthDependencies) {
         : `[auth] Password check refused (rate-limited, ${purpose})`);
       throw throttledError(purpose, null);
     }
+    // Across all sessions, a user gets a bounded number of step-up guesses per day.
+    const capAttempt = purpose === 'login' ? null : dependencies.stepUpFailureCap?.begin(username);
+    if (capAttempt && !capAttempt.allowed) {
+      dependencies.logInfo(`[auth] Password check refused (daily step-up cap, ${purpose})`);
+      throw throttledError(purpose, capAttempt.retryAfterMs);
+    }
     const attempt = dependencies.accountLockout?.begin(username, scope, subject);
     if (attempt && !attempt.allowed) {
       dependencies.logInfo(`[auth] Password check refused (${scope} lock, ${client.door} door, ${purpose})`);
@@ -331,6 +348,7 @@ export function createAuthService(dependencies: AuthDependencies) {
       return null;
     }
     throttle.forgive(throttleKey);
+    if (capAttempt?.allowed) dependencies.stepUpFailureCap?.succeed(capAttempt.attemptId);
     clearLockout(account.username, scope, client, purpose === 'login' ? 'password' : 'step-up', subject);
     return account;
   }
@@ -450,11 +468,11 @@ export function createAuthService(dependencies: AuthDependencies) {
       }
 
       dependencies.users.updateLastLogin(numericUserId(user.id));
-      recordEvent({ type: 'login-succeeded', client, detail: 'password' });
-      const sessionUser = { id: user.id, username: user.username };
+      const sessionUser = { id: user.id, username: user.username, sessionId: randomUUID() };
+      recordEvent({ type: 'login-succeeded', client, detail: 'password', collapseOn: sessionUser.sessionId });
       return {
         success: true,
-        user: sessionUser,
+        user: { id: sessionUser.id, username: sessionUser.username },
         token: dependencies.generateToken(sessionUser),
       };
     },
@@ -509,12 +527,12 @@ export function createAuthService(dependencies: AuthDependencies) {
         }
         throw passkeySignInFailed();
       }
-      const sessionUser = { id: account.id, username: account.username };
+      const sessionUser = { id: account.id, username: account.username, sessionId: randomUUID() };
       clearLockout(account.username, lockScopeFor('login', client), client, 'passkey');
       dependencies.users.updateLastLogin(numericUserId(account.id));
-      recordEvent({ type: 'passkey-signin', client, detail: result.rpId });
+      recordEvent({ type: 'passkey-signin', client, detail: result.rpId, collapseOn: sessionUser.sessionId });
       dependencies.logInfo(`[auth] Passkey sign-in granted on ${result.rpId} for local user "${account.username}"`);
-      return { success: true, user: sessionUser, token: dependencies.generateToken(sessionUser) };
+      return { success: true, user: { id: sessionUser.id, username: sessionUser.username }, token: dependencies.generateToken(sessionUser) };
     },
 
     /**
@@ -553,7 +571,8 @@ export function createAuthService(dependencies: AuthDependencies) {
       dependencies.logInfo(
         `[auth] Tailscale sign-in granted for ${maskedLogin}${fromNode} as local user "${user.username}"`,
       );
-      recordEvent({ type: 'tailscale-signin', client: { door: 'tailnet', address: decision.session.node }, detail: maskedLogin });
+      // Collapsed per device: the app signs in this way on every start.
+      recordEvent({ type: 'tailscale-signin', client: { door: 'tailnet', address: decision.session.node }, detail: maskedLogin, collapseOn: decision.session.node });
       return {
         success: true,
         user: sessionUser,
@@ -626,6 +645,8 @@ export function createAuthService(dependencies: AuthDependencies) {
         target,
         targetOrigin,
         ...(carriedClaim ? { tailscaleSession: { login: carriedClaim.login, node: carriedClaim.node } } : {}),
+        // The moved session is the same session for step-up budgets (a self-handoff mints no new one).
+        ...(sessionIdOf(user) ? { sessionId: sessionIdOf(user) } : {}),
       });
       dependencies.logInfo(
         `[auth] Handoff to the ${target} door issued (${carriedClaim ? 'Tailscale' : 'password'} session)`,
@@ -679,11 +700,12 @@ export function createAuthService(dependencies: AuthDependencies) {
       const sessionUser = { id: account.id, username: account.username };
       dependencies.users.updateLastLogin(numericUserId(account.id));
       dependencies.logInfo(`[auth] Handoff to the ${grant.target} door granted for local user "${account.username}"`);
-      recordEvent({ type: 'handoff-signin', client, detail: grant.target });
+      const handoffSessionId = grant.sessionId ?? randomUUID();
+      recordEvent({ type: 'handoff-signin', client, detail: grant.target, collapseOn: handoffSessionId });
       return {
         success: true,
         user: sessionUser,
-        token: dependencies.generateToken(sessionUser, grant.tailscaleSession),
+        token: dependencies.generateToken({ ...sessionUser, sessionId: handoffSessionId }, grant.tailscaleSession),
         target: grant.target,
       };
     },

@@ -1,6 +1,7 @@
 import type { createAuthSecurityStore } from './auth-security.store.js';
 
 type LockoutStore = ReturnType<typeof createAuthSecurityStore>['lockouts'];
+type StepUpFailureStore = ReturnType<typeof createAuthSecurityStore>['stepUpFailures'];
 
 /**
  * Which password door a count belongs to. Each scope locks on its own, so a guesser on the public
@@ -110,7 +111,9 @@ export function createAccountLockout(dependencies: AccountLockoutDependencies) {
       if (row && row.failures >= LOCKOUT_THRESHOLD) {
         return { allowed: false, retryAfterMs: lockDurationMs(row.level + 1) };
       }
-      const isAccount = dependencies.isAccount(usernameOf(username)) ? 1 : 0;
+      // One session's step-up budget is not an account's lock: it may be evicted (the per-user
+      // StepUpFailureCap still bounds that user), and it says nothing about which names exist.
+      const isAccount = !subject && dependencies.isAccount(usernameOf(username)) ? 1 : 0;
       if (!row && !isAccount) makeRoom();
       store.save({
         account_key: key,
@@ -160,6 +163,48 @@ export function createAccountLockout(dependencies: AccountLockoutDependencies) {
       const row = current(keyOf(username, scope, subject), at);
       const locked = Boolean(row && row.locked_until > at);
       return { locked, lockedUntil: locked && row ? row.locked_until : null, failures: row?.failures ?? 0, level: row?.level ?? 0 };
+    },
+  };
+}
+
+/** Wrong step-up passwords one user may enter across all sessions per rolling window. */
+const STEP_UP_CAP = 20;
+const STEP_UP_WINDOW_MS = 24 * 60 * 60_000;
+
+/**
+ * The per-user cap on step-up and handoff passwords across every session: 20 attempts that did
+ * not succeed per rolling 24 hours, persisted. It sits beside the per-session budget so that
+ * minting new sessions (self-handoff) cannot buy more guesses. Sign-ins never reset it; only
+ * "退出所有设备" (after it succeeded) and scripts/clear-login-lock.mjs do.
+ * Used by auth.module, which injects it into auth.service and account-security.service.
+ */
+export function createStepUpFailureCap(dependencies: { store: StepUpFailureStore; now?: () => number; max?: number; windowMs?: number }) {
+  const now = dependencies.now ?? Date.now;
+  const max = dependencies.max ?? STEP_UP_CAP;
+  const windowMs = dependencies.windowMs ?? STEP_UP_WINDOW_MS;
+  return {
+    /**
+     * Call before comparing a step-up password: refused while the user has used up the window;
+     * otherwise the attempt is counted at once (so parallel guesses cannot slip past) and its id
+     * returned, for `succeed` to take back.
+     */
+    begin(username: string): { allowed: true; attemptId: number } | { allowed: false; retryAfterMs: number } {
+      const at = now();
+      const { count, oldest } = dependencies.store.countSince(username, at - windowMs);
+      if (count >= max) {
+        return { allowed: false, retryAfterMs: Math.max(1000, (oldest ?? at) + windowMs - at) };
+      }
+      return { allowed: true, attemptId: dependencies.store.add(username, at) };
+    },
+
+    /** A correct password does not count. */
+    succeed(attemptId: number): void {
+      dependencies.store.remove(attemptId);
+    },
+
+    /** Forgets the user's attempts ("退出所有设备" or the local script); returns how many. */
+    reset(username: string): number {
+      return dependencies.store.clearUser(username);
     },
   };
 }

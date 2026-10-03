@@ -58,6 +58,8 @@ function clientAddressKey(value: string | undefined): string {
  *   public client by forging CF-Connecting-IP; only the dedicated port closes that.
  * - Tailscale Serve traffic (loopback, *.ts.net Host, exactly one tailnet address in
  *   X-Forwarded-For, and in header mode no Cloudflare headers) is keyed by that tailnet device.
+ * - Tailscale Funnel requests (Tailscale-Funnel-Request) are public traffic too: the public door,
+ *   keyed by the client address Serve writes into X-Forwarded-For.
  * - Otherwise the raw socket peer. X-Forwarded-For is never read for anything else.
  * Public and direct IPv6 clients are keyed by their /64.
  *
@@ -72,11 +74,16 @@ export function readRequestClient(
   const socketAddress = request.socket?.remoteAddress;
   const fromLoopback = isLoopbackAddress(socketAddress);
   const tunnelPort = readCloudflaredPort(env);
-  if (tunnelPort !== null) {
-    if (fromLoopback && request.socket?.localPort === tunnelPort) {
-      return { door: 'cloudflare', address: clientAddressKey(headerText(request, 'cf-connecting-ip')) };
-    }
-  } else if (fromLoopback && isViaCloudflareEdge(request.headers)) {
+  if (tunnelPort !== null && fromLoopback && request.socket?.localPort === tunnelPort) {
+    return { door: 'cloudflare', address: clientAddressKey(headerText(request, 'cf-connecting-ip')) };
+  }
+  // Tailscale Funnel is the public internet through Serve: the public door, keyed by the one
+  // client address Serve writes into X-Forwarded-For (Serve drops client copies of both headers).
+  if (fromLoopback && request.headers['tailscale-funnel-request'] !== undefined) {
+    return { door: 'cloudflare', address: clientAddressKey(headerText(request, 'x-forwarded-for')) };
+  }
+  // Header mode only: with the listener configured, Cloudflare headers elsewhere mean nothing.
+  if (tunnelPort === null && fromLoopback && isViaCloudflareEdge(request.headers)) {
     return { door: 'cloudflare', address: clientAddressKey(headerText(request, 'cf-connecting-ip')) };
   }
   if (fromLoopback && isTailnetHost(headerText(request, 'host')?.trim())) {

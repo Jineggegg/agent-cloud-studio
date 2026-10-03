@@ -67,6 +67,12 @@ function day(iso: string) {
 function moment(iso: string) {
   return new Date(iso).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
+// "· 12 次" when one row stands for repeated sign-ins of the same session or device.
+function eventLine(event: StudioSecurityEvent) {
+  return [moment(event.at), DOOR_LABELS[event.door] ?? event.door, event.client !== 'unknown' ? event.client : '', eventDetail(event),
+    (event.repeats ?? 1) > 1 ? `${event.repeats} 次` : ''].filter(Boolean).join(' · ');
+}
+
 function eventDetail(event: StudioSecurityEvent) {
   const detail = event.detail ?? '';
   // The method of a successful password login is already in its title.
@@ -313,7 +319,7 @@ export function StudioSettingsSecurity() {
         {importantEvents.map(event => <div className="ios-row no-icon security-event" key={event.id}>
           <span className="ios-row-body">
             <strong>{EVENT_LABELS[event.type] ?? event.type}</strong>
-            <small>{[moment(event.at), DOOR_LABELS[event.door] ?? event.door, event.client !== 'unknown' ? event.client : '', eventDetail(event)].filter(Boolean).join(' · ')}</small>
+            <small>{eventLine(event)}</small>
           </span>
         </div>)}
       </div>
@@ -324,7 +330,7 @@ export function StudioSettingsSecurity() {
         {signIns.map(event => <div className="ios-row no-icon security-event" key={event.id}>
           <span className="ios-row-body">
             <strong>{EVENT_LABELS[event.type] ?? event.type}</strong>
-            <small>{[moment(event.at), DOOR_LABELS[event.door] ?? event.door, event.client !== 'unknown' ? event.client : '', eventDetail(event)].filter(Boolean).join(' · ')}</small>
+            <small>{eventLine(event)}</small>
           </span>
         </div>)}
       </div>
@@ -335,7 +341,7 @@ export function StudioSettingsSecurity() {
       {visibleEvents.map(event => <div className="ios-row no-icon security-event" key={event.id}>
         <span className="ios-row-body">
           <strong>{EVENT_LABELS[event.type] ?? event.type}</strong>
-          <small>{[moment(event.at), DOOR_LABELS[event.door] ?? event.door, event.client !== 'unknown' ? event.client : '', eventDetail(event)].filter(Boolean).join(' · ')}</small>
+          <small>{eventLine(event)}</small>
         </span>
       </div>)}
       {events.length > COLLAPSED_EVENTS && <button type="button" className="ios-row action left no-icon" onClick={() => setShowAllEvents(value => !value)}>

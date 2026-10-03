@@ -5,7 +5,7 @@ import { getConnection, userDb } from '@/modules/database/index.js';
 import type { StudioRequestClient, StudioSessionRevocation } from '@/shared/types.js';
 import { readCloudflareAccessConfig, readCloudflaredPort, readStudioIngressOrigins } from '@/shared/utils.js';
 
-import { createAccountLockout } from './account-lockout.service.js';
+import { createAccountLockout, createStepUpFailureCap } from './account-lockout.service.js';
 import { createAccountSecurityService } from './account-security.service.js';
 import { getAuthSecurityStore } from './auth-security.store.js';
 import { authenticateToken, generateToken } from './auth.middleware.js';
@@ -40,6 +40,8 @@ const accountLockout = createAccountLockout({
   // Rows of real accounts are flagged and never evicted to make room for made-up usernames.
   isAccount: (username) => userDb.getUserByUsername(username) !== undefined,
 });
+// 20 wrong step-up passwords per user per rolling day, across all sessions.
+const stepUpFailureCap = createStepUpFailureCap({ store: securityStore.stepUpFailures });
 const securityEvents = createSecurityEventLog({ store: securityStore.events });
 // Sign-in passkeys work only on the two configured front doors (STUDIO_PUBLIC_ORIGIN and
 // STUDIO_TAILNET_ORIGIN), read per request like the other door settings.
@@ -74,6 +76,7 @@ const authService = createAuthService({
   ingressOrigins,
   logInfo: (message) => console.info(message),
   accountLockout,
+  stepUpFailureCap,
   securityEvents,
   passkeys,
   findUserById: (userId) => userDb.getUserById(userId),
@@ -84,6 +87,7 @@ const accountSecurity = createAccountSecurityService({
   passkeys,
   events: securityEvents,
   lockout: accountLockout,
+  stepUpCap: stepUpFailureCap,
   sessionVersions: securityStore.sessionVersions,
   onSessionsRevoked: (userId) => {
     const revoked: StudioSessionRevocation = { handoffCodes: handoffCodes.discardForUser(userId) };

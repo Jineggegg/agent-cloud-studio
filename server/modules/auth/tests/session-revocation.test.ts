@@ -72,6 +72,7 @@ const accountSecurity = createAccountSecurityService({
   },
   events: { record: () => undefined, recent: () => [], recentImportant: () => [], recentSignIns: () => [] },
   lockout: { status: () => ({ locked: false, lockedUntil: null, failures: 0, level: 0 }), clearScope: () => 0 },
+  stepUpCap: { reset: () => 0 },
   sessionVersions: store.sessionVersions,
   onSessionsRevoked: (revokedUserId) => {
     revokedUsers.push(revokedUserId);

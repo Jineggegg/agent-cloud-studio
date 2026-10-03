@@ -26,7 +26,16 @@ type SecurityEventInput = {
   client?: StudioRequestClient;
   /** Short, already-safe text such as "wrong-password" or a passkey's domain; capped at 200 chars. */
   detail?: string;
+  /**
+   * For successful sign-ins: what makes repeats the same (the session id, or the device for
+   * Tailscale sign-ins). Repeats from the same client within COLLAPSE_WINDOW_MS fold into one row
+   * with a count, so one session cannot push out everybody else's sign-ins.
+   */
+  collapseOn?: string;
 };
+
+// Repeated sign-ins of one session from one client within this window take a single row.
+const COLLAPSE_WINDOW_MS = 60 * 60_000;
 
 // Retention classes (auth-security.store): each keeps its own newest 500, so no amount of failed
 // attempts can push out an important change or the record of who actually got in.
@@ -52,7 +61,7 @@ function printable(text: string): string {
 }
 
 function view(row: ReturnType<EventStore['recent']>[number]) {
-  return { id: row.id, at: row.at, type: row.type, door: row.door, client: row.client, detail: row.detail };
+  return { id: row.id, at: row.at, type: row.type, door: row.door, client: row.client, detail: row.detail, repeats: row.repeats ?? 1 };
 }
 
 /**
@@ -68,14 +77,20 @@ export function createSecurityEventLog(dependencies: { store: EventStore; now?: 
   return {
     record(event: SecurityEventInput): void {
       try {
+        const at = now();
+        const door = event.client?.door ?? 'direct';
+        const client = event.client ? maskClientAddress(event.client.address) : 'unknown';
+        const collapse = event.collapseOn !== undefined;
         dependencies.store.append({
-          at: new Date(now()).toISOString(),
+          at: new Date(at).toISOString(),
           type: event.type,
-          door: event.client?.door ?? 'direct',
-          client: event.client ? maskClientAddress(event.client.address) : 'unknown',
+          door,
+          client,
           detail: event.detail === undefined ? null : printable(event.detail),
           important: EVENT_CLASSES[event.type] ?? NOISE,
-        });
+          // The key holds the masked client only, like the row itself.
+          collapse_key: collapse ? `${event.type}|${event.collapseOn?.slice(0, 80)}|${door}|${client}` : null,
+        }, collapse ? new Date(at - COLLAPSE_WINDOW_MS).toISOString() : undefined);
       } catch (error) {
         // Logging must never turn a sign-in into an error.
         console.warn('[auth] Could not record a security event:', error instanceof Error ? error.message : String(error));
