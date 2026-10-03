@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { api, readApiJson } from '@/shared/api';
 import { T212_ENV_LABELS, T212_MODE_LABELS } from '@/shared/constants';
 import type { T212Env, T212ModeChange, T212StepUpChallenge, T212TradingConfig, T212TradingMode } from '@/shared/types';
+import { apiErrorCode } from '@/shared/utils';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 import { StudioT212HistoryList, StudioT212HistoryRow } from '@/modules/studio/StudioT212History';
 import { StudioT212ReviewSheet } from '@/modules/studio/StudioT212ReviewSheet';
@@ -14,7 +15,10 @@ import '@/modules/studio/studio-orders.css';
 // Face ID and the save. Anything but null disables every option.
 type ModeBusy = 'saving' | 'challenge' | 'review' | 'passkey' | null;
 // A widening waiting for the user's go-ahead: the exact mode its challenge was issued for, and from which mode.
-type PendingWidening = { from: T212TradingMode; to: T212TradingMode; challenge: T212StepUpChallenge };
+// POST /mode/challenge: the challenge plus the server's view of the change: the mode in force, the new one, the accounts
+// it adds and the ceiling. The review is built from this, never from this page's possibly stale settings.
+type ModeChallenge = T212StepUpChallenge & { from: T212TradingMode; to: T212TradingMode; adds: T212Env[]; ceiling: T212TradingMode };
+type PendingWidening = { challenge: ModeChallenge };
 
 const MODES: T212TradingMode[] = ['off', 'demo', 'live', 'both'];
 // Live first, as the server lists them.
@@ -88,6 +92,8 @@ export function StudioT212TradingModeSelector({ config, trusted, onSaved }: {
     setError(message);
     // A cancelled Face ID prompt is the user's own choice; everything else is reported as a failure too.
     if (!cancelled(reason)) toast.error(widening ? '没有开启下单' : '交易模式没有保存', { description: message });
+    // Any trading-mode refusal may mean the server's state moved on (another tab, a stale review): show it as it is now.
+    if (apiErrorCode(reason).startsWith('T212_MODE_')) void onSaved();
   };
   // Narrowing saves at once; widening first fetches the challenge bound to that mode and shows it for review.
   const choose = async (next: T212TradingMode) => {
@@ -105,20 +111,21 @@ export function StudioT212TradingModeSelector({ config, trusted, onSaved }: {
     }
     setBusy('challenge');
     try {
-      const challenge = await readApiJson<T212StepUpChallenge>(await api.studio.t212Trading.modeChallenge(next));
-      setPending({ from: mode, to: next, challenge });
+      const challenge = await readApiJson<ModeChallenge>(await api.studio.t212Trading.modeChallenge(next));
+      setPending({ challenge });
       setBusy('review');
     } catch (reason) { fail(reason, true); setBusy(null); }
   };
   // Called straight from the review's confirm tap, so Face ID starts within that user gesture.
   const confirmWidening = async () => {
     if (!pending) return;
-    const { to, challenge } = pending;
+    const { challenge } = pending;
+    const { to } = challenge;
     setBusy('passkey');
     try {
       const assertion = await startAuthentication({ optionsJSON: challenge.authentication });
       await readApiJson(await api.studio.t212Trading.updateMode(to, { challengeId: challenge.challengeId, assertion }));
-      toast.success(`已用面容 ID / 触控 ID 开启${envNames(added(pending.from, to))}下单`, { description: `允许下单的账户：${T212_MODE_LABELS[to]}` });
+      toast.success(`已用面容 ID / 触控 ID 开启${envNames(challenge.adds)}下单`, { description: `允许下单的账户：${T212_MODE_LABELS[to]}` });
       setPending(null);
       await onSaved();
     } catch (reason) { setPending(null); fail(reason, true); }
@@ -126,7 +133,7 @@ export function StudioT212TradingModeSelector({ config, trusted, onSaved }: {
   };
   const cancelWidening = () => { setPending(null); setBusy(null); };
 
-  const opening = pending ? added(pending.from, pending.to) : [];
+  const opening = pending?.challenge.adds ?? [];
   return <>
     <div className="ios-list t212-mode" role="group" aria-labelledby={labelId}>
       <div className="ios-row no-icon">
@@ -151,11 +158,12 @@ export function StudioT212TradingModeSelector({ config, trusted, onSaved }: {
     {ceilingNote && <p className="ios-section-footer t212-mode-note" id={noteId}>{ceilingNote}</p>}
     {blockedWidening && <p className="studio-feedback t212-caps-blocked">{blocker}</p>}
     {error && <p className="studio-feedback error" role="alert">{error}</p>}
-    {/* The review step of a widening: from → to and what it opens, before Face ID / Touch ID is asked for. */}
+    {/* The review step of a widening: from → to and what it opens, as the server reported them with the challenge,
+        before Face ID / Touch ID is asked for. */}
     {pending && <StudioT212ReviewSheet title={`开启${envNames(opening)}下单？`}
-      message={`${opening.includes('live') ? '实盘使用真实资金。' : ''}服务器只接受下面这个范围。确认后用面容 ID / 触控 ID 验证，验证 60 秒内有效。`}
+      message={`${opening.includes('live') ? '实盘使用真实资金。' : ''}服务器只接受下面这个范围，而且只在当前仍是左边的范围时有效。确认后用面容 ID / 触控 ID 验证，验证 60 秒内有效。`}
       rows={[
-        { label: '允许下单的账户', value: `${T212_MODE_LABELS[pending.from]} → ${T212_MODE_LABELS[pending.to]}` },
+        { label: '允许下单的账户', value: `${T212_MODE_LABELS[pending.challenge.from]} → ${T212_MODE_LABELS[pending.challenge.to]}` },
         { label: '新开启', value: envNames(opening) },
       ]}
       verifying={busy === 'passkey'} onConfirm={() => void confirmWidening()} onCancel={cancelWidening} />}
@@ -175,8 +183,12 @@ export function StudioT212TradingModeHistory({ config }: { config: T212TradingCo
 
 function ModeChangeRow({ change }: { change: T212ModeChange }) {
   const refused = change.status === 'refused';
-  const heading = refused ? '开启下单被拒绝' : change.direction === 'widen' ? '开启下单' : change.to === 'off' ? '关闭下单' : '减少下单账户';
-  const values = change.from && change.to ? `${T212_MODE_LABELS[change.from]} → ${T212_MODE_LABELS[change.to]}` : '请求无效，没有可识别的交易模式';
-  return <StudioT212HistoryRow heading={heading} values={values} up={change.direction === 'widen'} refused={refused}
-    method={change.method} createdAt={change.createdAt} reason={change.reason} />;
+  const heading = refused ? '开启下单被拒绝' : change.direction === 'widen' ? '开启下单' : change.direction === 'pin' ? '固定下单账户'
+    : change.to === 'off' ? '关闭下单' : '减少下单账户';
+  // A pin made on the first read has no "from": it stored the mode that was already in force.
+  const values = change.direction === 'pin' && !change.from && change.to ? T212_MODE_LABELS[change.to]
+    : change.from && change.to ? `${T212_MODE_LABELS[change.from]} → ${T212_MODE_LABELS[change.to]}` : '请求无效，没有可识别的交易模式';
+  const mark = change.direction === 'widen' ? 'up' : change.direction === 'pin' ? 'pin' : 'down';
+  return <StudioT212HistoryRow heading={heading} values={values} mark={mark} refused={refused}
+    method={change.method} createdAt={change.createdAt} reason={change.reason} who={change} />;
 }

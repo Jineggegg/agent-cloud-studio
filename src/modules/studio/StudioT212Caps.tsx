@@ -8,7 +8,7 @@ import { T212_ENV_LABELS } from '@/shared/constants';
 import type {
   T212AccountCaps, T212CapChange, T212CapLimits, T212CapsInput, T212Env, T212StepUpChallenge, T212TradingConfig,
 } from '@/shared/types';
-import { decimalInputProblem, parseDecimalInput } from '@/shared/utils';
+import { apiErrorCode, decimalInputProblem, parseDecimalInput } from '@/shared/utils';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 import { StudioT212HistoryList, StudioT212HistoryRow } from '@/modules/studio/StudioT212History';
 import { StudioT212ReviewSheet } from '@/modules/studio/StudioT212ReviewSheet';
@@ -19,7 +19,9 @@ type Direction = 'raise' | 'lower';
 // Face ID and the save. Anything but null locks the account switch and the fields.
 type CapsBusy = 'saving' | 'challenge' | 'review' | 'passkey' | null;
 // A raise waiting for the user's go-ahead: the exact values the challenge was issued for.
-type PendingRaise = { input: T212CapsInput; challenge: T212StepUpChallenge };
+// POST /caps/challenge: the challenge plus the server's current caps and the new ones, which the review shows.
+type CapsChallenge = T212StepUpChallenge & { env: T212Env; from: T212CapLimits; to: T212CapLimits };
+type PendingRaise = { input: T212CapsInput; challenge: CapsChallenge };
 
 const ENVS: T212Env[] = ['live', 'demo'];
 // Caps are amounts of money: the server accepts at most two decimals.
@@ -132,6 +134,8 @@ function CapsForm({ env, caps, currency, ceiling, blocker, labelledBy, busy, set
     setError(message);
     // A cancelled Face ID prompt is the user's own choice; everything else is reported as a failure too.
     if (!cancelled(reason)) toast.error(raising ? '上限没有提高' : '上限没有保存', { description: message });
+    // Any caps refusal may mean the server's caps moved on (another tab, a stale review): show what is in force now.
+    if (apiErrorCode(reason).startsWith('T212_CAPS_')) void onSaved();
   };
   // Lowering saves at once; raising first fetches the challenge bound to these values and shows them for review.
   const save = async () => {
@@ -141,7 +145,7 @@ function CapsForm({ env, caps, currency, ceiling, blocker, labelledBy, busy, set
     if (direction === 'raise') {
       setBusy('challenge');
       try {
-        const challenge = await readApiJson<T212StepUpChallenge>(await api.studio.t212Trading.capsChallenge(input));
+        const challenge = await readApiJson<CapsChallenge>(await api.studio.t212Trading.capsChallenge(input));
         setPendingRaise({ input, challenge });
         setBusy('review');
       } catch (reason) { fail(reason, true); setBusy(null); }
@@ -204,13 +208,14 @@ function CapsForm({ env, caps, currency, ceiling, blocker, labelledBy, busy, set
     {problem && <p className="studio-feedback error" role="alert">{problem}</p>}
     {!problem && blocked && <p className="studio-feedback t212-caps-blocked">{blocker}</p>}
     {error && <p className="studio-feedback error" role="alert">{error}</p>}
-    {/* The review step of a raise: which account, and both caps from → to, before Face ID / Touch ID is asked for. */}
-    {pendingRaise && <StudioT212ReviewSheet title={`提高${T212_ENV_LABELS[env]}上限？`}
-      message="服务器只接受下面这组数值。确认后用面容 ID / 触控 ID 验证，验证 60 秒内有效。"
+    {/* The review step of a raise: the account and both caps from → to as the server reported them with the
+        challenge (never this page's possibly stale copy), before Face ID / Touch ID is asked for. */}
+    {pendingRaise && <StudioT212ReviewSheet title={`提高${T212_ENV_LABELS[pendingRaise.challenge.env]}上限？`}
+      message="服务器只接受下面这组数值，而且只在上限仍是左边的值时有效。确认后用面容 ID / 触控 ID 验证，验证 60 秒内有效。"
       rows={[
-        { label: '账户', value: T212_ENV_LABELS[env] },
-        { label: '单笔上限', value: change(caps.maxOrderValue, pendingRaise.input.maxOrderValue, currency) },
-        { label: '每日上限', value: change(caps.dailyLimit, pendingRaise.input.dailyLimit, currency) },
+        { label: '账户', value: T212_ENV_LABELS[pendingRaise.challenge.env] },
+        { label: '单笔上限', value: change(pendingRaise.challenge.from.maxOrderValue, pendingRaise.challenge.to.maxOrderValue, currency) },
+        { label: '每日上限', value: change(pendingRaise.challenge.from.dailyLimit, pendingRaise.challenge.to.dailyLimit, currency) },
       ]}
       verifying={busy === 'passkey'} onConfirm={() => void confirmRaise()} onCancel={cancelRaise} />}
   </>;
@@ -222,6 +227,6 @@ function CapChangeRow({ change: item, currency }: { change: T212CapChange; curre
   const values = item.from && item.to
     ? `单笔 ${change(item.from.maxOrderValue, item.to.maxOrderValue, currency)} · 每日 ${change(item.from.dailyLimit, item.to.dailyLimit, currency)}`
     : '请求无效，没有可识别的数值';
-  return <StudioT212HistoryRow heading={`${item.env ? T212_ENV_LABELS[item.env] : '未知账户'} · ${action}`} values={values} up={item.direction === 'raise'}
-    refused={refused} method={item.method} createdAt={item.createdAt} reason={item.reason} />;
+  return <StudioT212HistoryRow heading={`${item.env ? T212_ENV_LABELS[item.env] : '未知账户'} · ${action}`} values={values}
+    mark={item.direction === 'raise' ? 'up' : 'down'} refused={refused} method={item.method} createdAt={item.createdAt} reason={item.reason} who={item} />;
 }

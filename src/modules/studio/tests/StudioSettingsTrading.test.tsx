@@ -35,7 +35,7 @@ const CAPS = { ceiling: 10_000, defaults: { maxOrderValue: 500, dailyLimit: 2000
 // The trading mode as GET /trading reports it: in force, and the STUDIO_T212_TRADING ceiling.
 const modeState = (mode: string, ceiling = mode, custom = false) => ({ mode, ceiling, custom, updatedAt: custom ? '2026-10-02T08:00:00Z' : null });
 const CONFIG = {
-  allowedEnvs: ['demo'], tradingMode: modeState('demo'), modeChanges: [] as unknown[], modeRefusals: [] as unknown[],
+  allowedEnvs: ['demo'], tradingMode: modeState('demo'), modeChanges: [] as unknown[], modeRefusals: [] as unknown[], stepUpRequests: [] as unknown[],
   caps: CAPS, capChanges: [] as unknown[], capRefusals: [] as unknown[], currency: 'GBP', passkeys: [OTHER_DOMAIN],
   trustedOrigins: [], allowLocalhost: true, requirePasskey: false,
 };
@@ -218,7 +218,7 @@ test('raising asks for a challenge bound to the new values and signs it with Fac
   trading.config.mockImplementation(json(withPasskey));
   const authentication = { challenge: 'bound-challenge', rpId: window.location.hostname, allowCredentials: [{ id: 'cred-local', type: 'public-key' }], userVerification: 'required' };
   const assertion = { id: 'cred-local', rawId: 'cred-local', type: 'public-key', response: { signature: 'sig' }, clientExtensionResults: {} };
-  trading.capsChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '2026-10-02T10:01:00Z', authentication }));
+  trading.capsChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '2026-10-02T10:01:00Z', authentication, env: 'demo', from: { maxOrderValue: 250, dailyLimit: 1000 }, to: { maxOrderValue: 400, dailyLimit: 900 } }));
   trading.updateCaps.mockImplementation(json({ env: 'demo', direction: 'raise', method: 'passkey' }));
   webauthn.startAuthentication.mockResolvedValue(assertion);
   render(<StudioSettingsTrading />);
@@ -250,7 +250,7 @@ test('raising asks for a challenge bound to the new values and signs it with Fac
 
 test('cancelling the review sends nothing to Face ID and unlocks the editor', async () => {
   trading.config.mockImplementation(json({ ...CONFIG, passkeys: [THIS_DOMAIN] }));
-  trading.capsChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '', authentication: { challenge: 'c' } }));
+  trading.capsChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '', authentication: { challenge: 'c' }, env: 'demo', from: { maxOrderValue: 250, dailyLimit: 1000 }, to: { maxOrderValue: 400, dailyLimit: 1000 } }));
   render(<StudioSettingsTrading />);
   const form = await typeCaps('400');
   fireEvent.click(within(form).getByRole('button', { name: '用面容 ID / 触控 ID 提高上限' }));
@@ -317,7 +317,7 @@ test('values are checked against the ceiling, each other and two decimals before
 
 test('a cancelled Face ID changes nothing quietly; a server refusal is shown and toasted', async () => {
   trading.config.mockImplementation(json({ ...CONFIG, passkeys: [THIS_DOMAIN] }));
-  trading.capsChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '', authentication: { challenge: 'c' } }));
+  trading.capsChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '', authentication: { challenge: 'c' }, env: 'demo', from: { maxOrderValue: 250, dailyLimit: 1000 }, to: { maxOrderValue: 400, dailyLimit: 1000 } }));
   webauthn.startAuthentication.mockRejectedValueOnce(Object.assign(new Error('The operation either timed out or was not allowed.'), { name: 'NotAllowedError' }));
   render(<StudioSettingsTrading />);
   const form = await typeCaps('400');
@@ -444,7 +444,7 @@ test('adding an account shows from → to for review, then signs the challenge b
     .mockImplementation(json(widened));
   const authentication = { challenge: 'bound-mode', rpId: window.location.hostname, allowCredentials: [{ id: 'cred-local', type: 'public-key' }], userVerification: 'required' };
   const assertion = { id: 'cred-local', rawId: 'cred-local', type: 'public-key', response: { signature: 'sig' }, clientExtensionResults: {} };
-  trading.modeChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '2026-10-02T10:01:00Z', authentication }));
+  trading.modeChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '2026-10-02T10:01:00Z', authentication, from: 'demo', to: 'both', adds: ['live'], ceiling: 'both' }));
   trading.updateMode.mockImplementation(json({ mode: 'both', direction: 'widen', method: 'passkey' }));
   webauthn.startAuthentication.mockResolvedValue(assertion);
   render(<StudioSettingsTrading />);
@@ -473,7 +473,7 @@ test('adding an account shows from → to for review, then signs the challenge b
 
 test('a cancelled review or Face ID changes nothing quietly; a server refusal is shown and toasted', async () => {
   trading.config.mockImplementation(json({ ...BOTH, allowedEnvs: [], tradingMode: modeState('off', 'both', true), passkeys: [THIS_DOMAIN] }));
-  trading.modeChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '', authentication: { challenge: 'c' } }));
+  trading.modeChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '', authentication: { challenge: 'c' }, from: 'off', to: 'demo', adds: ['demo'], ceiling: 'both' }));
   render(<StudioSettingsTrading />);
 
   fireEvent.click(await modeOption('模拟盘'));
@@ -523,4 +523,79 @@ test('a refused challenge (rate limit) is toasted without a review; refused wide
   expect(within(refused).getByText('请求无效，没有可识别的交易模式')).toBeTruthy();
   expect(within(refused).getAllByText('开启下单被拒绝')).toHaveLength(2);
   expect(screen.queryByRole('list', { name: '下单账户变更记录' })).toBeNull();
+});
+
+test('the widening review shows the server’s state from the challenge, not this page’s possibly stale copy', async () => {
+  // This page still believes demo is in force; the server says another tab turned trading off meanwhile.
+  trading.config.mockImplementation(json({ ...BOTH, allowedEnvs: ['demo'], tradingMode: modeState('demo', 'both', true), passkeys: [THIS_DOMAIN] }));
+  trading.modeChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '', authentication: { challenge: 'c' }, from: 'off', to: 'both', adds: ['live', 'demo'], ceiling: 'both' }));
+  render(<StudioSettingsTrading />);
+  fireEvent.click(await modeOption('实盘+模拟盘'));
+  const review = await screen.findByRole('alertdialog', { name: '开启实盘和模拟盘下单？' });
+  expect(within(review).getByText('关闭 → 实盘+模拟盘')).toBeTruthy();
+  expect(within(review).getByText('实盘和模拟盘')).toBeTruthy();
+  expect(within(review).queryByText('模拟盘 → 实盘+模拟盘')).toBeNull();
+});
+
+test('the raise review shows the server’s caps from the challenge, not this page’s possibly stale copy', async () => {
+  trading.config.mockImplementation(json({ ...CONFIG, passkeys: [THIS_DOMAIN] }));
+  trading.capsChallenge.mockImplementation(json({
+    challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '', authentication: { challenge: 'c' },
+    env: 'demo', from: { maxOrderValue: 300, dailyLimit: 1200 }, to: { maxOrderValue: 400, dailyLimit: 1000 },
+  }));
+  render(<StudioSettingsTrading />);
+  const form = await typeCaps('400');
+  fireEvent.click(within(form).getByRole('button', { name: '用面容 ID / 触控 ID 提高上限' }));
+  const review = await screen.findByRole('alertdialog', { name: '提高模拟盘上限？' });
+  // The page showed £250 / £1,000; the server's caps were already £300 / £1,200.
+  expect(within(review).getByText('£300.00 → £400.00')).toBeTruthy();
+  expect(within(review).getByText('£1,200.00 → £1,000.00')).toBeTruthy();
+});
+
+test('a stale or other trading-mode refusal re-reads the settings so the selector shows the state in force', async () => {
+  trading.config
+    .mockImplementationOnce(json({ ...BOTH, allowedEnvs: ['demo'], tradingMode: modeState('demo', 'both', true), passkeys: [THIS_DOMAIN] }))
+    .mockImplementation(json({ ...BOTH, allowedEnvs: [], tradingMode: modeState('off', 'both', true), passkeys: [THIS_DOMAIN] }));
+  trading.modeChallenge.mockImplementation(json({ challengeId: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', expiresAt: '', authentication: { challenge: 'c' }, from: 'demo', to: 'both', adds: ['live'], ceiling: 'both' }));
+  trading.updateMode.mockImplementation(json('核对之后交易模式已经改过，这次验证作废，没有开启：请重新选择', 409, 'T212_MODE_STALE'));
+  webauthn.startAuthentication.mockResolvedValue({ id: 'cred-local', rawId: 'cred-local', response: { signature: 'sig' } });
+  render(<StudioSettingsTrading />);
+  fireEvent.click(await modeOption('实盘+模拟盘'));
+  fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '用面容 ID / 触控 ID 确认' }));
+  await waitFor(() => expect(toast.error).toHaveBeenCalledWith('没有开启下单', { description: expect.stringContaining('作废') }));
+  await waitFor(() => expect(trading.config).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(modeOptions()[0].getAttribute('aria-checked')).toBe('true'));
+});
+
+test('Face ID requests and every audit entry show which session and client caused them', async () => {
+  const thief = { session: 'thief-se', currentSession: false, client: '公网 203.0.*.*' };
+  const mine = { session: 'owner-se', currentSession: true, client: 'Tailscale 100.64.*.*' };
+  trading.config.mockImplementation(json({
+    ...BOTH, passkeys: [THIS_DOMAIN],
+    modeChanges: [
+      modeChange(3, { direction: 'narrow', from: 'both', to: 'off', ...thief }),
+      modeChange(2, { direction: 'pin', from: null, to: 'both', reason: '首次读取时固定为服务器当时允许的账户', ...mine }),
+    ],
+    stepUpRequests: [
+      { id: 'mode-7', kind: 'mode', to: 'live', outcome: 'replaced', origin: 'https://studio.ajarche.com', createdAt: '2026-10-02T09:30:00Z', ...thief },
+      { id: 'caps-4', kind: 'caps', env: 'live', to: { maxOrderValue: 900, dailyLimit: 2000 }, outcome: 'used', origin: null, createdAt: '2026-10-02T09:00:00Z', ...mine },
+    ],
+  }));
+  render(<StudioSettingsTrading />);
+  const requests = await screen.findByRole('list', { name: '面容 ID 验证请求' });
+  const [theirs, ours] = within(requests).getAllByRole('listitem');
+  expect(within(theirs).getByText('开启下单 · 改为「实盘」')).toBeTruthy();
+  expect(within(theirs).getByText(/被同一会话的新请求替换/)).toBeTruthy();
+  expect(within(theirs).getByText('其他会话 thief-se · 公网 203.0.*.*')).toBeTruthy();
+  expect(within(theirs).getByText('其他会话', { selector: '.status-badge' })).toBeTruthy();
+  expect(within(ours).getByText('提高实盘上限 · 单笔 900 · 每日 2,000')).toBeTruthy();
+  expect(within(ours).getByText('本会话 · Tailscale 100.64.*.*')).toBeTruthy();
+  expect(within(ours).queryByText('其他会话', { selector: '.status-badge' })).toBeNull();
+
+  const history = screen.getByRole('list', { name: '下单账户变更记录' });
+  expect(within(history).getByText('关闭下单')).toBeTruthy();
+  expect(within(history).getByText('其他会话 thief-se · 公网 203.0.*.*')).toBeTruthy();
+  // A pin made on the first read: the mode that was already in force, now the user's own choice.
+  expect(within(history).getByText('固定下单账户')).toBeTruthy();
+  expect(within(history).getByText('实盘+模拟盘')).toBeTruthy();
 });

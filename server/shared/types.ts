@@ -1862,11 +1862,23 @@ export type StudioT212PasskeyGate = {
 /**
  * Why a spent Face ID / Touch ID step-up challenge does not authorise the change it names, in the order they are
  * checked: the page is not on the trading allowlist, the 60 seconds passed, the request comes from another origin
- * than the challenge was issued to, the values (or the missing assertion) differ from what was approved, or the
- * assertion does not verify against the stored passkey. Each gated setting words these for itself.
+ * than the challenge was issued to, the setting changed since the review although the requested values did not
+ * (stale), the values (or the missing assertion) differ from what was approved, or the assertion does not verify
+ * against the stored passkey. Each gated setting words these for itself.
  * Used by trading212-step-up.service (returns it), trading212-caps.service and trading212-mode.service.
  */
-export type StudioT212StepUpProblem = 'untrusted-origin' | 'expired' | 'wrong-origin' | 'tampered' | 'passkey-failed';
+export type StudioT212StepUpProblem = 'untrusted-origin' | 'expired' | 'wrong-origin' | 'stale' | 'tampered' | 'passkey-failed';
+
+/**
+ * Who asked for a Trading 212 Face ID / Touch ID step-up: the auth session of the signed-in request (`sessionId`,
+ * the token's sid; '' when none) and where it came from (`client`: the door and a masked address such as
+ * "Tailscale 100.64.*.*", never a full address). Step-up budgets, the eviction of unanswered challenges and which
+ * session may redeem a challenge are keyed by it, so another session (a stolen one included) can neither use up,
+ * evict nor burn the owner's; audit rows record it so Settings can show who asked.
+ * Used by trading212-orders.routes (builds it), trading212-orders.service, trading212-step-up.service,
+ * trading212-caps.service and trading212-mode.service.
+ */
+export type StudioT212Requester = { sessionId: string; client: string };
 // ── v4 track: mail — server types below this line ──
 //----------------- STUDIO MAIL CONTRACTS ------------
 /**

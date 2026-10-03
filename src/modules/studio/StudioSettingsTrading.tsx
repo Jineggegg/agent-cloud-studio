@@ -4,6 +4,7 @@ import { Globe, ScanFace, Trash2 } from 'lucide-react';
 import { api, readApiJson } from '@/shared/api';
 import type { T212Passkey, T212TradingConfig } from '@/shared/types';
 import { StudioT212CapsEditor } from '@/modules/studio/StudioT212Caps';
+import { StudioT212StepUpRequestList } from '@/modules/studio/StudioT212History';
 import { StudioT212PasskeyEnroll, StudioT212RemovePasskeySheet } from '@/modules/studio/StudioT212Passkeys';
 import { StudioT212TradingModeHistory, StudioT212TradingModeSelector } from '@/modules/studio/StudioT212TradingMode';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
@@ -104,6 +105,8 @@ export function StudioSettingsTrading() {
 
     {config && <StudioT212CapsEditor config={config} trusted={trusted} onSaved={reload} />}
     {config && <StudioT212TradingModeHistory config={config} />}
+    {/* Who has been asking for Face ID (a stolen session shows up as 其他会话); the requests themselves change nothing. */}
+    {config && <StudioT212StepUpRequestList requests={config.stepUpRequests} />}
 
     {removing && <StudioT212RemovePasskeySheet passkey={removing} onCancel={() => setRemoving(null)}
       onRemoved={() => { setRemoving(null); void reload(); }} />}

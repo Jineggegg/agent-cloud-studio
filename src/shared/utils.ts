@@ -361,6 +361,14 @@ export function decimalInputProblem(value: string, places: number, label: string
 export const readableErrorMessage = (reason: unknown, fallback: string): string =>
   reason instanceof Error && reason.message ? reason.message : fallback;
 
+/**
+ * The server's machine-readable error code of a failed request (ApiRequestError.code, e.g. 'T212_MODE_STALE'), or ''
+ * when the reason carries none. Used by the Trading 212 order sheet, cap editor and trading-mode selector to react to
+ * specific refusals, such as re-reading the settings after any T212_CAPS_* or T212_MODE_* error.
+ */
+export const apiErrorCode = (reason: unknown): string =>
+  reason && typeof reason === 'object' && 'code' in reason && typeof reason.code === 'string' ? reason.code : '';
+
 // ---------------------------
 
 //----------------- MODEL QUOTA DISPLAY ------------

@@ -3,7 +3,7 @@ import os from 'node:os';
 import { existsSync, realpathSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 
-import { readRequestClient, verifyStepUpPassword } from '@/modules/auth/index.js';
+import { maskClientAddress, readRequestClient, verifyStepUpPassword } from '@/modules/auth/index.js';
 import { getConnection, getDatabasePath, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { createProject } from '@/modules/projects/index.js';
 import { readCodexAccountRateLimits } from '@/modules/providers/index.js';
@@ -181,7 +181,7 @@ export function createStudioModule() {
     origins: [process.env.STUDIO_PUBLIC_ORIGIN, process.env.STUDIO_TAILNET_ORIGIN],
     verifyStepUp: ({ user, client }, password) => verifyStepUpPassword(user, password, client),
   });
-  routes.use('/trading212', createTrading212OrdersRouter(trading212Orders, (req) => readRequestClient(req)));
+  routes.use('/trading212', createTrading212OrdersRouter(trading212Orders, (req) => readRequestClient(req), maskClientAddress));
   // ── v4 track: mail — create its service and mount its router below this line ──
   // Per-user read-only mail accounts (Gmail over IMAP, Outlook over Graph). Project-bound Gmail OAuth
   // connections from the older project mail module appear as extra accounts in the same inbox.

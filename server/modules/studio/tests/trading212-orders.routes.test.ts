@@ -17,7 +17,7 @@ import { createTrading212OrdersRouter } from '../trading212-orders.routes.js';
 
 const ORIGIN = 'https://studio.ajarche.com';
 
-type Call = (route: string, init?: { method?: string; body?: unknown; origin?: string | null; user?: number | null }) => Promise<{ status: number; body: any; headers: Headers }>;
+type Call = (route: string, init?: { method?: string; body?: unknown; origin?: string | null; user?: number | null; session?: string }) => Promise<{ status: number; body: any; headers: Headers }>;
 
 async function withApp(run: (call: Call, posts: () => string[], setOrderStatus: (status: number) => void) => Promise<void>) {
   const directory = mkdtempSync(path.join(os.tmpdir(), 't212-orders-routes-'));
@@ -48,12 +48,13 @@ async function withApp(run: (call: Call, posts: () => string[], setOrderStatus: 
   app.use(express.json());
   app.use((req, _res, next) => {
     const id = Number(req.get('x-test-user'));
-    if (id) (req as express.Request & { user?: { id: number } }).user = { id };
+    // Like authenticateToken: the token's session id rides on the user as a non-enumerable property.
+    if (id) (req as express.Request & { user?: { id: number } }).user = Object.defineProperty({ id }, 'sessionId', { value: req.get('x-test-session') ?? 'route-session', enumerable: false });
     next();
   });
   // Mounted exactly like studio.module: the read-only router first, then the orders router on the same path.
   app.use('/trading212', createTrading212Router(trading212));
-  app.use('/trading212', createTrading212OrdersRouter(orders, (req) => ({ door: 'direct', address: req.socket.remoteAddress ?? 'unknown' })));
+  app.use('/trading212', createTrading212OrdersRouter(orders, (req) => ({ door: 'direct', address: req.socket.remoteAddress ?? 'unknown' }), () => '127.*.*'));
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(error instanceof AppError ? error.statusCode : 500).json({ error: error instanceof Error ? error.message : 'error' });
   });
@@ -64,6 +65,7 @@ async function withApp(run: (call: Call, posts: () => string[], setOrderStatus: 
     await run(async (route, init = {}) => {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (init.user !== null) headers['x-test-user'] = String(init.user ?? 1);
+      if (init.session) headers['x-test-session'] = init.session;
       if (init.origin !== null) headers.Origin = init.origin ?? ORIGIN;
       const response = await fetch(`${base}${route}`, { method: init.method ?? 'GET', headers, body: init.body === undefined ? undefined : JSON.stringify(init.body) });
       return { status: response.status, body: await response.json(), headers: response.headers };
@@ -242,8 +244,9 @@ test('the trading mode is validated in the route; narrowing works from any page,
   await withApp(async (call, posts) => {
     const config = await call('/trading212/trading');
     assert.deepEqual(config.body.allowedEnvs, ['demo']);
-    assert.deepEqual(config.body.tradingMode, { mode: 'demo', ceiling: 'demo', custom: false, updatedAt: null });
-    assert.deepEqual(config.body.modeChanges, []);
+    // The first read pins the mode in force, so a later, wider STUDIO_T212_TRADING cannot widen it.
+    assert.deepEqual({ ...config.body.tradingMode, updatedAt: null }, { mode: 'demo', ceiling: 'demo', custom: true, updatedAt: null });
+    assert.deepEqual(config.body.modeChanges.map((item: { direction: string; to: string; currentSession: boolean; client: string }) => [item.direction, item.to, item.currentSession, item.client]), [['pin', 'demo', true, '直连 127.*.*']]);
 
     const id = '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f';
     const invalid = [
@@ -278,7 +281,7 @@ test('the trading mode is validated in the route; narrowing works from any page,
 
     const after = (await call('/trading212/trading')).body;
     assert.deepEqual(after.allowedEnvs, []);
-    assert.deepEqual(after.modeChanges.map((item: { from: string; to: string }) => [item.from, item.to]), [['demo', 'off']]);
+    assert.deepEqual(after.modeChanges.map((item: { from: string; to: string }) => [item.from, item.to]), [['demo', 'off'], [null, 'demo']]);
     // Two malformed attempts that named a challenge, the ceiling and the passkey-less widening.
     assert.equal(after.modeRefusals.length, 4);
 
@@ -290,5 +293,30 @@ test('the trading mode is validated in the route; narrowing works from any page,
     const wait = Number(limited.headers.get('retry-after'));
     assert.ok(wait > 3500 && wait <= 3600, String(wait));
     assert.equal(posts().length, 0);
+  });
+});
+
+test('Face ID budgets and audit rows follow the request’s session and masked client', async () => {
+  await withApp(async (call) => {
+    assert.equal((await call('/trading212/mode', { method: 'PUT', body: { mode: 'off' }, session: 'thief-session' })).status, 200);
+    // The thief's session uses up its own refusal budget...
+    for (let index = 0; index < 10; index += 1) {
+      assert.equal((await call('/trading212/mode', { method: 'PUT', body: { mode: 'demo' }, session: 'thief-session' })).status, 403);
+    }
+    const limited = await call('/trading212/mode', { method: 'PUT', body: { mode: 'demo' }, session: 'thief-session' });
+    assert.equal(limited.status, 429);
+    assert.ok(Number(limited.headers.get('retry-after')) > 3500);
+    assert.equal((await call('/trading212/caps', { method: 'PUT', body: { env: 'demo', maxOrderValue: 900, dailyLimit: 2000 }, session: 'thief-session' })).status, 403);
+    // ...while the owner's session is refused for its own reason (no passkey), never rate-limited by the thief.
+    const owner = await call('/trading212/mode', { method: 'PUT', body: { mode: 'demo' }, session: 'owner-session' });
+    assert.equal(owner.status, 403);
+    assert.match(owner.body.error, /启用面容 ID 后才能开启/);
+
+    const config = (await call('/trading212/trading', { session: 'owner-session' })).body;
+    const refusals = config.modeRefusals as { session: string; currentSession: boolean; client: string }[];
+    assert.deepEqual(refusals[0], { ...refusals[0], session: 'owner-se', currentSession: true, client: '直连 127.*.*' });
+    assert.equal(refusals.filter(item => item.session === 'thief-se' && !item.currentSession).length, 10);
+    assert.equal(config.capRefusals[0].session, 'thief-se');
+    assert.deepEqual(config.stepUpRequests, []);
   });
 });

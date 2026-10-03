@@ -17,6 +17,9 @@ type Origin = { origin: string; rpId: string };
 
 const STUDIO = { origin: 'https://studio.ajarche.com', rpId: 'studio.ajarche.com' };
 const TAILNET = { origin: 'https://desktop.tail1234.ts.net', rpId: 'desktop.tail1234.ts.net' };
+// Two sessions of the same user: the owner's iPad and a stolen token used from elsewhere.
+const OWNER = { sessionId: 'owner-session-1', client: 'Tailscale 100.64.*.*' };
+const THIEF = { sessionId: 'thief-session-2', client: '公网 203.0.*.*' };
 const PASSWORD = 'correct horse battery staple';
 const SUMMARY = {
   id: 1, currency: 'GBP', totalValue: 1620,
@@ -420,50 +423,148 @@ test('caps and their audit row are saved together or not at all', async () => {
   } finally { f.close(); }
 });
 
-test('challenges and refused raises are limited per user and hour with a Retry-After; lowering stays possible', async () => {
+test('challenges and refused raises are limited per session and hour with a Retry-After; expired ones never count', async () => {
   const f = fixture();
-  const limited = (seconds: number) => (error: Error & { code?: string; statusCode?: number; details?: { retryAfterSeconds?: number } }) =>
-    error.code === 'T212_CAPS_RATE_LIMITED' && error.statusCode === 429 && error.details?.retryAfterSeconds === seconds;
+  const limited = (seconds: number, pattern?: RegExp) => (error: Error & { code?: string; statusCode?: number; details?: { retryAfterSeconds?: number } }) =>
+    error.code === 'T212_CAPS_RATE_LIMITED' && error.statusCode === 429 && error.details?.retryAfterSeconds === seconds && (!pattern || pattern.test(error.message));
   try {
     await enablePasskey(f);
     const input = live(800, 2000);
+    // Ten at once: five stay open and five are replaced by newer ones of the same session; all ten count.
     for (let index = 0; index < 10; index += 1) await f.orders.capsChallenge(1, STUDIO, input);
-    await assert.rejects(f.orders.capsChallenge(1, STUDIO, input), limited(3600));
-    f.advance(30 * 60_000);
-    await assert.rejects(f.orders.capsChallenge(1, STUDIO, input), limited(1800));
+    await assert.rejects(f.orders.capsChallenge(1, STUDIO, input), limited(3600, /发起提高上限的次数过多/));
     assert.equal(f.issued(), 10, 'refused issuance adds no row');
-    f.advance(30 * 60_000 + 1000);
-    await f.orders.capsChallenge(1, STUDIO, input);
-
-    // Refused raises: ten are audited, the next gets a 429 and no row, and it also blocks new challenges.
-    for (let index = 0; index < 10; index += 1) await assert.rejects(update(f, STUDIO, input), coded('T212_CAPS_PASSKEY_REQUIRED'));
-    await assert.rejects(update(f, STUDIO, input), limited(3600));
+    // Once the open ones expire they stop counting, so a review left to time out costs nothing.
+    f.advance(61_000);
+    for (let index = 0; index < 5; index += 1) await f.orders.capsChallenge(1, STUDIO, input);
     await assert.rejects(f.orders.capsChallenge(1, STUDIO, input), coded('T212_CAPS_RATE_LIMITED'));
+    f.advance(60 * 60_000);
+
+    // Refused raises: ten are audited, the next gets a 429 and no row, yet challenges are still issued.
+    for (let index = 0; index < 10; index += 1) await assert.rejects(update(f, STUDIO, input), coded('T212_CAPS_PASSKEY_REQUIRED'));
+    await assert.rejects(update(f, STUDIO, input), limited(3600, /被拒绝的次数过多/));
     assert.equal(f.refusals().length, 10);
+    const challenge = await f.orders.capsChallenge(1, STUDIO, input);
+    const saved = await update(f, STUDIO, input, { challengeId: challenge.challengeId, assertion: signed(challenge.authentication) });
+    assert.equal(saved.method, 'passkey');
     const lowered = await update(f, STUDIO, live(400, 2000));
     assert.equal(lowered.method, 'session');
     assert.deepEqual(f.history()[0].to, { maxOrderValue: 400, dailyLimit: 2000 });
   } finally { f.close(); }
 });
 
-test('refused rows are pruned to a bounded number per user and never hide applied changes', async () => {
+test('only real Face ID failures gate new raise challenges', async () => {
+  const f = fixture();
+  try {
+    await enablePasskey(f);
+    const input = live(800, 2000);
+    for (let index = 0; index < 5; index += 1) {
+      const challenge = await f.orders.capsChallenge(1, STUDIO, input);
+      await assert.rejects(update(f, STUDIO, input, { challengeId: challenge.challengeId, assertion: signed(challenge.authentication, STUDIO, 'cred-studio', 'forged') }), coded('T212_CAPS_PASSKEY_FAILED'));
+      const next = await f.orders.capsChallenge(1, STUDIO, input);
+      await assert.rejects(update(f, STUDIO, live(5000, 6000), { challengeId: next.challengeId, assertion: signed(next.authentication) }), coded('T212_CAPS_TAMPERED'));
+      f.advance(61_000);
+    }
+    await assert.rejects(f.orders.capsChallenge(1, STUDIO, input), coded('T212_CAPS_RATE_LIMITED', /验证失败的次数过多/));
+    assert.equal(f.caps().maxOrderValue, 500);
+  } finally { f.close(); }
+});
+
+test('a stolen session cannot lock the owner out of raising caps, evict or burn the owner’s challenge', async () => {
+  const f = fixture();
+  try {
+    await enablePasskey(f);
+    const input = live(800, 2000);
+    const owner = await f.orders.capsChallenge(1, STUDIO, input, OWNER);
+    // The thief burns its own budgets: refusals, open challenges and replacements.
+    for (let index = 0; index < 10; index += 1) await assert.rejects(f.orders.updateCaps(1, STUDIO, { input }, THIEF), coded('T212_CAPS_PASSKEY_REQUIRED'));
+    await assert.rejects(f.orders.updateCaps(1, STUDIO, { input }, THIEF), coded('T212_CAPS_RATE_LIMITED'));
+    for (let index = 0; index < 10; index += 1) await f.orders.capsChallenge(1, STUDIO, input, THIEF);
+    await assert.rejects(f.orders.capsChallenge(1, STUDIO, input, THIEF), coded('T212_CAPS_RATE_LIMITED'));
+    // Naming the owner's challenge from the thief's session neither redeems nor spends it.
+    await assert.rejects(f.orders.updateCaps(1, STUDIO, { challengeId: owner.challengeId, input, assertion: signed(owner.authentication) }, THIEF), coded('T212_CAPS_RATE_LIMITED'));
+
+    // The owner's challenge is still open, and the owner can still ask for new ones.
+    const saved = await f.orders.updateCaps(1, STUDIO, { challengeId: owner.challengeId, input, assertion: signed(owner.authentication) }, OWNER);
+    assert.equal(saved.method, 'passkey');
+    await f.orders.capsChallenge(1, STUDIO, live(900, 2000), OWNER);
+
+    // Settings shows who asked: the thief's refusals and challenges under its own session and masked client.
+    const config = f.orders.config(1, OWNER);
+    assert.ok(config.capRefusals.every(item => item.session === 'thief-se' && item.client === THIEF.client && !item.currentSession));
+    assert.deepEqual(config.capChanges[0].session, 'owner-se');
+    assert.equal(config.capChanges[0].currentSession, true);
+    const requests = config.stepUpRequests;
+    assert.deepEqual(requests.filter(item => item.currentSession).map(item => item.outcome), ['pending', 'used']);
+    const thief = requests.filter(item => !item.currentSession);
+    assert.ok(thief.length >= 10 && thief.every(item => item.client === THIEF.client && item.kind === 'caps'));
+    assert.deepEqual([...new Set(thief.map(item => item.outcome))].sort(), ['pending', 'replaced']);
+  } finally { f.close(); }
+});
+
+test('a raise whose caps changed after the review is refused as stale, without counting against the session', async () => {
+  const f = fixture();
+  try {
+    await enablePasskey(f);
+    const challenge = await f.orders.capsChallenge(1, STUDIO, live(800, 3000));
+    // The reply carries what the review must show: the server's caps now and the new ones.
+    assert.equal(challenge.env, 'live');
+    assert.deepEqual(challenge.from, { maxOrderValue: 500, dailyLimit: 2000 });
+    assert.deepEqual(challenge.to, { maxOrderValue: 800, dailyLimit: 3000 });
+    // Another tab lowers the daily cap meanwhile.
+    await update(f, STUDIO, live(500, 1500));
+    await assert.rejects(update(f, STUDIO, live(800, 3000), { challengeId: challenge.challengeId, assertion: signed(challenge.authentication) }), coded('T212_CAPS_STALE'));
+    assert.equal(f.caps().dailyLimit, 1500);
+    assert.equal(f.calls.verifyAuthentication.length, 0);
+    assert.equal(f.refusals()[0].reason?.includes('作废'), true);
+    // A fresh review from the new state goes through.
+    const fresh = await f.orders.capsChallenge(1, STUDIO, live(800, 3000));
+    assert.deepEqual(fresh.from, { maxOrderValue: 500, dailyLimit: 1500 });
+    await update(f, STUDIO, live(800, 3000), { challengeId: fresh.challengeId, assertion: signed(fresh.authentication) });
+    assert.equal(f.caps().dailyLimit, 3000);
+  } finally { f.close(); }
+});
+
+test('refused rows are pruned to a bounded number per session and never hide applied changes', async () => {
   const f = fixture();
   try {
     await update(f, STUDIO, live(400, 2000));
-    const insert = f.database.prepare(`INSERT INTO studio_t212_cap_changes (user_id, env, direction, method, status, reason, created_at)
-      VALUES (?, 'live', 'raise', 'session', 'refused', 'old junk', '2026-09-01T00:00:00Z')`);
-    for (let index = 0; index < 150; index += 1) insert.run(1);
-    insert.run(2);
+    const insert = f.database.prepare(`INSERT INTO studio_t212_cap_changes (user_id, env, direction, method, status, reason, created_at, session_id, client)
+      VALUES (?, 'live', 'raise', 'session', 'refused', 'old junk', '2026-09-01T00:00:00Z', ?, ?)`);
+    for (let index = 0; index < 150; index += 1) insert.run(1, '', 'unknown');
+    for (let index = 0; index < 3; index += 1) insert.run(1, OWNER.sessionId, OWNER.client);
+    insert.run(2, '', 'unknown');
     await assert.rejects(update(f, STUDIO, live(900, 2000)), coded('T212_CAPS_PASSKEY_REQUIRED'));
-    const count = (userId: number, status: string) => (f.database.prepare('SELECT COUNT(*) AS count FROM studio_t212_cap_changes WHERE user_id = ? AND status = ?')
-      .get(userId, status) as { count: number }).count;
+    const count = (userId: number, status: string, sessionId = '') => (f.database.prepare('SELECT COUNT(*) AS count FROM studio_t212_cap_changes WHERE user_id = ? AND status = ? AND session_id = ?')
+      .get(userId, status, sessionId) as { count: number }).count;
     assert.equal(count(1, 'refused'), 100);
+    assert.equal(count(1, 'refused', OWNER.sessionId), 3, 'another session’s rows are never flushed');
     assert.equal(count(1, 'applied'), 1);
     assert.equal(count(2, 'refused'), 1, 'other users are untouched');
     assert.equal(f.refusals().length, 20);
     assert.match(f.refusals()[0].reason ?? '', /面容 ID/);
     assert.deepEqual(f.history().map(item => item.to), [{ maxOrderValue: 400, dailyLimit: 2000 }]);
   } finally { f.close(); }
+});
+
+test('audit tables written before sessions were recorded gain the new columns', () => {
+  const database = new Database(':memory:');
+  try {
+    database.exec(`CREATE TABLE studio_t212_cap_changes (
+      row_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, env TEXT,
+      old_max_order_value REAL, old_daily_limit REAL, new_max_order_value REAL, new_daily_limit REAL,
+      direction TEXT NOT NULL, method TEXT NOT NULL, status TEXT NOT NULL,
+      reason TEXT, origin TEXT, passkey_id TEXT, created_at TEXT NOT NULL
+    );
+    INSERT INTO studio_t212_cap_changes (user_id, env, direction, method, status, created_at, old_max_order_value, old_daily_limit, new_max_order_value, new_daily_limit)
+      VALUES (1, 'live', 'lower', 'session', 'applied', '2026-09-01T00:00:00Z', 500, 2000, 400, 2000);`);
+    const trading212 = { overview: async () => { throw new Error('unused'); }, placeOrder: async () => ({}), lastCurrency: () => 'GBP', instrumentCurrency: async () => null };
+    const orders = createTrading212OrdersService({ database, trading212: trading212 as any, trading: 'both', origins: [STUDIO.origin], verifyStepUp: async () => {} });
+    const columns = (database.prepare('PRAGMA table_info(studio_t212_cap_changes)').all() as { name: string }[]).map(column => column.name);
+    assert.ok(['session_id', 'client', 'code', 'outcome'].every(name => columns.includes(name)));
+    const [old] = orders.config(1, OWNER).capChanges;
+    assert.deepEqual([old.session, old.client, old.currentSession], [null, null, false]);
+  } finally { database.close(); }
 });
 
 test('the rolling daily cap counts placed, in-flight and unknown buys and holds against parallel confirmations', async () => {

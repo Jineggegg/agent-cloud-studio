@@ -17,6 +17,9 @@ type Origin = { origin: string; rpId: string };
 
 const STUDIO = { origin: 'https://studio.ajarche.com', rpId: 'studio.ajarche.com' };
 const TAILNET = { origin: 'https://desktop.tail1234.ts.net', rpId: 'desktop.tail1234.ts.net' };
+// Two sessions of the same user: the owner's iPad and a stolen token used from elsewhere.
+const OWNER = { sessionId: 'owner-session-1', client: 'Tailscale 100.64.*.*' };
+const THIEF = { sessionId: 'thief-session-2', client: '公网 203.0.*.*' };
 const PASSWORD = 'correct horse battery staple';
 const SUMMARY = {
   id: 1, currency: 'GBP', totalValue: 1620,
@@ -127,20 +130,61 @@ const order = (input: Partial<StudioT212OrderInput> = {}): StudioT212OrderInput 
 });
 const coded = (code: string, pattern?: RegExp) => (error: Error & { code?: string }) => error.code === code && (!pattern || pattern.test(error.message));
 
-test('the trading mode defaults to STUDIO_T212_TRADING, which is also its ceiling', () => {
+test('the trading mode starts at STUDIO_T212_TRADING, which is also its ceiling, and the first read pins it', () => {
   const both = fixture('both');
   const demo = fixture('demo');
   const off = fixture('off');
   try {
+    const pinned = { custom: true, updatedAt: '2026-10-02T10:00:00.000Z' };
     assert.deepEqual(both.config().allowedEnvs, ['live', 'demo']);
-    assert.deepEqual(both.config().tradingMode, { mode: 'both', ceiling: 'both', custom: false, updatedAt: null });
+    assert.deepEqual(both.config().tradingMode, { mode: 'both', ceiling: 'both', ...pinned });
     assert.deepEqual(demo.config().allowedEnvs, ['demo']);
-    assert.deepEqual(demo.config().tradingMode, { mode: 'demo', ceiling: 'demo', custom: false, updatedAt: null });
+    assert.deepEqual(demo.config().tradingMode, { mode: 'demo', ceiling: 'demo', ...pinned });
     assert.deepEqual(off.config().allowedEnvs, []);
     assert.equal(off.config().tradingMode.ceiling, 'off');
-    assert.deepEqual(both.changes(), []);
+    // The pin is audited once, however often the settings are read.
+    const [pin, ...rest] = both.changes();
+    assert.deepEqual(rest, []);
+    assert.deepEqual([pin.from, pin.to, pin.direction, pin.method, pin.status], [null, 'both', 'pin', 'session', 'applied']);
+    assert.match(pin.reason ?? '', /首次读取时固定/);
     assert.deepEqual(both.refusals(), []);
   } finally { both.close(); demo.close(); off.close(); }
+});
+
+test('a user pinned on first read is never widened by a later, wider STUDIO_T212_TRADING without Face ID', async () => {
+  const f = fixture('demo');
+  try {
+    await enablePasskey(f);
+    // The first read under demo stores demo as the user's choice; another user never read anything yet.
+    assert.deepEqual(f.config().allowedEnvs, ['demo']);
+    const raised = f.restart('both');
+    assert.deepEqual(raised.config(1).allowedEnvs, ['demo']);
+    assert.deepEqual(raised.config(1).tradingMode, { mode: 'demo', ceiling: 'both', custom: true, updatedAt: '2026-10-02T10:00:00.000Z' });
+    await assert.rejects(raised.preview(1, STUDIO, order()), coded('T212_TRADING_DISABLED', /实盘下单已在/));
+    await assert.rejects(raised.updateMode(1, STUDIO, { mode: 'both' }), coded('T212_MODE_PASSKEY_REQUIRED'));
+    // Only Face ID adds live.
+    const challenge = await raised.modeChallenge(1, STUDIO, 'both');
+    await raised.updateMode(1, STUDIO, { challengeId: challenge.challengeId, mode: 'both', assertion: signed(challenge.authentication) });
+    assert.deepEqual(raised.config(1).allowedEnvs, ['live', 'demo']);
+    // An order path pins too: user 2 never opened Settings, only previewed under demo.
+    await f.restart('demo').preview(2, STUDIO, order({ env: 'demo' }));
+    assert.deepEqual(f.restart('both').config(2).allowedEnvs, ['demo']);
+  } finally { f.close(); }
+});
+
+test('a user without a stored choice can pin the mode in force with the session alone', async () => {
+  const f = fixture('both');
+  try {
+    // Straight to PUT /mode, no settings read before it.
+    const pinned = await update(f, null, 'both');
+    assert.deepEqual([pinned.mode, pinned.direction, pinned.method], ['both', 'pin', 'session']);
+    assert.equal(pinned.tradingMode.custom, true);
+    const [entry] = f.changes();
+    assert.deepEqual([entry.from, entry.to, entry.direction, entry.status], ['both', 'both', 'pin', 'applied']);
+    // Once stored, the same mode again is no change.
+    await assert.rejects(update(f, null, 'both'), coded('T212_MODE_UNCHANGED'));
+    assert.deepEqual(f.restart('both').config(1).allowedEnvs, ['live', 'demo']);
+  } finally { f.close(); }
 });
 
 test('narrowing needs only the session, also without any passkey or trusted page, and is audited', async () => {
@@ -439,6 +483,7 @@ test('the mode and its audit row are saved together or not at all', async () => 
     f.database.exec(`CREATE TRIGGER mode_audit_down BEFORE INSERT ON studio_t212_mode_changes WHEN NEW.status = 'applied'
       BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END`);
     await assert.rejects(update(f, STUDIO, 'off'), /audit unavailable/);
+    // Reads still answer (with the ceiling) when the first-read pin cannot be written either.
     assert.deepEqual(f.config().allowedEnvs, ['live', 'demo']);
     assert.equal(f.config().tradingMode.custom, false);
     f.database.exec('DROP TRIGGER mode_audit_down');
@@ -448,29 +493,116 @@ test('the mode and its audit row are saved together or not at all', async () => 
   } finally { f.close(); }
 });
 
-test('widening challenges and refusals are limited per user and hour with a Retry-After; narrowing stays possible', async () => {
+
+test('widening challenges and refusals are limited per session and hour with a Retry-After; refusals never block Face ID', async () => {
   const f = fixture('both');
-  const limited = (seconds: number) => (error: Error & { code?: string; statusCode?: number; details?: { retryAfterSeconds?: number } }) =>
-    error.code === 'T212_MODE_RATE_LIMITED' && error.statusCode === 429 && error.details?.retryAfterSeconds === seconds;
+  const limited = (seconds: number, pattern?: RegExp) => (error: Error & { code?: string; statusCode?: number; details?: { retryAfterSeconds?: number } }) =>
+    error.code === 'T212_MODE_RATE_LIMITED' && error.statusCode === 429 && error.details?.retryAfterSeconds === seconds && (!pattern || pattern.test(error.message));
   try {
     await enablePasskey(f);
     await update(f, STUDIO, 'live');
     for (let index = 0; index < 10; index += 1) await f.orders.modeChallenge(1, STUDIO, 'both');
-    await assert.rejects(f.orders.modeChallenge(1, STUDIO, 'both'), limited(3600));
-    f.advance(30 * 60_000);
-    await assert.rejects(f.orders.modeChallenge(1, STUDIO, 'both'), limited(1800));
+    await assert.rejects(f.orders.modeChallenge(1, STUDIO, 'both'), limited(3600, /发起开启下单的次数过多/));
     assert.equal(f.issued(), 10, 'refused issuance adds no row');
-    f.advance(30 * 60_000 + 1000);
+    // Reviews left to time out stop counting: the five still open expire, the five replaced ones remain.
+    f.advance(61_000);
+    for (let index = 0; index < 5; index += 1) await f.orders.modeChallenge(1, STUDIO, 'both');
+    await assert.rejects(f.orders.modeChallenge(1, STUDIO, 'both'), coded('T212_MODE_RATE_LIMITED'));
+    f.advance(60 * 60_000);
 
-    // Refused widenings: ten are audited, the next gets a 429 and no row, and it also blocks new challenges.
+    // Refused widenings: ten are audited and the next gets a 429 and no row, but Face ID can still be asked for.
     for (let index = 0; index < 10; index += 1) await assert.rejects(update(f, STUDIO, 'both'), coded('T212_MODE_PASSKEY_REQUIRED', /需要面容 ID/));
-    await assert.rejects(update(f, STUDIO, 'both'), limited(3600));
-    await assert.rejects(f.orders.modeChallenge(1, STUDIO, 'both'), coded('T212_MODE_RATE_LIMITED', /关闭或减少账户不受影响/));
+    await assert.rejects(update(f, STUDIO, 'both'), limited(3600, /关闭或减少账户不受影响/));
     assert.equal(f.refusals().length, 10);
+    const saved = await widen(f, 'both');
+    assert.equal(saved.method, 'passkey');
     // The caps budget is separate, and narrowing is never limited.
     await f.orders.capsChallenge(1, STUDIO, { env: 'live', maxOrderValue: 600, dailyLimit: 2000 });
     const narrowed = await update(f, null, 'off');
     assert.equal(narrowed.method, 'session');
-    assert.deepEqual(f.changes().map(item => [item.from, item.to]), [['live', 'off'], ['both', 'live']]);
+    assert.deepEqual(f.changes().map(item => [item.from, item.to]), [['both', 'off'], ['live', 'both'], ['both', 'live']]);
+  } finally { f.close(); }
+});
+
+test('only real Face ID failures gate new widening challenges; expired and stale reviews never count', async () => {
+  const f = fixture('both');
+  try {
+    await enablePasskey(f);
+    await update(f, STUDIO, 'off');
+    // Expired reviews: the session's own timing, never counted against it.
+    for (let index = 0; index < 12; index += 1) {
+      const late = await f.orders.modeChallenge(1, STUDIO, 'demo');
+      f.advance(61_000);
+      await assert.rejects(update(f, STUDIO, 'demo', { challengeId: late.challengeId, assertion: signed(late.authentication) }), coded('T212_MODE_CHALLENGE_EXPIRED'));
+    }
+    // Real failures: forged signatures and tampered modes, each over a fresh challenge.
+    for (let index = 0; index < 5; index += 1) {
+      const forged = await f.orders.modeChallenge(1, STUDIO, 'demo');
+      await assert.rejects(update(f, STUDIO, 'demo', { challengeId: forged.challengeId, assertion: signed(forged.authentication, STUDIO, 'cred-studio', 'forged') }), coded('T212_MODE_PASSKEY_FAILED'));
+      const tampered = await f.orders.modeChallenge(1, STUDIO, 'demo');
+      await assert.rejects(update(f, STUDIO, 'both', { challengeId: tampered.challengeId, assertion: signed(tampered.authentication) }), coded('T212_MODE_TAMPERED'));
+      f.advance(61_000);
+    }
+    await assert.rejects(f.orders.modeChallenge(1, STUDIO, 'demo'), coded('T212_MODE_RATE_LIMITED', /验证失败的次数过多/));
+    assert.deepEqual(f.config().allowedEnvs, []);
+  } finally { f.close(); }
+});
+
+test('a stolen session cannot lock the owner out of re-enabling trading, evict or burn the owner’s challenge', async () => {
+  const f = fixture('both');
+  try {
+    await enablePasskey(f);
+    // The thief turns trading off, then burns every budget its session has.
+    await f.orders.updateMode(1, STUDIO, { mode: 'off' }, THIEF);
+    const owner = await f.orders.modeChallenge(1, STUDIO, 'both', OWNER);
+    for (let index = 0; index < 10; index += 1) await assert.rejects(f.orders.updateMode(1, STUDIO, { mode: 'live' }, THIEF), coded('T212_MODE_PASSKEY_REQUIRED'));
+    await assert.rejects(f.orders.updateMode(1, STUDIO, { mode: 'live' }, THIEF), coded('T212_MODE_RATE_LIMITED'));
+    for (let index = 0; index < 10; index += 1) await f.orders.modeChallenge(1, STUDIO, 'live', THIEF);
+    await assert.rejects(f.orders.modeChallenge(1, STUDIO, 'live', THIEF), coded('T212_MODE_RATE_LIMITED'));
+    // Another session's challenge id is neither redeemed nor spent, even with a 'valid' assertion (here from a fresh
+    // client of the thief's session, whose budget is not used up yet).
+    await assert.rejects(f.orders.updateMode(1, STUDIO, { challengeId: owner.challengeId, mode: 'both', assertion: signed(owner.authentication) }, { ...THIEF, client: 'Tailscale 100.64.*.*' }),
+      coded('T212_MODE_CHALLENGE_GONE'));
+    assert.equal(f.calls.verifyAuthentication.length, 0);
+
+    // The owner's challenge survived the thief's ten, and the owner re-enables trading with Face ID.
+    const saved = await f.orders.updateMode(1, STUDIO, { challengeId: owner.challengeId, mode: 'both', assertion: signed(owner.authentication) }, OWNER);
+    assert.deepEqual([saved.mode, saved.method], ['both', 'passkey']);
+    await f.orders.updateMode(1, STUDIO, { mode: 'off' }, OWNER);
+    await f.orders.modeChallenge(1, STUDIO, 'demo', OWNER);
+
+    // Settings shows the owner who asked: every thief row carries its session and masked client.
+    const config = f.orders.config(1, OWNER);
+    const thief = config.modeRefusals.filter(item => item.client === THIEF.client);
+    assert.equal(thief.length, 10);
+    assert.ok(thief.every(item => item.session === 'thief-se' && !item.currentSession));
+    const [narrowedByOwner, widenedByOwner, offByThief] = config.modeChanges;
+    assert.deepEqual([narrowedByOwner.currentSession, widenedByOwner.currentSession, offByThief.currentSession], [true, true, false]);
+    assert.equal(offByThief.client, THIEF.client);
+    const requests = config.stepUpRequests;
+    assert.deepEqual(requests.filter(item => item.currentSession).map(item => [item.kind, item.outcome]), [['mode', 'pending'], ['mode', 'used']]);
+    assert.ok(requests.filter(item => !item.currentSession).every(item => item.session === 'thief-se' && item.client === THIEF.client));
+  } finally { f.close(); }
+});
+
+test('the challenge reply carries the server state, and a widening whose mode changed after the review is stale', async () => {
+  const f = fixture('both');
+  try {
+    await enablePasskey(f);
+    await update(f, STUDIO, 'demo');
+    const challenge = await f.orders.modeChallenge(1, STUDIO, 'both');
+    assert.deepEqual([challenge.from, challenge.to, challenge.adds, challenge.ceiling], ['demo', 'both', ['live'], 'both']);
+    // Another tab turns trading off before Face ID completes: the reviewed "demo → both" no longer describes it.
+    await update(f, STUDIO, 'off');
+    await assert.rejects(update(f, STUDIO, 'both', { challengeId: challenge.challengeId, assertion: signed(challenge.authentication) }), coded('T212_MODE_STALE'));
+    assert.deepEqual(f.config().allowedEnvs, []);
+    assert.equal(f.calls.verifyAuthentication.length, 0);
+    const [stale] = f.refusals();
+    assert.deepEqual([stale.from, stale.to], ['off', 'both']);
+    // A fresh review from the new state goes through.
+    const fresh = await f.orders.modeChallenge(1, STUDIO, 'both');
+    assert.deepEqual([fresh.from, fresh.adds], ['off', ['live', 'demo']]);
+    await update(f, STUDIO, 'both', { challengeId: fresh.challengeId, assertion: signed(fresh.authentication) });
+    assert.deepEqual(f.config().allowedEnvs, ['live', 'demo']);
   } finally { f.close(); }
 });

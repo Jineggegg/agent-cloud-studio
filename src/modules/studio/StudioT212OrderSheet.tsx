@@ -10,7 +10,7 @@ import { toast } from 'sonner';
 import { api, readApiJson } from '@/shared/api';
 import { T212_MODE_LABELS } from '@/shared/constants';
 import type { T212Env, T212OrderSide, T212Position, T212TradingConfig } from '@/shared/types';
-import { decimalInputProblem, parseDecimalInput } from '@/shared/utils';
+import { apiErrorCode, decimalInputProblem, parseDecimalInput } from '@/shared/utils';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 import { StudioT212PasskeyEnroll } from '@/modules/studio/StudioT212Passkeys';
@@ -75,10 +75,6 @@ function exitDelay() {
 }
 function reasonText(reason: unknown, fallback: string) {
   return reason instanceof Error && reason.message ? reason.message : fallback;
-}
-// The server's machine-readable error code (ApiRequestError.code), or '' when there is none.
-function errorCode(reason: unknown) {
-  return reason && typeof reason === 'object' && 'code' in reason && typeof reason.code === 'string' ? reason.code : '';
 }
 
 /**
@@ -195,7 +191,7 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
       setPreview({ ...next, deadline: receivedAt + PREVIEW_WINDOW_MS });
       setSpent(false); setUnknownOutcome(false); setUnknownPendingOrder(null);
     } catch (reason) {
-      const kind = errorCode(reason);
+      const kind = apiErrorCode(reason);
       // Both refusals are handled on their own step: enabling Face ID here, or acknowledging the unknown order.
       if (kind === 'T212_PASSKEY_REQUIRED') { setPasskeyRefused(true); setPreview(null); }
       if (kind === 'T212_ORDER_UNKNOWN_PENDING') { setUnknownPendingOrder(orderKey); setPreview(null); }
@@ -217,7 +213,7 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
       dismiss();
     } catch (reason) {
       const message = reasonText(reason, '下单失败');
-      const unknown = errorCode(reason) === 'T212_ORDER_UNKNOWN';
+      const unknown = apiErrorCode(reason) === 'T212_ORDER_UNKNOWN';
       if (!mounted.current) {
         // The sheet was unmounted anyway (for example by its parent); the outcome must still reach the user.
         toast.error(unknown ? `${SIDE_LABEL[preview.side]} ${preview.ticker} 的订单状态未知` : `${SIDE_LABEL[preview.side]} ${preview.ticker} 没有提交`, {
@@ -228,7 +224,7 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
       // Previews are single use: whatever went wrong, confirming again needs a fresh preview.
       setSpent(true);
       // A narrowed trading mode turns the sheet into its "not enabled" step once the settings are re-read.
-      if (['T212_ORDER_CAP', 'T212_DAILY_CAP', 'T212_TRADING_DISABLED'].includes(errorCode(reason))) void onTradingChange();
+      if (['T212_ORDER_CAP', 'T212_DAILY_CAP', 'T212_TRADING_DISABLED'].includes(apiErrorCode(reason))) void onTradingChange();
       setUnknownOutcome(unknown);
       setError(message);
     } finally { if (mounted.current) setBusy(null); }

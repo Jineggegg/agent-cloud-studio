@@ -2105,10 +2105,23 @@ export type T212AccountCaps = T212CapLimits & {
  * raising with Face ID / Touch ID). `refused`: a raise attempt that was turned down, with its reason; `method` is
  * 'passkey' when it named a challenge. Account and values are null only for a malformed attempt naming no challenge.
  */
-export type T212CapChange = {
+export type T212CapChange = T212StepUpWho & {
   id: number; env: T212Env | null; direction: 'raise' | 'lower'; method: 'passkey' | 'session'; status: 'applied' | 'refused';
   from: T212CapLimits | null; to: T212CapLimits | null; reason: string | null; origin: string | null; createdAt: string;
 };
+/**
+ * Who caused an audited Trading 212 safety entry: a short fragment of the session id, whether it is the session
+ * viewing Settings, and the masked client ("Tailscale 100.64.*.*"). Null on entries recorded before this existed.
+ */
+export type T212StepUpWho = { session: string | null; currentSession: boolean; client: string | null };
+/**
+ * A Face ID / Touch ID challenge handed out for raising caps or adding accounts to the trading mode, newest first in
+ * Settings, so the owner can see which session is asking: open, used, left to expire, or replaced by a newer one of
+ * the same session. `to` is the requested caps or mode (null for an unreadable row).
+ */
+export type T212StepUpRequest = T212StepUpWho & {
+  id: string; outcome: 'pending' | 'used' | 'expired' | 'replaced'; origin: string | null; createdAt: string;
+} & ({ kind: 'caps'; env: T212Env | null; to: T212CapLimits | null } | { kind: 'mode'; to: T212TradingMode | null });
 /**
  * Which Trading 212 accounts may place orders: none, demo only, live only, or both. STUDIO_T212_TRADING on the server
  * is the ceiling; the user's own choice in Settings → 交易安全 can only narrow it (adding an account needs Face ID).
@@ -2121,11 +2134,12 @@ export type T212TradingMode = 'off' | 'demo' | 'live' | 'both';
 export type T212TradingModeState = { mode: T212TradingMode; ceiling: T212TradingMode; custom: boolean; updatedAt: string | null };
 /**
  * One audited trading-mode entry in Settings → 交易安全, newest first. `applied`: a saved change (narrowing with the
- * session, widening with Face ID / Touch ID). `refused`: a widening attempt that was turned down, with its reason;
- * `method` is 'passkey' when it named a challenge. Modes are null only for a malformed attempt naming no challenge.
+ * session, widening with Face ID / Touch ID, or a pin: the mode in force stored as the user's choice, `from` null when
+ * it happened on the first read). `refused`: a widening attempt that was turned down, with its reason; `method` is
+ * 'passkey' when it named a challenge. Modes are null only for a malformed attempt naming no challenge.
  */
-export type T212ModeChange = {
-  id: number; direction: 'widen' | 'narrow'; method: 'passkey' | 'session'; status: 'applied' | 'refused';
+export type T212ModeChange = T212StepUpWho & {
+  id: number; direction: 'widen' | 'narrow' | 'pin'; method: 'passkey' | 'session'; status: 'applied' | 'refused';
   from: T212TradingMode | null; to: T212TradingMode | null; reason: string | null; origin: string | null; createdAt: string;
 };
 /**
@@ -2143,6 +2157,8 @@ export type T212TradingConfig = {
   modeChanges: T212ModeChange[];
   // This user's latest refused widening attempts, newest first.
   modeRefusals: T212ModeChange[];
+  // Face ID challenges handed out for caps or the trading mode, newest first, with the session and client that asked.
+  stepUpRequests: T212StepUpRequest[];
   // Per-account caps; `defaults` come from STUDIO_T212_MAX_ORDER_VALUE / _MAX_DAILY_VALUE, nothing exceeds `ceiling`.
   caps: { ceiling: number; defaults: T212CapLimits; envs: Record<T212Env, T212AccountCaps> };
   // This user's latest applied cap changes, newest first; refused raises are listed apart so they cannot crowd them out.
