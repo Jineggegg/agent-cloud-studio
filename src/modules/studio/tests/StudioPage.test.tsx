@@ -9,6 +9,17 @@ const PROJECTS = [
   { id: 'snr', name: 'SNR 3.0', description: '', workspacePath: '/p/snr', modules: ['agents', 'snr-lab'], providers: ['claude', 'deepseek'], tone: 'sage', glyph: 'activity', links: [], remoteHost: '', remoteDir: '', updatedAt: '1' },
   { id: 'prof', name: '超级教授', description: '', workspacePath: '/p/prof', modules: ['agents'], providers: ['claude', 'codex', 'deepseek'], tone: 'clay', glyph: 'graduation', links: [{ label: '网站', url: 'https://example.test/' }], remoteHost: '', remoteDir: '', updatedAt: '1' },
 ];
+const MINUTE = 60_000;
+const HARNESS = {
+  machines: ['wsl', 'windows'], checkedAt: new Date().toISOString(),
+  tasks: [
+    { id: 'claude:windows:w1', provider: 'claude', machine: 'windows', sessionId: 'w1', title: 'v7 安全收尾', directory: '~/projects/agent-cloud-studio', client: '桌面版', state: 'running', startedAt: new Date(Date.now() - 12 * MINUTE).toISOString(), updatedAt: new Date().toISOString(), summary: null, href: null },
+    { id: 'codex:wsl:c1', provider: 'codex', machine: 'wsl', sessionId: 'c1', title: '排查网络', directory: '~/projects/net', client: '终端', state: 'running', startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), summary: null, href: '/work/native-net/s/c1' },
+    { id: 'codex:windows:c2', provider: 'codex', machine: 'windows', sessionId: 'c2', title: '注册 API Key', directory: 'C:\\Users\\me\\ca', client: '桌面版', state: 'done', startedAt: null, updatedAt: new Date(Date.now() - 5 * MINUTE).toISOString(), summary: '已推送到 GitHub，未合并。', href: null },
+  ],
+};
+const harnessTasks = vi.fn(() => json(HARNESS));
+const launchWorkbench = vi.fn((_provider: string) => json({ url: '/work/bench?new=codex' }));
 const conversations = vi.fn((space: string) => json(space === 'project:prof'
   ? [{ id: 'p1', title: '课程大纲', model: 'deepseek-flash', updated_at: new Date().toISOString(), space }]
   : [{ id: 'd1', title: '通用问题', model: 'deepseek-flash', updated_at: new Date().toISOString(), space }]));
@@ -25,7 +36,8 @@ vi.mock('@/shared/api', async (original) => ({
       conversations: (space: string) => conversations(space),
       conversation: vi.fn(),
       closeSnr: () => json({}),
-      projects: { list: () => json(PROJECTS), sessions: () => json([]) },
+      projects: { list: () => json(PROJECTS), sessions: () => json([]), launchWorkbench: (provider: string) => launchWorkbench(provider) },
+      harness: { tasks: () => harnessTasks() },
       workbench: { hubLinks: () => json([{ hubId: 'prof', projectId: 'native-prof' }]) },
       trading212: { status: () => json([{ env: 'live', configured: false, source: null }]) },
       quota: () => json([{ provider: 'claude', available: true, windows: [{ id: 'five_hour', label: '5 小时', usedPercent: 42, windowMinutes: 300, resetsAt: new Date(Date.now() + 7200000).toISOString() }], balances: [], source: 'statusline', observedAt: new Date().toISOString(), stale: false }]),
@@ -39,7 +51,8 @@ if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => 
 
 const { StudioPage } = await import('@/modules/studio/StudioPage');
 
-beforeEach(() => { localStorage.clear(); conversations.mockClear(); });
+// Studio opens in Harness once per launch by default; most tests start on the home screen with that turned off.
+beforeEach(() => { localStorage.clear(); localStorage.setItem('studio-harness-on-launch', 'off'); sessionStorage.clear(); conversations.mockClear(); });
 afterEach(cleanup);
 
 function renderStudio(path = '/') {
@@ -115,6 +128,53 @@ test('the gear in the home screen corner opens the settings app; AJ 出口 sits 
   expect(within(apps).getByRole('button', { name: 'AJ 出口，未开启' })).toBeTruthy();
   fireEvent.click(screen.getByTitle('设置'));
   expect(await screen.findByRole('region', { name: '设置' })).toBeTruthy();
+});
+
+test('opening Studio lands in Harness once per launch: both agents\' tasks on WSL and Windows, and a new session with either', async () => {
+  localStorage.removeItem('studio-harness-on-launch');
+  renderStudio();
+  const harness = await screen.findByRole('region', { name: 'Harness' });
+  expect(await within(harness).findByText('2 个任务在跑 · WSL 1 · Windows 1')).toBeTruthy();
+  const running = within(harness).getByRole('region', { name: '正在运行' });
+  expect(within(running).getByText('v7 安全收尾')).toBeTruthy();
+  expect(within(running).getByText('Claude Code · Windows · 桌面版')).toBeTruthy();
+  expect(within(running).getByText('已运行 12 分钟')).toBeTruthy();
+  // A WSL session Studio knows opens in the workbench; a Windows one is shown as it is.
+  expect(within(running).getByRole('link', { name: /排查网络/ }).getAttribute('href')).toBe('/work/native-net/s/c1');
+  expect(within(running).queryByRole('link', { name: /v7 安全收尾/ })).toBeNull();
+  const recent = within(harness).getByRole('region', { name: '最近' });
+  expect(within(recent).getByText('已推送到 GitHub，未合并。')).toBeTruthy();
+  expect(within(recent).getByText('ca')).toBeTruthy();
+
+  fireEvent.click(within(harness).getByRole('button', { name: /Codex/ }));
+  await waitFor(() => expect(launchWorkbench).toHaveBeenCalledWith('codex'));
+});
+
+test('after launching into Harness, its back button reaches the home screen and stays there', async () => {
+  localStorage.removeItem('studio-harness-on-launch');
+  renderStudio();
+  const harness = await screen.findByRole('region', { name: 'Harness' });
+  fireEvent.click(within(harness).getByRole('button', { name: '返回主屏幕' }));
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'Harness' })).toBeNull());
+  expect(screen.getByRole('navigation', { name: '应用' })).toBeTruthy();
+  await new Promise(resolve => setTimeout(resolve, 50));
+  expect(screen.queryByRole('region', { name: 'Harness' })).toBeNull();
+});
+
+test('Harness waits on the home screen as a spark tile when the device turns the launch off, and only the first launch redirects', async () => {
+  renderStudio();
+  const apps = await screen.findByRole('navigation', { name: '应用' });
+  expect(screen.queryByRole('region', { name: 'Harness' })).toBeNull();
+  const tile = within(apps).getByRole('button', { name: 'Harness' });
+  expect(tile.querySelector('svg[data-icon="spark"]')).toBeTruthy();
+  cleanup();
+
+  // Turned on, but this launch already went through Harness (a reload or a later visit to the home screen).
+  localStorage.removeItem('studio-harness-on-launch');
+  sessionStorage.setItem('studio-harness-launched', '1');
+  renderStudio();
+  expect(await screen.findByRole('navigation', { name: '应用' })).toBeTruthy();
+  expect(screen.queryByRole('region', { name: 'Harness' })).toBeNull();
 });
 
 test('SNR opens on its K-line lab and a deep link works without the home screen', async () => {

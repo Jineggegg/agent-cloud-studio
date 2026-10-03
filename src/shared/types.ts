@@ -1886,7 +1886,7 @@ export type StudioStatus = {
   snrRemoteUrl: string | null;
 };
 /** Built-in home-screen apps that are not projects; `workspace` is the 工作台 tile and routes to the workbench (/work). */
-export type StudioSystemApp = 'deepseek' | 'workspace' | 'connections' | 'github' | 'memory';
+export type StudioSystemApp = 'deepseek' | 'workspace' | 'connections' | 'github' | 'memory' | 'harness';
 /** Icon glyphs a home-screen tile can show; the server accepts exactly this list. */
 export type StudioGlyph = 'activity' | 'graduation' | 'candles' | 'mail' | 'folder' | 'terminal' | 'sparkles' | 'book' | 'chart' | 'globe';
 /** One icon on the Studio home screen: a project (`project:<id>`) or a system app. */
@@ -2702,4 +2702,28 @@ export type StudioRevokeAllResult = {
   success: boolean;
   revoked: { sessions: boolean; webSockets: number; apiKeys: number; snrAccess: number; pushSubscriptions: number; handoffCodes: number };
 };
+// ---------------------------
+//----------------- STUDIO HARNESS ------------
+/**
+ * One Claude Code or Codex session on the owner's computer, as GET /api/studio/harness/tasks lists it for the Harness
+ * app. `machine` is the side of WSL it runs on; `running` is mid-turn, `idle` a Claude Code session still open and
+ * waiting, `done` a Codex task finished in the last few hours. `href` opens it in the workbench (WSL sessions Studio has
+ * indexed only); `client` names the app it runs in (桌面版, 终端, VS Code, Studio…) when known.
+ */
+export type StudioHarnessTask = {
+  id: string;
+  provider: 'claude' | 'codex';
+  machine: 'wsl' | 'windows';
+  sessionId: string;
+  title: string;
+  directory: string | null;
+  client: string | null;
+  state: 'running' | 'idle' | 'done';
+  startedAt: string | null;
+  updatedAt: string | null;
+  summary: string | null;
+  href: string | null;
+};
+/** The Harness app's poll result: the sessions (running first), which machines were read, and when. */
+export type StudioHarnessTasks = { tasks: StudioHarnessTask[]; machines: StudioHarnessTask['machine'][]; checkedAt: string };
 // ---------------------------

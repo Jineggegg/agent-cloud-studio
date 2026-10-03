@@ -20,6 +20,8 @@ test('built-in products with an official mark show it; everything else keeps a T
     ['claude', 'sparkles', { brand: 'claude', icon: null }],
     // Codex is OpenAI's.
     ['codex', 'terminal', { brand: 'openai', icon: null }],
+    // Harness wears Studio's own logo, the spark.
+    ['harness', 'sparkles', { brand: null, icon: 'spark' }],
     // Built-in apps without a published mark, and every project, keep their glyph.
     ['memory', 'book', { brand: null, icon: 'book' }],
     ['aj-exit', 'globe', { brand: null, icon: 'world' }],

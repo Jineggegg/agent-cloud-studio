@@ -215,7 +215,7 @@ export function LaunchScreen({ label }: { label: string }) {
 /**
  * The Studio's logo as its app icon shows it (public/studio-icon.svg): the four-pointed spark in its halo, drawing
  * itself in on a dark tile. Used here by the error screen, by the auth module's sign-in layout and by the studio
- * module's Settings → 关于本机 header.
+ * module's Settings → 关于本机 header and Harness app header.
  */
 export function LaunchMark() {
   return (
