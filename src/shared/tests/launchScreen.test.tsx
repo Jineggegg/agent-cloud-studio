@@ -1,8 +1,18 @@
 import { act, cleanup, render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest';
 
-import indexHtml from '../../../index.html?raw';
 import { LaunchErrorBoundary, LaunchScreen, LaunchSplashRelease } from '@/shared/ui/LaunchScreen';
+
+// index.html sits at the repository root, outside the @/ source root, so it is read from disk rather than
+// imported. The frontend program has no Node types, so fs is loaded through a specifier TypeScript does not
+// resolve, as in serviceWorker.test.ts.
+let indexHtml = '';
+beforeAll(async () => {
+  const fsModule = 'node:fs';
+  const { readFileSync } = (await import(/* @vite-ignore */ fsModule)) as { readFileSync: (path: string, encoding: 'utf8') => string };
+  const testsDir = decodeURIComponent(import.meta.url.replace(/^file:\/\//, '').replace(/^\/([A-Za-z]:)/, '$1')).replace(/\/[^/]*$/, '');
+  indexHtml = readFileSync(`${testsDir}/../../../index.html`, 'utf8');
+});
 
 // The splash exactly as index.html ships it: backdrop, star and hint.
 function mountSplash() {
