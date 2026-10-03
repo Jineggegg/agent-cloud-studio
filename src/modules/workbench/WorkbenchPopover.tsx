@@ -36,9 +36,12 @@ function place(anchor: DOMRect, width: number, align: 'start' | 'end'): Placemen
  * to its trigger. Rendered in a portal over a transparent layer, so a tap outside closes it and no scrolling
  * ancestor clips it; Escape closes it and returns focus to the trigger, and arrow keys move between menu items.
  */
-export function WorkbenchPopover({ open, anchor, onClose, label, role = 'menu', align = 'start', width = 260, children }: {
+export function WorkbenchPopover({ open, anchor, onClose, label, role = 'menu', align = 'start', width = 260, initialFocus = 'auto', children }: {
   open: boolean; anchor: HTMLElement | null; onClose: () => void; label: string;
-  role?: 'menu' | 'dialog'; align?: 'start' | 'end'; width?: number; children: ReactNode;
+  role?: 'menu' | 'dialog'; align?: 'start' | 'end'; width?: number;
+  // 'panel' keeps focus on the panel itself (the project switcher opened by a finger that may still slide).
+  initialFocus?: 'auto' | 'panel';
+  children: ReactNode;
 }) {
   // Where the panel sits, measured from the trigger when it opens and when the window resizes.
   const [placement, setPlacement] = useState<Placement | null>(null);
@@ -57,13 +60,13 @@ export function WorkbenchPopover({ open, anchor, onClose, label, role = 'menu', 
     // Focus starts inside the panel (a search field or the first item) and goes back to the trigger afterwards. A
     // touch-only device skips the search field: focusing it would raise the soft keyboard over the list on every tap.
     const frame = window.requestAnimationFrame(() => {
-      const target = hasPreciseInput()
+      const target = initialFocus === 'panel' ? panel.current : hasPreciseInput()
         ? panel.current?.querySelector<HTMLElement>('[data-autofocus], [role="menuitem"], button, input, a[href]')
         : panel.current?.querySelector<HTMLElement>('[role="menuitem"], [role="option"], [data-popover-item], button, a[href]') ?? panel.current;
       target?.focus();
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [open, placement]);
+  }, [open, placement, initialFocus]);
 
   const close = () => {
     onClose();

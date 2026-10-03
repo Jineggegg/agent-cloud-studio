@@ -274,6 +274,8 @@ export const api = {
     // the project app's links to existing sessions. Read-only; it never registers a directory.
     workbench: {
       hubLinks: () => get('/api/studio/workbench/hub-links'),
+      // The project switcher's marks: { projects: { [ideProjectId]: { running, attention, attentionSessionIds } } }.
+      activity: () => get('/api/studio/workbench/activity'),
       // Conversations handed between providers mid-way: the project's chains, the handoff summary of the session
       // being left (with the block that seeds the next one), recording the next session, renaming and forgetting.
       threads: (projectId: string) => get(`/api/studio/workbench/threads${query({ projectId })}`),

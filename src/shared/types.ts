@@ -2336,6 +2336,13 @@ export type WorkbenchLayout = { sidebarCollapsed: boolean; inspectorOpen: boolea
 export type WorkbenchSessionGroup = { id: 'today' | 'yesterday' | 'week' | 'earlier'; label: string; items: WorkbenchSessionItem[] };
 /** An IDE project in the workbench switcher with the Studio hub project whose directory matches it, if any. */
 export type WorkbenchProjectEntry = { project: Project; hub: HubProject | null };
+/**
+ * One project's marks in the workbench project switcher (GET /api/studio/workbench/activity, keyed by IDE project
+ * id): how many sessions run right now (agent turns, background work, DeepSeek replies) and how many need the owner
+ * (an approval or question, a failed or interrupted run, a run that finished unseen), with those sessions' ids so the
+ * history can dot their rows. Projects with neither are absent from the map.
+ */
+export type WorkbenchProjectActivity = { running: number; attention: number; attentionSessionIds: string[] };
 /** Width class of the workbench viewport: phones get sheets, tablets an overlay inspector, desktops dock both columns. */
 export type WorkbenchViewport = 'phone' | 'tablet' | 'desktop';
 /** A local hub project and the IDE project registered for its directory (null until the first launch registers one). */
