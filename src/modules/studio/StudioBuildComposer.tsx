@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
-import { Check, Copy, ShieldAlert, Sparkles } from 'lucide-react';
 
+import { IconCheck, IconCopy, IconShieldExclamation, IconSparkles } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import type { StudioBuildCreated, StudioBuildEnvironment, StudioGlyph } from '@/shared/types';
 import { StudioBuildProgress } from '@/modules/studio/StudioBuildProgress';
@@ -81,7 +81,7 @@ function RestrictedNotice({ environment }: { environment: StudioBuildEnvironment
   const enableable = installable || environment.available === true;
   const situation = installable ? '服务器还没装沙箱组件，' : enableable ? '沙箱默认关闭，要先确认它在这台服务器上真的有效。' : '这台服务器不支持沙箱，';
   return <div className="build-env-notice" role="note" aria-labelledby="build-env-title">
-    <ShieldAlert size={18} aria-hidden="true" />
+    <IconShieldExclamation size={18} aria-hidden="true" />
     <div>
       <strong id="build-env-title" className="build-env-title">受限模式</strong>
       <p>{`${situation}${RESTRICTED_LIMITS}`}</p>
@@ -90,7 +90,7 @@ function RestrictedNotice({ environment }: { environment: StudioBuildEnvironment
         <div className="build-env-command">
           <code>{SANDBOX_INSTALL}</code>
           <button type="button" className="icon-button plain" aria-label={copied ? '已复制' : '复制命令'} title="复制命令" onClick={() => void copy()}>
-            {copied ? <Check size={16} className="copied-pop" aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
+            {copied ? <IconCheck size={16} className="copied-pop" aria-hidden="true" /> : <IconCopy size={16} aria-hidden="true" />}
           </button>
         </div>
       </>}
@@ -191,7 +191,7 @@ export function StudioBuildComposer({ onStarted, onCancel }: { onStarted: (creat
     <div className="project-form-actions">
       <button className="ios-button" type="button" disabled={busy} onClick={onCancel}>取消</button>
       <button className="ios-button filled" type="submit" disabled={busy || !ready}>
-        {busy ? <StudioSpinner size={16} /> : <Sparkles size={17} aria-hidden="true" />}{busy ? '正在准备…' : '开始开发'}</button>
+        {busy ? <StudioSpinner size={16} /> : <IconSparkles size={17} aria-hidden="true" />}{busy ? '正在准备…' : '开始开发'}</button>
     </div>
   </form>;
 }

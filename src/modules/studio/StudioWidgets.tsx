@@ -2,11 +2,11 @@ import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'r
 import type { KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject, SyntheticEvent } from 'react';
 import NumberFlow from '@number-flow/react';
 import { AnimatePresence, m } from 'motion/react';
-import { ArrowDownRight, ArrowUpRight, Eye, EyeOff, Minus } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { DndContext, DragOverlay, useDndContext } from '@dnd-kit/core';
 import { SortableContext } from '@dnd-kit/sortable';
 
+import { IconArrowDownRight, IconArrowUpRight, IconEye, IconEyeOff, IconMinus } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import type { QuotaDisplayItem, QuotaDisplayMode, StudioGitHubInbox, StudioQuotaSnapshot, StudioSnr, T212Overview, T212Point } from '@/shared/types';
 import { useQuotaPreferences } from '@/shared/hooks/useQuotaPreferences';
@@ -134,16 +134,17 @@ function money(value: number, currency: string, digits = 2) {
  * Claude or Codex: a ring for each item the owner shows (one on small, up to three otherwise), and on large a row
  * per shown item with its reset time and figure. `items` are this provider's shown items, already filtered.
  */
-function QuotaWidget({ snapshot, items, mode, size, title, tone, glyph, still }: {
+function QuotaWidget({ snapshot, items, mode, size, title, product, tone, glyph, still }: {
   snapshot: StudioQuotaSnapshot | undefined; items: QuotaDisplayItem[]; mode: QuotaDisplayMode;
-  size: WidgetSize; title: string; tone: string; glyph: string; still: boolean;
+  // `product` (claude, codex) gives the header its official mark (brandIcons).
+  size: WidgetSize; title: string; product: WidgetType; tone: string; glyph: string; still: boolean;
 }) {
   const now = useNow(30_000);
   const rings = items.filter(item => item.usedPercent !== null).slice(0, size === 'small' ? 1 : 3);
   const reported = Boolean(snapshot?.windows.length || snapshot?.credits?.length);
   return <>
     <header className="widget-head">
-      <StudioTileIcon tone={tone} glyph={glyph} size={14} variant="small" />
+      <StudioTileIcon tone={tone} glyph={glyph} product={product} size={14} variant="small" />
       <span>{title}</span>
       {snapshot && <span className={`widget-source ${snapshot.stale ? 'is-stale' : ''}`}>{snapshot.stale ? '可能过期' : SOURCE_LABEL[snapshot.source]}</span>}
     </header>
@@ -178,7 +179,7 @@ function DeepSeekWidget({ snapshot, shown, size, still }: {
 }) {
   const balance = snapshot?.balances[0];
   return <>
-    <header className="widget-head"><StudioTileIcon tone="slate" glyph="sparkles" size={14} variant="small" /><span>DeepSeek</span></header>
+    <header className="widget-head"><StudioTileIcon tone="slate" glyph="sparkles" product="deepseek" size={14} variant="small" /><span>DeepSeek</span></header>
     {!snapshot ? <div className="widget-loading" aria-label="读取中"><span /><span /></div>
       : !snapshot.available || !balance ? <p className="widget-note" title={snapshot.note}>{snapshot.note ?? '在设置里保存 API 密钥后显示余额'}</p>
         : !shown ? <p className="widget-note">{ALL_HIDDEN_NOTE}</p>
@@ -246,7 +247,7 @@ function TradingWidget({ size, reading: { overview, points }, still, masked, onT
     <header className="widget-head"><StudioTileIcon tone="moss" glyph="candles" size={14} variant="small" /><span>Trading 212</span>
       {overview && overview !== 'off' && <button type="button" className="widget-eye" aria-pressed={masked} aria-label={masked ? '显示金额' : '隐藏金额'}
         tabIndex={still ? -1 : undefined} onClick={onToggleMask} {...stopDragStart}>
-        {masked ? <EyeOff size={15} aria-hidden="true" /> : <Eye size={15} aria-hidden="true" />}</button>}
+        {masked ? <IconEyeOff size={15} aria-hidden="true" /> : <IconEye size={15} aria-hidden="true" />}</button>}
     </header>
     {overview === null ? <div className="widget-loading" aria-label="读取中"><span /><span /></div>
       : overview === 'off' ? <p className="widget-note">未接入账户</p>
@@ -254,7 +255,7 @@ function TradingWidget({ size, reading: { overview, points }, still, masked, onT
           <div className="widget-figure">
             {masked ? <strong className="widget-masked">{money(0, overview.currency, 0).replace(/[\d.,\s]/g, '')} {MASKED}</strong>
               : <strong><NumberFlow value={overview.totalValue} format={{ style: 'currency', currency: overview.currency || 'GBP', maximumFractionDigits: size === 'small' ? 0 : 2 }} locales="zh-CN" animated={!still} /></strong>}
-            {masked ? <small>金额已隐藏</small> : change ? <small className={`widget-delta ${change.amount >= 0 ? 'gain' : 'loss'}`}>{change.amount >= 0 ? <ArrowUpRight size={13} aria-hidden="true" /> : <ArrowDownRight size={13} aria-hidden="true" />}
+            {masked ? <small>金额已隐藏</small> : change ? <small className={`widget-delta ${change.amount >= 0 ? 'gain' : 'loss'}`}>{change.amount >= 0 ? <IconArrowUpRight size={13} aria-hidden="true" /> : <IconArrowDownRight size={13} aria-hidden="true" />}
               {change.amount >= 0 ? '+' : '−'}{Math.abs(change.amount).toFixed(2)}（{Math.abs(change.percent).toFixed(2)}%）今日</small> : <small>今日变化记录中</small>}
             {size !== 'small' && <Sparkline points={points} />}
           </div>
@@ -301,7 +302,7 @@ function GitHubWidget({ size, reading: { inbox, problem }, still }: { size: Widg
   </ul>;
   return <>
     <header className="widget-head">
-      <StudioTileIcon tone="graphite" glyph="pull-request" size={14} variant="small" /><span>GitHub</span>
+      <StudioTileIcon tone="graphite" glyph="pull-request" product="github" size={14} variant="small" /><span>GitHub</span>
       {inbox && problem ? <span className="widget-source is-stale" title={problem}>可能过期</span>
         : size === 'medium' && pulls.length ? <span className="widget-source">共 {pulls.length} 个</span>
           : review > 0 && <span className="widget-source">{review} 个待审</span>}
@@ -436,7 +437,7 @@ const SortableWidget = forwardRef<HTMLDivElement, {
         onClick={event => onOpen((event.currentTarget.parentElement ?? event.currentTarget).getBoundingClientRect())} />}
       {children}
       {editing && <div className="widget-edit" role="group" aria-label={`调整 ${name}`} {...stopDragStart}>
-        <button type="button" className="home-remove widget-remove" aria-label={`移除 ${name}`} onClick={onRemove}><Minus size={14} strokeWidth={3} aria-hidden="true" /></button>
+        <button type="button" className="home-remove widget-remove" aria-label={`移除 ${name}`} onClick={onRemove}><IconMinus size={14} strokeWidth={3} aria-hidden="true" /></button>
         <WidgetResizeHandle name={name} size={widget.size} onResize={onResize} />
       </div>}
     </article>
@@ -539,9 +540,9 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, onOpe
   const itemsOf = (provider: StudioQuotaSnapshot['provider']) => shownQuotaItems.filter(item => item.provider === provider);
   const renderBody = (widget: WidgetConfig, still: boolean) => <>
     {widget.type === 'claude' && <QuotaWidget snapshot={find('claude')} items={itemsOf('claude')} mode={quotaPreferences.mode}
-      size={widget.size} title="Claude Code" tone="clay" glyph="sparkles" still={still} />}
+      size={widget.size} title="Claude Code" product="claude" tone="clay" glyph="sparkles" still={still} />}
     {widget.type === 'codex' && <QuotaWidget snapshot={find('codex')} items={itemsOf('codex')} mode={quotaPreferences.mode}
-      size={widget.size} title="Codex" tone="graphite" glyph="terminal" still={still} />}
+      size={widget.size} title="Codex" product="codex" tone="graphite" glyph="terminal" still={still} />}
     {widget.type === 'deepseek' && <DeepSeekWidget snapshot={find('deepseek')} shown={itemsOf('deepseek').length > 0} size={widget.size} still={still} />}
     {widget.type === 'trading212' && <TradingWidget size={widget.size} reading={trading} still={still} masked={masked} onToggleMask={toggleMask} />}
     {widget.type === 'snr' && <SnrWidget snr={snr} size={widget.size} />}
@@ -562,7 +563,7 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, onOpe
       <header><h2 id="studio-widget-gallery">小组件</h2><button type="button" className="ios-button tinted" autoFocus onClick={onGalleryClose}>完成</button></header>
       <div className="ios-list">
         {CATALOG.map(entry => <div className="ios-row" key={entry.type}>
-          <StudioTileIcon tone={entry.tone} glyph={entry.glyph} size={17} variant="small" />
+          <StudioTileIcon tone={entry.tone} glyph={entry.glyph} product={entry.type} size={17} variant="small" />
           <span className="ios-row-body"><strong>{entry.name}</strong><small>{entry.caption}</small></span>
           {SIZES.map(size => <button type="button" key={size} className="ios-button tinted" aria-label={`添加${SIZE_LABEL[size]}号 ${entry.name}`} onClick={() => add(entry.type, size)}>{SIZE_LABEL[size]}</button>)}
         </div>)}

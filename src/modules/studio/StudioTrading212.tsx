@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowDownRight, ArrowUpRight, ChevronRight, Minus, RefreshCw, ShieldCheck } from 'lucide-react';
 
+import { IconArrowDownRight, IconArrowUpRight, IconChevronRight, IconMinus, IconRefresh, IconShieldCheck } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import { T212_MODE_LABELS } from '@/shared/constants';
 import type { T212Activity, T212Change, T212Env, T212OrderSide, T212Overview, T212Point, T212Status, T212TradingConfig } from '@/shared/types';
@@ -27,7 +27,7 @@ function signed(format: (value: number) => string, value: number) {
 function Delta({ change, format, label }: { change: T212Change | null; format: (value: number) => string; label: string }) {
   if (!change) return <span className="t212-delta muted">{label} · 记录不足</span>;
   const direction = change.amount > 0 ? 'gain' : change.amount < 0 ? 'loss' : 'flat';
-  const Icon = direction === 'gain' ? ArrowUpRight : direction === 'loss' ? ArrowDownRight : Minus;
+  const Icon = direction === 'gain' ? IconArrowUpRight : direction === 'loss' ? IconArrowDownRight : IconMinus;
   return <span className={`t212-delta ${direction}`}>
     <Icon size={16} className="t212-mark" aria-hidden="true" />
     {signed(format, change.amount)}（{change.percent >= 0 ? '+' : '−'}{Math.abs(change.percent).toFixed(2)}%）<small>{label}</small>
@@ -111,7 +111,7 @@ export function StudioTrading212() {
   if (status && !configured.length) {
     return <section className="ios-section first">
       <div className="ios-list"><div className="ios-empty">
-        <ShieldCheck size={30} strokeWidth={1.5} aria-hidden="true" />
+        <IconShieldCheck size={30} strokeWidth={1.5} aria-hidden="true" />
         <strong>尚未接入 Trading 212</strong>
         <span>在服务器的 .env 里设置 STUDIO_T212_ENV_FILE，指向包含 TRADING212_API_KEY 和 TRADING212_API_SECRET 的文件，然后重启 Studio。</span>
       </div></div>
@@ -133,15 +133,15 @@ export function StudioTrading212() {
       {/* Which accounts may place orders (Settings → 交易安全); without trading settings the view is read-only. */}
       {mode
         ? <span className={`status-badge ${mode === 'off' ? '' : mode === 'demo' ? 'good' : 'warn'}`} title="允许下单的账户，在「设置 → 交易安全」修改">
-          <ShieldCheck size={14} aria-hidden="true" /><span><span className="t212-phone-hidden">下单 · </span>{T212_MODE_LABELS[mode]}</span>
+          <IconShieldCheck size={14} aria-hidden="true" /><span><span className="t212-phone-hidden">下单 · </span>{T212_MODE_LABELS[mode]}</span>
         </span>
-        : <span className="status-badge"><ShieldCheck size={14} aria-hidden="true" />只读 · {env === 'live' ? '实盘' : '模拟'}</span>}
+        : <span className="status-badge"><IconShieldCheck size={14} aria-hidden="true" />只读 · {env === 'live' ? '实盘' : '模拟'}</span>}
       {trading && current && (tradable
         ? <button type="button" className="ios-button tinted t212-trade-button" onClick={() => setOrderSheet({})}>交易</button>
         : <Link to={SETTINGS_TRADING_PATH} className="ios-button t212-trade-button t212-enable-link" aria-label={`${envLabel}未开启下单，去设置开启`}>
-          <span>去设置<span className="t212-phone-hidden">开启</span></span><ChevronRight size={16} aria-hidden="true" />
+          <span>去设置<span className="t212-phone-hidden">开启</span></span><IconChevronRight size={16} aria-hidden="true" />
         </Link>)}
-      <button type="button" className={`icon-button ${loading ? 'refreshing' : ''}`} aria-label="刷新" title="刷新" disabled={loading} onClick={() => void load(env)}><RefreshCw size={18} className="refresh-icon" aria-hidden="true" /></button>
+      <button type="button" className={`icon-button ${loading ? 'refreshing' : ''}`} aria-label="刷新" title="刷新" disabled={loading} onClick={() => void load(env)}><IconRefresh size={18} className="refresh-icon" aria-hidden="true" /></button>
     </div>
 
     {error && <p className="studio-feedback error" role="alert">{error}</p>}
@@ -195,7 +195,7 @@ export function StudioTrading212() {
               </span>
               <span className="t212-position-figures">
                 <strong>{format(position.value)}</strong>
-                <span className={`t212-delta ${direction}`}>{direction === 'gain' ? <ArrowUpRight size={14} className="t212-mark" aria-hidden="true" /> : direction === 'loss' ? <ArrowDownRight size={14} className="t212-mark" aria-hidden="true" /> : null}{signed(format, position.pnl)}（{pct >= 0 ? '+' : '−'}{Math.abs(pct).toFixed(1)}%）</span>
+                <span className={`t212-delta ${direction}`}>{direction === 'gain' ? <IconArrowUpRight size={14} className="t212-mark" aria-hidden="true" /> : direction === 'loss' ? <IconArrowDownRight size={14} className="t212-mark" aria-hidden="true" /> : null}{signed(format, position.pnl)}（{pct >= 0 ? '+' : '−'}{Math.abs(pct).toFixed(1)}%）</span>
                 <small>占比 {(position.value / total * 100).toFixed(1)}%</small>
               </span>
             </div>;

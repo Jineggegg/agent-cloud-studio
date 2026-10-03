@@ -1,7 +1,7 @@
 import { Fragment, useState } from 'react';
 import type { ReactNode } from 'react';
-import { ArrowDownRight, ArrowUpRight, KeyRound, Pin, ShieldX } from 'lucide-react';
 
+import { IconArrowDownRight, IconArrowUpRight, IconKey, IconPin, IconShieldX } from '@/modules/studio/icons/tabler';
 import { T212_ENV_LABELS, T212_MODE_LABELS } from '@/shared/constants';
 import type { T212StepUpRequest, T212StepUpWho } from '@/shared/types';
 import '@/modules/studio/studio-orders.css';
@@ -57,7 +57,7 @@ export function StudioT212HistoryRow({ heading, values, mark, refused, method, c
   heading: string; values: string; mark: 'up' | 'down' | 'pin'; refused: boolean; method: 'passkey' | 'session'; createdAt: string;
   reason: string | null; who: T212StepUpWho;
 }) {
-  const Icon = refused ? ShieldX : mark === 'up' ? ArrowUpRight : mark === 'pin' ? Pin : ArrowDownRight;
+  const Icon = refused ? IconShieldX : mark === 'up' ? IconArrowUpRight : mark === 'pin' ? IconPin : IconArrowDownRight;
   const tone = refused ? 'tone-rose' : mark === 'up' ? 'tone-clay' : mark === 'pin' ? 'tone-slate' : 'tone-sage';
   const origin = whoText(who);
   return <div className="ios-row" role="listitem">
@@ -84,7 +84,7 @@ export function StudioT212StepUpRequestList({ requests }: { requests: T212StepUp
       : `开启下单${request.to ? ` · 改为「${T212_MODE_LABELS[request.to]}」` : ''}`;
     const origin = whoText(request);
     return <div className="ios-row" role="listitem">
-      <span className={`home-icon small ${request.currentSession ? 'tone-slate' : 'tone-clay'}`} aria-hidden="true"><KeyRound size={18} strokeWidth={1.8} /></span>
+      <span className={`home-icon small ${request.currentSession ? 'tone-slate' : 'tone-clay'}`} aria-hidden="true"><IconKey size={18} strokeWidth={1.8} /></span>
       <span className="ios-row-body">
         <strong>{target}</strong>
         <small>{OUTCOME_LABEL[request.outcome]} · {when(request.createdAt)}</small>

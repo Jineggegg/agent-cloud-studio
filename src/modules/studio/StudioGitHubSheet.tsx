@@ -3,8 +3,8 @@ import type { KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, m } from 'motion/react';
 import { toast } from 'sonner';
-import { ChevronDown, ChevronLeft, CircleCheck, CircleDashed, CircleMinus, CircleX, ExternalLink, GitMerge, RotateCw, TriangleAlert } from 'lucide-react';
 
+import { IconAlertTriangle, IconChevronDown, IconChevronLeft, IconCircleCheck, IconCircleDashed, IconCircleMinus, IconCircleX, IconExternalLink, IconGitMerge, IconRotateClockwise } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import { readableErrorMessage } from '@/shared/utils';
 import type { StudioGitHubCheck, StudioGitHubFile, StudioGitHubMergeMethod, StudioGitHubMergeResult, StudioGitHubPull, StudioGitHubPullDetail } from '@/shared/types';
@@ -113,10 +113,10 @@ function MergeConfluence({ head, base, sha, phase }: { head: string; base: strin
 }
 
 function CheckIcon({ state }: { state: StudioGitHubCheck['state'] }) {
-  if (state === 'failing') return <CircleX size={18} className="gh-check-icon failing" aria-hidden="true" />;
-  if (state === 'pending') return <CircleDashed size={18} className="gh-check-icon pending" aria-hidden="true" />;
-  if (state === 'skipped') return <CircleMinus size={18} className="gh-check-icon skipped" aria-hidden="true" />;
-  return <CircleCheck size={18} className="gh-check-icon passing" aria-hidden="true" />;
+  if (state === 'failing') return <IconCircleX size={18} className="gh-check-icon failing" aria-hidden="true" />;
+  if (state === 'pending') return <IconCircleDashed size={18} className="gh-check-icon pending" aria-hidden="true" />;
+  if (state === 'skipped') return <IconCircleMinus size={18} className="gh-check-icon skipped" aria-hidden="true" />;
+  return <IconCircleCheck size={18} className="gh-check-icon passing" aria-hidden="true" />;
 }
 const CHECK_STATE_LABEL: Record<StudioGitHubCheck['state'], string> = { failing: '失败', pending: '运行中', passing: '通过', skipped: '已跳过' };
 
@@ -312,16 +312,16 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
 
   const header = <header className="gh-sheet-header">
     {step === 'merge'
-      ? <button type="button" className="gh-sheet-nav" disabled={merging} onClick={() => go('detail', -1)}><ChevronLeft size={22} aria-hidden="true" />返回</button>
+      ? <button type="button" className="gh-sheet-nav" disabled={merging} onClick={() => go('detail', -1)}><IconChevronLeft size={22} aria-hidden="true" />返回</button>
       : <button type="button" className="gh-sheet-nav" disabled={merging} onClick={close}>关闭</button>}
     <h2 id="gh-sheet-title">{step === 'merge' ? '合并' : step === 'done' ? (result?.outcome === 'queued' ? '已排队' : '已合并') : `#${pull.number}`}</h2>
     <div className="gh-sheet-actions">
       {step === 'detail' && shown && <button type="button" className={`icon-button gh-sheet-refresh ${refreshing ? 'refreshing' : ''}`}
         aria-busy={refreshing || undefined} aria-label="刷新 PR" title="刷新" onClick={() => void refresh()}>
-        <RotateCw size={19} aria-hidden="true" />
+        <IconRotateClockwise size={19} aria-hidden="true" />
       </button>}
       <a className="icon-button" href={pull.url} target="_blank" rel="noreferrer" aria-label="在 GitHub 上打开" title="在 GitHub 上打开">
-        <ExternalLink size={19} aria-hidden="true" />
+        <IconExternalLink size={19} aria-hidden="true" />
       </a>
     </div>
   </header>;
@@ -333,13 +333,13 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
   </div>;
 
   const failed = <div className="gh-sheet-step">
-    <div className="gh-callout bad" role="alert"><TriangleAlert size={18} aria-hidden="true" /><span>{loadError}</span></div>
-    <button type="button" className="ios-button tinted" onClick={() => { setLoadError(''); void load(true); }}><RotateCw size={16} aria-hidden="true" />重试</button>
+    <div className="gh-callout bad" role="alert"><IconAlertTriangle size={18} aria-hidden="true" /><span>{loadError}</span></div>
+    <button type="button" className="ios-button tinted" onClick={() => { setLoadError(''); void load(true); }}><IconRotateClockwise size={16} aria-hidden="true" />重试</button>
   </div>;
 
   const visibleFiles = shown ? (allFiles ? shown.files : shown.files.slice(0, FILES_PREVIEW)) : [];
   const detailStep = shown && <m.div key="detail" className="gh-sheet-step" custom={direction} variants={STEP_VARIANTS} initial="enter" animate="center" exit="exit">
-    {loadError && <div className="gh-callout bad" role="alert"><TriangleAlert size={18} aria-hidden="true" /><span>{loadError}</span></div>}
+    {loadError && <div className="gh-callout bad" role="alert"><IconAlertTriangle size={18} aria-hidden="true" /><span>{loadError}</span></div>}
     <div className="gh-sheet-intro">
       <GitHubPullMark pull={shown} />
       <div>
@@ -369,7 +369,7 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
           <CheckIcon state={check.state} />
           <span className="gh-check-body"><strong>{check.name}</strong><small>{[check.workflow, CHECK_STATE_LABEL[check.state]].filter(Boolean).join(' · ')}</small></span>
           {check.required && <span className="gh-badge">必需</span>}
-          {check.url && <a className="icon-button plain gh-check-link" href={check.url} target="_blank" rel="noreferrer" aria-label={`查看 ${check.name} 的日志`}><ExternalLink size={16} aria-hidden="true" /></a>}
+          {check.url && <a className="icon-button plain gh-check-link" href={check.url} target="_blank" rel="noreferrer" aria-label={`查看 ${check.name} 的日志`}><IconExternalLink size={16} aria-hidden="true" /></a>}
         </li>)}
       </ul>
       {shown.checksTruncated && <p className="ios-section-footer">只列出前 100 项检查。</p>}
@@ -379,7 +379,7 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
       <h4 id="gh-files-title">文件 <span>{number(shown.filesTotal)} 个</span></h4>
       <ul className="ios-list gh-files">{visibleFiles.map(file => <FileRow key={file.path} file={file} />)}</ul>
       {shown.files.length > FILES_PREVIEW && <button type="button" className="gh-more" aria-expanded={allFiles} onClick={() => setAllFiles(open => !open)}>
-        {allFiles ? '收起' : `显示全部 ${shown.files.length} 个文件`}<ChevronDown size={16} aria-hidden="true" />
+        {allFiles ? '收起' : `显示全部 ${shown.files.length} 个文件`}<IconChevronDown size={16} aria-hidden="true" />
       </button>}
       {shown.filesTotal > shown.files.length && allFiles && <p className="ios-section-footer">只列出前 100 个文件，其余请在 GitHub 上查看。</p>}
     </section>}
@@ -388,7 +388,7 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
       <h4 id="gh-body-title">描述</h4>
       <div className={`gh-body ${bodyOpen ? 'is-open' : ''}`}><p>{shown.body}</p></div>
       <button type="button" className="gh-more" aria-expanded={bodyOpen} onClick={() => setBodyOpen(open => !open)}>
-        {bodyOpen ? '收起' : '展开描述'}<ChevronDown size={16} aria-hidden="true" />
+        {bodyOpen ? '收起' : '展开描述'}<IconChevronDown size={16} aria-hidden="true" />
       </button>
     </section>}
   </m.div>;
@@ -413,7 +413,7 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
       </div>}
     </div>
     {needsAcknowledgement && <div className="gh-callout warn">
-      <TriangleAlert size={18} aria-hidden="true" />
+      <IconAlertTriangle size={18} aria-hidden="true" />
       <div>
         <strong>{failing.length ? `${failing.length} 项检查没有通过` : '检查没有全部通过'}</strong>
         <span>{failing.length
@@ -436,11 +436,11 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
       <div><dt>目标分支</dt><dd className="mono">{shown.baseRef}</dd></div>
     </dl>
     {mergeError && <div className="gh-callout bad" role="alert">
-      <TriangleAlert size={18} aria-hidden="true" />
+      <IconAlertTriangle size={18} aria-hidden="true" />
       <div>
         <strong>{mergeError.code === 'MERGE_OUTCOME_UNKNOWN' ? '合并结果未知' : '没有合并'}</strong>
         <span>{mergeError.message}</span>
-        {STALE_CODES.has(mergeError.code) && <button type="button" className="ios-button tinted" onClick={() => void reload()}><RotateCw size={15} aria-hidden="true" />重新载入 PR</button>}
+        {STALE_CODES.has(mergeError.code) && <button type="button" className="ios-button tinted" onClick={() => void reload()}><IconRotateClockwise size={15} aria-hidden="true" />重新载入 PR</button>}
       </div>
     </div>}
   </m.div>;
@@ -457,9 +457,9 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
   const footer = shown && <footer className="gh-sheet-footer">
     {step === 'detail' && (blockers.length
       ? <><p className="gh-blocker" role="note">{blockers[0].message}</p><button type="button" className="ios-button filled gh-primary" disabled>合并</button></>
-      : <button type="button" className="ios-button filled gh-primary" onClick={() => go('merge', 1)}><GitMerge size={18} aria-hidden="true" />合并…</button>)}
+      : <button type="button" className="ios-button filled gh-primary" onClick={() => go('merge', 1)}><IconGitMerge size={18} aria-hidden="true" />合并…</button>)}
     {step === 'merge' && <button type="button" className="ios-button gh-primary gh-danger" disabled={!ready || merging} onClick={() => setConfirming(true)}>
-      {merging ? <><StudioSpinner size={17} />正在合并…</> : <><GitMerge size={18} aria-hidden="true" />合并 #{shown.number}</>}
+      {merging ? <><StudioSpinner size={17} />正在合并…</> : <><IconGitMerge size={18} aria-hidden="true" />合并 #{shown.number}</>}
     </button>}
     {step === 'done' && <button type="button" className="ios-button filled gh-primary" onClick={close}>完成</button>}
   </footer>;

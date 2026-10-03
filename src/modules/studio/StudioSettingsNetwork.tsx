@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, m } from 'motion/react';
 import { toast } from 'sonner';
-import { BookOpen, Check, Globe, KeyRound, Network, RefreshCw } from 'lucide-react';
 
+import { IconBook, IconCheck, IconKey, IconNetwork, IconRefresh, IconWorld } from '@/modules/studio/icons/tabler';
 import { ApiRequestError, api, readApiJson } from '@/shared/api';
 import { buildHandoffUrl, readIngressPreference, writeIngressPreference } from '@/shared/utils';
 import type { StudioIngress, StudioIngressId, StudioNetworkInfo } from '@/shared/types';
@@ -24,7 +24,7 @@ type ProbeResult = { state: 'ok'; latencyMs: number } | { state: 'access' } | { 
 
 // A door that has not answered by then is reported as unreachable.
 const PROBE_TIMEOUT_MS = 5000;
-const DOOR_ICONS: Record<StudioIngressId, typeof Globe> = { public: Globe, tailnet: Network };
+const DOOR_ICONS: Record<StudioIngressId, typeof IconWorld> = { public: IconWorld, tailnet: IconNetwork };
 const DOOR_TONES: Record<StudioIngressId, string> = { public: 'tone-slate', tailnet: 'tone-sage' };
 
 // Checks the door's public health check with a CORS request. Studio answers /health with
@@ -174,7 +174,7 @@ export function StudioSettingsNetwork() {
     <div className="ios-list" role="radiogroup" aria-labelledby="studio-network-heading" aria-busy={info === null || switching !== null}>
       {info === null && !loadFailed && <div className="ios-row no-icon"><StudioSpinner size={16} /><span className="ios-row-body"><small>读取中</small></span></div>}
       {loadFailed && <button type="button" className="ios-row action left no-icon" onClick={retryLoad}>
-        <RefreshCw size={17} aria-hidden="true" />读取失败，点此重试
+        <IconRefresh size={17} aria-hidden="true" />读取失败，点此重试
       </button>}
       {info?.ingresses.map(ingress => {
         const Icon = DOOR_ICONS[ingress.id];
@@ -197,7 +197,7 @@ export function StudioSettingsNetwork() {
                     : probe.state === 'access' ? <span className="studio-network-access">需 Access 验证</span>
                       : <span className="studio-network-down">不可达</span>}
               </span>}
-              {isCurrent && <span className="status-badge good"><Check size={13} strokeWidth={2.4} aria-hidden="true" />当前</span>}
+              {isCurrent && <span className="status-badge good"><IconCheck size={13} strokeWidth={2.4} aria-hidden="true" />当前</span>}
             </span>}
         </button>;
       })}
@@ -210,7 +210,7 @@ export function StudioSettingsNetwork() {
             <input id="studio-network-password" type="password" autoComplete="current-password" autoCapitalize="off" autoCorrect="off" spellCheck={false}
               value={password} onChange={event => setPassword(event.target.value)} placeholder="Studio 账户密码" disabled={switching !== null} autoFocus />
             <button className="ios-button filled" disabled={switching !== null || !password}>
-              <KeyRound size={16} aria-hidden="true" />切换
+              <IconKey size={16} aria-hidden="true" />切换
             </button>
           </div>
           <p className="studio-network-note">
@@ -232,10 +232,10 @@ export function StudioSettingsNetwork() {
       {info && info.guidance.length > 1 && <ul>{info.guidance.slice(1).map(line => <li key={line}>{line}</li>)}</ul>}
       <div className="studio-network-actions">
         <button type="button" className="studio-network-link" onClick={() => setGuideOpen(true)}>
-          <BookOpen size={13} aria-hidden="true" />设置说明
+          <IconBook size={13} aria-hidden="true" />设置说明
         </button>
         {info && <button type="button" className="studio-network-link" disabled={switching !== null} onClick={reprobe}>
-          <RefreshCw size={13} aria-hidden="true" />重新检测
+          <IconRefresh size={13} aria-hidden="true" />重新检测
         </button>}
       </div>
     </div>

@@ -3,9 +3,9 @@ import type { KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { browserSupportsWebAuthn, platformAuthenticatorIsAvailable, startAuthentication, startRegistration } from '@simplewebauthn/browser';
 import type { PublicKeyCredentialCreationOptionsJSON, PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/browser';
-import { ScanFace } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { IconFaceId } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import type { T212Passkey } from '@/shared/types';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
@@ -73,7 +73,7 @@ export function StudioT212PasskeyEnroll({ again, disabled = false, onEnrolled }:
           value={password} onChange={event => setPassword(event.target.value)} disabled={busy || disabled || platform === false} placeholder="Studio 登录密码" />
       </div>
       <button type="submit" className="ios-row action left no-icon" disabled={!ready}>
-        {busy ? <StudioSpinner size={16} /> : <ScanFace size={19} aria-hidden="true" />}
+        {busy ? <StudioSpinner size={16} /> : <IconFaceId size={19} aria-hidden="true" />}
         {again ? '在这台设备上也启用面容 ID / 触控 ID' : '启用面容 ID / 触控 ID 下单'}
       </button>
     </form>
@@ -156,7 +156,7 @@ export function StudioT212RemovePasskeySheet({ passkey, onRemoved, onCancel }: {
           {error && <p className="t212-stepup-error" role="alert">{error}</p>}
         </div>
         {viaPasskey && <button type="button" className="sheet-action t212-stepup-passkey" disabled={busy !== null} onClick={() => void remove('passkey')}>
-          {busy === 'passkey' ? <StudioSpinner size={16} /> : <ScanFace size={18} aria-hidden="true" />}用面容 ID / 触控 ID 验证
+          {busy === 'passkey' ? <StudioSpinner size={16} /> : <IconFaceId size={18} aria-hidden="true" />}用面容 ID / 触控 ID 验证
         </button>}
         <div className="sheet-actions">
           <button type="button" className="sheet-action" disabled={busy !== null} onClick={cancel}>取消</button>

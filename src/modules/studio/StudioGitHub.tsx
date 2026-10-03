@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, m } from 'motion/react';
-import { ChevronRight, GitPullRequest, RotateCw, SquareTerminal, TriangleAlert } from 'lucide-react';
 
+import { IconAlertTriangle, IconChevronRight, IconGitPullRequest, IconRotateClockwise, IconTerminal2 } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import { readableErrorMessage } from '@/shared/utils';
 import type { StudioGitHubInbox, StudioGitHubMergeRecord, StudioGitHubMergeResult, StudioGitHubPull, StudioGitHubStatus } from '@/shared/types';
@@ -62,7 +62,7 @@ function PullRow({ pull, onOpen }: { pull: StudioGitHubPull; onOpen: () => void 
     </span>
     <span className="gh-row-trail">
       <GitHubTime iso={pull.updatedAt} />
-      <ChevronRight size={18} className="chevron" aria-hidden="true" />
+      <IconChevronRight size={18} className="chevron" aria-hidden="true" />
     </span>
   </button>;
 }
@@ -187,19 +187,19 @@ export function StudioGitHub({ refreshing = false }: { refreshing?: boolean }) {
     </div>
 
     {error && <div className="gh-callout bad" role="alert">
-      <TriangleAlert size={18} aria-hidden="true" />
+      <IconAlertTriangle size={18} aria-hidden="true" />
       <span>{error}</span>
       <button type="button" className="ios-button tinted" disabled={syncing} onClick={() => reload(true)}>重试</button>
     </div>}
 
     {setupNeeded ? <div className="gh-setup">
-      <span className="gh-setup-mark" aria-hidden="true"><SquareTerminal size={28} strokeWidth={1.6} /></span>
+      <span className="gh-setup-mark" aria-hidden="true"><IconTerminal2 size={28} strokeWidth={1.6} /></span>
       <h2>{status.installed ? '让 gh 登录 GitHub' : '这台电脑上还没有 gh'}</h2>
       <p>{status.message}</p>
       <code className="gh-command">{status.installed ? 'gh auth login' : 'sudo apt install gh'}</code>
       <p className="gh-setup-hint">在运行 Studio 的电脑（WSL）终端里执行。Studio 只调用 gh，不读取也不保存它的令牌。</p>
       <button type="button" className="ios-button filled" disabled={syncing} onClick={() => reload(true)}>
-        {syncing ? <StudioSpinner size={16} /> : <RotateCw size={16} aria-hidden="true" />}重新检查
+        {syncing ? <StudioSpinner size={16} /> : <IconRotateClockwise size={16} aria-hidden="true" />}重新检查
       </button>
     </div>
       : !inbox ? (error ? null : <InboxSkeleton />)
@@ -211,7 +211,7 @@ export function StudioGitHub({ refreshing = false }: { refreshing?: boolean }) {
           </div>
 
           {groups.length === 0 ? <div className="ios-empty gh-empty">
-            <GitPullRequest size={32} strokeWidth={1.5} aria-hidden="true" />
+            <IconGitPullRequest size={32} strokeWidth={1.5} aria-hidden="true" />
             <strong>{activeFilter.empty}</strong>
             <span>{activeFilter.hint}</span>
           </div>

@@ -2,11 +2,12 @@ import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { AnimatePresence, m } from 'motion/react';
 import { toast } from 'sonner';
-import { AlertTriangle, BookOpen, Check, ChevronRight, Copy, Minus, Search, SearchX, ServerOff, Sparkles, X } from 'lucide-react';
 
+import { IconAlertTriangle, IconBook, IconCheck, IconChevronRight, IconCopy, IconMinus, IconSearch, IconSearchOff, IconServerOff, IconX } from '@/modules/studio/icons/tabler';
 import type { StudioMemoryAgentId, StudioMemoryAgentStatus, StudioMemoryFolder, StudioMemoryNote, StudioMemoryStatus } from '@/shared/types';
 import { copyTextToClipboard, readableErrorMessage } from '@/shared/utils';
 import { useStudioMemory } from '@/modules/studio/hooks/useStudioMemory';
+import { StudioBrandMark } from '@/modules/studio/brandIcons';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { MemoryFolderMark, MemoryTime, MemoryWriterTag } from '@/modules/studio/StudioMemoryMarks';
 import { StudioMemoryReader } from '@/modules/studio/StudioMemoryReader';
@@ -28,11 +29,11 @@ function folderOf(folders: StudioMemoryFolder[], name: string): StudioMemoryFold
 }
 
 // Each agent installation as the owner knows it: the app, where it runs, and its icon tone.
-const AGENT_LOOK: Record<StudioMemoryAgentId, { name: string; place: string; tone: string; mark: string }> = {
-  'claude-wsl': { name: 'Claude Code', place: 'WSL', tone: 'clay', mark: 'C' },
-  'codex-wsl': { name: 'Codex', place: 'WSL', tone: 'graphite', mark: 'O' },
-  'claude-windows': { name: 'Claude Code', place: 'Windows', tone: 'clay', mark: 'C' },
-  'codex-windows': { name: 'Codex', place: 'Windows', tone: 'graphite', mark: 'O' },
+const AGENT_LOOK: Record<StudioMemoryAgentId, { name: string; place: string; tone: string; mark: ReactNode }> = {
+  'claude-wsl': { name: 'Claude Code', place: 'WSL', tone: 'clay', mark: <StudioBrandMark brand="claude" size={18} /> },
+  'codex-wsl': { name: 'Codex', place: 'WSL', tone: 'graphite', mark: <StudioBrandMark brand="openai" size={18} /> },
+  'claude-windows': { name: 'Claude Code', place: 'Windows', tone: 'clay', mark: <StudioBrandMark brand="claude" size={18} /> },
+  'codex-windows': { name: 'Codex', place: 'Windows', tone: 'graphite', mark: <StudioBrandMark brand="openai" size={18} /> },
 };
 
 type AgentRow = { id: string; name: string; place: string | null; tone: string; mark: ReactNode; state: 'ok' | 'warn' | 'absent'; detail: string };
@@ -67,7 +68,7 @@ function agentRows(status: StudioMemoryStatus): AgentRow[] {
   return [
     ...status.agents.map(agent => agentRow(agent, status)),
     {
-      id: 'deepseek', name: 'Studio DeepSeek', place: null, tone: 'slate', mark: <Sparkles size={16} strokeWidth={1.8} />,
+      id: 'deepseek', name: 'Studio DeepSeek', place: null, tone: 'slate', mark: <StudioBrandMark brand="deepseek" size={18} />,
       state: deepseek.enabled && status.reachable ? 'ok' : 'warn',
       detail: !deepseek.enabled ? '已关闭（STUDIO_MEMORY_DEEPSEEK）' : status.reachable ? '回复前查阅记忆' : '等待记忆服务',
     },
@@ -89,7 +90,7 @@ function fixesOf(status: StudioMemoryStatus) {
 function MemoryStatusCard({ status, statusError, total }: { status: StudioMemoryStatus | null; statusError: string; total: number | null }) {
   if (!status) {
     return statusError
-      ? <div className="memory-card memory-status"><p className="memory-status-error" role="alert"><AlertTriangle size={16} aria-hidden="true" />{statusError}</p></div>
+      ? <div className="memory-card memory-status"><p className="memory-status-error" role="alert"><IconAlertTriangle size={16} aria-hidden="true" />{statusError}</p></div>
       : <div className="memory-card memory-status" role="status" aria-label="正在读取记忆状态"><div className="memory-status-skeleton"><i /><i /><i /></div></div>;
   }
   const server = status.reachable
@@ -118,10 +119,10 @@ function MemoryStatusCard({ status, statusError, total }: { status: StudioMemory
           <small>{agent.detail}</small>
         </span>
         {agent.state === 'ok'
-          ? <Check size={17} className="memory-agent-state" aria-label="正常" />
+          ? <IconCheck size={17} className="memory-agent-state" aria-label="正常" />
           : agent.state === 'warn'
-            ? <AlertTriangle size={16} className="memory-agent-state" aria-label="需要处理" />
-            : <Minus size={16} className="memory-agent-state" aria-label="未安装" />}
+            ? <IconAlertTriangle size={16} className="memory-agent-state" aria-label="需要处理" />
+            : <IconMinus size={16} className="memory-agent-state" aria-label="未安装" />}
       </li>)}
     </ul>
     {fixes.length > 0 && <ul className="memory-fixes" aria-label="接入方法">
@@ -130,7 +131,7 @@ function MemoryStatusCard({ status, statusError, total }: { status: StudioMemory
         <div className="memory-fix-command">
           <code>{fix.command}</code>
           <button type="button" className="memory-copy" aria-label={`复制命令 ${fix.command}`} title="复制命令" onClick={() => void copy(fix.command)}>
-            <Copy size={15} aria-hidden="true" />
+            <IconCopy size={15} aria-hidden="true" />
           </button>
         </div>
       </li>)}
@@ -200,7 +201,7 @@ export function StudioMemory({ refreshing = false }: { refreshing?: boolean }) {
     <div className="memory-main">
       <div className="memory-toolbar">
         <label className="ios-search memory-search">
-          <Search size={17} aria-hidden="true" />
+          <IconSearch size={17} aria-hidden="true" />
           <span className="studio-visually-hidden">搜索记忆</span>
           {/* 200 characters is the server's limit for a search. While pinyin is being composed the marked text
               stays in the box but is not searched; the chosen characters are searched on compositionend. */}
@@ -212,7 +213,7 @@ export function StudioMemory({ refreshing = false }: { refreshing?: boolean }) {
               if (event.key === 'Escape' && memory.query && !event.nativeEvent.isComposing) { event.preventDefault(); memory.setQuery(''); }
             }} />
           {memory.searchPending && <StudioSpinner size={15} />}
-          {memory.query && <button type="button" className="memory-search-clear" aria-label="清除搜索" onClick={() => memory.setQuery('')}><X size={14} strokeWidth={2.4} aria-hidden="true" /></button>}
+          {memory.query && <button type="button" className="memory-search-clear" aria-label="清除搜索" onClick={() => memory.setQuery('')}><IconX size={14} strokeWidth={2.4} aria-hidden="true" /></button>}
         </label>
       </div>
 
@@ -230,7 +231,7 @@ export function StudioMemory({ refreshing = false }: { refreshing?: boolean }) {
       </div>
 
       {memory.error && !loading && notes.length > 0 && <p className="memory-notice" role="alert">
-        <AlertTriangle size={15} aria-hidden="true" />{memory.error.offline ? '记忆服务暂时不可用，显示的是上次读取的笔记。' : memory.error.message}
+        <IconAlertTriangle size={15} aria-hidden="true" />{memory.error.offline ? '记忆服务暂时不可用，显示的是上次读取的笔记。' : memory.error.message}
       </p>}
 
       {loading && <div className="memory-list memory-list-skeleton" role="status" aria-label="正在读取笔记">
@@ -239,19 +240,19 @@ export function StudioMemory({ refreshing = false }: { refreshing?: boolean }) {
 
       {!loading && notes.length === 0 && (memory.error
         ? <div className="ios-empty memory-empty" role="alert">
-          {memory.error.offline ? <ServerOff size={32} strokeWidth={1.5} aria-hidden="true" /> : <AlertTriangle size={30} strokeWidth={1.5} aria-hidden="true" />}
+          {memory.error.offline ? <IconServerOff size={32} strokeWidth={1.5} aria-hidden="true" /> : <IconAlertTriangle size={30} strokeWidth={1.5} aria-hidden="true" />}
           <strong>{memory.error.offline ? '记忆服务未运行' : memory.error.message}</strong>
           {memory.error.offline && <span>在 WSL 里运行 <code>systemctl --user start studio-memory</code>，或重新执行安装脚本。</span>}
           <button type="button" className="ios-button tinted" onClick={() => void memory.refresh()}>重试</button>
         </div>
         : memory.searching
           ? !memory.searchPending && <div className="ios-empty memory-empty">
-            <SearchX size={30} strokeWidth={1.5} aria-hidden="true" />
+            <IconSearchOff size={30} strokeWidth={1.5} aria-hidden="true" />
             <strong>没有找到「{trimmed}」</strong>
             <span>中文按词检索，试试更短的词，比如「部署」或「端口」。</span>
           </div>
           : <div className="ios-empty memory-empty">
-            <BookOpen size={32} strokeWidth={1.5} aria-hidden="true" />
+            <IconBook size={32} strokeWidth={1.5} aria-hidden="true" />
             <strong>{memory.folder ? '这个文件夹还没有笔记' : '还没有记忆'}</strong>
             <span>在 Claude Code、Codex 或 DeepSeek 里说出值得长期记住的决定和偏好，它们会记在这里。</span>
           </div>)}
@@ -271,7 +272,7 @@ export function StudioMemory({ refreshing = false }: { refreshing?: boolean }) {
                   <small><MemoryFolderMark folder={folder} variant="label" />{note.updatedAt && <> · <MemoryTime value={note.updatedAt} /></>}</small>
                   {memory.searching && note.snippet && <span className="memory-snippet">{highlight(note.snippet, trimmed)}</span>}
                 </span>
-                <ChevronRight size={18} className="chevron" aria-hidden="true" />
+                <IconChevronRight size={18} className="chevron" aria-hidden="true" />
               </button>
             </m.li>;
           })}

@@ -3,9 +3,9 @@ import type { KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { browserSupportsWebAuthn, startRegistration } from '@simplewebauthn/browser';
 import type { PublicKeyCredentialCreationOptionsJSON } from '@simplewebauthn/browser';
-import { Globe, LockKeyhole, LogOut, ScanFace, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { IconFaceId, IconLock, IconLogout, IconTrash, IconWorld } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import type { StudioPasswordLock, StudioRevokeAllResult, StudioSecurityEvent, StudioSecurityOverview, StudioSignInPasskey } from '@/shared/types';
 import { useAuth } from '@/modules/auth';
@@ -273,7 +273,7 @@ export function StudioSettingsSecurity() {
         const lock = overview?.passwordLocks[row.key];
         if (!lock) return null;
         return <div className="ios-row" key={row.key}>
-          <span className="home-icon small tone-slate" aria-hidden="true"><LockKeyhole size={18} strokeWidth={1.6} /></span>
+          <span className="home-icon small tone-slate" aria-hidden="true"><IconLock size={18} strokeWidth={1.6} /></span>
           <span className="ios-row-body"><strong>{row.title}</strong><small>{lockText(lock, row.hint)}</small></span>
           <span className={`status-badge ${lock.locked ? 'warn' : 'good'}`}>{lock.locked ? '已锁定' : '正常'}</span>
         </div>;
@@ -288,7 +288,7 @@ export function StudioSettingsSecurity() {
           value={password} onChange={event => setPassword(event.target.value)} disabled={busy !== null || !supported || !originAllowed} placeholder="Studio 登录密码" />
       </div>
       <button type="submit" className="ios-row action left no-icon" disabled={!canEnroll}>
-        {busy === 'enroll' ? <StudioSpinner size={16} /> : <ScanFace size={19} aria-hidden="true" />}
+        {busy === 'enroll' ? <StudioSpinner size={16} /> : <IconFaceId size={19} aria-hidden="true" />}
         {enabledHere ? '在这台设备上也启用面容 ID 登录' : '在这台设备启用面容 ID 登录'}
       </button>
     </form>}
@@ -300,13 +300,13 @@ export function StudioSettingsSecurity() {
 
     {passkeys.length > 0 && <div className="ios-list security-passkey-list" role="group" aria-label="登录通行密钥">
       {passkeys.map(passkey => <div className="ios-row" key={passkey.id}>
-        <span className="home-icon small tone-slate" aria-hidden="true">{passkey.rpId === host ? <ScanFace size={18} strokeWidth={1.6} /> : <Globe size={18} strokeWidth={1.6} />}</span>
+        <span className="home-icon small tone-slate" aria-hidden="true">{passkey.rpId === host ? <IconFaceId size={18} strokeWidth={1.6} /> : <IconWorld size={18} strokeWidth={1.6} />}</span>
         <span className="ios-row-body">
           <strong>{passkey.rpId}{passkey.rpId === host && <span className="security-current">当前</span>}</strong>
           <small>{passkey.label ?? '设备'} · {day(passkey.createdAt)} 启用{passkey.lastUsedAt ? ` · ${day(passkey.lastUsedAt)} 用过` : ''}</small>
         </span>
         <button type="button" className="icon-button danger" aria-label={`移除 ${passkey.rpId} 的登录通行密钥`} onClick={() => setRemoving(passkey)}>
-          <Trash2 size={18} aria-hidden="true" />
+          <IconTrash size={18} aria-hidden="true" />
         </button>
       </div>)}
     </div>}
@@ -352,7 +352,7 @@ export function StudioSettingsSecurity() {
 
     <div className="ios-list security-revoke">
       <button type="button" className="ios-row action left destructive no-icon" disabled={busy !== null} onClick={() => setConfirmRevoke(true)}>
-        {busy === 'revoke' ? <StudioSpinner size={16} /> : <LogOut size={18} aria-hidden="true" />}退出所有设备
+        {busy === 'revoke' ? <StudioSpinner size={16} /> : <IconLogout size={18} aria-hidden="true" />}退出所有设备
       </button>
     </div>
     <p className="ios-section-footer">所有已登录的浏览器（包括这台）都会立即退出，正在运行的对话和终端连接会断开，API 密钥会被停用、SNR 研究入口会关闭、推送通知要在各设备上重新开启，之后需要重新登录。</p>

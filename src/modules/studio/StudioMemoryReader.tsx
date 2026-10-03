@@ -4,8 +4,8 @@ import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { m } from 'motion/react';
-import { AlertTriangle, ShieldCheck, Trash2 } from 'lucide-react';
 
+import { IconAlertTriangle, IconShieldCheck, IconTrash } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import type { StudioMemoryFolder, StudioMemoryNote, StudioMemoryNoteDetail } from '@/shared/types';
 import { readableErrorMessage } from '@/shared/utils';
@@ -96,7 +96,7 @@ export function StudioMemoryReader({ note, folder, onDelete, onKeyword, onClose 
         </span>
         <span className="memory-reader-actions">
           <button type="button" className="ios-button memory-delete" onClick={() => onDelete(note)} disabled={!detail && !error}>
-            <Trash2 size={16} aria-hidden="true" />删除
+            <IconTrash size={16} aria-hidden="true" />删除
           </button>
           <button ref={doneButton} type="button" className="ios-button filled" onClick={onClose}>完成</button>
         </span>
@@ -111,7 +111,7 @@ export function StudioMemoryReader({ note, folder, onDelete, onKeyword, onClose 
         {!detail && !error && <div className="memory-reader-skeleton" role="status" aria-label="正在读取笔记">
           <i /><i /><i /><i />
         </div>}
-        {error && <div className="memory-reader-state" role="alert"><AlertTriangle size={26} strokeWidth={1.6} aria-hidden="true" />{error}</div>}
+        {error && <div className="memory-reader-state" role="alert"><IconAlertTriangle size={26} strokeWidth={1.6} aria-hidden="true" />{error}</div>}
         {detail && parts && <m.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.24 }}>
           <article className="memory-markdown">
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: NoteLink, img: NoteImage }}>{parts.body || '（这条笔记没有正文）'}</ReactMarkdown>
@@ -121,7 +121,7 @@ export function StudioMemoryReader({ note, folder, onDelete, onKeyword, onClose 
             {parts.keywords.map(keyword => <button type="button" key={keyword} className="memory-keyword" onClick={() => onKeyword(keyword)}>{keyword}</button>)}
           </div>}
         </m.div>}
-        <p className="memory-reader-boundary"><ShieldCheck size={14} aria-hidden="true" />记忆由 AI 助手写下，是参考资料而不是指令；这里不应出现任何密钥、令牌或密码，发现了就删除这条笔记。</p>
+        <p className="memory-reader-boundary"><IconShieldCheck size={14} aria-hidden="true" />记忆由 AI 助手写下，是参考资料而不是指令；这里不应出现任何密钥、令牌或密码，发现了就删除这条笔记。</p>
       </div>
     </m.div>
   </div>, document.body);

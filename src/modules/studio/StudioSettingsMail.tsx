@@ -3,11 +3,12 @@ import type { FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { AnimatePresence, m } from 'motion/react';
 import { toast } from 'sonner';
-import { Copy, ExternalLink, KeyRound, RotateCw, Trash2 } from 'lucide-react';
 
+import { IconCopy, IconExternalLink, IconKey, IconRotateClockwise, IconTrash } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import type { HubProject, StudioMailAccount, StudioMailAccounts, StudioMailDevicePoll, StudioMailDeviceStart, StudioMailProvider } from '@/shared/types';
 import { readableErrorMessage } from '@/shared/utils';
+import { StudioBrandMark } from '@/modules/studio/brandIcons';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 import '@/modules/studio/studio-mail.css';
@@ -30,7 +31,7 @@ const DEVICE_STORAGE_KEY = 'studio-mail-outlook-device-v1';
 
 function ProviderIcon({ provider }: { provider: StudioMailProvider }) {
   return <span className={`home-icon small ${provider === 'outlook' ? 'tone-slate' : 'tone-clay'}`} aria-hidden="true">
-    <span className="mail-provider-mark">{provider === 'outlook' ? 'O' : 'G'}</span>
+    <StudioBrandMark brand={provider === 'outlook' ? 'outlook' : 'gmail'} size={18} />
   </span>;
 }
 
@@ -196,7 +197,7 @@ export function StudioSettingsMail() {
       {data === null && !loadError && <div className="ios-row no-icon"><StudioSpinner size={16} /><span className="ios-row-body"><small>读取中</small></span></div>}
       {data === null && loadError && <div className="ios-row no-icon">
         <span className="ios-row-body"><strong>邮箱账户没有读到</strong><small>{loadError}</small></span>
-        <button type="button" className="ios-button tinted" onClick={() => void load()}><RotateCw size={15} aria-hidden="true" />重试</button>
+        <button type="button" className="ios-button tinted" onClick={() => void load()}><IconRotateClockwise size={15} aria-hidden="true" />重试</button>
       </div>}
       {data?.accounts.map(account => {
         const badge = STATUS_BADGES[account.status];
@@ -214,7 +215,7 @@ export function StudioSettingsMail() {
               ? <button type="button" className="ios-button tinted mail-reverify" aria-label={`重新验证 ${account.email}`} disabled={busy !== null || device !== null} onClick={reverify}>重新验证</button>
               : <span className={`status-badge ${badge.tone}`}>{badge.label}</span>}
             <button type="button" className="icon-button danger" aria-label={`移除 ${account.email}`} title="移除" disabled={busy !== null} onClick={() => setPendingRemove(account)}>
-              <Trash2 size={17} aria-hidden="true" />
+              <IconTrash size={17} aria-hidden="true" />
             </button>
           </span>
         </div>;
@@ -233,7 +234,7 @@ export function StudioSettingsMail() {
             <li>打开「应用专用密码」，新建一个名为 Studio 的密码。</li>
             <li>把显示的 16 位密码粘贴到下面，空格可以保留。</li>
           </ol>
-          <a className="mail-link" href={APP_PASSWORDS_URL} target="_blank" rel="noopener noreferrer">打开应用专用密码页面<ExternalLink size={15} aria-hidden="true" /></a>
+          <a className="mail-link" href={APP_PASSWORDS_URL} target="_blank" rel="noopener noreferrer">打开应用专用密码页面<IconExternalLink size={15} aria-hidden="true" /></a>
           <div className="mail-fields">
             <label>Gmail 地址
               <input type="email" inputMode="email" autoComplete="email" autoCapitalize="off" autoCorrect="off" spellCheck={false} required
@@ -250,7 +251,7 @@ export function StudioSettingsMail() {
           <div className="mail-form-actions">
             <button type="button" className="ios-button tinted" disabled={busy === 'gmail'} onClick={closeGmail}>取消</button>
             <button type="submit" className="ios-button filled" disabled={busy !== null || !email.trim() || !password.trim()}>
-              {busy === 'gmail' ? <><StudioSpinner size={15} />正在登录 Gmail…</> : <><KeyRound size={16} aria-hidden="true" />验证并保存</>}
+              {busy === 'gmail' ? <><StudioSpinner size={15} />正在登录 Gmail…</> : <><IconKey size={16} aria-hidden="true" />验证并保存</>}
             </button>
           </div>
         </m.form>}
@@ -269,10 +270,10 @@ export function StudioSettingsMail() {
           <p>打开 Microsoft 登录页面，输入下面的代码，并允许 Studio「读取你的邮件」。</p>
           <div className="mail-device-code">
             <span aria-label={`登录代码 ${device.userCode}`}>{device.userCode}</span>
-            <button type="button" className="icon-button" aria-label="复制代码" title="复制代码" onClick={() => void copyCode()}><Copy size={18} aria-hidden="true" /></button>
+            <button type="button" className="icon-button" aria-label="复制代码" title="复制代码" onClick={() => void copyCode()}><IconCopy size={18} aria-hidden="true" /></button>
           </div>
           <div className="mail-device-actions">
-            <a className="ios-button filled" href={device.verificationUri} target="_blank" rel="noopener noreferrer"><ExternalLink size={16} aria-hidden="true" />打开验证页面</a>
+            <a className="ios-button filled" href={device.verificationUri} target="_blank" rel="noopener noreferrer"><IconExternalLink size={16} aria-hidden="true" />打开验证页面</a>
             <button type="button" className="ios-button tinted" onClick={() => setDevice(null)}>取消</button>
           </div>
           <span className="mail-device-wait" role="status"><StudioSpinner size={14} />等待你在 Microsoft 页面完成登录{expiryTime(device.expiresAt) ? ` · ${expiryTime(device.expiresAt)} 前有效` : ''}</span>

@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { m } from 'motion/react';
-import { ChevronDown, ExternalLink, Globe, RotateCw } from 'lucide-react';
 import { createPortal } from 'react-dom';
 
+import { IconChevronDown, IconExternalLink, IconRotateClockwise, IconWorld } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import type { HubProject, StudioLinkStatus, StudioProjectLink } from '@/shared/types';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
@@ -45,13 +45,13 @@ export function StudioLinksSheet({ project, onClose }: { project: HubProject; on
           return <m.button type="button" key={link.url} className="link-card" onClick={() => open(link)}
             initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.035, type: 'spring', stiffness: 300, damping: 30 }}
             whileTap={{ scale: 0.96 }}>
-            <span className="link-card-icon" aria-hidden="true"><Globe size={20} strokeWidth={1.6} /></span>
+            <span className="link-card-icon" aria-hidden="true"><IconWorld size={20} strokeWidth={1.6} /></span>
             <span className="link-card-text"><strong>{link.label}</strong><small>{host(link.url)}</small></span>
             <span className="link-card-status">
               {status === null ? <StudioSpinner size={14} label="检查中" />
                 : <><span className={`status-dot ${info?.ok ? 'good' : ''}`} aria-hidden="true" />{info?.ok ? `${info.latencyMs ?? '–'} ms` : info?.status ? `HTTP ${info.status}` : '无法连接'}</>}
             </span>
-            <ExternalLink size={15} className="link-card-open" aria-label={info?.frameable ? '在应用内打开' : '在新标签打开'} />
+            <IconExternalLink size={15} className="link-card-open" aria-label={info?.frameable ? '在应用内打开' : '在新标签打开'} />
           </m.button>;
         })}
       </div>
@@ -60,11 +60,11 @@ export function StudioLinksSheet({ project, onClose }: { project: HubProject; on
 
     {browsing && <div className="studio-cover browser-cover" role="dialog" aria-modal="true" aria-label={browsing.label}>
       <header>
-        <button type="button" className="navbar-back ios-press" onClick={() => setBrowsing(null)}><ChevronDown size={22} aria-hidden="true" />完成</button>
+        <button type="button" className="navbar-back ios-press" onClick={() => setBrowsing(null)}><IconChevronDown size={22} aria-hidden="true" />完成</button>
         <strong>{browsing.label}</strong>
         <span className="browser-actions">
-          <button type="button" className="icon-button" aria-label="重新加载" onClick={() => setReloadKey(key => key + 1)}><RotateCw size={18} aria-hidden="true" /></button>
-          <a className="icon-button" href={browsing.url} target="_blank" rel="noopener noreferrer" aria-label="在新标签打开"><ExternalLink size={18} aria-hidden="true" /></a>
+          <button type="button" className="icon-button" aria-label="重新加载" onClick={() => setReloadKey(key => key + 1)}><IconRotateClockwise size={18} aria-hidden="true" /></button>
+          <a className="icon-button" href={browsing.url} target="_blank" rel="noopener noreferrer" aria-label="在新标签打开"><IconExternalLink size={18} aria-hidden="true" /></a>
         </span>
       </header>
       <iframe key={reloadKey} title={browsing.label} src={browsing.url} sandbox="allow-scripts allow-forms allow-same-origin allow-popups" referrerPolicy="no-referrer" />

@@ -1899,6 +1899,11 @@ export type StudioHomeTile = {
   // App Store-style progress while an AI builds this project: the icon dims and a ring fills.
   progress?: StudioTileProgress;
 };
+/**
+ * A product whose official mark Studio draws in one colour instead of a glyph (studio brandIcons): the built-in GitHub
+ * and DeepSeek apps, the Claude, Codex (OpenAI), Cursor and OpenCode agents, and the Gmail and Outlook mail accounts.
+ */
+export type StudioBrand = 'github' | 'claude' | 'openai' | 'deepseek' | 'cursor' | 'opencode' | 'gmail' | 'outlook';
 /** Build progress drawn on a home tile; `value` runs from 0 to 1 and follows the AI's task list. */
 export type StudioTileProgress = { value: number; state: 'queued' | 'building' | 'done' | 'failed'; label?: string };
 /** A DeepSeek conversation space: the general app or one project; histories never cross spaces. */

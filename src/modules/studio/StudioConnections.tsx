@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CandlestickChart, ChevronRight, ExternalLink, Info, KeyRound, LoaderCircle, MessagesSquare, RefreshCw, Server, ShieldCheck, SquareTerminal } from 'lucide-react';
 
+import { IconChartCandle, IconChevronRight, IconExternalLink, IconInfoCircle, IconKey, IconLoader2, IconMessages, IconRefresh, IconServer, IconShieldCheck, IconTerminal2 } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import { useTheme } from '@/shared/context/ThemeContext';
 import type { StudioRemoteHost, StudioRemoteStatus, StudioStatus, T212Status, ThemeMode } from '@/shared/types';
@@ -30,11 +30,11 @@ function RemoteHostRow({ host }: { host: StudioRemoteHost }) {
   useEffect(check, [host.name]); // eslint-disable-line react-hooks/exhaustive-deps
   const tools = status?.online ? (['claude', 'codex', 'tmux'] as const).map(tool => `${tool} ${status.tools[tool] ? '✓' : '✗'}`).join(' · ') : status?.error;
   return <div className="ios-row">
-    <span className="home-icon small tone-graphite" aria-hidden="true"><Server size={18} strokeWidth={1.6} /></span>
+    <span className="home-icon small tone-graphite" aria-hidden="true"><IconServer size={18} strokeWidth={1.6} /></span>
     <span className="ios-row-body"><strong>{host.label}</strong><small className="mono">{host.target}{tools ? ` — ${tools}` : ''}</small></span>
     {status === null ? <StudioSpinner size={16} label="正在检查" />
       : <span className={`status-badge ${status.online ? 'good' : 'warn'}`}>{status.online ? `在线 ${status.latencyMs ?? '–'} ms` : '离线'}</span>}
-    <button type="button" className="icon-button" aria-label={`重新检查 ${host.label}`} disabled={status === null} onClick={check}><RefreshCw size={17} aria-hidden="true" /></button>
+    <button type="button" className="icon-button" aria-label={`重新检查 ${host.label}`} disabled={status === null} onClick={check}><IconRefresh size={17} aria-hidden="true" /></button>
   </div>;
 }
 
@@ -109,7 +109,7 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
       <div className="ios-section-header"><h2 id="studio-deepseek-heading">DeepSeek API</h2><span className="caption">本地密钥库</span></div>
       <div className="ios-list">
         <div className="ios-row">
-          <span className="home-icon small tone-slate" aria-hidden="true"><MessagesSquare size={22} /></span>
+          <span className="home-icon small tone-slate" aria-hidden="true"><IconMessages size={22} /></span>
           <span className="ios-row-body"><strong>DeepSeek</strong><small>{status?.deepseek.source === 'file' ? '来自服务器密钥文件（STUDIO_DEEPSEEK_ENV_FILE）' : status?.deepseek.baseUrl ?? 'https://api.deepseek.com'}</small></span>
           <span className={`status-badge ${configured ? 'good' : 'warn'}`}>{configured ? '已配置' : '未配置'}</span>
         </div>
@@ -119,16 +119,16 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
             <input id="studio-api-key" type="password" autoComplete="new-password" autoCapitalize="off" autoCorrect="off" spellCheck={false}
               value={key} onChange={event => setKey(event.target.value)} placeholder={configured ? '输入新密钥以替换' : '必填'} disabled={busy !== null} />
             <button className="ios-button filled" disabled={busy !== null || !key.trim()}>
-              {busy === 'save' ? <LoaderCircle size={16} className="spin" aria-hidden="true" /> : <KeyRound size={16} aria-hidden="true" />}保存
+              {busy === 'save' ? <IconLoader2 size={16} className="spin" aria-hidden="true" /> : <IconKey size={16} aria-hidden="true" />}保存
             </button>
           </div>
         </form>
         <button type="button" className="ios-row action left no-icon" disabled={busy !== null || !configured}
           onClick={() => void act('test', async () => { await api.studio.testKey().then(readApiJson); setResult('连接验证通过'); })}>
-          {busy === 'test' && <LoaderCircle size={18} className="spin" aria-hidden="true" />}验证连接
+          {busy === 'test' && <IconLoader2 size={18} className="spin" aria-hidden="true" />}验证连接
         </button>
         <button type="button" className="ios-row action left destructive no-icon" disabled={busy !== null || status?.deepseek.source !== 'vault'} onClick={() => setConfirmRemove(true)}>
-          {busy === 'remove' && <LoaderCircle size={18} className="spin" aria-hidden="true" />}移除密钥
+          {busy === 'remove' && <IconLoader2 size={18} className="spin" aria-hidden="true" />}移除密钥
         </button>
       </div>
       {result && <p className="studio-feedback good" role="status">{result}</p>}
@@ -142,17 +142,17 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
         <Link to="/work?new=claude" className="ios-row">
           <span className="home-icon small tone-clay" aria-hidden="true">C</span>
           <span className="ios-row-body"><strong>Claude Code</strong><small>Claude 订阅 · 在工作台中对话</small></span>
-          <ChevronRight size={18} className="chevron" aria-hidden="true" />
+          <IconChevronRight size={18} className="chevron" aria-hidden="true" />
         </Link>
         <Link to="/work?new=codex" className="ios-row">
-          <span className="home-icon small tone-graphite" aria-hidden="true"><SquareTerminal size={20} /></span>
+          <span className="home-icon small tone-graphite" aria-hidden="true"><IconTerminal2 size={20} /></span>
           <span className="ios-row-body"><strong>Codex</strong><small>ChatGPT 订阅 · 在工作台中对话</small></span>
-          <ChevronRight size={18} className="chevron" aria-hidden="true" />
+          <IconChevronRight size={18} className="chevron" aria-hidden="true" />
         </Link>
         {status?.agentWorkbenchUrl && <a className="ios-row" href={status.agentWorkbenchUrl} target="_blank" rel="noreferrer">
-          <span className="home-icon small tone-stone" aria-hidden="true"><ExternalLink size={18} /></span>
+          <span className="home-icon small tone-stone" aria-hidden="true"><IconExternalLink size={18} /></span>
           <span className="ios-row-body"><strong>外部工作台</strong><small>{status.agentWorkbenchUrl}</small></span>
-          <ChevronRight size={18} className="chevron" aria-hidden="true" />
+          <IconChevronRight size={18} className="chevron" aria-hidden="true" />
         </a>}
       </div>
       <p className="ios-section-footer">工作台直接调用这台电脑上已登录的 Claude Code 与 Codex CLI，不替换凭据，也不会转为 API 计费。</p>
@@ -166,7 +166,7 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
       <div className="ios-section-header"><h2 id="studio-t212-heading">Trading 212</h2><span className="caption">密钥文件</span></div>
       <div className="ios-list">
         {(t212 ?? []).map(item => <div className="ios-row" key={item.env}>
-          <span className="home-icon small tone-moss" aria-hidden="true"><CandlestickChart size={17} strokeWidth={1.6} /></span>
+          <span className="home-icon small tone-moss" aria-hidden="true"><IconChartCandle size={17} strokeWidth={1.6} /></span>
           <span className="ios-row-body"><strong>{item.env === 'live' ? '实盘账户' : '模拟账户'}</strong><small>{item.source ? `密钥文件 · ${item.source}` : '未设置密钥文件'}</small></span>
           <span className={`status-badge ${item.configured ? 'good' : ''}`}>{item.configured ? '已接入' : '未接入'}</span>
         </div>)}
@@ -181,14 +181,14 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
       <div className="ios-section-header"><h2 id="studio-about-heading">关于</h2></div>
       <div className="ios-list">
         <a className="ios-row" href="https://github.com/Jineggegg/agent-cloud-studio" target="_blank" rel="noreferrer">
-          <span className="home-icon small tone-slate" aria-hidden="true"><Info size={20} /></span>
+          <span className="home-icon small tone-slate" aria-hidden="true"><IconInfoCircle size={20} /></span>
           <span className="ios-row-body"><strong>Agent Cloud Studio</strong><small>修改版源码</small></span>
-          <ExternalLink size={16} className="chevron" aria-hidden="true" />
+          <IconExternalLink size={16} className="chevron" aria-hidden="true" />
         </a>
         <a className="ios-row" href="https://github.com/siteboon/claudecodeui" target="_blank" rel="noreferrer">
-          <span className="home-icon small tone-stone" aria-hidden="true"><ShieldCheck size={20} /></span>
+          <span className="home-icon small tone-stone" aria-hidden="true"><IconShieldCheck size={20} /></span>
           <span className="ios-row-body"><strong>CloudCLI UI</strong><small>上游项目 · AGPL-3.0-or-later</small></span>
-          <ExternalLink size={16} className="chevron" aria-hidden="true" />
+          <IconExternalLink size={16} className="chevron" aria-hidden="true" />
         </a>
       </div>
     </section>

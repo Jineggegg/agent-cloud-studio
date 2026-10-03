@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { MessagesSquare, Search, Trash2 } from 'lucide-react';
 
+import { IconMessages, IconSearch, IconTrash } from '@/modules/studio/icons/tabler';
 import type { StudioConversation, StudioGlyph } from '@/shared/types';
 import type { useStudio } from '@/modules/studio/hooks/useStudio';
 import { StudioChat } from '@/modules/studio/StudioChat';
@@ -30,7 +30,7 @@ export function StudioChatPane({ studio, assistant, tone, glyph, title, onOpenTh
   return <div className="studio-chat-layout">
     <aside className="studio-chat-list" aria-label="对话列表">
       <div className="chat-list-search">
-        <label className="ios-search"><Search size={17} aria-hidden="true" />
+        <label className="ios-search"><IconSearch size={17} aria-hidden="true" />
           <input type="search" aria-label="搜索对话" placeholder="搜索" value={search} onChange={event => setSearch(event.target.value)} />
         </label>
       </div>
@@ -42,10 +42,10 @@ export function StudioChatPane({ studio, assistant, tone, glyph, title, onOpenTh
               <span className="ios-row-body"><strong>{item.title}</strong><small>{item.model}</small></span>
               <time dateTime={item.updated_at}>{formatDay(item.updated_at)}</time>
             </button>
-            <button type="button" className="icon-button" title="删除对话" aria-label={`删除 ${item.title}`} disabled={studio.sending} onClick={() => onDelete(item)}><Trash2 size={17} aria-hidden="true" /></button>
+            <button type="button" className="icon-button" title="删除对话" aria-label={`删除 ${item.title}`} disabled={studio.sending} onClick={() => onDelete(item)}><IconTrash size={17} aria-hidden="true" /></button>
           </div>)}
         </div>}
-        {!history.length && <div className="ios-empty"><MessagesSquare size={30} strokeWidth={1.5} aria-hidden="true" /><span>{search ? '没有匹配的对话' : `${title} 还没有对话`}</span>
+        {!history.length && <div className="ios-empty"><IconMessages size={30} strokeWidth={1.5} aria-hidden="true" /><span>{search ? '没有匹配的对话' : `${title} 还没有对话`}</span>
           {!search && <button type="button" className="ios-button tinted" onClick={() => void open()}>新建对话</button>}</div>}
       </div>
     </aside>
