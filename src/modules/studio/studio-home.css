@@ -26,8 +26,6 @@
 .home-page::-webkit-scrollbar { display: none; }
 /* Holds the margin above the widget grid, so its measured height is everything above the first page's icons. */
 .home-widgets-slot { display: flow-root; }
-/* An icon that moved to another page appears there in place; only its first arrival rises in. */
-.home-tile.has-arrived { animation: none; }
 
 /* ---------- Page control ---------- */
 /* iOS page dots at the foot of the screen; while the pages move they gather into a frosted capsule. */
@@ -102,16 +100,15 @@
   animation: tile-lift 380ms cubic-bezier(.34, 1.3, .64, 1) backwards;
 }
 @keyframes tile-lift { from { scale: 1; } }
-.home-drag-overlay .home-tile { animation: none; }
 .home-tile-slot[data-sort-id] .home-icon {
-  transition: transform var(--dur-slow) var(--ease-spring), filter var(--dur-fast) ease, box-shadow var(--dur-base) var(--ease-out);
+  transition: transform var(--dur-slow) var(--ease-spring), background-color .3s ease-in-out, filter var(--dur-fast) ease, box-shadow var(--dur-base) var(--ease-out);
 }
 .home-screen .home-tile-slot.is-lifted .home-icon {
   transform: none; filter: none;
-  box-shadow: var(--icon-rim, inset 0 1px 0 rgba(255, 255, 255, .32)), 0 2px 4px rgba(30, 25, 15, .1), 0 22px 40px -10px rgba(30, 25, 15, .45);
+  box-shadow: 0 2px 4px rgba(30, 25, 15, .1), 0 22px 40px -10px rgba(30, 25, 15, .45);
 }
 .dark .home-screen .home-tile-slot.is-lifted .home-icon {
-  box-shadow: var(--icon-rim, inset 0 1px 0 rgba(255, 255, 255, .2)), 0 2px 6px rgba(0, 0, 0, .4), 0 24px 44px -10px rgba(0, 0, 0, .7);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .4), 0 24px 44px -10px rgba(0, 0, 0, .7);
 }
 /* In edit mode a press dims nothing and never shrinks the icon: it is the start of a drag. */
 .home-screen.editing .home-tile-slot[data-sort-id] .home-tile:active .home-icon { transform: none; filter: none; }
@@ -173,11 +170,9 @@
 }
 
 /* ---------- AJ 出口: a tile that is a switch ---------- */
-/* On: a green ring round the icon and a green state line with a dot, like a status light. */
-.home-tile .home-icon-wrap[data-on] .home-icon {
-  box-shadow: var(--icon-rim), 0 0 0 3px var(--ios-green), 0 2px 4px rgba(0, 0, 0, .06),
-    0 22px 30px -14px color-mix(in srgb, var(--tone-b) 55%, var(--home-icon-float));
-}
+/* On: a green ring on the card's edge and a green state line with a dot, like a status light. */
+.home-tile .home-icon-wrap[data-on] .home-icon { border-color: var(--ios-green); box-shadow: 0 0 0 1.5px var(--ios-green); }
+.home-tile:is(:hover, :active) .home-icon-wrap[data-on] .home-icon { box-shadow: 0 0 0 1.5px var(--ios-green), var(--home-card-lift); }
 .home-status.is-switch { display: inline-flex; align-items: center; gap: 5px; }
 .home-status.is-switch.is-on { color: var(--ios-green); }
 .home-status.is-switch.is-on::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }

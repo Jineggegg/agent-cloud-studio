@@ -5,13 +5,16 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest';
 vi.mock('@/shared/context/ThemeContext', () => ({ useTheme: () => ({ isDarkMode: false, setThemeMode: vi.fn() }) }));
 vi.mock('@/modules/studio/StudioWidgets', () => ({ StudioWidgets: () => null }));
 vi.mock('@/modules/studio/StudioFluidBackground', () => ({ StudioFluidBackground: () => null }));
+// Reduced motion as motion reads it, switched per test.
+const motionPreference = vi.hoisted(() => ({ reduced: false }));
+vi.mock('motion/react', async importOriginal => ({ ...await importOriginal<Record<string, unknown>>(), useReducedMotion: () => motionPreference.reduced }));
 
 import type { StudioHomeTile } from '@/shared/types';
 import { StudioHomeScreen } from '@/modules/studio/StudioHomeScreen';
 import { installPointerEvent, layOutSortablesInARow, moveOnePlaceWithKeyboard } from '@/modules/studio/tests/sortableTestHelpers';
 
 beforeAll(installPointerEvent);
-beforeEach(() => localStorage.clear());
+beforeEach(() => { localStorage.clear(); motionPreference.reduced = false; });
 afterEach(() => {
   cleanup();
   // A drag leaves short-lived click guards on document and window that remove themselves on a timer; run those
@@ -220,4 +223,56 @@ test('a damaged saved layout falls back to the default home screen', () => {
   localStorage.setItem('studio-home-layout-v1', '{not json');
   renderHome();
   expect(screen.getByRole('button', { name: 'DeepSeek' })).toBeTruthy();
+});
+
+// The tests load none of motion's features (StudioPage loads them lazily), so an icon that rises in stays at the
+// entrance's first frame: faded out and 20 px low. An icon without the entrance has no such style.
+const rising = (tile: HTMLElement) => tile.style.opacity === '0' && tile.style.transform.includes('translateY(20px)');
+
+function renderFilling(tiles: StudioHomeTile[], loading: boolean) {
+  const props = { tiles, loading, covered: false, snr: null, onOpen: vi.fn(), onOpenWidget: vi.fn(), onOpenSettings: vi.fn(), onCreate: vi.fn(), onRefresh: vi.fn(), onSignOut: vi.fn(), refreshing: false };
+  const tree = (next: Partial<typeof props>) => <MemoryRouter><StudioHomeScreen {...props} {...next} /></MemoryRouter>;
+  const view = render(tree({}));
+  return { rerender: (next: Partial<typeof props>) => view.rerender(tree(next)) };
+}
+
+test('icons rise in while the home screen first fills, and never again on later renders, new icons or edit mode', () => {
+  const builtIn = TILES.slice(2);
+  const { rerender } = renderFilling(builtIn, true);
+  const deepseek = screen.getByRole('button', { name: 'DeepSeek' });
+  expect(rising(deepseek)).toBe(true);
+  expect(rising(screen.getByRole('link', { name: '工作台' }))).toBe(true);
+  expect(rising(screen.getByRole('button', { name: '新建项目' }))).toBe(true);
+  // The projects arrive: still the first fill, so they rise in too.
+  rerender({ tiles: TILES, loading: false });
+  expect(rising(screen.getByRole('button', { name: 'SNR 3.0，在线' }))).toBe(true);
+  // Re-rendering keeps every icon mounted, so nothing starts over.
+  expect(screen.getByRole('button', { name: 'DeepSeek' })).toBe(deepseek);
+  // A project created later simply appears.
+  rerender({ tiles: [...TILES, { id: 'project:new', name: '新项目', tone: 'rose', glyph: 'chart' }], loading: false });
+  const created = screen.getByRole('button', { name: '新项目' });
+  expect(rising(created)).toBe(false);
+  expect(created.style.opacity).toBe('');
+  // Edit mode leaves the icons mounted (no replay) and keeps dnd-kit's transform on the slot, not the tile.
+  fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
+  expect(screen.getByRole('button', { name: 'DeepSeek' })).toBe(deepseek);
+  expect(deepseek.closest('[data-sort-id]')).not.toBe(deepseek);
+  fireEvent.click(screen.getByRole('button', { name: '从主屏幕隐藏 DeepSeek' }));
+  expect(screen.queryByRole('button', { name: 'DeepSeek' })).toBeNull();
+});
+
+test('under reduced motion icons appear without the entrance', () => {
+  motionPreference.reduced = true;
+  renderHome();
+  expect(rising(screen.getByRole('button', { name: 'DeepSeek' }))).toBe(false);
+  expect(rising(screen.getByRole('button', { name: '新建项目' }))).toBe(false);
+});
+
+test('icons are cards with the official mark for built-in products and a line glyph for projects', () => {
+  renderHome({ tiles: [...TILES, { id: 'github', name: 'GitHub', tone: 'graphite', glyph: 'pull-request' }] });
+  const markOf = (name: string) => screen.getByRole('button', { name }).querySelector('.home-icon svg');
+  expect(markOf('GitHub')?.getAttribute('data-brand')).toBe('github');
+  expect(markOf('DeepSeek')?.getAttribute('data-brand')).toBe('deepseek');
+  expect(markOf('SNR 3.0，在线')?.getAttribute('data-icon')).toBe('activity');
+  expect(markOf('超级教授')?.getAttribute('data-icon')).toBe('school');
 });

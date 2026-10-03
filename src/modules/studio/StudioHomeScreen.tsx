@@ -2,12 +2,13 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, u
 import type { MouseEvent, MutableRefObject, RefObject } from 'react';
 import { Link } from 'react-router-dom';
 import { createPortal } from 'react-dom';
-import { Check, ChevronLeft, ChevronRight, LayoutGrid, LogOut, Minus, Moon, Plus, RefreshCw, RotateCcw, Settings, SlidersHorizontal, Sun, X } from 'lucide-react';
+import { m, useReducedMotion } from 'motion/react';
 import { DndContext, DragOverlay, MeasuringStrategy, useDndContext } from '@dnd-kit/core';
 import type { DragMoveEvent } from '@dnd-kit/core';
 import { SortableContext } from '@dnd-kit/sortable';
 import { getEventCoordinates } from '@dnd-kit/utilities';
 
+import { IconAdjustmentsHorizontal, IconCheck, IconChevronLeft, IconChevronRight, IconLayoutGrid, IconLogout, IconMinus, IconMoon, IconPlus, IconRefresh, IconRotate, IconSettings, IconSun, IconX } from '@/modules/studio/icons/tabler';
 import { useTheme } from '@/shared/context/ThemeContext';
 import { STUDIO_AJ_EXIT_TILE_ID } from '@/shared/constants';
 import type { StudioHomeTile, StudioSnr, StudioTileProgress } from '@/shared/types';
@@ -129,8 +130,29 @@ const preventContextMenu = (event: MouseEvent) => event.preventDefault();
 
 // How many copies of each icon are mounted right now, by tile id. An icon that mounts while its id is still counted
 // is moving to another page (its old copy unmounts in the same commit), so it appears in place instead of rising in
-// with the entrance animation again; a new project, or an icon brought back from the library, still rises in.
+// with the entrance animation again.
 const mountedIcons = new Map<string, number>();
+// True from the home screen's mount until it has filled for the first time (its projects loaded): only icons that mount
+// by then rise in; anything mounting later (a page change, a new project, an icon back from the library) simply
+// appears. Module state, not React state, because it is read once by each icon as it mounts and never drives a render.
+let homeFilling = true;
+
+// The entrance, the first time the home screen fills: icons rise 20 px and fade in one after another, 80 ms apart, on
+// a soft spring. `m`, not `motion`: StudioPage loads motion's features lazily (LazyMotion strict).
+const MotionLink = m.create(Link);
+const ENTRANCE_HIDDEN = { opacity: 0, y: 20 } as const;
+const ENTRANCE_SHOWN = { opacity: 1, y: 0 } as const;
+const ENTRANCE_STAGGER_S = 0.08;
+const entranceTransition = (index: number) => ({
+  y: { type: 'spring', stiffness: 100, damping: 12, delay: index * ENTRANCE_STAGGER_S },
+  opacity: { duration: 0.4, ease: 'easeOut', delay: index * ENTRANCE_STAGGER_S },
+} as const);
+// The motion props of a tile: the entrance when it rises in, otherwise none (it simply appears, and later renders,
+// page moves and edit mode never replay anything). Its y offset lives on the tile, never on the sortable slot that
+// dnd-kit moves.
+const entranceProps = (rises: boolean, index: number) => rises
+  ? { initial: ENTRANCE_HIDDEN, animate: ENTRANCE_SHOWN, transition: entranceTransition(index) }
+  : { initial: false as const };
 
 // The status an AI build gives its tile, in words, for the accessible name.
 const buildStatusText = (progress: StudioTileProgress) => progress.label ?? `开发中 ${Math.round(progress.value * 100)}%`;
@@ -143,7 +165,7 @@ function TileFace({ tile, editing, iconSize, switchState }: { tile: StudioHomeTi
   const progress = tile.progress;
   return <>
     <span className="home-icon-wrap" data-build={progress?.state} data-on={switchState === 'on' ? 'true' : undefined}>
-      <StudioTileIcon tone={tile.tone} glyph={tile.glyph} size={iconSize}>{progress && <StudioBuildProgress progress={progress} />}</StudioTileIcon>
+      <StudioTileIcon tone={tile.tone} glyph={tile.glyph} product={tile.id} size={iconSize}>{progress && <StudioBuildProgress progress={progress} />}</StudioTileIcon>
       {progress?.state === 'failed' && !editing && <StudioBuildBadge />}
     </span>
     <span className="home-label">{tile.name}</span>
@@ -164,8 +186,10 @@ function SortableTile({ tile, index, last, editing, labels, iconSize, switchStat
   onBuildAction?: (action: 'stop' | 'resume') => void;
 }) {
   const { attributes, isDragging, itemAttributes, listeners, setActivatorNodeRef, setNodeRef, style } = useHomeSortableItem(tile.id);
-  // Fixed at mount: an icon that moved to another page appears in place instead of rising in again.
-  const [arrived] = useState(() => (mountedIcons.get(tile.id) ?? 0) > 0);
+  const reducedMotion = useReducedMotion();
+  // Fixed at mount: the icon rises in only while the home screen first fills, never under reduced motion, and not
+  // when it merely moved to another page.
+  const [rises] = useState(() => homeFilling && !reducedMotion && !mountedIcons.get(tile.id));
   useLayoutEffect(() => {
     mountedIcons.set(tile.id, (mountedIcons.get(tile.id) ?? 0) + 1);
     return () => {
@@ -182,7 +206,8 @@ function SortableTile({ tile, index, last, editing, labels, iconSize, switchStat
   // Links and buttons are focusable already; edit mode only adds the sortable description for screen readers.
   const shared = {
     ref: setActivatorNodeRef,
-    className: `home-tile ${arrived ? 'has-arrived' : ''}`, style: { animationDelay: `${index * 45}ms` }, title: labels ? undefined : tile.name, 'aria-label': label,
+    className: 'home-tile', title: labels ? undefined : tile.name, 'aria-label': label,
+    ...entranceProps(rises, index),
     ...(editing ? { 'aria-roledescription': attributes['aria-roledescription'], 'aria-describedby': attributes['aria-describedby'] } : {}),
     ...listeners,
     onContextMenu: preventContextMenu,
@@ -191,23 +216,34 @@ function SortableTile({ tile, index, last, editing, labels, iconSize, switchStat
   return <div ref={setNodeRef} {...itemAttributes} style={style} className={`home-tile-slot ${isDragging ? 'is-placeholder' : ''}`}>
     {tile.href
       // A mouse swipe that starts on a link must not turn into the browser's own link drag.
-      ? <Link to={tile.href} draggable={false} {...shared} onClick={event => onActivate(tile, event)}>{body}</Link>
-      : <button type="button" {...shared} onClick={event => onActivate(tile, event)}>{body}</button>}
+      ? <MotionLink to={tile.href} draggable={false} {...shared} onClick={event => onActivate(tile, event)}>{body}</MotionLink>
+      : <m.button type="button" {...shared} onClick={event => onActivate(tile, event)}>{body}</m.button>}
     {editing && (buildRunning && onBuildAction
-      ? <button type="button" className="home-remove build-stop" aria-label={`停止开发 ${tile.name}`} onClick={() => onBuildAction('stop')}><X size={14} strokeWidth={3} aria-hidden="true" /></button>
-      : <button type="button" className="home-remove" aria-label={`从主屏幕隐藏 ${tile.name}`} onClick={onHide}><Minus size={14} strokeWidth={3} aria-hidden="true" /></button>)}
+      ? <button type="button" className="home-remove build-stop" aria-label={`停止开发 ${tile.name}`} onClick={() => onBuildAction('stop')}><IconX size={14} strokeWidth={3} aria-hidden="true" /></button>
+      : <button type="button" className="home-remove" aria-label={`从主屏幕隐藏 ${tile.name}`} onClick={onHide}><IconMinus size={14} strokeWidth={3} aria-hidden="true" /></button>)}
     {editing && progress?.state === 'failed' && onBuildAction && <button type="button" className="home-resume" aria-label={`继续开发 ${tile.name}`}
-      onClick={() => onBuildAction('resume')}><RotateCcw size={14} strokeWidth={2.6} aria-hidden="true" /></button>}
+      onClick={() => onBuildAction('resume')}><IconRotate size={14} strokeWidth={2.6} aria-hidden="true" /></button>}
     {/* VoiceOver and Switch Control cannot drag, so edit mode also offers move buttons. They stay out of sight
         (the grid keeps its clean iPadOS look) until focused, when they appear under the icon. aria-disabled,
         not disabled, keeps a button focused when its icon reaches an end. They move across pages too. */}
     {editing && <span className="home-move" role="group" aria-label={`调整 ${tile.name} 的位置`}>
       <button type="button" aria-label={`前移 ${tile.name}`} aria-disabled={index === 0} data-move-id={tile.id} data-move-step="-1"
-        onClick={() => { if (index > 0) onMove(-1); }}><ChevronLeft size={16} aria-hidden="true" /></button>
+        onClick={() => { if (index > 0) onMove(-1); }}><IconChevronLeft size={16} aria-hidden="true" /></button>
       <button type="button" aria-label={`后移 ${tile.name}`} aria-disabled={last} data-move-id={tile.id} data-move-step="1"
-        onClick={() => { if (!last) onMove(1); }}><ChevronRight size={16} aria-hidden="true" /></button>
+        onClick={() => { if (!last) onMove(1); }}><IconChevronRight size={16} aria-hidden="true" /></button>
     </span>}
   </div>;
+}
+
+/** The 新建 tile after the icons: a dashed card that creates a project, rising in with them the first time. */
+function AddTile({ index, large, labels, onCreate }: { index: number; large: boolean; labels: boolean; onCreate: () => void }) {
+  const reducedMotion = useReducedMotion();
+  // Fixed at mount, like the icons' (it moves to another page when icons are added or hidden, and then just appears).
+  const [rises] = useState(() => homeFilling && !reducedMotion);
+  return <m.button type="button" className="home-tile add" aria-label="新建项目" title={labels ? undefined : '新建项目'} onClick={onCreate} {...entranceProps(rises, index)}>
+    <span className="home-icon tone-ghost" aria-hidden="true"><IconPlus size={large ? 44 : 34} strokeWidth={1.4} /></span>
+    <span className="home-label">新建</span>
+  </m.button>;
 }
 
 /**
@@ -276,6 +312,8 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
   const [resizeCount, countResize] = useReducer((count: number) => count + 1, 0);
   // Where the widgets' drag overlay is portaled: outside the sliding pages (a callback ref, so widgets get the node).
   const [dragHost, setDragHost] = useState<HTMLDivElement | null>(null);
+  // A new home screen fills again (its icons render after this, so they see it); see homeFilling.
+  useState(() => { homeFilling = true; });
   const ajExit = useAjExit();
 
   const homeRef = useRef<HTMLDivElement | null>(null);
@@ -289,6 +327,7 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
   // A move button that was pressed; its icon may have moved to another page (a new node) and focus must follow.
   const pendingMoveFocus = useRef<{ id: string; step: -1 | 1 } | null>(null);
 
+  useEffect(() => { if (!loading) homeFilling = false; }, [loading]);
   useEffect(() => {
     try { localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout)); } catch { /* Private mode keeps the layout for this visit only. */ }
   }, [layout]);
@@ -403,7 +442,8 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
     if (editing && !(event.target as Element).closest(KEEPS_EDITING)) setEditing(false);
   };
   const today = new Date();
-  const iconSize = layout.large ? 52 : 40;
+  // The glyph is half the card, as in the approved design (92 px card, 124 px large).
+  const iconSize = layout.large ? 62 : 46;
   const pageCount = ranges.length;
 
   const pageControl = pageCount > 1 && <div className={`home-page-control ${pager.lit ? 'is-lit' : ''}`} role="group" aria-label="主屏幕页面">
@@ -429,17 +469,14 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
         })}
         {index === 0 && loading && !visible.length && [0, 1, 2].map(placeholder => <div className="home-tile-slot" key={`placeholder-${placeholder}`} aria-hidden="true"><span className="home-tile placeholder"><span className="home-icon tone-ghost" /></span></div>)}
         {holdsAdd && <div className="home-tile-slot">
-          <button type="button" className="home-tile add" style={{ animationDelay: `${visible.length * 45}ms` }} aria-label="新建项目" title={layout.labels ? undefined : '新建项目'} onClick={onCreate}>
-            <span className="home-icon tone-ghost" aria-hidden="true"><Plus size={layout.large ? 44 : 34} strokeWidth={1.4} /></span>
-            <span className="home-label">新建</span>
-          </button>
+          <AddTile index={visible.length} large={layout.large} labels={layout.labels} onCreate={onCreate} />
         </div>}
       </nav>
     </section>;
   };
 
   return <div ref={homeRef} className={`home-screen ${layout.large ? 'large-icons' : ''} ${layout.labels ? '' : 'no-labels'} ${editing ? 'editing' : ''}`} onClick={leaveEditOnEmptyTap}>
-    <StudioFluidBackground />
+    <StudioFluidBackground dark={isDarkMode} paused={covered} />
     <header className="home-top">
       <div className="home-date">
         <span className="home-weekday">{new Intl.DateTimeFormat('zh-CN', { weekday: 'long', timeZone: 'Europe/London' }).format(today)}</span>
@@ -447,18 +484,18 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
       </div>
       <div className="home-actions">
         {editing ? <>
-          <button type="button" className="glass-button home-action-compact" aria-label="添加小组件" title="添加小组件" onClick={() => setWidgetGalleryOpen(true)}><Plus size={17} aria-hidden="true" /><span className="studio-wide-only">小组件</span></button>
-          <button type="button" className="glass-button home-action-compact" aria-label="资源库" title="App 资源库" onClick={() => setLibraryOpen(true)}><LayoutGrid size={17} aria-hidden="true" /><span className="studio-wide-only">资源库</span></button>
-          <button type="button" className="glass-button strong" onClick={() => setEditing(false)}><Check size={17} aria-hidden="true" />完成</button>
+          <button type="button" className="glass-button home-action-compact" aria-label="添加小组件" title="添加小组件" onClick={() => setWidgetGalleryOpen(true)}><IconPlus size={17} aria-hidden="true" /><span className="studio-wide-only">小组件</span></button>
+          <button type="button" className="glass-button home-action-compact" aria-label="资源库" title="App 资源库" onClick={() => setLibraryOpen(true)}><IconLayoutGrid size={17} aria-hidden="true" /><span className="studio-wide-only">资源库</span></button>
+          <button type="button" className="glass-button strong" onClick={() => setEditing(false)}><IconCheck size={17} aria-hidden="true" />完成</button>
         </> : <>
           <button type="button" className="glass-icon theme-toggle" aria-label={isDarkMode ? '切换到浅色模式' : '切换到深色模式'} title={isDarkMode ? '浅色模式' : '深色模式'}
             onClick={event => revealTheme(() => setThemeMode(isDarkMode ? 'light' : 'dark'), event.currentTarget)}>
-            {isDarkMode ? <Sun size={18} aria-hidden="true" /> : <Moon size={18} aria-hidden="true" />}</button>
-          <button type="button" className={`glass-icon ${refreshing ? 'refreshing' : ''}`} aria-label="刷新状态" title="刷新状态" disabled={refreshing} onClick={onRefresh}><RefreshCw size={18} className="refresh-icon" aria-hidden="true" /></button>
-          <button type="button" className="glass-icon" aria-label="编辑主屏幕" title="编辑主屏幕" onClick={() => setEditing(true)}><SlidersHorizontal size={18} aria-hidden="true" /></button>
-          <button type="button" className="glass-icon" aria-label="退出登录" title="退出登录" onClick={onSignOut}><LogOut size={18} aria-hidden="true" /></button>
+            {isDarkMode ? <IconSun size={18} aria-hidden="true" /> : <IconMoon size={18} aria-hidden="true" />}</button>
+          <button type="button" className={`glass-icon ${refreshing ? 'refreshing' : ''}`} aria-label="刷新状态" title="刷新状态" disabled={refreshing} onClick={onRefresh}><IconRefresh size={18} className="refresh-icon" aria-hidden="true" /></button>
+          <button type="button" className="glass-icon" aria-label="编辑主屏幕" title="编辑主屏幕" onClick={() => setEditing(true)}><IconAdjustmentsHorizontal size={18} aria-hidden="true" /></button>
+          <button type="button" className="glass-icon" aria-label="退出登录" title="退出登录" onClick={onSignOut}><IconLogout size={18} aria-hidden="true" /></button>
           {/* Settings, one size smaller, in the corner. */}
-          <button type="button" className="glass-icon home-gear" aria-label="设置" title="设置" onClick={event => onOpenSettings(event.currentTarget.getBoundingClientRect())}><Settings size={17} aria-hidden="true" /></button>
+          <button type="button" className="glass-icon home-gear" aria-label="设置" title="设置" onClick={event => onOpenSettings(event.currentTarget.getBoundingClientRect())}><IconSettings size={17} aria-hidden="true" /></button>
         </>}
       </div>
     </header>
@@ -496,7 +533,7 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
         <h3>已隐藏</h3>
         <div className="ios-list">
           {hidden.map(tile => <div className="ios-row" key={tile.id}>
-            <StudioTileIcon tone={tile.tone} glyph={tile.glyph} size={17} variant="small" />
+            <StudioTileIcon tone={tile.tone} glyph={tile.glyph} product={tile.id} size={17} variant="small" />
             <span className="ios-row-body"><strong>{tile.name}</strong></span>
             <button type="button" className="ios-button tinted" onClick={() => update({ hidden: layout.hidden.filter(id => id !== tile.id) })}>添加到主屏幕</button>
           </div>)}

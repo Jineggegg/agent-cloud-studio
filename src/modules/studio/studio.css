@@ -29,17 +29,24 @@
   --ios-shadow: 0 1px 2px rgba(40, 35, 25, .04), 0 10px 30px rgba(40, 35, 25, .05);
   --ios-shadow-float: 0 2px 6px rgba(40, 35, 25, .06), 0 18px 48px rgba(40, 35, 25, .14);
   --ios-scrim: rgba(20, 18, 14, .28);
-  /* Home wallpaper: near-white, cool mist at the top easing to warm paper at the bottom. */
+  /* Home wallpaper: near-white, cool mist at the top easing to warm paper at the bottom, under the light beams
+     (StudioFluidBackground); the dim layer breathes in the base colour. */
   --wall: linear-gradient(165deg, #e6ecf3 0%, #f7f7f5 48%, #f2ece4 100%);
+  --wall-base: #f4f4f1;
+  --beam-dim: #f4f4f1;
   --grain-opacity: .05;
+  --grain-blend: multiply;
   /* Home-screen glass (widgets, toolbar buttons): frosted white with a bright top rim, floating on the wallpaper. */
   --home-glass: linear-gradient(140deg, rgba(255, 255, 255, .5), rgba(255, 255, 255, .2));
   --home-glass-sheen: rgba(255, 255, 255, .4);
   --home-glass-edge: rgba(255, 255, 255, .6);
   --home-glass-rim: rgba(255, 255, 255, .9);
   --home-glass-shadow: 0 1px 2px rgba(60, 45, 30, .06), 0 24px 46px -20px rgba(60, 45, 30, .32);
-  --home-icon-edge: rgba(255, 255, 255, .55);
-  --home-icon-float: rgba(60, 45, 30, .3);
+  /* App icons are translucent cards with a hairline edge; hover or press lifts them on a soft shadow. */
+  --home-card: rgba(255, 255, 255, .62);
+  --home-card-hover: rgba(255, 255, 255, .4);
+  --home-card-edge: rgba(29, 28, 26, .1);
+  --home-card-lift: 0 4px 6px -1px rgba(0, 0, 0, .1), 0 2px 4px -2px rgba(0, 0, 0, .1);
   --home-label-shadow: 0 1px 1px rgba(255, 255, 255, .45);
   --ease-out: cubic-bezier(.22, .8, .2, 1);
   --ease-spring: cubic-bezier(.34, 1.3, .64, 1);
@@ -82,16 +89,31 @@
   --ios-shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 10px 30px rgba(0, 0, 0, .25);
   --ios-shadow-float: 0 2px 8px rgba(0, 0, 0, .4), 0 18px 48px rgba(0, 0, 0, .5);
   --ios-scrim: rgba(0, 0, 0, .5);
-  --wall: linear-gradient(165deg, #1e2330 0%, #16191f 48%, #0f1013 100%);
-  --grain-opacity: .07;
-  --home-glass: linear-gradient(140deg, rgba(255, 255, 255, .16), rgba(255, 255, 255, .05));
-  --home-glass-sheen: rgba(255, 255, 255, .12);
-  --home-glass-edge: rgba(255, 255, 255, .16);
-  --home-glass-rim: rgba(255, 255, 255, .3);
-  --home-glass-shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 28px 52px -20px rgba(0, 0, 0, .75);
-  --home-icon-edge: rgba(255, 255, 255, .24);
-  --home-icon-float: rgba(0, 0, 0, .6);
-  --home-label-shadow: 0 1px 3px rgba(0, 0, 0, .55);
+  /* iOS-neutral near-black, no blue cast. */
+  --wall: linear-gradient(165deg, #1a1a1c 0%, #111112 48%, #070708 100%);
+  --wall-base: #0b0b0c;
+  --beam-dim: #0a0a0a;
+  --grain-opacity: .06;
+  --grain-blend: screen;
+  --home-glass: linear-gradient(140deg, rgba(255, 255, 255, .14), rgba(255, 255, 255, .05));
+  --home-glass-sheen: rgba(255, 255, 255, .1);
+  --home-glass-edge: rgba(255, 255, 255, .14);
+  --home-glass-rim: rgba(255, 255, 255, .26);
+  --home-glass-shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 28px 52px -20px rgba(0, 0, 0, .8);
+  --home-card: rgba(44, 44, 46, .62);
+  --home-card-hover: rgba(44, 44, 46, .4);
+  --home-card-edge: rgba(255, 255, 255, .12);
+  --home-card-lift: 0 4px 6px -1px rgba(0, 0, 0, .3), 0 2px 4px -2px rgba(0, 0, 0, .3);
+  --home-label-shadow: 0 1px 3px rgba(0, 0, 0, .6);
+}
+/* The dark home screen uses iOS's neutral label and material colours over its near-black wallpaper. The apps and
+   sheets keep the warmer palette above, whose tertiary label has more contrast on their surfaces. */
+.dark .home-screen {
+  --ios-label: #f5f5f7;
+  --ios-label-2: rgba(235, 235, 245, .62);
+  --ios-label-3: rgba(235, 235, 245, .38);
+  --ios-glass: rgba(28, 28, 30, .72);
+  --ios-glass-strong: rgba(44, 44, 46, .86);
 }
 
 /* ---------- Base ---------- */
@@ -186,13 +208,22 @@
   padding-top: calc(28px + env(safe-area-inset-top));
 }
 .home-screen.large-icons { --icon: 124px; --tile: 156px; }
-.home-wallpaper { position: fixed; inset: 0; z-index: -1; overflow: hidden; background: var(--ios-bg) var(--wall); pointer-events: none; }
-/* Film grain keeps the gradient from looking digital. */
+.home-wallpaper { position: fixed; inset: 0; z-index: -1; overflow: hidden; background: var(--wall-base) var(--wall); pointer-events: none; }
+/* The light beams: a low-resolution canvas, overscanned so the blur never shows its edges, softened by a CSS blur
+   (stronger where the canvas cannot blur the beams itself). */
+.home-beams { position: absolute; top: -6%; left: -6%; width: 112%; height: 112%; filter: blur(8px); }
+.home-beams[data-blur="css"] { filter: blur(20px); }
+/* A slow 10 s breath that dims the beams a little and lets them back. */
+.home-beams-dim { position: absolute; inset: 0; background: var(--beam-dim); opacity: .05; animation: home-beams-dim 10s ease-in-out infinite; }
+@keyframes home-beams-dim { 50% { opacity: .15; } }
+.home-wallpaper.is-paused .home-beams-dim { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) { .home-beams-dim { animation: none; opacity: .1; } }
+/* Film grain keeps the gradient from looking digital (and the large soft areas from banding). */
 .home-wallpaper::after {
-  content: ""; position: absolute; inset: 0; opacity: var(--grain-opacity); mix-blend-mode: multiply;
+  content: ""; position: absolute; inset: 0; opacity: var(--grain-opacity); mix-blend-mode: var(--grain-blend);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .9 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
-.dark .home-wallpaper::after { mix-blend-mode: screen; filter: invert(1); }
+.dark .home-wallpaper::after { filter: invert(1); }
 
 .home-top {
   flex-shrink: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
@@ -234,9 +265,7 @@
 .home-tile {
   display: flex; flex-direction: column; align-items: center; gap: 10px; width: var(--tile); padding: 6px 0;
   color: var(--ios-label); text-align: center; border-radius: 24px;
-  animation: tile-in 700ms var(--ease-out) backwards;
 }
-@keyframes tile-in { from { opacity: 0; transform: translateY(18px) scale(.9); } }
 .home-label { max-width: 100%; font-size: var(--label); font-weight: 500; letter-spacing: .01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: var(--home-label-shadow); }
 .home-status { margin-top: -6px; font-size: 12px; color: var(--ios-label-2); text-shadow: var(--home-label-shadow); }
 .no-labels .home-label, .no-labels .home-status, .large-icons .home-status { display: none; }
@@ -272,26 +301,33 @@
 .tone-ghost { --tone-a: transparent; --tone-b: transparent; color: var(--ios-label-2); box-shadow: none; border: 1.5px dashed color-mix(in srgb, var(--ios-label-2) 50%, transparent); }
 .tone-ghost::before, .tone-ghost::after { display: none; }
 
-/* Home-screen icons are tinted glass: the tone shows through at part strength so the wallpaper glows behind it,
-   with a bright rim, a specular highlight at the top and a soft coloured shadow that lifts the icon off the page. */
-.home-tile .home-icon {
-  --icon-rim: inset 0 1.5px 0 rgba(255, 255, 255, .6), inset 0 -12px 22px -10px rgba(0, 0, 0, .14);
-  background: linear-gradient(160deg, color-mix(in srgb, var(--tone-a) 52%, transparent), color-mix(in srgb, var(--tone-b) 62%, transparent));
-  -webkit-backdrop-filter: blur(22px) saturate(190%); backdrop-filter: blur(22px) saturate(190%);
-  border: 1px solid var(--home-icon-edge);
-  box-shadow: var(--icon-rim), 0 2px 4px rgba(0, 0, 0, .06), 0 22px 30px -14px color-mix(in srgb, var(--tone-b) 55%, var(--home-icon-float));
+/* Home-screen icons (and the App library's) are cards: translucent over the wallpaper, a hairline edge, corners of
+   14 px on a 96 px card (scaled with the icon size), and the glyph or official mark in one colour at 80 % ink. The
+   tones stay for the apps' own surfaces; on the home screen everything is monochrome. */
+.home-tile .home-icon, .library-sheet .ios-row > .home-icon {
+  border-radius: max(7px, calc(var(--icon) * 14 / 96));
+  color: var(--ios-label); background: var(--home-card); border: 1px solid var(--home-card-edge); box-shadow: none;
+  transition: transform .3s ease-in-out, background-color .3s ease-in-out, box-shadow .3s ease-in-out;
 }
-.home-tile .home-icon::before { background: radial-gradient(95% 60% at 28% -4%, rgba(255, 255, 255, .5), transparent 62%); }
-.home-tile .home-icon::after { display: none; }
-.home-tile .home-icon svg { filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .28)); }
+.home-tile .home-icon { -webkit-backdrop-filter: blur(24px) saturate(160%); backdrop-filter: blur(24px) saturate(160%); }
+:is(.home-tile .home-icon, .library-sheet .ios-row > .home-icon)::before,
+:is(.home-tile .home-icon, .library-sheet .ios-row > .home-icon)::after { display: none; }
+:is(.home-tile .home-icon, .library-sheet .ios-row > .home-icon) > svg:first-child {
+  filter: none; opacity: .8; transition: transform .3s ease-in-out, opacity .3s ease-in-out;
+}
 .home-tile .home-icon.tone-ghost {
-  background: rgba(255, 255, 255, .1); box-shadow: none; color: var(--ios-label-2);
+  background: rgba(255, 255, 255, .08); color: var(--ios-label-2); -webkit-backdrop-filter: none; backdrop-filter: none;
   border: 1.5px dashed color-mix(in srgb, var(--ios-label-2) 55%, transparent);
 }
-.home-tile .home-icon.tone-ghost svg { filter: none; }
 
-.home-tile:not(.add):active .home-icon { transform: scale(.9); filter: brightness(.86); transition-duration: var(--dur-press); }
-@media (hover: hover) { .home-tile:hover .home-icon { transform: translateY(-3px); } }
+/* Hover or press: the card rises 4 px on a soft shadow and the glyph grows a little. */
+.home-tile:not(.add):active .home-icon { transform: translateY(-4px); background: var(--home-card-hover); box-shadow: var(--home-card-lift); }
+.home-tile:not(.add):active .home-icon > svg:first-child { transform: scale(1.1); opacity: 1; }
+@media (hover: hover) {
+  .home-tile:hover .home-icon { transform: translateY(-4px); box-shadow: var(--home-card-lift); }
+  .home-tile:not(.add):hover .home-icon { background: var(--home-card-hover); }
+  .home-tile:hover .home-icon > svg:first-child { transform: scale(1.1); opacity: 1; }
+}
 
 /* Edit mode: icons expose a hide badge (the jiggle, lift and drop live in studio-home.css). */
 .home-remove {
@@ -339,7 +375,8 @@
 .studio-app.has-origin.closing > * { animation: app-content-out 420ms cubic-bezier(.4, 0, .2, 1) forwards; transform-origin: var(--zoom-cx) var(--zoom-cy); }
 .studio-app.has-origin::after {
   content: ""; position: absolute; inset: 0; z-index: 40; pointer-events: none; opacity: 0;
-  background: radial-gradient(120% 80% at 20% 0%, rgba(255, 255, 255, .22), transparent 55%), linear-gradient(160deg, var(--tone-a), var(--tone-b));
+  /* The card it grows out of is neutral, so the app dissolves in from its own surface colour. */
+  background: var(--ios-surface);
 }
 .studio-app.has-origin.opening::after { animation: app-tone-out var(--dur-slow) ease-out both; }
 .studio-app.has-origin.closing::after { animation: app-tone-in 420ms ease-in forwards; }
