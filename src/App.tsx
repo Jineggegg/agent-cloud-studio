@@ -4,6 +4,7 @@ import { I18nextProvider } from 'react-i18next';
 
 import { ThemeProvider } from '@/shared/context/ThemeContext';
 import { UiPreferencesProvider } from '@/shared/context/UiPreferencesContext';
+import { useFrontendUpdateWatcher } from '@/shared/hooks/useFrontendUpdateWatcher';
 import { LaunchErrorBoundary, LaunchScreen, LaunchSplashRelease } from '@/shared/ui/LaunchScreen';
 import { AuthProvider, ProtectedRoute } from '@/modules/auth';
 import { i18n } from '@/modules/i18n';
@@ -117,8 +118,11 @@ function detectRouterBasename() {
  * /work keeps the splash (not a spinner) up until the workbench itself is ready. An unknown path
  * goes to the Studio home, and a screen that throws (or a chunk that fails to download) shows
  * LaunchErrorBoundary's error screen, so the splash can never be left up with nothing behind it.
+ * It also watches for a redeployed web client, so a page left open (the iPad home-screen app) never keeps
+ * running an old bundle against a newer server.
  */
 export default function App() {
+  useFrontendUpdateWatcher();
   const routerBasename = detectRouterBasename();
   // One element shape for all three Studio routes, so opening an app keeps the home screen mounted.
   const studioScreen = <><StudioPage /><LaunchSplashRelease /></>;
