@@ -2013,6 +2013,39 @@ export type StudioOutlookTokens = { accessToken: string; refreshToken: string; e
  * a project. Remote projects (agents on an SSH host) have no local directory and are never listed.
  */
 export type StudioWorkbenchHubLink = { hubId: string; projectId: string | null };
+//----------------- WORKBENCH THREADS (provider handoffs) ------------
+/**
+ * One stretch of a workbench conversation, run by one provider: an agent session (Claude Code or Codex, by its app
+ * session id) or a Studio DeepSeek conversation. `handoffAt` is when the conversation was handed to it (null for the
+ * first stretch); `modelLabel` is the model as the chat named it when it took over (null when unknown).
+ */
+export type StudioWorkbenchThreadSegment = {
+  kind: 'agent' | 'deepseek';
+  provider: 'claude' | 'codex' | 'deepseek';
+  sessionId: string;
+  modelLabel: string | null;
+  handoffAt: string | null;
+};
+/**
+ * A workbench conversation that moved between providers mid-way: its stretches in order, the last one being the
+ * session that continues it. Stored by the workbench threads service (studio_workbench_threads) per owner and IDE
+ * project; the workbench lists a thread as one conversation titled `title` and opens the latest stretch.
+ */
+export type StudioWorkbenchThread = {
+  id: string;
+  projectId: string;
+  title: string;
+  segments: StudioWorkbenchThreadSegment[];
+  createdAt: string;
+  updatedAt: string;
+};
+/**
+ * What a handoff hands the next provider: `summary`, built deterministically from the outgoing session's stored
+ * transcript (capped at a few thousand characters), and `context`, the `<handoff>` block (an introduction plus the
+ * summary) the workbench appends to the owner's next message as the new session's first prompt.
+ */
+export type StudioWorkbenchHandoff = { summary: string; context: string };
+// ---------------------------
 // ── v6 track: chat — server types below this line ──
 // ── v6 track: github — server types below this line ──
 //----------------- STUDIO GITHUB (gh CLI) ------------

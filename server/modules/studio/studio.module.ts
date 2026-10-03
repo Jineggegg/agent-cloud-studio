@@ -7,7 +7,7 @@ import { maskClientAddress, readRequestClient, verifyStepUpPassword } from '@/mo
 import { getConnection, getDatabasePath, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { getStudioPushStatus, sendStudioPushNotification } from '@/modules/notifications/index.js';
 import { createProject } from '@/modules/projects/index.js';
-import { readCodexAccountRateLimits } from '@/modules/providers/index.js';
+import { readCodexAccountRateLimits, sessionsService } from '@/modules/providers/index.js';
 import { scheduledMessagesService } from '@/modules/scheduled-messages/index.js';
 import { AppError, readStudioIngressOrigins } from '@/shared/utils.js';
 
@@ -37,6 +37,7 @@ import { createQuotaService } from './quota/quota.service.js';
 import { createQuotaRouter } from './quota/quota.routes.js';
 import { createWorkbenchService } from './workbench.service.js';
 import { createWorkbenchRouter } from './workbench.routes.js';
+import { createWorkbenchThreadsService } from './workbench-threads.service.js';
 import { createMemoryMcpClient } from './memory/memory-client.adapter.js';
 import { createMemoryService, findWindowsHome, memoryFolderName } from './memory/memory.service.js';
 import { createMemoryChatBridge } from './memory/memory-chat.service.js';
@@ -239,7 +240,22 @@ export function createStudioModule() {
       return row && !row.isArchived ? row.project_id : null;
     },
   });
-  routes.use('/workbench', createWorkbenchRouter(workbench));
+  // A conversation handed to another provider mid-way: a summary from the stored transcript seeds the next session,
+  // and the chain of sessions is kept so the workbench lists and shows it as one conversation.
+  const workbenchThreads = createWorkbenchThreadsService({
+    database: getConnection(),
+    agentSession(sessionId) {
+      try {
+        const details = sessionsService.getSessionDetailsById(sessionId);
+        return { provider: details.provider, projectId: details.project?.projectId ?? null };
+      } catch { return null; }
+    },
+    agentTranscript: async sessionId => (await sessionsService.fetchHistory(sessionId, { limit: null, offset: 0 })).messages,
+    deepseekConversation: (userId, conversationId) => service.conversation(userId, conversationId) as {
+      messages: { role: string; content: string; status?: string }[];
+    },
+  });
+  routes.use('/workbench', createWorkbenchRouter(workbench, workbenchThreads));
   // ── v6 track: chat — create its service and mount its router below this line ──
   // ── v6 track: github — create its service and mount its router below this line ──
   // The owner's GitHub through the gh CLI already signed in on this machine (gh keeps the token; Studio never reads
