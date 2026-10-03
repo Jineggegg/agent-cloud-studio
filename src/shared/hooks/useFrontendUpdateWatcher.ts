@@ -58,6 +58,15 @@ function readEntryBasePath(): string | null {
   }
 }
 
+// The build signature of the index.html the server serves now, or null when the answer is not a built page.
+async function fetchServedSignature(basePath: string, signal: AbortSignal): Promise<string | null> {
+  const response = await api.webClient.indexHtml(basePath, signal);
+  if (!response.ok || !(response.headers.get('content-type') ?? '').includes('text/html')) return null;
+  const html = await response.text();
+  if (html.length > MAX_INDEX_HTML_CHARS) return null;
+  return readFrontendBuildSignature(new DOMParser().parseFromString(html, 'text/html'));
+}
+
 function hasFocusedTextWithContent(): boolean {
   const focused = document.activeElement;
   if (focused instanceof HTMLTextAreaElement) return focused.value.trim().length > 0;
@@ -119,14 +128,6 @@ export function startFrontendUpdateWatcher(options: FrontendUpdateWatcherOptions
     && resumedAt !== null && now - resumedAt <= RESUME_RELOAD_WINDOW_MS && lastInteractionAt < resumedAt
     && !document.querySelector(OPEN_LAYER_SELECTOR) && !hasFocusedTextWithContent();
 
-  const fetchServedSignature = async (signal: AbortSignal): Promise<string | null> => {
-    const response = await api.webClient.indexHtml(basePath, signal);
-    if (!response.ok || !(response.headers.get('content-type') ?? '').includes('text/html')) return null;
-    const html = await response.text();
-    if (html.length > MAX_INDEX_HTML_CHARS) return null;
-    return readFrontendBuildSignature(new DOMParser().parseFromString(html, 'text/html'));
-  };
-
   const check = async () => {
     const startedAt = Date.now();
     if (stopped || inFlight || document.visibilityState !== 'visible' || startedAt - lastCheckAt < MIN_CHECK_GAP_MS) return;
@@ -139,7 +140,7 @@ export function startFrontendUpdateWatcher(options: FrontendUpdateWatcherOptions
     try {
       // The race keeps a fetch that ignores its signal from holding the watcher.
       served = await Promise.race([
-        fetchServedSignature(controller.signal),
+        fetchServedSignature(basePath, controller.signal),
         new Promise<null>(resolve => controller.signal.addEventListener('abort', () => resolve(null), { once: true })),
       ]);
       failed = controller.signal.aborted;
@@ -213,6 +214,35 @@ export function startFrontendUpdateWatcher(options: FrontendUpdateWatcherOptions
     window.removeEventListener('pointerdown', onInteraction, { capture: true });
     window.removeEventListener('keydown', onInteraction, { capture: true });
   };
+}
+
+/**
+ * Used by the Studio home's refresh button (StudioPage): a tap is the owner asking for the latest, so when the
+ * server now serves a newer build than this page booted with, it is loaded at once (`reload`, by default
+ * window.location.reload) and the promise resolves true; otherwise it resolves false and the caller refreshes
+ * its data as usual. No answer within ten seconds, a failed or unrecognisable answer, or a development page
+ * (no hashed entry bundle) all resolve false. The background watcher's loop guard does not apply: each tap asks.
+ */
+export async function reloadIfNewBuild(reload: () => void = () => window.location.reload()): Promise<boolean> {
+  const bootSignature = readFrontendBuildSignature(document);
+  const basePath = bootSignature === null ? null : readEntryBasePath();
+  if (bootSignature === null || basePath === null) return false;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS);
+  try {
+    const served = await Promise.race([
+      fetchServedSignature(basePath, controller.signal),
+      new Promise<null>(resolve => controller.signal.addEventListener('abort', () => resolve(null), { once: true })),
+    ]);
+    if (served === null || served === bootSignature) return false;
+    rememberReload(served, Date.now());
+    reload();
+    return true;
+  } catch {
+    return false;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 /**
