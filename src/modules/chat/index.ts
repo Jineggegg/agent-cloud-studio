@@ -23,3 +23,7 @@ export { ToolRenderer, SubagentPanel, WorkflowPanel } from '@/modules/chat/tools
 export { default as CommandResultModal } from '@/modules/chat/modals/CommandResultModal';
 export { buildClaudeToolPermissionEntry, formatToolInputForDisplay } from '@/modules/chat/utils/chatPermissions';
 export { stripProposedPlanEnvelope } from '@/modules/chat/utils/chatFormatting';
+// History rows turned into transcript messages and a cached diff calculator, as the engine makes them. Consumed by
+// the workbench handoff prelude, which reads earlier sessions of a conversation outside the engine.
+export { normalizedToChatMessages } from '@/modules/chat/hooks/useChatMessages';
+export { createCachedDiffCalculator } from '@/modules/chat/utils/messageTransforms';

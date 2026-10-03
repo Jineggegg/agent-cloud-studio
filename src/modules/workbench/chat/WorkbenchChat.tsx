@@ -246,6 +246,7 @@ export function WorkbenchChat({
       project={project}
       segments={handoff.chain}
       next={{ provider: handoff.to.provider, modelLabel: handoff.to.modelLabel, handoffAt: null }}
+      onOpenFile={onOpenFile}
       pending={waiting ? {
         status: waiting.summary.status,
         summary: waiting.summary.text,
@@ -259,6 +260,7 @@ export function WorkbenchChat({
       project={project}
       segments={position.earlier}
       next={{ provider: position.current.provider, modelLabel: position.current.modelLabel, handoffAt: position.current.handoffAt }}
+      onOpenFile={onOpenFile}
     />
   ) : null;
   const prepare = waiting ? prepareHandoffMessage : undefined;
