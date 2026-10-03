@@ -10,7 +10,7 @@ import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simp
 import type Database from 'better-sqlite3';
 
 import { AppError, describePasskeyDevice } from '@/shared/utils.js';
-import type { StudioT212Environment, StudioT212OrderInput, StudioT212TrustedOrigin } from '@/shared/types.js';
+import type { StudioRequestClient, StudioT212Environment, StudioT212OrderInput, StudioT212TrustedOrigin } from '@/shared/types.js';
 
 import type { createTrading212Service } from './trading212.service.js';
 
@@ -34,8 +34,12 @@ type Dependencies = {
   allowLocalhost?: string;
   // Exact browser origins that may trade and own passkeys (STUDIO_PUBLIC_ORIGIN, STUDIO_TAILNET_ORIGIN).
   origins: (string | undefined)[];
-  // Checks the user's Studio account password: adding or removing a passkey always needs this step-up.
-  verifyPassword: (userId: number, password: string) => Promise<boolean>;
+  /**
+   * The auth module's password step-up (verifyStepUpPassword): adding or removing a passkey always
+   * needs it. It counts under the same per-session budget, per-user daily cap and security log as
+   * every other step-up, and throws an AppError (403 wrong, 429 throttled or capped, 400 missing).
+   */
+  verifyStepUp: (who: StepUpWho, password: string) => Promise<void>;
   // SimpleWebAuthn functions; injectable so tests never need a real authenticator.
   webauthn?: WebAuthn;
   now?: () => number;
@@ -64,15 +68,23 @@ const PREVIEW_TTL_MS = 60_000;
 const CEREMONY_TTL_MS = 5 * 60_000;
 // After an order whose outcome is unknown, an identical order is refused for this long unless acknowledged.
 const UNKNOWN_HOLD_MS = 5 * 60_000;
-// Password step-up: five wrong passwords in a row lock passkey changes for fifteen minutes.
-const MAX_PASSWORD_FAILURES = 5;
-const PASSWORD_LOCK_MS = 15 * 60_000;
 const MAX_PASSWORD_LENGTH = 1024;
 const DEFAULT_MAX_ORDER_VALUE = 500;
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
 const ENV_LABEL: Record<StudioT212Environment, string> = { live: '实盘', demo: '模拟盘' };
 const SIDE_LABEL = { buy: '买入', sell: '卖出' } as const;
 const DEFAULT_WEBAUTHN: WebAuthn = { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse };
+
+/**
+ * Who asks for a password step-up: the signed-in user as authenticateToken attached it (with its
+ * session id) and the request client, so the auth module counts the attempt against the right session.
+ */
+type StepUpWho = { user: unknown; client: StudioRequestClient };
+
+// For callers without a request (tests): the user alone, from no particular client.
+function anonymousStepUp(userId: number): StepUpWho {
+  return { user: { id: userId }, client: { door: 'direct', address: 'unknown' } };
+}
 
 function fail(message: string, statusCode: number, code = 'T212_ORDER_REFUSED'): never {
   throw new AppError(message, { statusCode, code });
@@ -147,8 +159,6 @@ export function createTrading212OrdersService(deps: Dependencies) {
   const registrations = new Map<string, Pending>();
   // Removal challenges per user and passkey id, for removals authorised by that passkey.
   const removals = new Map<string, Pending>();
-  // Consecutive wrong step-up passwords per user, and when a lock after too many of them ends.
-  const passwordFailures = new Map<number, { count: number; lockedUntil: number }>();
   db.exec(`
     CREATE TABLE IF NOT EXISTS studio_t212_passkeys (
       id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, rp_id TEXT NOT NULL, credential_id TEXT NOT NULL UNIQUE,
@@ -214,19 +224,16 @@ export function createTrading212OrdersService(deps: Dependencies) {
     const minutes = Math.max(1, Math.round((now() - Date.parse(row.created_at)) / 60_000));
     return `约 ${minutes} 分钟前一笔相同的订单（${SIDE_LABEL[order.side]} ${order.quantity} 股 ${order.ticker}）状态未知：请先在 Trading 212 核对它是否已经成交；确认没有成交后，再明确确认重新下单`;
   }
-  async function assertPassword(userId: number, password: string) {
-    const time = now();
-    const state = passwordFailures.get(userId);
-    if (state && state.lockedUntil > time) fail('Studio 密码错误次数过多，请 15 分钟后再试', 429, 'T212_STEP_UP_LOCKED');
-    // The attempt is counted before the (slow) password check, so concurrent guesses cannot all slip under
-    // the limit; a correct password clears the count. A lock that has run out starts a fresh count.
-    const count = (state && state.lockedUntil && state.lockedUntil <= time ? 0 : state?.count ?? 0) + 1;
-    passwordFailures.set(userId, { count, lockedUntil: count >= MAX_PASSWORD_FAILURES ? time + PASSWORD_LOCK_MS : 0 });
-    let correct = false;
-    try { correct = password.length > 0 && password.length <= MAX_PASSWORD_LENGTH && await deps.verifyPassword(userId, password); }
-    catch { correct = false; }
-    if (correct) { passwordFailures.delete(userId); return; }
-    fail('Studio 密码不正确', 403, 'T212_STEP_UP_FAILED');
+  // The password step-up goes through the auth module, whose limits and log apply; its refusals
+  // keep their meaning under this module's codes (429 stays a lock, with auth's own wording).
+  async function assertPassword(who: StepUpWho, password: string) {
+    if (!password || password.length > MAX_PASSWORD_LENGTH) fail('Studio 密码不正确', 403, 'T212_STEP_UP_FAILED');
+    try {
+      await deps.verifyStepUp(who, password);
+    } catch (error) {
+      if (error instanceof AppError && error.statusCode === 429) fail(error.message, 429, 'T212_STEP_UP_LOCKED');
+      fail('Studio 密码不正确', 403, 'T212_STEP_UP_FAILED');
+    }
   }
   // Verifies an assertion against one stored credential with user verification required, then advances its counter.
   async function verifyAssertion(row: PasskeyRow, assertion: AuthenticationResponseJSON, challenge: string, origin: string) {
@@ -415,9 +422,9 @@ export function createTrading212OrdersService(deps: Dependencies) {
     },
 
     // Starts adding a passkey for the request's domain; the password step-up comes before any challenge is issued.
-    async passkeyOptions(userId: number, userName: string | undefined, origin: StudioT212TrustedOrigin, password: string) {
+    async passkeyOptions(userId: number, userName: string | undefined, origin: StudioT212TrustedOrigin, password: string, who: StepUpWho = anonymousStepUp(userId)) {
       prune();
-      await assertPassword(userId, password);
+      await assertPassword(who, password);
       const options = await webauthn.generateRegistrationOptions({
         rpName: 'Agent Cloud Studio', rpID: origin.rpId,
         userName: userName?.trim() || `studio-${userId}`, userDisplayName: 'Studio 交易确认',
@@ -468,10 +475,10 @@ export function createTrading212OrdersService(deps: Dependencies) {
       return options;
     },
 
-    async removePasskey(userId: number, origin: StudioT212TrustedOrigin, id: string, stepUp: StepUp) {
+    async removePasskey(userId: number, origin: StudioT212TrustedOrigin, id: string, stepUp: StepUp, who: StepUpWho = anonymousStepUp(userId)) {
       const row = findPasskey(userId, id);
       if ('password' in stepUp) {
-        await assertPassword(userId, stepUp.password);
+        await assertPassword(who, stepUp.password);
       } else {
         const key = `${userId}:${id}`;
         const pending = removals.get(key);

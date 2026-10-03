@@ -2,7 +2,7 @@ import express from 'express';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 import { AppError, asyncHandler } from '@/shared/utils.js';
-import type { StudioT212OrderInput } from '@/shared/types.js';
+import type { StudioRequestClient, StudioT212OrderInput } from '@/shared/types.js';
 
 import type { createTrading212OrdersService } from './trading212-orders.service.js';
 
@@ -95,7 +95,13 @@ function previewId(value: unknown) {
  * router, for passkey-gated order placement and passkey management. Read paths stay on the read-only router.
  * Every passkey change needs a step-up (the Studio password, or that passkey for its own removal).
  */
-export function createTrading212OrdersRouter(service: ReturnType<typeof createTrading212OrdersService>) {
+export function createTrading212OrdersRouter(
+  service: ReturnType<typeof createTrading212OrdersService>,
+  // The auth module's request classifier, so a step-up is counted for the right client.
+  readClient: (req: express.Request) => StudioRequestClient,
+) {
+  // The signed-in user (with its session id) and the client, for the auth step-up.
+  const stepUpWho = (req: express.Request) => ({ user: (req as AuthenticatedRequest).user, client: readClient(req) });
   const router = express.Router();
   router.use((_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
   router.get('/trading', (req, res) => { res.json(service.config(user(req))); });
@@ -114,7 +120,7 @@ export function createTrading212OrdersRouter(service: ReturnType<typeof createTr
   router.post('/passkey/options', asyncHandler(async (req, res) => {
     const userId = user(req);
     const origin = service.trustedOrigin(req.get('origin'));
-    res.json(await service.passkeyOptions(userId, (req as AuthenticatedRequest).user?.username, origin, password(req.body)));
+    res.json(await service.passkeyOptions(userId, (req as AuthenticatedRequest).user?.username, origin, password(req.body), stepUpWho(req)));
   }));
   router.post('/passkey', asyncHandler(async (req, res) => {
     const userId = user(req);
@@ -130,7 +136,7 @@ export function createTrading212OrdersRouter(service: ReturnType<typeof createTr
   router.post('/passkey/:id/remove', asyncHandler(async (req, res) => {
     const userId = user(req);
     const origin = service.trustedOrigin(req.get('origin'));
-    res.json(await service.removePasskey(userId, origin, passkeyId(req.params.id), stepUp(req.body)));
+    res.json(await service.removePasskey(userId, origin, passkeyId(req.params.id), stepUp(req.body), stepUpWho(req)));
   }));
   return router;
 }

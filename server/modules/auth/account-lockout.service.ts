@@ -183,18 +183,19 @@ export function createStepUpFailureCap(dependencies: { store: StepUpFailureStore
   const max = dependencies.max ?? STEP_UP_CAP;
   const windowMs = dependencies.windowMs ?? STEP_UP_WINDOW_MS;
   return {
-    /**
-     * Call before comparing a step-up password: refused while the user has used up the window;
-     * otherwise the attempt is counted at once (so parallel guesses cannot slip past) and its id
-     * returned, for `succeed` to take back.
-     */
-    begin(username: string): { allowed: true; attemptId: number } | { allowed: false; retryAfterMs: number } {
+    /** Whether the user may try another step-up password now (counts nothing). */
+    check(username: string): { allowed: true } | { allowed: false; retryAfterMs: number } {
       const at = now();
       const { count, oldest } = dependencies.store.countSince(username, at - windowMs);
-      if (count >= max) {
-        return { allowed: false, retryAfterMs: Math.max(1000, (oldest ?? at) + windowMs - at) };
-      }
-      return { allowed: true, attemptId: dependencies.store.add(username, at) };
+      return count >= max ? { allowed: false, retryAfterMs: Math.max(1000, (oldest ?? at) + windowMs - at) } : { allowed: true };
+    },
+
+    /**
+     * Counts one attempt that is about to compare a password (only those count: requests refused
+     * by a throttle or lock never reach here). Returns its id, for `succeed` to take back.
+     */
+    record(username: string): number {
+      return dependencies.store.add(username, now());
     },
 
     /** A correct password does not count. */

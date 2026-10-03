@@ -144,6 +144,19 @@ function throttledError(purpose: 'login' | 'handoff' | 'step-up', retryAfterMs: 
   });
 }
 
+// The refusal once the user's daily step-up cap is used up; the way out is to sign everything out.
+function stepUpCapError(purpose: 'login' | 'handoff' | 'step-up', retryAfterMs: number): AppError {
+  const hours = Math.max(1, Math.ceil(retryAfterMs / 3_600_000));
+  return new AppError(
+    `今天输错密码确认的次数太多，约 ${hours} 小时后才能再试。如果不是你本人在尝试，请在「设置 → 安全」里退出所有设备，这也会重置这个计数`,
+    {
+      code: purpose === 'handoff' ? 'AUTH_HANDOFF_RATE_LIMITED' : 'AUTH_STEP_UP_RATE_LIMITED',
+      statusCode: 429,
+      details: { retryAfterSeconds: Math.ceil(retryAfterMs / 1000), reason: 'daily-cap' },
+    },
+  );
+}
+
 // Lets the first event per client per minute through and drops the rest, for refusals anyone can
 // trigger at will (malformed or replayed passkey assertions); bounded to 1024 clients.
 function createMinuteGate(now: () => number) {
@@ -319,10 +332,10 @@ export function createAuthService(dependencies: AuthDependencies) {
       throw throttledError(purpose, null);
     }
     // Across all sessions, a user gets a bounded number of step-up guesses per day.
-    const capAttempt = purpose === 'login' ? null : dependencies.stepUpFailureCap?.begin(username);
-    if (capAttempt && !capAttempt.allowed) {
+    const capCheck = purpose === 'login' ? null : dependencies.stepUpFailureCap?.check(username);
+    if (capCheck && !capCheck.allowed) {
       dependencies.logInfo(`[auth] Password check refused (daily step-up cap, ${purpose})`);
-      throw throttledError(purpose, capAttempt.retryAfterMs);
+      throw stepUpCapError(purpose, capCheck.retryAfterMs);
     }
     const attempt = dependencies.accountLockout?.begin(username, scope, subject);
     if (attempt && !attempt.allowed) {
@@ -332,6 +345,8 @@ export function createAuthService(dependencies: AuthDependencies) {
     // Counted before the slow comparison, so parallel guesses cannot all pass the checks above;
     // a success takes it back.
     throttle.record(throttleKey);
+    // Only now, with every refusal behind it, does the attempt count towards the daily cap.
+    const capAttemptId = purpose === 'login' ? undefined : dependencies.stepUpFailureCap?.record(username);
     const account = dependencies.users.getUserByUsername(username);
     const valid = await dependencies.comparePassword(password, account?.password_hash ?? timingHash);
     if (!account || !valid) {
@@ -348,7 +363,7 @@ export function createAuthService(dependencies: AuthDependencies) {
       return null;
     }
     throttle.forgive(throttleKey);
-    if (capAttempt?.allowed) dependencies.stepUpFailureCap?.succeed(capAttempt.attemptId);
+    if (capAttemptId !== undefined) dependencies.stepUpFailureCap?.succeed(capAttemptId);
     clearLockout(account.username, scope, client, purpose === 'login' ? 'password' : 'step-up', subject);
     return account;
   }

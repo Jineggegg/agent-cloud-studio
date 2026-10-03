@@ -426,3 +426,29 @@ test('successful Tailscale and handoff sign-ins are recorded and kept apart from
   assert.deepEqual(events.recentSignIns(10).map((event) => event.type), ['login-succeeded', 'handoff-signin', 'tailscale-signin']);
   assert.equal(events.recentSignIns(10)[2].client, '100.101.*.*');
 });
+
+test('requests refused by a lock never count towards the daily cap; the cap says how to get out', async () => {
+  const { service, store, clock } = createHarness();
+  const stolen = Object.defineProperty({ ...OWNER }, 'sessionId', { value: 'stolen-session' });
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    assert.equal((await refusal(service.verifyStepUpPassword(stolen, 'guess', publicClient(attempt)))).code, 'AUTH_STEP_UP_FAILED');
+  }
+  // 15 more from the locked session (after the in-memory throttle window, so the lock answers).
+  clock.now += 11 * MINUTE;
+  for (let attempt = 0; attempt < 15; attempt += 1) {
+    assert.equal((await refusal(service.verifyStepUpPassword(stolen, 'guess', publicClient(attempt)))).statusCode, 429);
+  }
+  assert.equal(store.stepUpFailures.countSince(OWNER.username, 0).count, 5);
+  // The owner's own session still gets through.
+  const owners = Object.defineProperty({ ...OWNER }, 'sessionId', { value: 'owner-session' });
+  await service.verifyStepUpPassword(owners, PASSWORD, OWNER_DEVICE);
+
+  // Once the cap is used up, its refusal points at 退出所有设备.
+  for (let session = 0; session < 3; session += 1) {
+    const minted = Object.defineProperty({ ...OWNER }, 'sessionId', { value: `minted-${session}` });
+    for (let attempt = 0; attempt < 5; attempt += 1) await refusal(service.verifyStepUpPassword(minted, 'guess', publicClient(session)));
+  }
+  const capped = await refusal(service.verifyStepUpPassword(owners, PASSWORD, OWNER_DEVICE));
+  assert.equal(capped.statusCode, 429);
+  assert.match(capped.message, /退出所有设备/);
+});
