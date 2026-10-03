@@ -5,7 +5,7 @@ import path from 'node:path';
 import { resolveClaudeRateSnapshotPath, resolveHomeRelativePath } from '@/shared/utils.js';
 import type { StudioQuotaSnapshot } from '@/shared/types.js';
 
-import { readClaudeQuota } from './claude-quota.adapter.js';
+import { createClaudeUsageReader, readClaudeQuota } from './claude-quota.adapter.js';
 import { readCodexQuota } from './codex-quota.adapter.js';
 import { readDeepSeekQuota } from './deepseek-quota.adapter.js';
 
@@ -27,8 +27,10 @@ type QuotaDependencies = {
   now?: () => number;
   // Per-load deadline, mainly for tests.
   loadTimeoutMs?: number;
-  // Overrides for STUDIO_CLAUDE_RATE_FILE and STUDIO_CODEX_SESSIONS_DIRS, mainly for tests.
-  files?: { claudeSnapshot?: string; codexSessionDirectories?: string[] };
+  // Overrides for STUDIO_CLAUDE_RATE_FILE, STUDIO_CLAUDE_CREDENTIALS_FILE and STUDIO_CODEX_SESSIONS_DIRS, mainly for tests.
+  files?: { claudeSnapshot?: string; claudeCredentials?: string; codexSessionDirectories?: string[] };
+  // Override for STUDIO_CLAUDE_USAGE_API (false is "off"), mainly for tests.
+  claudeUsageApi?: boolean;
 };
 
 function failed(provider: Provider, note = '读取用量时出错，请稍后重试'): StudioQuotaSnapshot {
@@ -43,6 +45,21 @@ function codexSessionDirectoriesFromEnv() {
   return [path.join(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex'), 'sessions')];
 }
 
+// The credentials file of the machine's Claude login, which Studio's own Claude sessions use too:
+// STUDIO_CLAUDE_CREDENTIALS_FILE (`~` and relative paths are home-based), else Claude's config directory
+// (CLAUDE_CONFIG_DIR, default ~/.claude). Only its OAuth access token is read, per request.
+function claudeCredentialsFileFromEnv() {
+  const configured = process.env.STUDIO_CLAUDE_CREDENTIALS_FILE?.trim();
+  if (configured) return resolveHomeRelativePath(configured);
+  const configDirectory = process.env.CLAUDE_CONFIG_DIR?.trim();
+  return path.join(configDirectory ? resolveHomeRelativePath(configDirectory) : path.join(os.homedir(), '.claude'), '.credentials.json');
+}
+
+// STUDIO_CLAUDE_USAGE_API=off (or 0 / false / no) stops Studio from calling Claude's usage API at all.
+function claudeUsageApiEnabledFromEnv() {
+  return !/^(off|0|false|no)$/i.test(process.env.STUDIO_CLAUDE_USAGE_API?.trim() ?? '');
+}
+
 /**
  * Used by studio.module (and the quota route tests) to build the snapshots behind GET /api/studio/quota.
  *
@@ -51,8 +68,10 @@ function codexSessionDirectoriesFromEnv() {
  * Each settles independently, is cached for a minute and is loaded at most once at a time
  * (concurrent callers share the pending load). A load that has not settled after 20 s resolves to
  * an unavailable snapshot, which is cached like any other result, so a stuck source cannot hold
- * the endpoint. A changed DeepSeek key invalidates its entry. File locations come from the
- * environment once, when the service is created.
+ * the endpoint. A changed DeepSeek key invalidates its entry. Claude is read live from Claude's
+ * usage API with the machine's Claude login first and falls back to the statusLine / SDK snapshot
+ * (claude-quota.adapter). File locations and STUDIO_CLAUDE_USAGE_API come from the environment
+ * once, when the service is created.
  */
 export function createQuotaService(deps: QuotaDependencies) {
   const now = deps.now ?? Date.now;
@@ -60,6 +79,13 @@ export function createQuotaService(deps: QuotaDependencies) {
   const loadTimeoutMs = deps.loadTimeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS;
   const claudeSnapshot = deps.files?.claudeSnapshot ?? resolveClaudeRateSnapshotPath();
   const codexSessionDirectories = deps.files?.codexSessionDirectories ?? codexSessionDirectoriesFromEnv();
+  // One reader for the service's lifetime, so its own answer cache, in-flight guard and backoff hold across loads.
+  const claudeUsage = createClaudeUsageReader({
+    credentialsFile: deps.files?.claudeCredentials ?? claudeCredentialsFileFromEnv(),
+    enabled: deps.claudeUsageApi ?? claudeUsageApiEnabledFromEnv(),
+    request,
+    now,
+  });
   const cache = new Map<string, CacheEntry>();
 
   // The abandoned load keeps running in the background; the Codex reader stops its own child
@@ -105,7 +131,7 @@ export function createQuotaService(deps: QuotaDependencies) {
   return {
     async snapshots(userId: number): Promise<StudioQuotaSnapshot[]> {
       return Promise.all([
-        cached('claude', '', 'claude', () => readClaudeQuota({ snapshotFile: claudeSnapshot, now: now() })),
+        cached('claude', '', 'claude', () => readClaudeQuota({ snapshotFile: claudeSnapshot, now: now(), usage: claudeUsage })),
         cached('codex', '', 'codex', () => readCodexQuota({ readRateLimits: deps.codexRateLimits, sessionDirectories: codexSessionDirectories, now: now() })),
         deepseek(userId),
       ]);

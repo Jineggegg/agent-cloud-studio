@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +15,8 @@ import { createQuotaService } from '../quota/quota.service.js';
 import { createQuotaRouter } from '../quota/quota.routes.js';
 
 const START = Date.parse('2026-10-02T12:00:00.000Z');
+// No test may read this machine's real Claude login: every service gets a credentials path that does not exist.
+const MISSING_CREDENTIALS = path.join(os.tmpdir(), `quota-test-no-login-${randomUUID()}`, '.credentials.json');
 
 function fixture() {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'quota-service-test-'));
@@ -38,7 +41,7 @@ function fixture() {
       await new Promise<void>(resolve => { releaseCodex = resolve; });
       return { rateLimits: { primary: { usedPercent: 7, windowDurationMins: 300, resetsAt: null }, secondary: null } };
     },
-    files: { claudeSnapshot, codexSessionDirectories: [path.join(directory, 'sessions')] },
+    files: { claudeSnapshot, claudeCredentials: MISSING_CREDENTIALS, codexSessionDirectories: [path.join(directory, 'sessions')] },
   });
   return { directory, service, counts, keys, advance: (ms: number) => { clock += ms; }, release: () => releaseCodex() };
 }
@@ -86,7 +89,7 @@ test('a throwing key lookup degrades to an unavailable DeepSeek snapshot', async
   const service = createQuotaService({
     deepseekKey: () => { throw new Error('bad master key'); },
     codexRateLimits: null,
-    files: { claudeSnapshot: path.join(os.tmpdir(), 'quota-missing-snapshot.json'), codexSessionDirectories: [] },
+    files: { claudeSnapshot: path.join(os.tmpdir(), 'quota-missing-snapshot.json'), claudeCredentials: MISSING_CREDENTIALS, codexSessionDirectories: [] },
   });
   const [claude, codex, deepseek] = await service.snapshots(1);
   assert.equal(claude.available, false);
@@ -105,7 +108,7 @@ test('a load that never settles times out, is cached like a failure and is retri
     // Ignores its abort signal and never answers, like a read blocked on a FIFO.
     request: (() => { requests++; return new Promise<Response>(() => {}); }) as unknown as typeof fetch,
     codexRateLimits: null,
-    files: { claudeSnapshot: path.join(os.tmpdir(), 'quota-missing-snapshot.json'), codexSessionDirectories: [] },
+    files: { claudeSnapshot: path.join(os.tmpdir(), 'quota-missing-snapshot.json'), claudeCredentials: MISSING_CREDENTIALS, codexSessionDirectories: [] },
   });
   const [claude, , first] = await service.snapshots(1);
   assert.equal(claude.available, false, 'the other providers are not held up');
@@ -182,7 +185,7 @@ test('GET /api/studio/quota serves all three providers through the real service 
       return { rateLimits: { primary: { usedPercent: 9, windowDurationMins: 300, resetsAt: null }, secondary: null } };
     },
     request: (async () => Response.json({ is_available: true, balance_infos: [{ currency: 'USD', total_balance: '2.50' }] })) as unknown as typeof fetch,
-    files: { claudeSnapshot, codexSessionDirectories: [path.join(directory, 'sessions')] },
+    files: { claudeSnapshot, claudeCredentials: MISSING_CREDENTIALS, codexSessionDirectories: [path.join(directory, 'sessions')] },
   })));
   const app = appWithTestUser(target => { target.use('/api/studio', routes); });
   try {
@@ -199,5 +202,43 @@ test('GET /api/studio/quota serves all three providers through the real service 
       assert.deepEqual(deepseek.balances, [{ currency: 'USD', total: 2.5, granted: 0, toppedUp: 0 }]);
       assert.deepEqual(keyRequests, [3]);
     });
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('the service reads Claude from the usage API first, through its own fetch, and falls back when it is off', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'quota-usage-wiring-test-'));
+  const claudeSnapshot = path.join(directory, 'studio-rate-limits.json');
+  const claudeCredentials = path.join(directory, '.credentials.json');
+  writeFileSync(claudeSnapshot, JSON.stringify({
+    observedAt: new Date(START).toISOString(), source: 'statusline',
+    five_hour: { used_percentage: 12, resets_at: Math.round(START / 1000) + 3600 },
+  }));
+  writeFileSync(claudeCredentials, JSON.stringify({ claudeAiOauth: { accessToken: 'wiring-test-token', expiresAt: START + 3_600_000 } }));
+  let clock = START;
+  const usageCalls: string[] = [];
+  const request = (async (url: string | URL) => {
+    if (String(url).includes('api.anthropic.com')) {
+      usageCalls.push(String(url));
+      return Response.json({ five_hour: { utilization: 33, resets_at: new Date(START + 3_600_000).toISOString() }, seven_day: null });
+    }
+    return Response.json({ is_available: true, balance_infos: [] });
+  }) as unknown as typeof fetch;
+  const create = (claudeUsageApi?: boolean) => createQuotaService({
+    now: () => clock, deepseekKey: () => null, codexRateLimits: null, request, claudeUsageApi,
+    files: { claudeSnapshot, claudeCredentials, codexSessionDirectories: [] },
+  });
+  try {
+    const service = create();
+    const [claude] = await service.snapshots(1);
+    assert.equal(claude.source, 'usage-api');
+    assert.deepEqual(claude.windows.map(window => [window.id, window.usedPercent]), [['five_hour', 33]]);
+    assert.deepEqual(usageCalls, ['https://api.anthropic.com/api/oauth/usage']);
+    clock += 61_000;
+    await service.snapshots(1);
+    assert.equal(usageCalls.length, 2, 'refreshed once the service cache and the reader cache have both expired');
+
+    const off = await create(false).snapshots(1);
+    assert.equal(off[0].source, 'statusline', 'STUDIO_CLAUDE_USAGE_API=off keeps the snapshot path');
+    assert.equal(usageCalls.length, 2);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

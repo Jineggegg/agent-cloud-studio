@@ -1630,13 +1630,17 @@ export type StudioLinkStatus = { url: string; ok: boolean; status: number | null
 /** One usage window of a model plan, e.g. the 5-hour or weekly limit. */
 export type StudioQuotaWindow = { id: string; label: string; usedPercent: number; windowMinutes: number | null; resetsAt: string | null };
 
-/** What the home-screen widgets know about one provider's quota; `source` says how trustworthy it is. */
+/**
+ * What the home-screen widgets know about one provider's quota; `source` says how trustworthy it is.
+ * `usage-api` is Claude's account usage read live with the machine's Claude login (what `/usage` shows);
+ * `statusline` and `sdk-event` are Claude snapshots written while Claude was in use.
+ */
 export type StudioQuotaSnapshot = {
   provider: 'claude' | 'codex' | 'deepseek';
   available: boolean;
   windows: StudioQuotaWindow[];
   balances: { currency: string; total: number; granted: number; toppedUp: number }[];
-  source: 'official' | 'statusline' | 'sdk-event' | 'local-log' | 'unavailable';
+  source: 'official' | 'usage-api' | 'statusline' | 'sdk-event' | 'local-log' | 'unavailable';
   observedAt: string | null;
   stale: boolean;
   note?: string;

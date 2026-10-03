@@ -73,7 +73,13 @@ bash scripts/wsl/install-studio-service.sh
 
 - **Codex**：自动读取。优先用 Codex 官方接口（`codex app-server` 的 `account/rateLimits/read`，需要 Codex 已登录 ChatGPT 账号）；失败时退回到最近几个 Codex 会话日志（默认 `~/.codex/sessions`，可用 `STUDIO_CODEX_SESSIONS_DIRS` 指定多个目录，用 `:` 分隔）。日志只在你使用 Codex 时更新，超过 15 分钟会标为过期。
 - **DeepSeek**：用你在「连接」中保存的密钥查询官方余额接口，不需要额外配置。
-- **Claude**：Claude 没有公开的额度查询接口，Studio 读取一个快照文件 `~/.claude/studio-rate-limits.json`（可用 `STUDIO_CLAUDE_RATE_FILE` 改位置），里面只有用量百分比和重置时间，没有任何密钥。快照有两个来源：
+- **Claude**：自动读取，不需要配置。Studio 用服务器上这台机器的 Claude 登录（也就是 Studio 自己的 Claude 会话用的那个）发出和 Claude Code `/usage` 相同的只读查询（`GET https://api.anthropic.com/api/oauth/usage`），小组件标为「官方」。
+  - 登录凭据默认读 `~/.claude/.credentials.json`（设置了 `CLAUDE_CONFIG_DIR` 时读那个目录下的同名文件），可用 `STUDIO_CLAUDE_CREDENTIALS_FILE` 改位置。Studio 只在每次查询时读出其中的访问令牌放进这一个请求，不记日志、不返回给浏览器、不写盘，也从不续期——令牌过期时这次就不查，等 Claude CLI 下次运行时自己续期。
+  - 每分钟最多查一次，同一时间只有一个请求，5 秒超时；被拒绝（401/403）、限流（429）、服务出错、超时或答复格式不对时，5 分钟内不再查（Claude 重新登录后会立刻重试）。
+  - 不想让 Studio 调用这个接口时设 `STUDIO_CLAUDE_USAGE_API=off`。
+  - 读不到时（未登录、登录已过期、用 API 密钥登录、接口暂时不可用或已关闭），退回到下面的快照文件，小组件的提示会说明原因。
+
+  快照文件 `~/.claude/studio-rate-limits.json`（可用 `STUDIO_CLAUDE_RATE_FILE` 改位置）里只有用量百分比和重置时间，没有任何密钥。快照有两个来源：
   1. 在 Studio 里进行的 Claude 对话会自动更新它。
   2. 在终端直接用 Claude Code 时，需要把状态栏（statusLine）指向仓库里的脚本。请你自己编辑 `~/.claude/settings.json`，加入：
 
@@ -88,7 +94,7 @@ bash scripts/wsl/install-studio-service.sh
 
   只有 Claude 订阅账号（Pro / Max）才有 5 小时 / 每周限额；用 API 密钥登录时小组件会显示「暂无数据」。快照超过 6 小时未更新，或者重置时间已过，会标为过期。
 
-`STUDIO_CLAUDE_RATE_FILE` 和 `STUDIO_CODEX_SESSIONS_DIRS` 里的 `~` 会展开成你的主目录，相对路径也按主目录解析（不按当前目录），所以在 systemd 的 `Environment=` 里写 `~/.claude/x.json` 也能用；服务和 statusLine 脚本会落到同一个文件。修改后需要重启服务才会生效。
+`STUDIO_CLAUDE_RATE_FILE`、`STUDIO_CLAUDE_CREDENTIALS_FILE` 和 `STUDIO_CODEX_SESSIONS_DIRS` 里的 `~` 会展开成你的主目录，相对路径也按主目录解析（不按当前目录），所以在 systemd 的 `Environment=` 里写 `~/.claude/x.json` 也能用；服务和 statusLine 脚本会落到同一个文件。修改后需要重启服务才会生效。
 
 ## 7. SNR 实验室（可选）
 
