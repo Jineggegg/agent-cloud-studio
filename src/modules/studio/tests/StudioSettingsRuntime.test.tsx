@@ -41,8 +41,8 @@ test('distinguishes browser, disk, running backend, checkout, GitHub and host wi
   expect(screen.getByText(/有未提交改动 · 源码状态不代表运行版本/)).toBeTruthy();
   expect(screen.getByText('studio-host · linux')).toBeTruthy();
   expect(screen.queryByText('已是最新版本')).toBeNull();
-  expect(screen.getByRole('link', { name: '查看连接方式' }).getAttribute('href')).toBe('#studio-network-heading');
-  expect(screen.getByRole('link', { name: '查看远程主机' }).getAttribute('href')).toBe('#studio-remote-heading');
+  // Inside settings it links to 网络与远程主机 (StudioConnections passes onOpenNetwork); alone it has nowhere to go.
+  expect(screen.queryByRole('button', { name: '查看连接方式与远程主机' })).toBeNull();
 });
 
 test('different browser build offers reload and frontend/backend mismatch stays neutral', async () => {
@@ -118,4 +118,11 @@ test('checks only on open or explicit refresh and aborts when the section closes
   const signal = mocks.runtime.mock.calls[0][0] as AbortSignal;
   view.unmount();
   expect(signal.aborted).toBe(true);
+});
+
+test('inside settings it opens 网络与远程主机', async () => {
+  const openNetwork = vi.fn();
+  render(<StudioSettingsRuntime onOpenNetwork={openNetwork} />);
+  fireEvent.click(await screen.findByRole('button', { name: '查看连接方式与远程主机' }));
+  expect(openNetwork).toHaveBeenCalledTimes(1);
 });

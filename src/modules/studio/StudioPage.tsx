@@ -19,6 +19,8 @@ import { StudioCreateSheet } from '@/modules/studio/StudioCreateSheet';
 import { StudioHomeScreen } from '@/modules/studio/StudioHomeScreen';
 import { lazyStudioPanel } from '@/modules/studio/lazyStudioPanel';
 import { StudioLinksSheet } from '@/modules/studio/StudioLinksSheet';
+import { SETTINGS_PAGES, readSettingsPage, useSettingsSplit } from '@/modules/studio/settingsPages';
+import type { SettingsPageId } from '@/modules/studio/settingsPages';
 import type { WidgetType } from '@/modules/studio/StudioWidgets';
 import '@/modules/studio/studio.css';
 
@@ -103,6 +105,8 @@ export function StudioPage() {
   const [confirmProjectDelete, setConfirmProjectDelete] = useState(false);
   // AI builds: progress rings on project icons, polled only while one is running.
   const builds = useStudioBuilds(projects);
+  // Settings show their list beside the chosen page on a wide screen, one screen at a time on a phone.
+  const settingsSplit = useSettingsSplit();
 
   const loadProjects = useCallback(async () => {
     try { setProjects(await api.studio.projects.list().then(readApiJson<HubProject[]>)); setProjectsError(''); }
@@ -183,8 +187,19 @@ export function StudioPage() {
   const tab = tabs.find(item => item.id === searchParams.get('tab'))?.id ?? tabs[0]?.id;
   const setTab = (id: string) => { setThreadOpen(false); setCompact(false); setSearchParams({ tab: id }, { replace: true, state: location.state }); };
   const chatContext = (target?.kind === 'app' && target.id === 'deepseek') || (Boolean(project) && tab === 'chat');
+  // Settings: the page in the URL (?tab=<page>), and whether the list and the page sit side by side.
+  const settingsOpen = target?.kind === 'app' && target.id === 'connections';
+  const settingsPage = settingsOpen ? readSettingsPage(searchParams.get('tab'), location.hash) : null;
+  const settingsParent = settingsPage ? SETTINGS_PAGES[settingsPage].parent ?? null : null;
+  // A phone shows one settings screen at a time; its navigation bar then leads back up a level, not home.
+  const settingsPushed = settingsOpen && !settingsSplit && settingsPage !== null;
+  const openSettingsPage = (page: SettingsPageId | null) => {
+    setCompact(false);
+    setSearchParams(page ? { tab: page } : {}, { replace: true, state: location.state });
+  };
   const title = target?.kind === 'app' ? SYSTEM_TITLES[target.id] : project?.name ?? (projects ? '项目不存在' : '');
-  const navTitle = chatContext && (threadOpen || studio.active) ? studio.active?.title ?? '新对话' : title;
+  const navTitle = chatContext && (threadOpen || studio.active) ? studio.active?.title ?? '新对话'
+    : settingsPushed && settingsPage ? SETTINGS_PAGES[settingsPage].title : title;
   const assistant = project ? `${project.name} · DeepSeek` : 'DeepSeek';
   const busy = studio.loading || refreshing || studio.sending;
   const error = studio.error || projectsError;
@@ -241,12 +256,14 @@ export function StudioPage() {
 
     {target && <div className={`studio-app ${transition ?? ''} ${origin ? `has-origin tone-${origin.tone}` : ''}`} style={appStyle} role="region" aria-label={title || '应用'}>
       <main className={`studio-main ${tabs.length ? 'has-tabs' : ''}`}>
-        <header className="studio-navbar" data-compact={chatContext || tabs.length > 0 || compact ? 'true' : 'false'}>
+        <header className="studio-navbar" data-compact={chatContext || tabs.length > 0 || compact || (settingsOpen && settingsSplit) ? 'true' : 'false'}>
           <div className="navbar-leading">
             {chatContext && threadOpen && <button type="button" className="navbar-back ios-press studio-phone-only" onClick={() => setThreadOpen(false)}><IconChevronLeft size={26} aria-hidden="true" />{project ? 'DeepSeek' : '对话'}</button>}
-            <button type="button" className={`navbar-back ios-press ${chatContext && threadOpen ? 'studio-wide-only' : ''}`} onClick={goHome} aria-label="返回主屏幕"><IconChevronLeft size={26} aria-hidden="true" /><IconLayoutGrid size={18} aria-hidden="true" /></button>
+            {settingsPushed ? <button type="button" className="navbar-back ios-press" onClick={() => openSettingsPage(settingsParent)}>
+              <IconChevronLeft size={26} aria-hidden="true" />{settingsParent ? SETTINGS_PAGES[settingsParent].title : '设置'}</button>
+              : <button type="button" className={`navbar-back ios-press ${chatContext && threadOpen ? 'studio-wide-only' : ''}`} onClick={goHome} aria-label="返回主屏幕"><IconChevronLeft size={26} aria-hidden="true" /><IconLayoutGrid size={18} aria-hidden="true" /></button>}
           </div>
-          <div className="navbar-title" aria-hidden={!(chatContext || tabs.length > 0 || compact)}>
+          <div className="navbar-title" aria-hidden={!(chatContext || tabs.length > 0 || compact || (settingsOpen && settingsSplit))}>
             {navTitle}
             {chatContext && (threadOpen || studio.active) && <small>{assistant} · {studio.active?.model ?? '新建'}</small>}
           </div>
@@ -268,12 +285,14 @@ export function StudioPage() {
         {chatContext ? <StudioChatPane key={chatSpace} studio={studio} assistant={assistant} title={title}
           tone={project?.tone ?? 'slate'} glyph={project?.glyph ?? 'sparkles'}
           onOpenThread={() => setThreadOpen(true)} onDelete={setPendingDelete} />
+          // Settings lay out their own list and pages, each with its own scrolling.
+          : settingsOpen ? <StudioConnections status={studio.status} onChange={studio.refresh} page={settingsPage} split={settingsSplit}
+            onNavigate={openSettingsPage} onScroll={onScroll} onSignOut={signOut} />
           : <div className="studio-scroll" onScroll={onScroll}>
             <AnimatePresence mode="wait" initial={false}>
             <m.div className="studio-content" key={`${target.kind}:${target.id}:${tab ?? ''}`}
               initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8, transition: { duration: 0.14 } }}>
               {!tabs.length && <div className="studio-large-title"><h1>{title}</h1></div>}
-              {target.kind === 'app' && target.id === 'connections' && <StudioConnections status={studio.status} onChange={studio.refresh} />}
               {/* ── v6 track: github — app content below this line ── */}
               {target.kind === 'app' && target.id === 'github' && <StudioGitHub refreshing={refreshing} />}
               {/* ── v6 track: memory — app content below this line ── */}

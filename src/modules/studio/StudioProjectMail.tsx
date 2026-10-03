@@ -23,7 +23,7 @@ type AccountLoad = {
   requestKey: string;
 };
 
-const SETTINGS_PATH = '/apps/connections';
+const SETTINGS_PATH = '/apps/connections?tab=mail';
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 const DAY_MS = 86_400_000;
 // The unified inbox shows at most this many of the merged, newest-first rows (each account sends up to 30).
