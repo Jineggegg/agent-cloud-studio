@@ -136,6 +136,9 @@ export function createAutomationsService(deps: Dependencies) {
   const running = new Set<string>();
   let timer: ReturnType<typeof setInterval> | null = null;
   let polling = false;
+  // Events that arrive after start() but before the first poll (a build failed by the restart itself) wait for it,
+  // so the server has finished starting (Web Push configured) before anything is sent.
+  let held: { userId: number; projectId: string; event: 'build-failed'; detail: string }[] | null = null;
   db.exec(`
     CREATE TABLE IF NOT EXISTS studio_automations (
       id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, project_id TEXT NOT NULL, config TEXT NOT NULL,
@@ -317,7 +320,7 @@ export function createAutomationsService(deps: Dependencies) {
     return ran;
   }
 
-  return {
+  const service = {
     list(userId: number, projectId: string): StudioAutomationRecord[] {
       deps.project(userId, projectId);
       return (db.prepare(`SELECT ${COLUMNS} FROM studio_automations WHERE user_id = ? AND project_id = ? ORDER BY created_at, rowid`).all(userId, projectId) as AutomationRow[]).map(toRecord);
@@ -389,7 +392,11 @@ export function createAutomationsService(deps: Dependencies) {
     },
 
     // Called when something happens in a project (e.g. its AI build failed): its matching automations run now.
-    async handleEvent(userId: number, projectId: string, event: 'build-failed', detail: string) {
+    async handleEvent(userId: number, projectId: string, event: 'build-failed', detail: string): Promise<number> {
+      if (held) {
+        held.push({ userId, projectId, event, detail });
+        return 0;
+      }
       const rows = db.prepare(`SELECT ${COLUMNS} FROM studio_automations WHERE user_id = ? AND project_id = ? AND enabled = 1`).all(userId, projectId) as AutomationRow[];
       const matching = rows.filter(row => {
         const trigger = config(row).trigger;
@@ -415,24 +422,33 @@ export function createAutomationsService(deps: Dependencies) {
 
     tick,
 
-    // Starts the poll that runs due schedules (and catches up right away); the timer never keeps the process alive.
-    start(intervalMs = POLL_MS) {
+    // Starts the poll that runs due schedules (catching up 5 s after start, with any events held until then); the
+    // timers never keep the process alive.
+    start(intervalMs = POLL_MS, firstPollMs = 5_000): void {
       if (timer) return;
+      held = [];
+      const report = (error: unknown) => console.error('[studio-automations] poll failed', error instanceof Error ? error.message : error);
       const poll = () => {
         if (polling) return;
         polling = true;
-        void tick().catch((error: unknown) => console.error('[studio-automations] poll failed', error instanceof Error ? error.message : error))
-          .finally(() => { polling = false; });
+        const events = held ?? [];
+        held = null;
+        void (async () => {
+          for (const item of events) await service.handleEvent(item.userId, item.projectId, item.event, item.detail);
+          await tick();
+        })().catch(report).finally(() => { polling = false; });
       };
       timer = setInterval(poll, intervalMs);
       timer.unref?.();
-      const first = setTimeout(poll, 5_000);
+      const first = setTimeout(poll, firstPollMs);
       first.unref?.();
     },
 
     stop() {
       if (timer) clearInterval(timer);
       timer = null;
+      held = null;
     },
   };
+  return service;
 }

@@ -273,3 +273,20 @@ test('the push status and test notification go through the push sender', async (
     assert.equal(f.sent[0].tag, 'automation:test');
   } finally { f.database.close(); }
 });
+
+test('an event during startup waits for the first poll, so nothing is pushed before the server is ready', async () => {
+  const f = fixture();
+  try {
+    f.service.create(1, 'prof', { title: '构建失败通知', prompt: '', trigger: { kind: 'event', event: 'build-failed' }, action: { kind: 'notify', message: '开发失败了' } });
+    f.service.start(60_000, 20);
+    assert.equal(await f.service.handleEvent(1, 'prof', 'build-failed', '服务器重启，开发中断了'), 0);
+    assert.equal(f.sent.length, 0);
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.deepEqual(f.sent.map(message => message.body), ['开发失败了：服务器重启，开发中断了']);
+    // After the first poll events run at once.
+    assert.equal(await f.service.handleEvent(1, 'prof', 'build-failed', 'again'), 1);
+  } finally {
+    f.service.stop();
+    f.database.close();
+  }
+});
