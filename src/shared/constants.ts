@@ -288,9 +288,12 @@ export const STUDIO_MOTION_OUT_MS = 300;
 
 /**
  * Chinese name of each Trading 212 trading mode (which accounts may place orders), shared by the selector in
- * Settings → 交易安全 and the mode badge in the Trading 212 app so both always say the same thing.
+ * Settings → 交易安全, its 变更日志 page and the mode badge in the Trading 212 app so all say the same thing.
  */
 export const T212_MODE_LABELS: Record<T212TradingMode, string> = { off: '关闭', demo: '模拟盘', live: '实盘', both: '实盘+模拟盘' };
 
-/** Chinese name of each Trading 212 account, as the cap editor and the trading-mode selector in Settings name them. */
+/**
+ * Chinese name of each Trading 212 account, as the cap editor, the trading-mode selector and the 变更日志 page in
+ * Settings name them.
+ */
 export const T212_ENV_LABELS: Record<T212Env, string> = { live: '实盘', demo: '模拟盘' };

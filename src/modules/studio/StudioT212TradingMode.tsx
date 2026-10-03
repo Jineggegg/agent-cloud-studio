@@ -4,10 +4,9 @@ import { toast } from 'sonner';
 
 import { api, readApiJson } from '@/shared/api';
 import { T212_ENV_LABELS, T212_MODE_LABELS } from '@/shared/constants';
-import type { T212Env, T212ModeChange, T212StepUpChallenge, T212TradingConfig, T212TradingMode } from '@/shared/types';
+import type { T212Env, T212StepUpChallenge, T212TradingConfig, T212TradingMode } from '@/shared/types';
 import { apiErrorCode } from '@/shared/utils';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
-import { StudioT212HistoryList, StudioT212HistoryRow } from '@/modules/studio/StudioT212History';
 import { StudioT212ReviewSheet } from '@/modules/studio/StudioT212ReviewSheet';
 import '@/modules/studio/studio-orders.css';
 
@@ -57,7 +56,7 @@ function widenBlocker(config: T212TradingConfig, trusted: boolean) {
 /**
  * Used by StudioSettingsTrading (Settings → 交易安全) as the one-tap selector for which Trading 212 accounts may
  * place orders: 关闭 / 模拟盘 / 实盘 / 实盘+模拟盘. STUDIO_T212_TRADING is the ceiling: options outside it are disabled
- * with the server's reason. Narrowing saves at once with the session; adding an account fetches a challenge bound to
+ * with the server's reason as their title (no standing note; the records are on 变更日志). Narrowing saves at once with the session; adding an account fetches a challenge bound to
  * the new mode, shows from → to for review, then signs it with this domain's Face ID / Touch ID passkey (without
  * one, those options are disabled and the selector says to enable Face ID first). Every option is disabled while a
  * request or ceremony runs, and each result is toasted.
@@ -72,18 +71,11 @@ export function StudioT212TradingModeSelector({ config, trusted, onSaved }: {
   // Failure of the last attempt (server refusal, cancelled Face ID), shown until the next attempt.
   const [error, setError] = useState('');
   const labelId = useId();
-  const noteId = useId();
 
   const { mode, ceiling } = config.tradingMode;
   const ceilingEnvs = MODE_ENVS[ceiling];
   const outsideCeiling = (value: T212TradingMode) => MODE_ENVS[value].some(env => !ceilingEnvs.includes(env));
   const blocker = widenBlocker(config, trusted);
-  const unavailable = MODES.filter(outsideCeiling);
-  const missingOnServer = (['live', 'demo'] as const).filter(env => !ceilingEnvs.includes(env));
-  // One line for every option the server does not allow, e.g. 服务器未开启实盘下单.
-  const ceilingNote = unavailable.length
-    ? `服务器未开启${envNames(missingOnServer)}下单（STUDIO_T212_TRADING=${ceiling}），${unavailable.map(value => `「${T212_MODE_LABELS[value]}」`).join('')}不可选`
-    : '';
   // Options that would add an account while this page cannot approve that with Face ID.
   const blockedWidening = Boolean(blocker) && MODES.some(value => !outsideCeiling(value) && added(mode, value).length > 0);
 
@@ -137,15 +129,11 @@ export function StudioT212TradingModeSelector({ config, trusted, onSaved }: {
   return <>
     <div className="ios-list t212-mode" role="group" aria-labelledby={labelId}>
       <div className="ios-row no-icon">
-        <span className="ios-row-body">
-          <strong id={labelId}>允许下单的账户</strong>
-          <small>服务器上限：{T212_MODE_LABELS[ceiling]}（STUDIO_T212_TRADING）</small>
-        </span>
+        <span className="ios-row-body"><strong id={labelId}>允许下单的账户</strong></span>
         {busy !== null && busy !== 'review' && <StudioSpinner size={16} label="正在保存交易模式" />}
       </div>
       <div className="t212-mode-control">
-        <div className="segmented t212-mode-segmented" role="radiogroup" aria-labelledby={labelId} aria-describedby={ceilingNote ? noteId : undefined}
-          aria-busy={busy !== null || undefined}>
+        <div className="segmented t212-mode-segmented" role="radiogroup" aria-labelledby={labelId} aria-busy={busy !== null || undefined}>
           {MODES.map(value => {
             const reason = outsideCeiling(value) ? `服务器未开启${envNames(MODE_ENVS[value].filter(env => !ceilingEnvs.includes(env)))}下单`
               : blocker && added(mode, value).length ? blocker : undefined;
@@ -155,7 +143,6 @@ export function StudioT212TradingModeSelector({ config, trusted, onSaved }: {
         </div>
       </div>
     </div>
-    {ceilingNote && <p className="ios-section-footer t212-mode-note" id={noteId}>{ceilingNote}</p>}
     {blockedWidening && <p className="studio-feedback t212-caps-blocked">{blocker}</p>}
     {error && <p className="studio-feedback error" role="alert">{error}</p>}
     {/* The review step of a widening: from → to and what it opens, as the server reported them with the challenge,
@@ -168,27 +155,4 @@ export function StudioT212TradingModeSelector({ config, trusted, onSaved }: {
       ]}
       verifying={busy === 'passkey'} onConfirm={() => void confirmWidening()} onCancel={cancelWidening} />}
   </>;
-}
-
-/**
- * Used by StudioSettingsTrading (Settings → 交易安全) to list this user's trading-mode changes and, apart from them,
- * refused attempts to add accounts, newest first.
- */
-export function StudioT212TradingModeHistory({ config }: { config: T212TradingConfig }) {
-  return <>
-    <StudioT212HistoryList title="下单账户变更记录" items={config.modeChanges} renderItem={item => <ModeChangeRow change={item} />} />
-    <StudioT212HistoryList title="被拒绝的开启" items={config.modeRefusals} renderItem={item => <ModeChangeRow change={item} />} />
-  </>;
-}
-
-function ModeChangeRow({ change }: { change: T212ModeChange }) {
-  const refused = change.status === 'refused';
-  const heading = refused ? '开启下单被拒绝' : change.direction === 'widen' ? '开启下单' : change.direction === 'pin' ? '固定下单账户'
-    : change.to === 'off' ? '关闭下单' : '减少下单账户';
-  // A pin made on the first read has no "from": it stored the mode that was already in force.
-  const values = change.direction === 'pin' && !change.from && change.to ? T212_MODE_LABELS[change.to]
-    : change.from && change.to ? `${T212_MODE_LABELS[change.from]} → ${T212_MODE_LABELS[change.to]}` : '请求无效，没有可识别的交易模式';
-  const mark = change.direction === 'widen' ? 'up' : change.direction === 'pin' ? 'pin' : 'down';
-  return <StudioT212HistoryRow heading={heading} values={values} mark={mark} refused={refused}
-    method={change.method} createdAt={change.createdAt} reason={change.reason} who={change} />;
 }

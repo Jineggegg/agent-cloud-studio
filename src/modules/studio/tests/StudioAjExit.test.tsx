@@ -10,6 +10,7 @@ vi.mock('@/modules/studio/StudioFluidBackground', () => ({ StudioFluidBackground
 
 import type { StudioHomeTile } from '@/shared/types';
 import { StudioHomeScreen } from '@/modules/studio/StudioHomeScreen';
+import { StudioSettingsAjExit } from '@/modules/studio/StudioSettingsAjExit';
 
 const IPAD = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15';
 const WINDOWS = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36';
@@ -152,6 +153,34 @@ test('without the Shortcuts app (not an iPad, iPhone or Mac) the tile only expla
   expect(within(sheet).getByRole('note').textContent).toMatch(/iPad 或 iPhone 上的「快捷指令」/);
   expect(within(sheet).queryByRole('button', { name: '已经建好，开启 AJ 出口' })).toBeNull();
   expect(assign).not.toHaveBeenCalled();
+});
+
+test('Settings → AJ 出口 on an iPad: the state, the two shortcut names, the switch and the setup steps', () => {
+  render(<StudioSettingsAjExit />);
+  const device = screen.getByRole('region', { name: '这台设备' });
+  expect(within(device).getByText('未设置')).toBeTruthy();
+  expect(within(device).getByText('Studio AJ 出口 开')).toBeTruthy();
+  expect(within(device).getByText('Studio AJ 出口 关')).toBeTruthy();
+  expect(screen.getByRole('heading', { name: '设置步骤' })).toBeTruthy();
+  // No small print beside the heading or under the row.
+  expect(screen.queryByText('只记在本机')).toBeNull();
+  expect(screen.queryByText('还没有确认快捷指令已建好')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: '已经建好，开启 AJ 出口' }));
+  expect(assign).toHaveBeenCalledWith(`${ON}&x-success=${encodeURIComponent('https://studio.ajarche.com/')}`);
+  expect(within(device).getByText('已开启')).toBeTruthy();
+  expect(within(device).getByRole('button', { name: '关闭 AJ 出口' })).toBeTruthy();
+});
+
+test('Settings → AJ 出口 elsewhere says it is switched from an iPhone or iPad, without the setup', () => {
+  vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(WINDOWS);
+  render(<StudioSettingsAjExit />);
+  expect(screen.getByText('仅限 iPhone / iPad')).toBeTruthy();
+  expect(screen.getByText('AJ 出口通过 iPhone / iPad 的快捷指令切换，在这台设备上无法操作。')).toBeTruthy();
+  expect(screen.queryByText('这台设备不支持')).toBeNull();
+  expect(screen.queryByRole('heading', { name: '设置步骤' })).toBeNull();
+  expect(screen.queryByText('Studio AJ 出口 开')).toBeNull();
+  expect(screen.queryByText('Studio AJ 出口 关')).toBeNull();
+  expect(screen.queryAllByRole('button')).toHaveLength(0);
 });
 
 test('a damaged saved state falls back to not set up', () => {

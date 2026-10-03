@@ -139,14 +139,13 @@
 .t212-order-off { display: grid; justify-items: center; gap: 12px; padding: 24px 8px 28px; text-align: center; font-size: 15px; line-height: 1.6; color: var(--ios-label-2); }
 .t212-order-off svg { color: var(--ios-label-3); }
 .t212-order-off strong { font-size: 17px; color: var(--ios-label); }
-:is(.t212-order-off, .t212-settings-note) code {
+.t212-order-off code {
   padding: 1px 6px; border-radius: 6px; background: var(--ios-fill); color: var(--ios-label);
   font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap;
 }
 
 /* ---------- Settings → 交易安全 ---------- */
 .t212-passkey-current { margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 700; vertical-align: 2px; background: var(--ios-tint-soft); color: var(--ios-tint); }
-.t212-settings-note { line-height: 1.6; }
 .t212-passkey-list { margin-top: 14px; }
 /* Password field + enable row: one inset list with a separator between them. */
 .t212-enroll { margin-top: 14px; }
@@ -158,25 +157,23 @@
 .t212-mode-segmented { display: flex; width: 100%; }
 /* Widths follow the labels (实盘+模拟盘 is the longest), as iOS apportions segments by content; never two lines. */
 .t212-mode-segmented button { flex: 1 1 auto; min-height: 40px; padding: 4px 8px; font-size: 14px; white-space: nowrap; }
-.t212-mode-note { line-height: 1.5; }
 .t212-origin { margin-top: 14px; }
 
-/* Caps per account: a grouped-list sub-header with the account switch, the two fields, today's usage and the save row. */
+/* Caps per account: a grouped-list sub-header with the account switch, the two fields and the save row. */
 .t212-subheading { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 36px; margin-top: 24px; padding: 0 16px 6px; }
 .t212-subheading h3 { font-size: 13px; font-weight: 600; letter-spacing: .02em; color: var(--ios-label-2); }
 .t212-caps-form .ios-field label { width: 4.4em; }
 .t212-caps-form .ios-field input { font-variant-numeric: tabular-nums; }
-.t212-caps-form .ios-row-body small { font-variant-numeric: tabular-nums; }
-.t212-order-meter.t212-caps-meter { flex-shrink: 0; width: 72px; }
-.t212-caps-meter.near span { background: var(--ios-orange); }
-.t212-caps-meter.full span { background: var(--ios-red); }
 .studio-feedback.t212-caps-blocked { line-height: 1.5; color: var(--ios-orange); }
+
+/* ---------- Settings → Trading 212 → 变更日志 ---------- */
 .t212-history .ios-row { align-items: flex-start; }
 .t212-history .home-icon.small { margin-top: 2px; }
 .t212-history .ios-row-body small { font-variant-numeric: tabular-nums; }
+/* A log is read, not scanned: long values and refusal reasons wrap instead of being cut off. */
+.t212-log .ios-row-body small { white-space: normal; overflow-wrap: anywhere; }
 /* Entries caused by another session than the one viewing Settings. */
 .t212-history .ios-row-body small.t212-history-other { color: var(--ios-orange); }
-.studio .t212-history-more { min-height: 44px; padding: 0 16px; font-size: 15px; color: var(--ios-tint); }
 
 /* Review before Face ID (raising caps, adding accounts): what changes from → to, then Face ID (stacked actions,
    as iOS does for long labels). */
