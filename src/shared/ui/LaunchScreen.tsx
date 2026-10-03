@@ -14,6 +14,8 @@ const SPLASH_CLEANUP_MS = SPLASH_FADE_MS + 180;
 const ENTRY_STYLESHEET_SELECTOR = 'link[data-acs-entry-style]';
 // How often the splash re-checks those stylesheets between their load events.
 const STYLESHEET_POLL_MS = 100;
+// How long the splash waits for the two animation frames before it leaves anyway.
+const FRAME_FALLBACK_MS = 400;
 
 /**
  * Crossfades the index.html launch screen into the screen React just painted.
@@ -85,9 +87,13 @@ function releaseAfterNextPaint(): () => void {
   const firstFrame = window.requestAnimationFrame(() => {
     secondFrame = window.requestAnimationFrame(releaseLaunchSplash);
   });
+  // A visible page can still be starved of frames (a throttled or freshly restored tab); the screen is
+  // already rendered, so after a short wait the splash goes without the two-frame handshake.
+  const fallback = window.setTimeout(releaseLaunchSplash, FRAME_FALLBACK_MS);
   return () => {
     window.cancelAnimationFrame(firstFrame);
     window.cancelAnimationFrame(secondFrame);
+    window.clearTimeout(fallback);
   };
 }
 
