@@ -35,14 +35,37 @@ export function useTaskRecovery({ projectPath, sessionId, subscribe }: {
     }
   }, [projectPath, sessionId, scope]);
 
+  // Close a card the server no longer offers at once, then confirm with a fresh list. The refresh
+  // also supersedes any lookup started before the claim, so a stale response cannot bring it back.
+  const dismiss = useCallback(async (runId: string) => {
+    setResult((previous) => (previous.scope === scope && previous.runs.some((run) => run.runId === runId)
+      ? { ...previous, runs: previous.runs.filter((run) => run.runId !== runId) }
+      : previous));
+    await refresh();
+  }, [refresh, scope]);
+
   useEffect(() => {
     void refresh();
     const onVisible = () => { if (document.visibilityState === 'visible') void refresh(); };
     window.addEventListener('focus', onVisible);
     document.addEventListener('visibilitychange', onVisible);
+    // The last live run seen in this conversation: a different run id means a run (possibly a
+    // continuation started on another device) began, so the server list may have changed.
+    let lastSeenRunId: string | null = null;
     const unsubscribe = subscribe((event) => {
-      if (event.kind === 'websocket_reconnected'
-        || (event.sessionId === sessionId && (event.kind === 'protocol_error' || (event.kind === 'complete' && event.success === false)))) void refresh();
+      if (event.kind === 'websocket_reconnected') { void refresh(); return; }
+      // A continuation's receipt names the run it claimed. Run ids are unique, so this needs no
+      // session match: a continuation of an unassigned run receipts under its new conversation.
+      if (event.kind === 'run_accepted' && typeof event.recoveryOfRunId === 'string') {
+        void dismiss(event.recoveryOfRunId);
+        return;
+      }
+      if (!sessionId || event.sessionId !== sessionId) return;
+      const runId = typeof event.runId === 'string' && event.runId ? event.runId : null;
+      const runStarted = runId !== null && runId !== lastSeenRunId;
+      if (runId) lastSeenRunId = runId;
+      if (runStarted || event.kind === 'run_accepted' || event.kind === 'complete' || event.kind === 'protocol_error'
+        || (event.kind === 'chat_subscribed' && event.isProcessing === true)) void refresh();
     });
     return () => {
       requestVersionRef.current += 1;
@@ -50,13 +73,15 @@ export function useTaskRecovery({ projectPath, sessionId, subscribe }: {
       window.removeEventListener('focus', onVisible);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [refresh, subscribe, sessionId]);
+  }, [refresh, dismiss, subscribe, sessionId]);
 
   const resolve = useCallback(async (runId: string) => {
     const response = await api.taskRecovery.resolve(runId);
-    if (!response.ok) throw new Error('Recovery update failed');
-    await refresh();
-  }, [refresh]);
+    // 200 with alreadyHandled (claimed by a continuation or resolved elsewhere) and 404 (gone)
+    // both leave nothing to review here, so the card closes without an error.
+    if (!response.ok && response.status !== 404) throw new Error('Recovery update failed');
+    await dismiss(runId);
+  }, [dismiss]);
 
   return {
     runs: result.scope === scope ? result.runs : [],
