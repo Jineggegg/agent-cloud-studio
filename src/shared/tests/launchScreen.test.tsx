@@ -56,6 +56,18 @@ test('the splash starts leaving only after the new screen has had a frame to pai
   expect(document.documentElement.classList.contains('acs-app-entering')).toBe(false);
 });
 
+test('a visible page starved of animation frames still loses the splash after a short wait', () => {
+  vi.mocked(window.requestAnimationFrame).mockImplementation(() => 0);
+  const splash = mountSplash();
+  render(<LaunchSplashRelease />);
+  act(() => { vi.advanceTimersByTime(399); });
+  expect(splash.dataset.state).toBeUndefined();
+  act(() => { vi.advanceTimersByTime(1); });
+  expect(splash.dataset.state).toBe('leaving');
+  act(() => { vi.advanceTimersByTime(600); });
+  expect(document.getElementById('launch-splash')).toBeNull();
+});
+
 test('a screen that unmounts before painting does not release the splash', () => {
   const splash = mountSplash();
   const { unmount } = render(<LaunchSplashRelease />);

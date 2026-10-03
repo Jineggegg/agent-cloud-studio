@@ -74,6 +74,7 @@ const CONVENTIONS_BLOCK = `## 共享记忆（studio-memory）
 
 Claude Code、Codex 和 Studio 里的 DeepSeek 共用一个 basic-memory 记忆库（MCP 服务 \`${SERVER_NAME}\`）。
 - 开始处理某个项目前，先用 \`search_notes\` 搜索该项目的文件夹和 \`global\`，读相关笔记再动手。
+- 记忆范围默认只用「当前项目文件夹 + \`global\`」：搜索结果里只读这两个文件夹的笔记，其他项目文件夹（例如不在云工作台项目时的 \`agent-cloud-studio\`）默认不读；确实需要别的项目的信息时，再有针对性地去读。
 - 把持久的事实、决定和偏好写成笔记（\`write_note\`）：项目相关放在以项目目录名（小写）命名的文件夹，
   如 \`agent-cloud-studio\`；跨项目的放 \`global\`。同一主题先搜索，优先更新已有笔记，不要重复新建。
 - tags 写上你自己（\`claude\` 或 \`codex\`），方便看出是谁记的。
