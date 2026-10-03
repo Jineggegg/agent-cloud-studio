@@ -1,7 +1,9 @@
 import type { ComponentProps, RefObject } from 'react';
 import { ChevronLeft, LayoutGrid, PanelLeftClose, Search, X } from 'lucide-react';
 
-import type { StudioQuotaSnapshot, WorkbenchNewChatChoice, WorkbenchNewProvider, WorkbenchProjectEntry, WorkbenchViewport } from '@/shared/types';
+import type {
+  StudioQuotaSnapshot, WorkbenchNewChatChoice, WorkbenchNewProvider, WorkbenchProjectActivity, WorkbenchProjectEntry, WorkbenchViewport,
+} from '@/shared/types';
 import { WorkbenchNewSession } from '@/modules/workbench/WorkbenchNewSession';
 import { WorkbenchProjectSwitcher } from '@/modules/workbench/WorkbenchProjectSwitcher';
 import { WorkbenchQuotaBars } from '@/modules/workbench/WorkbenchQuotaBars';
@@ -13,6 +15,8 @@ type WorkbenchSidebarProps = {
   modifier: string | null;
   entries: WorkbenchProjectEntry[] | null;
   current: WorkbenchProjectEntry | null;
+  // The switcher's running / needs-you marks per IDE project id (null until read).
+  activity: Record<string, WorkbenchProjectActivity> | null;
   // The agents "+ 新会话" offers in this project (the shared new-chat rule).
   newChatChoices: WorkbenchNewChatChoice[];
   lastProvider: WorkbenchNewProvider;
@@ -39,7 +43,7 @@ type WorkbenchSidebarProps = {
  * "+ 新会话", the searchable history and the model quota bars.
  */
 export function WorkbenchSidebar({
-  viewport, modifier, entries, current, newChatChoices, lastProvider, query, searchRef, quota, list,
+  viewport, modifier, entries, current, activity, newChatChoices, lastProvider, query, searchRef, quota, list,
   onQueryChange, onSelectProject, onArchiveProject, onDeleteProject, onNewChat, backTitle, onBack, onHide, onOpenSettings,
 }: WorkbenchSidebarProps) {
   return <div className="wb-sidebar">
@@ -56,7 +60,7 @@ export function WorkbenchSidebar({
     </header>
 
     <div className="wb-sidebar-top">
-      <WorkbenchProjectSwitcher entries={entries} current={current} onSelect={onSelectProject} onArchive={onArchiveProject} onDelete={onDeleteProject} />
+      <WorkbenchProjectSwitcher entries={entries} current={current} activity={activity} onSelect={onSelectProject} onArchive={onArchiveProject} onDelete={onDeleteProject} />
       {current && <WorkbenchNewSession choices={newChatChoices} lastProvider={lastProvider} onStart={onNewChat}
         shortcut={modifier ? `${modifier}N` : null} />}
       {current && <label className="ios-search wb-search">

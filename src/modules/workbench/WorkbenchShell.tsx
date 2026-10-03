@@ -25,8 +25,10 @@ import { WorkbenchInspector } from '@/modules/workbench/WorkbenchInspector';
 import { WorkbenchProviderMark } from '@/modules/workbench/WorkbenchProviderMark';
 import { WorkbenchPullChip } from '@/modules/workbench/WorkbenchPullChip';
 import { WorkbenchSidebar } from '@/modules/workbench/WorkbenchSidebar';
+import { useWorkbenchActivity } from '@/modules/workbench/hooks/useWorkbenchActivity';
 import { useWorkbenchAttention } from '@/modules/workbench/hooks/useWorkbenchAttention';
 import { useWorkbenchLayout } from '@/modules/workbench/hooks/useWorkbenchLayout';
+import { useWorkbenchPresence } from '@/modules/workbench/hooks/useWorkbenchPresence';
 import { useWorkbenchProjects } from '@/modules/workbench/hooks/useWorkbenchProjects';
 import { useWorkbenchQuota } from '@/modules/workbench/hooks/useWorkbenchQuota';
 import { useWorkbenchSessions } from '@/modules/workbench/hooks/useWorkbenchSessions';
@@ -134,15 +136,29 @@ export function WorkbenchShell() {
   // read from the URL (with every stretch of the handed-over conversation it continues), as the history row is below.
   const viewedThread = target
     ? sessions.threads.find(item => item.segments.some(segment => segment.kind === target.kind && segment.sessionId === target.id)) : undefined;
-  const attention = useWorkbenchAttention(!target ? [] : viewedThread ? viewedThread.segments.map(segment => segment.sessionId) : [target.id]);
+  const viewedSessionIds = !target ? [] : viewedThread ? viewedThread.segments.map(segment => segment.sessionId) : [target.id];
+  const attention = useWorkbenchAttention(viewedSessionIds);
+  // The server learns what is on screen (no notification for it, a finished run there counts as seen) and tells
+  // the switcher which projects run something or need the owner.
+  useWorkbenchPresence(viewedSessionIds);
+  const activity = useWorkbenchActivity();
+  // This project's sessions the server says need the owner (an approval, a failed or interrupted run, a run that
+  // finished unseen, possibly on another device); the open conversation is already in front of them.
+  const viewedKey = viewedSessionIds.join('\u0000');
+  const serverAttentionIds = project ? activity?.[project.projectId]?.attentionSessionIds : undefined;
+  const serverAttention = useMemo(() => {
+    const viewed = viewedKey.split('\u0000');
+    return new Set((serverAttentionIds ?? []).filter(sessionId => !viewed.includes(sessionId)));
+  }, [serverAttentionIds, viewedKey]);
 
   // Running sessions (GET /api/providers/sessions/running plus live chat frames) breathe in the history; a row needs
   // the owner when any of its sessions does.
   const historyItems = useMemo(() => sessions.items?.map(item => {
     const running = busy.has(item.id);
-    const needsOwner = item.thread ? item.thread.segments.some(segment => attention.has(segment.sessionId)) : attention.has(item.id);
+    const needs = (sessionId: string) => attention.has(sessionId) || serverAttention.has(sessionId);
+    const needsOwner = item.thread ? item.thread.segments.some(segment => needs(segment.sessionId)) : needs(item.id);
     return running || needsOwner ? { ...item, running: running || item.running, attention: needsOwner || undefined } : item;
-  }) ?? null, [sessions.items, busy, attention]);
+  }) ?? null, [sessions.items, busy, attention, serverAttention]);
   const historyNeedsOwner = Boolean(historyItems?.some(item => item.attention));
   const listed = target && historyItems ? historyItems.find(item => item.kind === target.kind && item.id === target.id) ?? null : null;
   const historyLoaded = historyItems !== null;
@@ -337,7 +353,7 @@ export function WorkbenchShell() {
   }
 
   const sidebar = <WorkbenchSidebar
-    viewport={viewport} modifier={modifier} entries={entries} current={current} newChatChoices={newChoices} lastProvider={lastProvider}
+    viewport={viewport} modifier={modifier} entries={entries} current={current} activity={activity} newChatChoices={newChoices} lastProvider={lastProvider}
     query={query} searchRef={searchRef} quota={quota}
     list={project ? {
       projectId: project.projectId, items: historyItems, activeId: session?.id ?? null, error: sessions.error,

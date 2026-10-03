@@ -46,12 +46,16 @@ const mocks = vi.hoisted(() => ({
   renameThread: vi.fn(),
   removeThread: vi.fn(),
   quota: vi.fn(),
+  activity: vi.fn(),
+  sent: [] as unknown[],
   listeners: [] as ((event: ServerEvent) => void)[],
   busy: new Set<string>(),
   chatMounts: 0,
   toast: vi.fn(),
   toastError: vi.fn(),
 }));
+// One stable function, like the real context's, so the presence report is not re-sent on every render.
+const mockSendMessage = vi.hoisted(() => (message: unknown) => { mocks.sent.push(message); return true; });
 const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }));
 
 vi.mock('@/shared/api', async original => ({
@@ -70,6 +74,7 @@ vi.mock('@/shared/api', async original => ({
       projects: { list: () => json(HUBS) },
       workbench: {
         hubLinks: () => json([{ hubId: 'professor', projectId: 'p1' }]),
+        activity: () => mocks.activity(),
         threads: (projectId: string) => mocks.threads(projectId),
         renameThread: (...args: unknown[]) => mocks.renameThread(...args),
         removeThread: (id: string) => mocks.removeThread(id),
@@ -86,7 +91,11 @@ vi.mock('@number-flow/react', () => ({
   default: ({ value, suffix = '' }: { value: number; suffix?: string }) => <span>{`${value}${suffix}`}</span>,
 }));
 vi.mock('@/shared/context/WebSocketContext', () => ({
-  useWebSocket: () => ({ subscribe: (listener: (event: ServerEvent) => void) => { mocks.listeners.push(listener); return () => { mocks.listeners = mocks.listeners.filter(item => item !== listener); }; } }),
+  useWebSocket: () => ({
+    subscribe: (listener: (event: ServerEvent) => void) => { mocks.listeners.push(listener); return () => { mocks.listeners = mocks.listeners.filter(item => item !== listener); }; },
+    sendMessage: mockSendMessage,
+    isConnected: true,
+  }),
 }));
 vi.mock('@/shared/context/SessionProtectionContext', () => ({ useBusySessionIdSet: () => mocks.busy }));
 vi.mock('@/modules/command-palette', () => ({ usePaletteOpsRegister: () => {} }));
@@ -173,6 +182,8 @@ beforeAll(installPointerEvent);
 beforeEach(() => {
   localStorage.clear();
   mocks.listeners = [];
+  mocks.sent = [];
+  mocks.activity.mockImplementation(() => json({ projects: {} }));
   mocks.busy = new Set();
   mocks.chatMounts = 0;
   mocks.toast.mockClear();
@@ -754,4 +765,42 @@ test('leaving the workbench gives the tab back the app title', async () => {
   await waitFor(() => expect(document.title).toBe('修复登录 · 超级教授'));
   cleanup();
   expect(document.title).toBe('Agent Cloud Studio');
+});
+
+test('the page tells the server which conversation is on screen, and again when another one opens', async () => {
+  renderShell('/work/p1/s/s1');
+  const history = await screen.findByRole('navigation', { name: '会话历史' });
+  const visible = document.visibilityState === 'visible';
+  await waitFor(() => expect(mocks.sent).toContainEqual({ type: 'workbench.presence', sessionIds: ['s1'], visible }));
+
+  fireEvent.click(await within(history).findByRole('link', { name: /重构侧栏/ }));
+  await waitFor(() => expect(mocks.sent.at(-1)).toEqual({ type: 'workbench.presence', sessionIds: ['s2'], visible }));
+  cleanup();
+  // Leaving the workbench clears the report.
+  expect(mocks.sent.at(-1)).toEqual({ type: 'workbench.presence', sessionIds: [], visible: false });
+});
+
+test('the switcher shows the server\'s activity live, and this project\'s sessions that need the owner get their dot', async () => {
+  mocks.activity.mockImplementation(() => json({ projects: {
+    p1: { running: 0, attention: 1, attentionSessionIds: ['s3'] },
+    p2: { running: 1, attention: 0, attentionSessionIds: [] },
+  } }));
+  renderShell('/work/p1/s/s1');
+  const history = await screen.findByRole('navigation', { name: '会话历史' });
+  // A failed run in s3 (perhaps on another device) dots its row; the closed switcher marks the other running project.
+  expect(await within(history).findByRole('link', { name: '整理旧接口，Claude Code，需要查看' })).toBeTruthy();
+  expect(await screen.findByTestId('switcher-running')).toBeTruthy();
+  expect(screen.getByRole('button', { name: '当前项目：超级教授，切换项目（其他项目：1 个正在运行）' })).toBeTruthy();
+
+  // A workbench_activity frame makes the page read again: snr3-lab now waits for an approval.
+  mocks.activity.mockImplementation(() => json({ projects: { p2: { running: 1, attention: 1, attentionSessionIds: ['x1'] } } }));
+  act(() => mocks.listeners.forEach(listener => listener({ kind: 'workbench_activity' })));
+  expect(await screen.findByTestId('switcher-attention')).toBeTruthy();
+  await waitFor(() => expect(within(history).getByRole('link', { name: '整理旧接口，Claude Code' })).toBeTruthy());
+
+  fireEvent.click(screen.getByRole('button', { name: /^当前项目：超级教授，切换项目/ }));
+  const popover = screen.getByRole('dialog', { name: '切换项目' });
+  const snr = within(popover).getByRole('button', { name: 'snr3-lab，正在运行，需要你处理' });
+  expect(within(snr).getByTestId('project-running')).toBeTruthy();
+  expect(within(snr).getByTestId('project-attention')).toBeTruthy();
 });

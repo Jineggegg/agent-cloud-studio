@@ -38,6 +38,24 @@ export type RealtimeClientConnection = {
 };
 
 /**
+ * A change in a chat run's lifecycle, announced by the websocket module's run registry
+ * (`chatRunRegistry.onActivity`) to in-process observers such as the Studio workbench activity
+ * (which projects are running or need the owner).
+ *
+ * - `started`: a run was registered for the session.
+ * - `permission`: a tool approval or question was requested, answered or withdrawn.
+ * - `ended`: the run's terminal `complete` passed (the visible turn is over: done, failed or aborted).
+ * - `settled`: the run's durable record was written (a failure is only on record from here) or
+ *   its reservation was discarded.
+ *
+ * Carries only the stable app session id; observers read anything else from its own source.
+ */
+export type ChatRunActivityEvent = {
+  sessionId: string;
+  change: 'started' | 'permission' | 'ended' | 'settled';
+};
+
+/**
  * Authenticated user payload attached to websocket upgrade requests.
  *
  * Platform and OSS auth flows currently use either `id` or `userId`; both are

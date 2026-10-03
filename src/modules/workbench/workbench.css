@@ -65,6 +65,27 @@ body.wb-resizing iframe { pointer-events: none; }
 .wb-switcher .home-icon.small { --icon: 36px; border-radius: 10px; }
 .wb-switcher-name { flex: 1; min-width: 0; font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wb-switcher-chevron { color: var(--ios-label-3); }
+/* Press-and-slide: the finger that presses the switcher may slide onto the list, so it neither pans nor selects text. */
+.wb-switcher { touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+/* The other projects' combined mark on ⌃⌄: a red dot when one needs the owner, else a small spinner while one runs. */
+.wb-switcher-control { position: relative; display: inline-flex; flex-shrink: 0; }
+.wb-switcher-badge { position: absolute; top: -4px; right: -5px; pointer-events: none; }
+.wb-switcher-badge.is-attention {
+  width: 9px; height: 9px; border-radius: 50%; background: var(--ios-red); box-shadow: 0 0 0 2px var(--ios-surface);
+}
+.wb-switcher-badge.is-running {
+  width: 9px; height: 9px; border-radius: 50%; border: 1.6px solid color-mix(in srgb, var(--ios-tint) 25%, transparent);
+  border-top-color: var(--ios-tint); background: var(--ios-surface); animation: wb-activity-spin .9s linear infinite;
+}
+/* A switcher row's live marks, left of the ✓: a spinner while something runs, a red dot while it needs the owner. */
+.wb-project-marks { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.wb-project-marks:empty { display: none; }
+.wb-activity-spinner {
+  display: block; width: 14px; height: 14px; border-radius: 50%; border: 1.8px solid color-mix(in srgb, var(--ios-label-2) 22%, transparent);
+  border-top-color: var(--ios-label-2); animation: wb-activity-spin .9s linear infinite;
+}
+.wb-activity-dot { display: block; width: 9px; height: 9px; border-radius: 50%; background: var(--ios-red); }
+@keyframes wb-activity-spin { to { transform: rotate(360deg); } }
 .wb-switcher.is-loading { padding: 9px 14px 9px 9px; }
 .wb-switcher.is-loading .skeleton-block { flex-shrink: 0; width: 36px; height: 36px; border-radius: 10px; background: var(--ios-fill); }
 .wb-switcher.is-loading .skeleton-block + .skeleton-block { flex-shrink: 1; width: 52%; height: 12px; border-radius: 6px; }
@@ -417,6 +438,11 @@ body.wb-resizing iframe { pointer-events: none; }
 .wb-project-row { border-radius: 11px; }
 .wb-project-name { flex: 1; min-width: 0; font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (hover: hover) { .wb-project-row .wb-popover-item { padding-right: 44px; } }
+/* The row under a sliding finger: a highlight that glides from row to row (layoutId) and a slight lift. */
+.wb-project-row .wb-popover-item { position: relative; isolation: isolate; transition: background-color 120ms ease, transform 160ms var(--ease-spring, ease-out); }
+.wb-slide-highlight { position: absolute; inset: 0; z-index: -1; border-radius: 11px; background: var(--ios-fill-pressed); pointer-events: none; }
+.wb-project-row .wb-popover-item[data-slide-active] { transform: scale(1.02); }
+@media (hover: hover) { .wb-popover-list[data-sliding] .wb-popover-item:hover { background: transparent; } }
 .wb-badge { padding: 1px 6px; border-radius: 999px; font-size: 10px; font-style: normal; font-weight: 600; background: var(--ios-tint-soft); color: var(--ios-tint); }
 .wb-popover-search { display: flex; align-items: center; gap: 6px; flex-shrink: 0; min-height: 38px; margin: 2px 2px 6px; padding: 0 10px; border-radius: 10px; background: var(--ios-fill); color: var(--ios-label-3); }
 .studio-layer .wb-popover-search input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; color: var(--ios-label); font-size: 15px; }
@@ -478,6 +504,10 @@ body.wb-resizing iframe { pointer-events: none; }
   .wb-pr-chip-dot { animation: none !important; }
   .wb-mark[data-running] { animation: none !important; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .3), 0 0 0 2px color-mix(in srgb, var(--ios-green) 40%, transparent); }
   .wb-files-editor, .wb-chat-skeleton, .wb-attention-dot { animation: none !important; }
+  /* The spinners still say "working", turning slowly; a sliding finger's row is highlighted without the lift. */
+  .wb-activity-spinner, .wb-switcher-badge.is-running { animation-duration: 2.4s !important; }
+  .wb-project-row .wb-popover-item { transition: background-color 120ms ease; }
+  .wb-project-row .wb-popover-item[data-slide-active] { transform: none; }
 }
 @media (prefers-contrast: more) {
   .wb-row-time, .wb-quota-label, .wb-group-title { color: var(--ios-label-2); }

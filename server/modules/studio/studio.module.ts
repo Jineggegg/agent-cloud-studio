@@ -4,11 +4,14 @@ import { existsSync, realpathSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 
 import { maskClientAddress, readRequestClient, verifyStepUpPassword } from '@/modules/auth/index.js';
-import { getConnection, getDatabasePath, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
-import { getStudioPushStatus, sendStudioPushNotification } from '@/modules/notifications/index.js';
+import { getConnection, getDatabasePath, projectsDb, sessionsDb, taskRunsDb, userDb } from '@/modules/database/index.js';
+import {
+  getStudioPushStatus, isSessionInView, notifyRunStopped, onSessionsViewed, sendStudioPushNotification,
+} from '@/modules/notifications/index.js';
 import { createProject } from '@/modules/projects/index.js';
-import { readCodexAccountRateLimits, sessionsService } from '@/modules/providers/index.js';
+import { providerRuntimeService, readCodexAccountRateLimits, sessionsService } from '@/modules/providers/index.js';
 import { scheduledMessagesService } from '@/modules/scheduled-messages/index.js';
+import { chatRunRegistry, connectedClients, WS_OPEN_STATE } from '@/modules/websocket/index.js';
 import { AppError, readStudioIngressOrigins } from '@/shared/utils.js';
 
 import { createStudioService } from './studio.service.js';
@@ -44,6 +47,7 @@ import { createQuotaRouter } from './quota/quota.routes.js';
 import { createWorkbenchService } from './workbench.service.js';
 import { createWorkbenchRouter } from './workbench.routes.js';
 import { createWorkbenchThreadsService } from './workbench-threads.service.js';
+import { createWorkbenchActivityService } from './workbench-activity.service.js';
 import { createPromptSuggester } from './prompt-suggestions.service.js';
 import { createPromptSuggestionsRouter } from './prompt-suggestions.routes.js';
 import { createMemoryMcpClient } from './memory/memory-client.adapter.js';
@@ -263,7 +267,45 @@ export function createStudioModule() {
       messages: { role: string; content: string; status?: string }[];
     },
   });
-  routes.use('/workbench', createWorkbenchRouter(workbench, workbenchThreads));
+  // The project switcher's marks: projects with an agent turn or DeepSeek reply running, and projects that need the
+  // owner (an approval or question, a failed or interrupted run, a run that finished unseen). Pages are told to read
+  // again over the chat websocket; a DeepSeek reply that finished off screen is also notified, like an agent run.
+  const projectIdOf = (projectPath: string | null | undefined) => {
+    const project = projectPath ? projectsDb.getProjectPath(projectPath) : null;
+    return project && !project.isArchived ? project.project_id : null;
+  };
+  const linkedHubProjects = (userId: number) => new Map(workbench.hubLinks(userId)
+    .flatMap(link => (link.projectId ? [[link.hubId, link.projectId] as [string, string]] : [])));
+  const workbenchActivity = createWorkbenchActivityService({
+    listRunningSessions: () => sessionsService.listRunningSessions(),
+    hasPendingApproval: sessionId => providerRuntimeService.getPendingApprovalsForSession(sessionId).length > 0,
+    listUnresolvedRuns: userId => taskRunsDb.listInterrupted(userId, { limit: 100 }),
+    sessionProjectId(sessionId) {
+      const session = sessionsDb.getSessionById(sessionId);
+      return session && !session.isArchived ? projectIdOf(session.project_path) : null;
+    },
+    projectIdOfPath: projectPath => projectIdOf(projectPath),
+    replyingConversations: userId => service.replyingConversations(userId),
+    hubProjectIds: linkedHubProjects,
+    isSessionInView: sessionId => isSessionInView(sessionId),
+    broadcast() {
+      const frame = JSON.stringify({ kind: 'workbench_activity', timestamp: new Date().toISOString() });
+      for (const client of connectedClients) if (client.readyState === WS_OPEN_STATE) client.send(frame);
+    },
+  });
+  chatRunRegistry.onActivity(event => workbenchActivity.handleRunActivity(event));
+  onSessionsViewed(sessionIds => workbenchActivity.handleSessionsViewed(sessionIds));
+  service.observeReplies(event => {
+    workbenchActivity.handleReply(event);
+    if (event.phase !== 'ended') return;
+    const hubId = /^project:(.+)$/.exec(event.space)?.[1];
+    const projectId = hubId ? linkedHubProjects(event.userId).get(hubId) : undefined;
+    notifyRunStopped({
+      userId: event.userId, provider: 'deepseek', sessionId: event.conversationId, sessionName: event.title,
+      url: projectId ? `/work/${encodeURIComponent(projectId)}/d/${encodeURIComponent(event.conversationId)}` : '/',
+    });
+  });
+  routes.use('/workbench', createWorkbenchRouter(workbench, workbenchThreads, workbenchActivity));
   // ── v6 track: chat — create its service and mount its router below this line ──
   // The faint suggested next message in every chat composer, from DeepSeek with the Studio chat's key
   // (STUDIO_SUGGEST_MODEL picks the model, default deepseek-chat); without a key only a local rule answers.
