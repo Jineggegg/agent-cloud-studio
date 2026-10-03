@@ -4,16 +4,26 @@ import { createPortal } from 'react-dom';
 import { AnimatePresence, m } from 'motion/react';
 import { toast } from 'sonner';
 
-import { IconAlertTriangle, IconChevronDown, IconChevronLeft, IconCircleCheck, IconCircleDashed, IconCircleMinus, IconCircleX, IconExternalLink, IconGitMerge, IconRotateClockwise } from '@/modules/studio/icons/tabler';
+import {
+  IconAlertTriangle, IconChevronDown, IconChevronLeft, IconCircleCheck, IconCircleDashed, IconCircleMinus, IconCircleX, IconExternalLink, IconGitBranch,
+  IconGitMerge, IconGitPullRequest, IconPlayerPlay, IconRotateClockwise,
+} from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import { readableErrorMessage } from '@/shared/utils';
-import type { StudioGitHubCheck, StudioGitHubFile, StudioGitHubMergeMethod, StudioGitHubMergeResult, StudioGitHubPull, StudioGitHubPullDetail } from '@/shared/types';
+import type {
+  StudioGitHubActionResult, StudioGitHubCheck, StudioGitHubFile, StudioGitHubMergeMethod, StudioGitHubMergeResult, StudioGitHubPull, StudioGitHubPullDetail,
+} from '@/shared/types';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 import { GitHubPullMark, GitHubReviewBadge, GitHubTime } from '@/modules/studio/StudioGitHubMarks';
+// The sheet also opens outside the GitHub app (the workbench's PR chip), so it brings its own styles.
+import '@/modules/studio/studio-github.css';
 
 type Step = 'detail' | 'merge' | 'done';
 type Phase = 'idle' | 'merging' | 'merged' | 'queued';
+// The one-tap fixes offered next to a blocker; the server re-checks and audits each one.
+type FixKind = 'update-branch' | 'ready' | 'approve-runs';
+type Fix = { kind: FixKind; title: string; detail: string; label: string; busyLabel: string };
 
 const METHOD_COPY: Record<StudioGitHubMergeMethod, { label: string; hint: (base: string) => string }> = {
   squash: { label: '压缩合并', hint: base => `把全部提交压缩成一个，写入 ${base}` },
@@ -29,6 +39,9 @@ const EXIT_ANIMATIONS = new Set(['gh-sheet-out', 'gh-sheet-down']);
 const EXIT_FALLBACK_MS = 480;
 // While a check runs, the open sheet re-reads the pull request this often so 合并 unlocks without closing it.
 const PENDING_POLL_MS = 15_000;
+// GitHub writes the merge commit of 更新分支 a few seconds after accepting it; the sheet reads again after this long.
+const UPDATE_SETTLE_MS = 4_000;
+const FIX_ICON: Record<FixKind, typeof IconGitBranch> = { 'update-branch': IconGitBranch, ready: IconGitPullRequest, 'approve-runs': IconPlayerPlay };
 // What Tab can reach inside the sheet (disabled buttons and hidden inputs are skipped).
 const FOCUSABLE = 'a[href], button:not(:disabled), input:not(:disabled):not([type="hidden"]), [tabindex]:not([tabindex="-1"])';
 // Server refusals that mean the sheet shows an outdated pull request; they offer 重新载入 instead of 重试.
@@ -77,6 +90,49 @@ function errorCode(reason: unknown) {
   return reason && typeof reason === 'object' && 'code' in reason && typeof reason.code === 'string' ? reason.code : '';
 }
 const number = (value: number) => value.toLocaleString('zh-CN');
+
+// What can be fixed from the sheet: a branch behind its base, a draft, and Actions runs waiting for approval.
+// Nothing is offered when the gh token cannot write (canMerge) or the pull request is no longer open.
+function fixesFor(detail: StudioGitHubPullDetail, canMerge: boolean): Fix[] {
+  if (!canMerge || detail.state !== 'open') return [];
+  const fixes: Fix[] = [];
+  if (detail.blockers.some(blocker => blocker.code === 'HEAD_BEHIND')) {
+    fixes.push({ kind: 'update-branch', title: '分支需要更新', detail: `把 ${detail.baseRef} 的新提交合并进来`, label: '更新分支', busyLabel: '正在更新' });
+  }
+  if (detail.isDraft) fixes.push({ kind: 'ready', title: '这是草稿 PR', detail: '标记为可审查后才能合并', label: '标记为可审查', busyLabel: '正在标记' });
+  if (detail.pendingRuns.length) {
+    const names = detail.pendingRuns.map(run => run.name);
+    fixes.push({
+      kind: 'approve-runs', title: `${detail.pendingRuns.length} 个运行等待批准`,
+      detail: `${names.slice(0, 3).join('、')}${names.length > 3 ? ' 等' : ''}`, label: '批准运行', busyLabel: '正在批准',
+    });
+  }
+  return fixes;
+}
+
+// The confirmation for a fix, naming exactly what will happen on GitHub.
+function fixConfirmation(detail: StudioGitHubPullDetail, kind: FixKind) {
+  const short = detail.headSha.slice(0, 7);
+  if (kind === 'update-branch') {
+    return {
+      title: `更新 #${detail.number} 的分支？`, confirmLabel: '更新分支', destructive: false,
+      message: `把 ${detail.baseRef} 的最新提交合并进 ${detail.headRef}（头提交 ${short}）。PR 上会多一个合并提交，检查会重新运行。`,
+    };
+  }
+  if (kind === 'ready') {
+    return {
+      title: `把 #${detail.number} 标记为可审查？`, confirmLabel: '标记为可审查', destructive: false,
+      message: `${detail.owner}/${detail.repo} · 草稿状态会解除，请求的审查者会收到通知。`,
+    };
+  }
+  const runs = detail.pendingRuns;
+  const listed = runs.map(run => (run.environments.length ? `${run.name}（${run.environments.join('、')}）` : run.name)).join('、');
+  const fromContributor = runs.some(run => run.kind === 'contributor');
+  return {
+    title: runs.length === 1 ? `批准运行「${runs[0].name}」？` : `批准 ${runs.length} 个运行？`, confirmLabel: '批准运行', destructive: true,
+    message: `${listed}。${fromContributor ? '外部贡献者的代码会在仓库的 Actions 里运行，' : ''}批准后可能使用仓库的密钥和部署环境，请先确认代码可信。`,
+  };
+}
 
 /**
  * The merge, drawn as git draws it: the head branch runs along the top and bends into the base lane. While GitHub
@@ -144,16 +200,19 @@ function FileRow({ file }: { file: StudioGitHubFile }) {
 }
 
 /**
- * Used by StudioGitHub for one pull request: checks, files and description, then 合并 → method → a destructive
- * confirmation naming the repository, PR and short SHA → spinner → success toast. Errors stay in the sheet, and the
- * server re-checks everything (head SHA, required checks, blockers) before it runs gh pr merge.
+ * Used by StudioGitHub, and by the workbench module's PR chip (through the studio barrel), for one pull request:
+ * checks, files and description, then 合并 → method → a destructive confirmation naming the repository, PR and short
+ * SHA → spinner → success toast. Errors stay in the sheet, and the server re-checks everything (head SHA, required
+ * checks, blockers) before it runs gh pr merge. Next to the blockers it can fix, the sheet offers 更新分支,
+ * 标记为可审查 and 批准运行, each confirmed here and re-checked and audited by the server.
  */
 export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
   pull: StudioGitHubPull;
   // False when the server's gh token cannot merge (no repo scope); merging is then not offered.
   canMerge: boolean;
   onClose: () => void;
-  // Called after every merge attempt that reached the server, so the inbox and merge history refresh.
+  // Called after every merge attempt or fix that reached the server (null unless a merge succeeded), so the inbox,
+  // merge history or chip refresh.
   onChanged: (result: StudioGitHubMergeResult | null) => void;
 }) {
   const repoKey = `${pull.owner}/${pull.repo}`.toLowerCase();
@@ -188,7 +247,16 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
   const [closing, setClosing] = useState(false);
   // The header's refresh is reading the pull request again; its icon spins meanwhile.
   const [refreshing, setRefreshing] = useState(false);
+  // The fix whose confirmation is open (更新分支, 标记为可审查, 批准运行).
+  const [confirmingFix, setConfirmingFix] = useState<FixKind | null>(null);
+  // The fix in flight; its button spins and the sheet cannot be closed meanwhile.
+  const [fixing, setFixing] = useState<FixKind | null>(null);
+  // Why the last fix failed and its server code; kept visible until the next fix or reload.
+  const [fixError, setFixError] = useState<{ message: string; code: string } | null>(null);
   const sheet = useRef<HTMLDivElement>(null);
+  // The delayed re-read after 更新分支, cleared when the sheet unmounts.
+  const settleTimer = useRef<number | null>(null);
+  useEffect(() => () => { if (settleTimer.current !== null) window.clearTimeout(settleTimer.current); }, []);
   const body = useRef<HTMLDivElement>(null);
   // onClose runs once, from whichever comes first: the exit animation's end or its fallback timer.
   const closed = useRef(false);
@@ -231,7 +299,7 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
     onClose();
   };
   const close = () => {
-    if (merging || closing) return;
+    if (merging || fixing || closing) return;
     setClosing(true);
     window.setTimeout(finishClose, exitFallback());
   };
@@ -250,7 +318,7 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
   };
   const onKeyDown = (event: KeyboardEvent) => {
     // The confirmation alert handles its own keys while it is open.
-    if (confirming) return;
+    if (confirming || confirmingFix) return;
     if (event.key === 'Tab') {
       // A modal sheet keeps keyboard focus inside itself, wrapping at either end.
       const focusable = [...(sheet.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])];
@@ -278,6 +346,7 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
   // GitHub's UNSTABLE covers checks that do not pass even when none is listed as failing; both need the user's word.
   const needsAcknowledgement = failing.length > 0 || shown?.mergeState === 'unstable';
   const blockers = [...(shown?.blockers ?? []), ...(canMerge ? [] : [{ code: 'NO_SCOPE', message: 'gh 令牌缺少 repo 权限：在服务器上运行 gh auth refresh -s repo' }])];
+  const fixes = shown ? fixesFor(shown, canMerge) : [];
   const short = (shown?.headSha ?? pull.headSha).slice(0, 7);
   const acknowledged = Boolean(shown && acknowledgedSha === shown.headSha);
   const ready = Boolean(shown && method && !blockers.length && (!needsAcknowledgement || acknowledged));
@@ -301,6 +370,30 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
       onChanged(null);
     } finally {
       setMerging(false);
+    }
+  };
+  // Runs a confirmed fix; either way the pull request is read again and the inbox told that something changed.
+  const runFix = async (kind: FixKind) => {
+    if (!shown) return;
+    setFixing(kind);
+    setFixError(null);
+    const { owner, repo, number: pullNumber } = pull;
+    try {
+      const request = kind === 'update-branch' ? api.studio.github.updateBranch(owner, repo, pullNumber, shown.headSha)
+        : kind === 'ready' ? api.studio.github.markReady(owner, repo, pullNumber)
+          : api.studio.github.approveRuns(owner, repo, pullNumber, shown.pendingRuns.map(run => run.id));
+      const done = await request.then(readApiJson<StudioGitHubActionResult>);
+      toast.success(done.message);
+      if (done.pull) { setDetail(done.pull); setLoadError(''); } else await load(true, true);
+      if (kind === 'update-branch') {
+        settleTimer.current = window.setTimeout(() => { settleTimer.current = null; void load(true, true); }, UPDATE_SETTLE_MS);
+      }
+    } catch (failure) {
+      setFixError({ message: readableErrorMessage(failure, '操作失败'), code: errorCode(failure) });
+      await load(true, true);
+    } finally {
+      setFixing(null);
+      onChanged(null);
     }
   };
   const reload = async () => {
@@ -361,6 +454,27 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
       <li><span>改动</span><span className="gh-fact-value"><span className="gh-diff mono"><ins>+{number(shown.additions)}</ins><del>−{number(shown.deletions)}</del></span><DiffBlocks additions={shown.additions} deletions={shown.deletions} /></span></li>
       <li><span>可合并</span><span className={`gh-fact-value ${mergeability(shown).tone}`}>{mergeability(shown).label}</span></li>
     </ul>
+
+    {fixError && <div className="gh-callout bad" role="alert">
+      <IconAlertTriangle size={18} aria-hidden="true" />
+      <div><strong>没有完成</strong><span>{fixError.message}</span></div>
+    </div>}
+    {fixes.length > 0 && <section className="gh-sheet-section" aria-labelledby="gh-fixes-title">
+      <h4 id="gh-fixes-title">可以在这里处理</h4>
+      <ul className="ios-list gh-fixes">
+        {fixes.map(fix => {
+          const Icon = FIX_ICON[fix.kind];
+          return <li key={fix.kind} className="gh-fix">
+            <span className={`gh-fix-icon is-${fix.kind}`} aria-hidden="true"><Icon size={17} /></span>
+            <span className="gh-fix-body"><strong>{fix.title}</strong><small>{fix.detail}</small></span>
+            <button type="button" className="ios-button tinted gh-fix-button" disabled={fixing !== null || merging} aria-busy={fixing === fix.kind || undefined}
+              onClick={() => { setFixError(null); setConfirmingFix(fix.kind); }}>
+              {fixing === fix.kind ? <><StudioSpinner size={14} />{fix.busyLabel}</> : fix.label}
+            </button>
+          </li>;
+        })}
+      </ul>
+    </section>}
 
     {shown.checkItems.length > 0 && <section className="gh-sheet-section" aria-labelledby="gh-checks-title">
       <h4 id="gh-checks-title">检查</h4>
@@ -457,7 +571,7 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
   const footer = shown && <footer className="gh-sheet-footer">
     {step === 'detail' && (blockers.length
       ? <><p className="gh-blocker" role="note">{blockers[0].message}</p><button type="button" className="ios-button filled gh-primary" disabled>合并</button></>
-      : <button type="button" className="ios-button filled gh-primary" onClick={() => go('merge', 1)}><IconGitMerge size={18} aria-hidden="true" />合并…</button>)}
+      : <button type="button" className="ios-button filled gh-primary" disabled={fixing !== null} onClick={() => go('merge', 1)}><IconGitMerge size={18} aria-hidden="true" />合并…</button>)}
     {step === 'merge' && <button type="button" className="ios-button gh-primary gh-danger" disabled={!ready || merging} onClick={() => setConfirming(true)}>
       {merging ? <><StudioSpinner size={17} />正在合并…</> : <><IconGitMerge size={18} aria-hidden="true" />合并 #{shown.number}</>}
     </button>}
@@ -467,7 +581,7 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
   return createPortal(
     <div className={`studio-layer ${closing ? 'closing' : ''}`} onKeyDown={onKeyDown}>
       <div className="sheet-scrim" aria-hidden="true" onClick={close} />
-      <div ref={sheet} tabIndex={-1} className="gh-sheet" role="dialog" aria-modal="true" aria-labelledby="gh-sheet-title" aria-busy={merging || undefined}
+      <div ref={sheet} tabIndex={-1} className="gh-sheet" role="dialog" aria-modal="true" aria-labelledby="gh-sheet-title" aria-busy={merging || fixing !== null || undefined}
         onAnimationEnd={event => { if (closing && event.target === event.currentTarget && EXIT_ANIMATIONS.has(event.animationName)) finishClose(); }}>
         <div className="gh-sheet-grabber" aria-hidden="true" />
         {header}
@@ -485,6 +599,10 @@ export function StudioGitHubSheet({ pull, canMerge, onClose, onChanged }: {
         confirmLabel="合并"
         onCancel={() => setConfirming(false)}
         onConfirm={() => { setConfirming(false); void submit(); }} />}
+      {confirmingFix && shown && <StudioConfirmSheet
+        {...fixConfirmation(shown, confirmingFix)}
+        onCancel={() => setConfirmingFix(null)}
+        onConfirm={() => { const kind = confirmingFix; setConfirmingFix(null); void runFix(kind); }} />}
     </div>,
     document.body,
   );

@@ -6,7 +6,7 @@ import {
 import { IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
 import type {
-  HubAgentProvider, HubAutomationInput, HubProjectInput, HubTaskInput, StudioChatSpace, StudioGitHubMergeInput, StudioIngressId, T212CapsInput, T212Env, T212TradingMode,
+  HubAgentProvider, HubAutomationInput, HubProjectInput, HubTaskInput, PromptSuggestionAssistant, PromptSuggestionTurn, StudioChatSpace, StudioGitHubMergeInput, StudioIngressId, T212CapsInput, T212Env, T212TradingMode,
 } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
@@ -292,6 +292,10 @@ export const api = {
       removeThread: (threadId: string) => del(`/api/studio/workbench/threads/${encodeURIComponent(threadId)}`),
     },
     // ── v6 track: chat — endpoints below this line ──
+    // The faint suggested next message of a chat composer, from the conversation tail (DeepSeek, else a local rule):
+    // `{ suggestion: string | null, source }`. The signal cancels it when the conversation moves on.
+    suggestions: (body: { assistant: PromptSuggestionAssistant; turns: PromptSuggestionTurn[] }, signal?: AbortSignal) =>
+      post('/api/studio/suggestions', body, { signal }),
     // ── v6 track: github — endpoints below this line ──
     // The owner's GitHub through the server's gh CLI: account, PR inbox, one PR, merging (audited) and merge history.
     // `refresh` bypasses the server's 45-second cache (it still reuses a fetch from the last few seconds).
@@ -303,6 +307,15 @@ export const api = {
       merge: (owner: string, repo: string, number: number, input: StudioGitHubMergeInput) =>
         post(`/api/studio/github/prs/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}/merge`, input),
       merges: () => get('/api/studio/github/merges'),
+      // One-tap fixes for a blocked PR (audited): merge the base into the head, mark a draft ready, approve waiting runs.
+      updateBranch: (owner: string, repo: string, number: number, expectedHeadSha: string) =>
+        post(`/api/studio/github/prs/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}/update-branch`, { expectedHeadSha }),
+      markReady: (owner: string, repo: string, number: number) =>
+        post(`/api/studio/github/prs/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}/ready`, {}),
+      approveRuns: (owner: string, repo: string, number: number, runIds: number[]) =>
+        post(`/api/studio/github/prs/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}/approve-runs`, { runIds }),
+      // The open PR of a workbench project's current branch (30-second server cache), or null.
+      branchPull: (projectId: string, refresh = false) => get(`/api/studio/github/branch-pr${query({ projectId, refresh })}`),
     },
     // ── v6 track: builder — endpoints below this line ──
     // App Store-style AI builds: poll the list, start one (name, icon, what to build), continue it with a follow-up, stop it;

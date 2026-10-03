@@ -2355,6 +2355,16 @@ export type WorkbenchChatChrome = {
   onProviderChange?: (provider: WorkbenchNewProvider) => void;
 };
 // ── v6 track: chat — types below this line ──
+//----------------- SUGGESTED NEXT MESSAGE ------------
+/** Who answers in a chat whose next message is being suggested; the server names it in what DeepSeek reads. */
+export type PromptSuggestionAssistant = 'claude' | 'codex' | 'deepseek' | 'assistant';
+/**
+ * One turn of the conversation tail sent to POST /api/studio/suggestions, oldest first. `tool` turns describe what
+ * an agent did in one line (编辑 App.tsx；运行 npm test). Built by the chat composers, sent by api.studio.suggestions
+ * through useSuggestedPrompt.
+ */
+export type PromptSuggestionTurn = { role: 'user' | 'assistant' | 'tool'; text: string };
+// ---------------------------
 /**
  * One row of a workbench chat menu (WorkbenchMenu). `kind: 'toggle'` draws a switch instead of a check, is announced
  * as a checkbox, and keeps the menu open when tapped, like the 1M-context switch under the model list. `badge` is a
@@ -2470,13 +2480,35 @@ export type StudioGitHubFile = { path: string; additions: number; deletions: num
  * description excerpt (render as text, never as HTML), the merge methods the repository allows and the server's
  * blockers, which the merge endpoint enforces whatever the sheet shows. `mergeQueue` means the base branch requires a
  * merge queue: the merge queues the PR and cannot delete its branch. A `mergeState` of 'unstable' needs the same
- * acknowledgement as a failing check, since GitHub sees checks that do not pass.
+ * acknowledgement as a failing check, since GitHub sees checks that do not pass. `pendingRuns` lists Actions runs
+ * the sheet can approve (empty when GitHub could not be asked).
  */
 export type StudioGitHubPullDetail = StudioGitHubPull & {
   state: 'open' | 'closed' | 'merged'; body: string; bodyTruncated: boolean; createdAt: string;
   checkItems: StudioGitHubCheck[]; checksTruncated: boolean; files: StudioGitHubFile[]; filesTotal: number;
   mergeMethods: StudioGitHubMergeMethod[]; deleteBranchOnMerge: boolean; isCrossRepository: boolean; viewerCanMerge: boolean;
   mergeQueue: boolean; blockers: { code: string; message: string }[]; mergeCommitSha: string | null;
+  pendingRuns: StudioGitHubPendingRun[];
+};
+/**
+ * A GitHub Actions run on a pull request's head commit waiting for approval: a first-time contributor's fork run
+ * ('contributor') or a run held by environment protection rules the gh account may approve ('deployment', with the
+ * names of those environments). Approved from the PR sheet through POST …/approve-runs.
+ */
+export type StudioGitHubPendingRun = { id: number; name: string; kind: 'contributor' | 'deployment'; environments: string[] };
+/**
+ * POST …/update-branch, …/ready and …/approve-runs result: a short Chinese confirmation and the pull request as
+ * GitHub reports it right afterwards (null when that read failed; the sheet then reads it itself).
+ */
+export type StudioGitHubActionResult = { message: string; pull: StudioGitHubPullDetail | null };
+/**
+ * GET /api/studio/github/branch-pr?projectId=: the open pull request of a workbench project's current branch, or null
+ * (no PR, not a GitHub checkout, gh signed out). `pull` is the inbox summary with the server's blockers and runs
+ * waiting for approval, enough for the chat header chip and to open the PR sheet; `canMerge` is the gh token's.
+ */
+export type StudioGitHubBranchPull = {
+  branch: string; canMerge: boolean;
+  pull: StudioGitHubPull & { blockers: { code: string; message: string }[]; pendingRuns: StudioGitHubPendingRun[] };
 };
 /**
  * POST …/merge body. `expectedHeadSha` is the head the user reviewed (GitHub refuses a moved head);

@@ -31,6 +31,8 @@ import { createRemoteHostsRouter } from './remote-hosts.routes.js';
 import { createGhRunner, resolveGhPath } from './github/github-cli.adapter.js';
 import { createGitHubService } from './github/github.service.js';
 import { createGitHubRouter } from './github/github.routes.js';
+import { createGitHubBranchService } from './github/github-branch.service.js';
+import { createLocalRepoReader } from './github/git-local.adapter.js';
 import { createStudioNetworkService } from './network.service.js';
 import { createStudioNetworkRouter } from './network.routes.js';
 import { createQuotaService } from './quota/quota.service.js';
@@ -38,6 +40,8 @@ import { createQuotaRouter } from './quota/quota.routes.js';
 import { createWorkbenchService } from './workbench.service.js';
 import { createWorkbenchRouter } from './workbench.routes.js';
 import { createWorkbenchThreadsService } from './workbench-threads.service.js';
+import { createPromptSuggester } from './prompt-suggestions.service.js';
+import { createPromptSuggestionsRouter } from './prompt-suggestions.routes.js';
 import { createMemoryMcpClient } from './memory/memory-client.adapter.js';
 import { createMemoryService, findWindowsHome, memoryFolderName } from './memory/memory.service.js';
 import { createMemoryChatBridge } from './memory/memory-chat.service.js';
@@ -257,6 +261,12 @@ export function createStudioModule() {
   });
   routes.use('/workbench', createWorkbenchRouter(workbench, workbenchThreads));
   // ── v6 track: chat — create its service and mount its router below this line ──
+  // The faint suggested next message in every chat composer, from DeepSeek with the Studio chat's key
+  // (STUDIO_SUGGEST_MODEL picks the model, default deepseek-chat); without a key only a local rule answers.
+  routes.use('/suggestions', createPromptSuggestionsRouter(createPromptSuggester({
+    deepseekKey: userId => service.deepseekApiKey(userId),
+    model: process.env.STUDIO_SUGGEST_MODEL,
+  })));
   // ── v6 track: github — create its service and mount its router below this line ──
   // The owner's GitHub through the gh CLI already signed in on this machine (gh keeps the token; Studio never reads
   // it). STUDIO_GH_PATH points at gh when it is not in ~/.local/bin, /usr/local/bin, /usr/bin or on PATH.
@@ -264,7 +274,16 @@ export function createStudioModule() {
     database: getConnection(),
     run: createGhRunner({ ghPath: resolveGhPath(process.env.STUDIO_GH_PATH) }),
   });
-  routes.use('/github', createGitHubRouter(github));
+  // The workbench chat header's PR chip: the open PR of an IDE project's current branch (git reads its origin).
+  const githubBranches = createGitHubBranchService({
+    github,
+    projectDirectory(projectId) {
+      const row = projectsDb.getProjectById(projectId);
+      return row && !row.isArchived ? row.project_path : null;
+    },
+    readLocalRepo: createLocalRepoReader(),
+  });
+  routes.use('/github', createGitHubRouter(github, githubBranches));
   // ── v6 track: builder — create its service and mount its router below this line ──
   // App Store-style AI builds: a new ~/projects folder, a hub project (the icon) and an unattended Claude Code
   // session per build (STUDIO_BUILDS_ROOT, STUDIO_BUILDS_MAX_PARALLEL, STUDIO_BUILD_MODEL; see builds.module.ts).

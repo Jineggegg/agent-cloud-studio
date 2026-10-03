@@ -2047,6 +2047,24 @@ export type StudioWorkbenchThread = {
 export type StudioWorkbenchHandoff = { summary: string; context: string };
 // ---------------------------
 // ── v6 track: chat — server types below this line ──
+//----------------- STUDIO SUGGESTED NEXT MESSAGE ------------
+/**
+ * What a chat composer sends to POST /api/studio/suggestions: who the assistant is and the tail of the
+ * conversation, oldest first. `tool` turns are one-line descriptions of what the agent did (编辑 src/app.ts).
+ * Used by the suggestions router (which validates and bounds it) and the prompt suggester (which clips it again
+ * before DeepSeek sees it). The texts are untrusted conversation data, never instructions to the server.
+ */
+export type StudioPromptSuggestionInput = {
+  assistant: 'claude' | 'codex' | 'deepseek' | 'assistant';
+  turns: { role: 'user' | 'assistant' | 'tool'; text: string }[];
+};
+/**
+ * The suggested next message the composer shows faintly and sends with one tap: from DeepSeek, from the local
+ * rule (好的，继续 after a "shall I?" question), or `none` (suggestion null) when there is no obvious next step.
+ * Returned by the prompt suggester through the suggestions router.
+ */
+export type StudioPromptSuggestion = { suggestion: string | null; source: 'deepseek' | 'local' | 'none' };
+// ---------------------------
 // ── v6 track: github — server types below this line ──
 //----------------- STUDIO GITHUB (gh CLI) ------------
 /**

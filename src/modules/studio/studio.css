@@ -1119,3 +1119,14 @@ html.dark [data-sonner-toaster] .studio-toast[data-type="success"] [data-icon] {
   .home-date h1 { font-size: 34px; white-space: nowrap; }
   .home-actions .glass-icon { min-width: 40px; height: 40px; border-radius: 20px; }
 }
+
+/* The suggested next message: faint tinted text in the empty field (Send sends it), sized by the suggestion so it
+   never clips; the transparent textarea lies over it and still takes the caret and typing. */
+.composer-input { position: relative; flex: 1; min-width: 0; }
+.composer-input .composer-suggestion {
+  min-height: 36px; padding: 7px 0; font-size: 17px; line-height: 22px; white-space: pre-wrap; overflow-wrap: anywhere; pointer-events: none;
+  color: color-mix(in srgb, var(--ios-tint) 60%, var(--ios-label-3));
+}
+.composer-field:has(.composer-input.has-suggestion) { background: color-mix(in srgb, var(--ios-tint) 6%, var(--ios-surface)); }
+.studio .composer-input textarea { display: block; width: 100%; }
+.studio .composer-input.has-suggestion textarea { position: absolute; inset: 0; height: 100% !important; min-height: 0; }

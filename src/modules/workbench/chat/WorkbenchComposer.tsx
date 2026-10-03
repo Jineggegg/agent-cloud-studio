@@ -23,6 +23,7 @@ import { WorkbenchEffortControl } from '@/modules/workbench/chat/WorkbenchEffort
 import { WorkbenchMenu } from '@/modules/workbench/chat/WorkbenchMenu';
 import { WorkbenchMicButton } from '@/modules/workbench/chat/WorkbenchMicButton';
 import { WorkbenchSendButton } from '@/modules/workbench/chat/WorkbenchSendButton';
+import { WorkbenchSuggestedInput } from '@/modules/workbench/chat/WorkbenchSuggestedInput';
 import { modelShortLabel, permissionModeCopy, providerLabel } from '@/modules/workbench/chat/utils/workbenchChatCopy';
 
 type ComposerState = ReturnType<typeof useWorkbenchAgentEngine>['composer'];
@@ -43,6 +44,10 @@ type WorkbenchComposerProps = {
   isProcessing: boolean;
   canAbort: boolean;
   onAbort: () => void;
+  // The suggested next message (useSuggestedPrompt), shown faintly while the field is empty; Send sends it.
+  suggestion?: string | null;
+  // Called when the suggestion is sent or filled in, so it does not show again before the next answer.
+  onSuggestionUsed?: () => void;
 };
 
 const POPOVER_SPRING = { type: 'spring', stiffness: 520, damping: 36, mass: 0.7 } as const;
@@ -75,7 +80,8 @@ function AttachmentTile({ file, error, onRemove }: { file: File; error?: string;
  * Used by WorkbenchAgentChat as the input dock: an auto-growing field (Enter sends, Shift+Enter breaks the line),
  * image attachments by drop, paste or picker, dictation where the browser has speech recognition, typed slash
  * commands and @ file mentions, the permission-mode and model chips, the reasoning-effort control, and the spring
- * send/stop disc. All sending behaviour comes from the inherited composer hook.
+ * send/stop disc. All sending behaviour comes from the inherited composer hook. With the field empty, a suggested
+ * next message shows faintly: Send (or Enter) sends it as it is; typing hides it and clearing the field restores it.
  */
 export function WorkbenchComposer({
   composer,
@@ -92,6 +98,8 @@ export function WorkbenchComposer({
   isProcessing,
   canAbort,
   onAbort,
+  suggestion = null,
+  onSuggestionUsed,
 }: WorkbenchComposerProps) {
   const {
     input,
@@ -127,6 +135,7 @@ export function WorkbenchComposer({
     cancelEditMessage,
     delivery,
     preparedRecovery,
+    handleVoiceTranscript,
   } = composer;
   const commandListRef = useRef<HTMLDivElement>(null);
   const hasContent = Boolean(input.trim()) || attachedFiles.length > 0;
@@ -134,6 +143,14 @@ export function WorkbenchComposer({
   // Until the server confirms (or refuses) the last send, the button stays off so one draft never runs twice; a
   // prepared continuation must be sent explicitly once the current run ends, never queued (as in ChatComposer).
   const sendBlocked = delivery?.state === 'sending' || delivery?.state === 'unknown' || (Boolean(preparedRecovery) && isProcessing);
+  // The suggestion only stands in for an empty field between runs; editing a sent message or a recovery draft hides it.
+  const shownSuggestion = suggestion && !hasContent && !isProcessing && !editingAnchorId && !preparedRecovery ? suggestion : null;
+  // The transcript hook mirrors the text into the composer's ref, so submitting reads it at once (as dictation does).
+  const sendSuggestion = () => {
+    if (!shownSuggestion || sendBlocked) return;
+    onSuggestionUsed?.();
+    handleVoiceTranscript(shownSuggestion, true);
+  };
   const modeCopy = permissionModeCopy(permissionMode);
   const modelName = modelShortLabel(model, modelOptions);
   // The effort control's stops: the levels this model accepts (the `default` sentinel is not a stop).
@@ -188,7 +205,8 @@ export function WorkbenchComposer({
         className="wbc-composer"
         onSubmit={(event) => {
           event.preventDefault();
-          void handleSubmit(event);
+          if (shownSuggestion) sendSuggestion();
+          else void handleSubmit(event);
         }}
       >
         <AnimatePresence>
@@ -267,23 +285,34 @@ export function WorkbenchComposer({
           </ul>
         )}
 
-        <textarea
-          ref={textareaRef}
-          className="wbc-input"
-          rows={1}
-          dir="auto"
-          aria-label="消息"
-          enterKeyHint="send"
-          placeholder={`给 ${providerLabel(provider)} 发消息`}
-          value={input}
-          onChange={handleInputChange}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          onClick={handleTextareaClick}
-          onInput={handleTextareaInput}
-          onFocus={() => handleInputFocusChange(true)}
-          onBlur={() => handleInputFocusChange(false)}
-        />
+        <WorkbenchSuggestedInput suggestion={shownSuggestion}>
+          <textarea
+            ref={textareaRef}
+            className="wbc-input"
+            rows={1}
+            dir="auto"
+            aria-label="消息"
+            aria-description={shownSuggestion ? `建议的下一条：${shownSuggestion}。直接发送即可` : undefined}
+            enterKeyHint="send"
+            placeholder={shownSuggestion ? '' : `给 ${providerLabel(provider)} 发消息`}
+            value={input}
+            onChange={handleInputChange}
+            onKeyDown={(event) => {
+              const composing = event.nativeEvent.isComposing || event.keyCode === 229;
+              if (shownSuggestion && !composing && event.key === 'Enter' && !event.shiftKey && !event.altKey) {
+                event.preventDefault();
+                sendSuggestion();
+                return;
+              }
+              handleKeyDown(event);
+            }}
+            onPaste={handlePaste}
+            onClick={handleTextareaClick}
+            onInput={handleTextareaInput}
+            onFocus={() => handleInputFocusChange(true)}
+            onBlur={() => handleInputFocusChange(false)}
+          />
+        </WorkbenchSuggestedInput>
 
         <div className="wbc-composer-bar">
           <button type="button" className="wbc-tool-button" aria-label="添加图片或文件" title="添加图片或文件" onClick={openAttachmentPicker}>
@@ -346,7 +375,7 @@ export function WorkbenchComposer({
           <span className="wbc-composer-spacer" />
           <WorkbenchSendButton
             mode={sendMode}
-            disabled={sendBlocked || (sendMode === 'send' ? !hasContent : sendMode === 'stop' ? !canAbort : false)}
+            disabled={sendBlocked || (sendMode === 'send' ? !hasContent && !shownSuggestion : sendMode === 'stop' ? !canAbort : false)}
             onStop={onAbort}
           />
         </div>

@@ -31,6 +31,11 @@ type PullSummary = {
 type CheckItem = { name: string; workflow: string | null; state: CheckState; required: boolean; url: string | null };
 type FileItem = { path: string; additions: number; deletions: number; change: string };
 type Blocker = { code: string; message: string };
+// A GitHub Actions run on the head commit that waits for someone to approve it: a first-time contributor's fork run
+// ('contributor'), or a run held by environment protection rules the gh account may approve ('deployment').
+type PendingRun = { id: number; name: string; kind: 'contributor' | 'deployment'; environments: string[] };
+// What approving a pending run needs: the environment ids the gh account may approve (deployment runs only).
+type RunApproval = PendingRun & { environmentIds: number[] };
 type PullDetail = PullSummary & {
   state: 'open' | 'closed' | 'merged'; body: string; bodyTruncated: boolean; createdAt: string;
   checkItems: CheckItem[]; checksTruncated: boolean; files: FileItem[]; filesTotal: number;
@@ -38,7 +43,16 @@ type PullDetail = PullSummary & {
   // The base branch requires a merge queue: gh then queues the PR instead of merging it (and refuses --delete-branch).
   mergeQueue: boolean;
   blockers: Blocker[]; mergeCommitSha: string | null;
+  // Actions runs on the head commit waiting for approval; empty when GitHub could not be asked (never fails the read).
+  pendingRuns: PendingRun[];
 };
+// The one-tap fixes the detail sheet offers next to a blocker, each audited in studio_github_actions.
+type PullAction = 'update-branch' | 'ready' | 'approve-runs';
+type ActionOutcome = 'pending' | 'done' | 'refused' | 'failed' | 'unknown' | 'invalid';
+/** A validated update-branch request: the head SHA the user saw, which GitHub must still find on the branch. */
+type UpdateBranchRequest = { expectedHeadSha: string };
+/** A validated approve-runs request: distinct positive run ids, at most MAX_APPROVE_RUNS. */
+type ApproveRunsRequest = { runIds: number[] };
 // 'invalid' marks a merge request the router rejected (bad method, SHA or flags) after the PR address parsed.
 type MergeOutcome = 'pending' | 'merged' | 'queued' | 'refused' | 'failed' | 'unknown' | 'invalid';
 type MergeRow = {
@@ -64,6 +78,12 @@ const MAX_ERROR_LENGTH = 160;
 // A merged pull request stays out of the inbox this long, because GitHub's search index lists it as open for a while
 // after the merge. Merged pull requests can never be reopened, so hiding one is always safe.
 const MERGED_HIDE_MS = 5 * 60_000;
+// Updating a branch, marking a PR ready or approving a run is one quick GitHub call each.
+const ACTION_TIMEOUT_MS = 30_000;
+// Runs on one head commit that are looked up for pending deployments; more than this is never realistic.
+const MAX_DEPLOYMENT_LOOKUPS = 6;
+const MAX_APPROVE_RUNS = 20;
+const APPROVAL_COMMENT = 'Approved from Studio';
 
 // GitHub logins and organisation names never start with "-", so no owner can be read as a gh flag.
 const OWNER = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
@@ -73,6 +93,8 @@ const NUMBER = /^[1-9][0-9]{0,9}$/;
 const MAX_NUMBER = 2_147_483_647;
 const SHA = /^[0-9a-f]{40}$/;
 const SCOPE = /^[a-z][a-z0-9:_-]{0,40}$/;
+// A git branch name as gh may receive it: no leading "-", no "..", "//" or "@{", no trailing "/" or ".lock".
+const BRANCH = /^(?![-/.])(?!.*(?:\.\.|\/\/|@\{|\/$|\.lock$))[A-Za-z0-9._/-]{1,200}$/;
 const MERGE_METHODS: readonly MergeMethod[] = ['squash', 'merge', 'rebase'];
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: '合并提交', squash: '压缩合并', rebase: '变基合并' };
 // The repository settings that turn each method on.
@@ -207,7 +229,7 @@ function mergeOutputLines(result: GhFailure) {
 
 const clip = (value: string) => value.length > MAX_ERROR_LENGTH ? `${value.slice(0, MAX_ERROR_LENGTH - 1)}…` : value;
 const mergeRefusal = (code: string, message: string, statusCode = 409) => new AppError(message, { statusCode, code });
-const HEAD_BEHIND_MESSAGE = '分支落后于目标分支，仓库要求先更新：请在 GitHub 上更新分支后再合并';
+const HEAD_BEHIND_MESSAGE = '分支落后于目标分支，仓库要求先更新分支后再合并';
 const CONFLICT_MESSAGE = '有合并冲突：请先解决冲突再合并';
 
 // GitHub refusing a required status check, e.g. `Required status check "build" is expected.`, in Chinese.
@@ -268,6 +290,50 @@ function describeMergeFailure(result: GhFailure) {
   }
   if (/merge conflict/i.test(text)) return mergeRefusal('MERGE_CONFLICT', CONFLICT_MESSAGE);
   if (/not mergeable/i.test(text)) return mergeRefusal('MERGE_BLOCKED', 'GitHub 认为这个 PR 现在不能合并：请重新载入 PR 查看原因');
+  return generic;
+}
+
+// A GitHub database id (run, environment) as a positive safe integer, or 0; only such ids reach argv and API paths.
+const positiveId = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : 0;
+
+// The messages of a failed `gh api` call: the REST body's `message` and any GraphQL-style `errors`, both on stdout.
+function apiMessages(stdout: string) {
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    if (!isRecord(parsed)) return '';
+    const own = typeof parsed.message === 'string' ? [parsed.message] : [];
+    const errors = Array.isArray(parsed.errors) ? parsed.errors.map(error => isRecord(error) && typeof error.message === 'string' ? error.message : '') : [];
+    return [...own, ...errors].filter(Boolean).join('\n');
+  } catch { return ''; }
+}
+
+const actionRefusal = (code: string, message: string, statusCode = 409) => new AppError(message, { statusCode, code });
+
+/**
+ * Failures of the one-tap fixes (update branch, mark ready, approve runs) as a short Chinese reason with a code, in
+ * the style of describeFailure: GitHub's specific refusals first, then sign-in, rate limit, SAML and network, then a
+ * missing permission. Raw output only ever surfaces redacted, as one line.
+ */
+function describeActionFailure(result: GhFailure) {
+  if (result.reason !== 'failed') return describeFailure(result);
+  const text = stripAnsiSequences(`${result.stderr}\n${apiMessages(result.stdout)}`).replace(TOKEN_PATTERN, '[已隐藏]').split(/\r?\n/)
+    .map(item => item.replace(CONTROL_CHARACTERS, ' ').replace(/\s+/g, ' ').trim())
+    .filter(item => item && !GH_ADVICE.test(item)).join('\n');
+  if (/unknown command|unknown flag|unknown shorthand/i.test(text)) return actionRefusal('GH_OUTDATED', 'gh 版本过旧，不支持这个操作：请在服务器上升级 gh', 502);
+  if (/expected head sha|head sha[^\n]*(?:match|differ)|head ref[^\n]*(?:changed|match)/i.test(text)) {
+    return actionRefusal('HEAD_MOVED', 'PR 在确认期间有了新提交，GitHub 没有更新分支：请重新查看后再试');
+  }
+  if (/merge conflict/i.test(text)) return actionRefusal('MERGE_CONFLICT', '和目标分支有冲突，无法自动更新：请在本地解决冲突');
+  if (/no new commits|already up[ -]to[ -]date|is up to date/i.test(text)) return actionRefusal('ALREADY_UP_TO_DATE', '分支已经是最新的，不需要更新');
+  if (/not from a fork|cannot be approved|not waiting|already (?:been )?approved|no pending deployments?/i.test(text)) {
+    return actionRefusal('RUN_NOT_PENDING', '这个运行已经不需要批准：请刷新后再看');
+  }
+  const cleaned: GhFailure = { ...result, stderr: text, stdout: '' };
+  const generic = describeFailure(cleaned);
+  if (generic.code !== 'GH_FAILED') return generic;
+  if (/resource not accessible|must have (?:admin|write|push)|not authorized|permission|http 403/i.test(text)) {
+    return actionRefusal('NO_PERMISSION', '当前 gh 账号没有权限执行这个操作', 403);
+  }
   return generic;
 }
 
@@ -376,7 +442,7 @@ function readPull(node: unknown, repository: Record<string, unknown> | null): Om
 function blockersOf(detail: Omit<PullDetail, 'blockers'>): Refusal[] {
   const blockers: Refusal[] = [];
   if (detail.state !== 'open') blockers.push({ code: 'PR_NOT_OPEN', message: detail.state === 'merged' ? '这个 PR 已经合并' : '这个 PR 已关闭', status: 409 });
-  if (detail.isDraft) blockers.push({ code: 'PR_DRAFT', message: '草稿 PR 不能合并：请先在 GitHub 上标记为可审查', status: 409 });
+  if (detail.isDraft) blockers.push({ code: 'PR_DRAFT', message: '草稿 PR 不能合并：请先标记为可审查', status: 409 });
   if (!detail.viewerCanMerge) blockers.push({ code: 'NO_PERMISSION', message: '当前 gh 账号对这个仓库没有写权限', status: 403 });
   if (detail.mergeable === 'conflicting' || detail.mergeState === 'dirty') blockers.push({ code: 'MERGE_CONFLICT', message: CONFLICT_MESSAGE, status: 409 });
   const requiredFailing = detail.checkItems.filter(check => check.required && check.state === 'failing');
@@ -387,7 +453,7 @@ function blockersOf(detail: Omit<PullDetail, 'blockers'>): Refusal[] {
   // With a merge queue gh skips that check and queues the pull request, so neither state blocks there.
   if (detail.state === 'open' && !detail.mergeQueue) {
     if (detail.mergeState === 'behind') {
-      blockers.push({ code: 'HEAD_BEHIND', message: `${detail.headRef} 落后于 ${detail.baseRef}，仓库要求先更新分支：请在 GitHub 上更新后再合并`, status: 409 });
+      blockers.push({ code: 'HEAD_BEHIND', message: `${detail.headRef} 落后于 ${detail.baseRef}，仓库要求先更新分支后再合并`, status: 409 });
     }
     // A blocker above already explains most BLOCKED states; otherwise the review decision usually does.
     if (detail.mergeState === 'blocked' && !blockers.length) {
@@ -445,12 +511,36 @@ export function parseGitHubMergeRequest(body: unknown): MergeRequest {
   return { method, expectedHeadSha: body.expectedHeadSha, deleteBranch: body.deleteBranch === true, acknowledgeFailing: body.acknowledgeFailing === true };
 }
 
+/** Used by github.routes to validate an update-branch body: the head SHA the user saw in the sheet. */
+export function parseGitHubUpdateBranchRequest(body: unknown): UpdateBranchRequest {
+  if (!isRecord(body)) fail('请求格式无效', 400, 'INVALID_BODY');
+  if (typeof body.expectedHeadSha !== 'string' || !SHA.test(body.expectedHeadSha)) fail('缺少有效的头提交 SHA（40 位小写十六进制）', 400, 'INVALID_SHA');
+  return { expectedHeadSha: body.expectedHeadSha };
+}
+
+/** Used by github.routes to validate an approve-runs body: 1–20 distinct positive integer run ids. */
+export function parseGitHubApproveRunsRequest(body: unknown): ApproveRunsRequest {
+  if (!isRecord(body) || !Array.isArray(body.runIds)) fail('请求格式无效：缺少 runIds', 400, 'INVALID_BODY');
+  const runIds = body.runIds.map(positiveId);
+  if (!runIds.length || runIds.length > MAX_APPROVE_RUNS || runIds.some(id => !id)) fail(`runIds 应为 1–${MAX_APPROVE_RUNS} 个正整数`, 400, 'INVALID_RUN_IDS');
+  return { runIds: [...new Set(runIds)] };
+}
+
+/** Used by github-branch.service to accept only an owner/repo pair that is safe to place in gh's argv. */
+export function isGitHubRepository(owner: string, repo: string) {
+  return OWNER.test(owner) && REPO.test(repo) && repo !== '.' && repo !== '..';
+}
+
 /**
  * Used by studio.module, behind /api/studio/github: the owner's GitHub through the gh CLI already signed in on the
  * server. Reads (account status, PR inbox, PR detail) are cached and single-flight; a merge re-reads the pull request,
  * refuses on a moved head, failing required checks and other blockers, passes --match-head-commit so GitHub refuses
  * a head that moves afterwards, and records every attempt in studio_github_merges (requests the router rejects too,
  * through recordInvalidMerge). A finished merge hides the pull request from the inbox at once.
+ * The one-tap fixes the detail sheet offers next to a blocker (更新分支, 标记为可审查, 批准运行) follow the same rules:
+ * audited in studio_github_actions, decided on a fresh strict read, never with --admin or anything that bypasses
+ * branch protection, and followed by dropped caches and a new read. Also used by github-branch.service for the PR of
+ * a workbench project's branch (status and pull).
  */
 export function createGitHubService({ database, run, now = Date.now }: { database: Database.Database; run: StudioGhRun; now?: () => number }) {
   database.exec(`
@@ -460,6 +550,12 @@ export function createGitHubService({ database, run, now = Date.now }: { databas
       outcome TEXT NOT NULL, code TEXT, message TEXT, created_at TEXT NOT NULL, finished_at TEXT
     );
     CREATE INDEX IF NOT EXISTS studio_github_merges_user_time ON studio_github_merges (user_id, created_at);
+    CREATE TABLE IF NOT EXISTS studio_github_actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, owner TEXT NOT NULL, repo TEXT NOT NULL,
+      number INTEGER NOT NULL, action TEXT NOT NULL, subject TEXT NOT NULL, outcome TEXT NOT NULL, code TEXT, message TEXT,
+      created_at TEXT NOT NULL, finished_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS studio_github_actions_user_time ON studio_github_actions (user_id, created_at);
   `);
 
   let status: CacheEntry<GitHubStatus> | null = null;
@@ -470,6 +566,8 @@ export function createGitHubService({ database, run, now = Date.now }: { databas
   const detailRequests = new Map<string, Promise<PullDetail>>();
   // Pull requests with a merge in flight; a second attempt on the same one is refused rather than queued.
   const merging = new Set<string>();
+  // Pull requests with a one-tap fix in flight; a merge or a second fix on the same one is refused meanwhile.
+  const acting = new Set<string>();
   // Bumped by every merge attempt that reached gh: a read that started before it never writes its result to a cache.
   let cacheGeneration = 0;
   // Pull requests merged through Studio (refKey → when), hidden from every inbox answer for MERGED_HIDE_MS.
@@ -570,6 +668,48 @@ export function createGitHubService({ database, run, now = Date.now }: { databas
     return { login, pulls: sorted, fetchedAt: iso(), truncated };
   }
 
+  // One `gh api` GET of a REST path built only from validated values; rejects with describeFailure's reason.
+  async function restGet(path: string) {
+    const result = await run(['api', path], { timeoutMs: READ_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024 });
+    if (!result.ok) throw describeFailure(result);
+    try { return JSON.parse(result.stdout) as unknown; } catch { fail('GitHub 返回了无法识别的数据', 502, 'GH_BAD_RESPONSE'); }
+  }
+
+  /**
+   * Actions runs on `headSha` that wait for approval: fork runs of a first-time contributor (status action_required,
+   * approvable with write access) and runs held by environment protection rules, keeping only the environments the gh
+   * account may approve. `strict` (an approval deciding on it) rejects when a lookup fails; otherwise a run whose
+   * pending deployments cannot be read is skipped.
+   */
+  async function readRunApprovals(ref: PullRef, headSha: string, viewerCanMerge: boolean, strict: boolean): Promise<RunApproval[]> {
+    const repoPath = `repos/${ref.owner}/${ref.repo}`;
+    const listed = await restGet(`${repoPath}/actions/runs?head_sha=${headSha}&per_page=50`);
+    const runs = isRecord(listed) && Array.isArray(listed.workflow_runs) ? listed.workflow_runs : [];
+    const approvals: RunApproval[] = [];
+    const waiting: Array<{ id: number; name: string }> = [];
+    for (const item of runs) {
+      if (!isRecord(item) || item.head_sha !== headSha) continue;
+      const id = positiveId(item.id);
+      if (!id) continue;
+      const name = line(item.name, 120) || line(item.display_title, 120) || `运行 ${id}`;
+      if (item.status === 'action_required' && viewerCanMerge) approvals.push({ id, name, kind: 'contributor', environments: [], environmentIds: [] });
+      else if (item.status === 'waiting' && waiting.length < MAX_DEPLOYMENT_LOOKUPS) waiting.push({ id, name });
+    }
+    const deployments = await Promise.all(waiting.map(async ({ id, name }): Promise<RunApproval | null> => {
+      let pending: unknown;
+      try { pending = await restGet(`${repoPath}/actions/runs/${id}/pending_deployments`); } catch (error) { if (strict) throw error; return null; }
+      const environments = (Array.isArray(pending) ? pending : []).flatMap(entry => {
+        if (!isRecord(entry) || entry.current_user_can_approve !== true || !isRecord(entry.environment)) return [];
+        const environmentId = positiveId(entry.environment.id);
+        return environmentId ? [{ id: environmentId, name: line(entry.environment.name, 80) || `环境 ${environmentId}` }] : [];
+      });
+      return environments.length ? {
+        id, name, kind: 'deployment', environments: environments.map(item => item.name), environmentIds: environments.map(item => item.id),
+      } : null;
+    }));
+    return [...approvals, ...deployments.filter((item): item is RunApproval => item !== null)].sort((a, b) => a.id - b.id);
+  }
+
   async function readDetail(ref: PullRef, strict: boolean): Promise<PullDetail> {
     const data = await graphql(DETAIL_QUERY, ['-f', `owner=${ref.owner}`, '-f', `repo=${ref.repo}`, '-F', `number=${ref.number}`], strict);
     const repository = isRecord(data.repository) ? data.repository : null;
@@ -589,12 +729,18 @@ export function createGitHubService({ database, run, now = Date.now }: { databas
     const files = isRecord(node.files) && Array.isArray(node.files.nodes) ? node.files.nodes : [];
     const { body, truncated } = excerpt(node.body);
     const mergeCommit = isRecord(node.mergeCommit) && typeof node.mergeCommit.oid === 'string' && SHA.test(node.mergeCommit.oid) ? node.mergeCommit.oid : null;
+    const state = readEnum(node.state, ['open', 'closed', 'merged'] as const) ?? 'closed';
+    const viewerCanMerge = typeof repository.viewerPermission === 'string' && WRITE_PERMISSIONS.has(repository.viewerPermission);
+    // Fail-soft: runs waiting for approval are an extra, so a failed Actions read only means none are offered.
+    const pendingRuns = state !== 'open' ? [] : await readRunApprovals(ref, summary.headSha, viewerCanMerge, false)
+      .then(items => items.map(({ id, name, kind, environments }) => ({ id, name, kind, environments })))
+      .catch(() => []);
     const withoutBlockers: Omit<PullDetail, 'blockers'> = {
       ...summary,
       // The detail lists every check, so its summary is counted from the list rather than the inbox's counters.
       checks: summarizeCounts(passing, failing, pending),
       reasons: [],
-      state: readEnum(node.state, ['open', 'closed', 'merged'] as const) ?? 'closed',
+      state,
       body, bodyTruncated: truncated,
       createdAt: isoDate(node.createdAt),
       checkItems,
@@ -606,9 +752,10 @@ export function createGitHubService({ database, run, now = Date.now }: { databas
       mergeMethods: MERGE_METHODS.filter(method => repository[METHOD_SETTING[method]] === true),
       deleteBranchOnMerge: repository.deleteBranchOnMerge === true,
       isCrossRepository: node.isCrossRepository === true,
-      viewerCanMerge: typeof repository.viewerPermission === 'string' && WRITE_PERMISSIONS.has(repository.viewerPermission),
+      viewerCanMerge,
       mergeQueue: node.isMergeQueueEnabled === true,
       mergeCommitSha: mergeCommit,
+      pendingRuns,
     };
     return { ...withoutBlockers, blockers: blockersOf(withoutBlockers).map(({ code, message }) => ({ code, message })) };
   }
@@ -681,6 +828,67 @@ export function createGitHubService({ database, run, now = Date.now }: { databas
     database.prepare('UPDATE studio_github_merges SET outcome = ?, code = ?, message = ?, finished_at = ? WHERE id = ?').run(outcome, code, message, iso(), id);
   }
 
+  // Runs one gh command of a one-tap fix. Whatever happened, the pull request changed or may have: the caches go.
+  async function runFix(ref: PullRef, args: string[]) {
+    const result = await run(args, { timeoutMs: ACTION_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
+    invalidate(ref, false);
+    if (result.ok) return;
+    if (result.reason === 'timeout') {
+      throw new AppError('GitHub 响应超时：操作可能已经生效，请刷新确认', { statusCode: 504, code: 'ACTION_OUTCOME_UNKNOWN' });
+    }
+    throw describeActionFailure(result);
+  }
+
+  /**
+   * One audited one-tap fix: an audit row first (nothing runs without one), one fix at a time per pull request and
+   * never during a merge, a fresh strict read of the pull request that `steps` decides on (it may refuse through
+   * `refuse`), then gh. Afterwards the caches are dropped and the pull request is read again for the sheet.
+   */
+  async function performAction(userId: number, ref: PullRef, action: PullAction, subject: string,
+    steps: (detail: PullDetail, refuse: (refusal: Refusal) => never) => Promise<string>) {
+    const key = refKey(ref);
+    let recordId: number;
+    try {
+      recordId = Number(database.prepare(`INSERT INTO studio_github_actions (user_id, owner, repo, number, action, subject, outcome, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`).run(userId, ref.owner, ref.repo, ref.number, action, subject, iso()).lastInsertRowid);
+    } catch (error) {
+      console.error('[studio] github action audit insert failed:', error instanceof Error ? error.message : error);
+      throw new AppError('无法写入操作记录，已取消', { statusCode: 500, code: 'AUDIT_FAILED' });
+    }
+    let finished = false;
+    const close = (outcome: Exclude<ActionOutcome, 'pending' | 'invalid'>, code: string | null, message: string) => {
+      finished = true;
+      try {
+        database.prepare('UPDATE studio_github_actions SET outcome = ?, code = ?, message = ?, finished_at = ? WHERE id = ?').run(outcome, code, message, iso(), recordId);
+      } catch (error) {
+        console.error('[studio] github action audit update failed:', error instanceof Error ? error.message : error);
+      }
+    };
+    const refuse = (refusal: Refusal): never => {
+      close('refused', refusal.code, refusal.message);
+      throw new AppError(refusal.message, { statusCode: refusal.status, code: refusal.code });
+    };
+    if (merging.has(key) || acting.has(key)) refuse({ code: 'ACTION_IN_PROGRESS', message: '这个 PR 上有操作正在进行，请稍候', status: 409 });
+    acting.add(key);
+    try {
+      const detail = await getDetail(ref, { strict: true });
+      if (detail.state !== 'open') refuse({ code: 'PR_NOT_OPEN', message: detail.state === 'merged' ? '这个 PR 已经合并' : '这个 PR 已关闭', status: 409 });
+      const message = await steps(detail, refuse);
+      close('done', null, message);
+      // GitHub may take a moment to recompute; the sheet gets what it says now and re-reads on its own later.
+      const pull = await getDetail(ref, { force: true }).catch(() => null);
+      return { message, pull };
+    } catch (error) {
+      if (!finished) {
+        const failure = error instanceof AppError ? error : null;
+        close(failure?.code === 'ACTION_OUTCOME_UNKNOWN' ? 'unknown' : 'failed', failure?.code ?? 'INTERNAL_ERROR', failure?.message ?? '操作失败');
+      }
+      throw error;
+    } finally {
+      acting.delete(key);
+    }
+  }
+
   return {
     status(force = false) {
       return getStatus(force);
@@ -704,6 +912,22 @@ export function createGitHubService({ database, run, now = Date.now }: { databas
       return getDetail(ref, { force });
     },
 
+    /**
+     * The number of the open pull request from `branch` of owner/repo itself (a fork's branch of the same name does not
+     * count), or null. Used by github-branch.service for a workbench project's current branch.
+     */
+    async openPullForBranch(owner: string, repo: string, branch: string): Promise<number | null> {
+      if (!isGitHubRepository(owner, repo)) fail('仓库格式无效', 400, 'INVALID_REPO');
+      if (!BRANCH.test(branch)) fail('分支名格式无效', 400, 'INVALID_BRANCH');
+      const result = await run(['pr', 'list', '--repo', `${owner}/${repo}`, `--head=${branch}`, '--state', 'open', '--json', 'number,isCrossRepository', '--limit', '5'],
+        { timeoutMs: READ_TIMEOUT_MS, maxBuffer: 256 * 1024 });
+      if (!result.ok) throw describeFailure(result);
+      let parsed: unknown = null;
+      try { parsed = JSON.parse(result.stdout); } catch { fail('gh pr list 返回了无法识别的数据', 502, 'GH_BAD_RESPONSE'); }
+      const own = (Array.isArray(parsed) ? parsed : []).find(item => isRecord(item) && item.isCrossRepository !== true && positiveId(item.number) && Number(item.number) <= MAX_NUMBER);
+      return own ? positiveId((own as Record<string, unknown>).number) : null;
+    },
+
     async merge(userId: number, ref: PullRef, request: MergeRequest) {
       const key = refKey(ref);
       let recordId: number;
@@ -718,6 +942,11 @@ export function createGitHubService({ database, run, now = Date.now }: { databas
         const message = '这个 PR 正在合并，请稍候';
         finish(recordId, 'refused', 'MERGE_IN_PROGRESS', message);
         fail(message, 409, 'MERGE_IN_PROGRESS');
+      }
+      if (acting.has(key)) {
+        const message = '这个 PR 上有操作正在进行，请稍候';
+        finish(recordId, 'refused', 'ACTION_IN_PROGRESS', message);
+        fail(message, 409, 'ACTION_IN_PROGRESS');
       }
       merging.add(key);
       let finished = false;
@@ -788,6 +1017,76 @@ export function createGitHubService({ database, run, now = Date.now }: { databas
           .run(userId, ref.owner, ref.repo, ref.number, failure?.code ?? 'INVALID_BODY', failure?.message ?? '请求格式无效', iso(), iso());
       } catch (insertError) {
         console.error('[studio] github merge audit insert failed:', insertError instanceof Error ? insertError.message : insertError);
+      }
+    },
+
+    /**
+     * 更新分支: merges the base branch into the head branch through GitHub's update-branch API, which itself refuses
+     * when the head is no longer `expectedHeadSha`. Only offered (and accepted) while GitHub reports the branch BEHIND.
+     */
+    updateBranch(userId: number, ref: PullRef, request: UpdateBranchRequest) {
+      return performAction(userId, ref, 'update-branch', request.expectedHeadSha, async (detail, refuse) => {
+        if (detail.headSha !== request.expectedHeadSha) {
+          refuse({ code: 'HEAD_MOVED', message: `PR 有了新提交（现在是 ${shortSha(detail.headSha)}）：请重新查看后再更新`, status: 409 });
+        }
+        if (detail.mergeState !== 'behind') refuse({ code: 'NOT_BEHIND', message: '这个 PR 现在不需要更新分支：请刷新后再看', status: 409 });
+        await runFix(ref, ['api', '-X', 'PUT', `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/update-branch`, '-f', `expected_head_sha=${request.expectedHeadSha}`]);
+        return `已把 ${detail.baseRef} 的最新提交合并进 ${detail.headRef}，检查会重新运行`;
+      });
+    },
+
+    /** 标记为可审查: gh pr ready on a draft pull request. */
+    markReady(userId: number, ref: PullRef) {
+      return performAction(userId, ref, 'ready', '', async (detail, refuse) => {
+        if (!detail.isDraft) refuse({ code: 'NOT_DRAFT', message: '这个 PR 已经是可审查状态', status: 409 });
+        await runFix(ref, ['pr', 'ready', String(ref.number), '--repo', `${ref.owner}/${ref.repo}`]);
+        return `#${ref.number} 已标记为可审查`;
+      });
+    },
+
+    /**
+     * 批准运行: approves the requested Actions runs on the head commit. Every id must be one that a fresh read lists as
+     * waiting for this gh account (a contributor's fork run, or environments it may approve); otherwise nothing runs.
+     * Runs are approved one by one; a failure after some succeeded says which ones went through.
+     */
+    approveRuns(userId: number, ref: PullRef, request: ApproveRunsRequest) {
+      return performAction(userId, ref, 'approve-runs', request.runIds.join(','), async (detail, refuse) => {
+        const approvals = await readRunApprovals(ref, detail.headSha, detail.viewerCanMerge, true);
+        const byId = new Map(approvals.map(item => [item.id, item]));
+        const selected = request.runIds.map(id => byId.get(id));
+        if (selected.some(item => !item)) {
+          refuse({ code: 'RUN_NOT_PENDING', message: '有运行已经不需要批准，或当前 gh 账号无权批准：请刷新后再看', status: 409 });
+        }
+        const approved: string[] = [];
+        for (const item of selected as RunApproval[]) {
+          const path = `repos/${ref.owner}/${ref.repo}/actions/runs/${item.id}`;
+          const args = item.kind === 'contributor' ? ['api', '-X', 'POST', `${path}/approve`]
+            : ['api', '-X', 'POST', `${path}/pending_deployments`, ...item.environmentIds.flatMap(id => ['-F', `environment_ids[]=${id}`]),
+              '-f', 'state=approved', '-f', `comment=${APPROVAL_COMMENT}`];
+          try {
+            await runFix(ref, args);
+          } catch (error) {
+            if (!approved.length || !(error instanceof AppError)) throw error;
+            throw new AppError(`已批准「${approved.join('、')}」，「${item.name}」没有批准：${error.message}`, { statusCode: error.statusCode, code: error.code });
+          }
+          approved.push(item.name);
+        }
+        return approved.length === 1 ? `已批准运行「${approved[0]}」` : `已批准 ${approved.length} 个运行`;
+      });
+    },
+
+    /**
+     * A one-tap fix the router rejected after the PR address parsed (bad SHA or run ids), so studio_github_actions
+     * holds every attempt. Never throws: the request is refused either way.
+     */
+    recordInvalidAction(userId: number, ref: PullRef, action: PullAction, error: unknown) {
+      const failure = error instanceof AppError ? error : null;
+      try {
+        database.prepare(`INSERT INTO studio_github_actions (user_id, owner, repo, number, action, subject, outcome, code, message, created_at, finished_at)
+          VALUES (?, ?, ?, ?, ?, '', 'invalid', ?, ?, ?, ?)`)
+          .run(userId, ref.owner, ref.repo, ref.number, action, failure?.code ?? 'INVALID_BODY', failure?.message ?? '请求格式无效', iso(), iso());
+      } catch (insertError) {
+        console.error('[studio] github action audit insert failed:', insertError instanceof Error ? insertError.message : insertError);
       }
     },
 

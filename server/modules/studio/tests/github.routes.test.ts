@@ -8,6 +8,7 @@ import { AppError } from '@/shared/utils.js';
 
 import { createGitHubRouter } from '../github/github.routes.js';
 import type { createGitHubService } from '../github/github.service.js';
+import type { createGitHubBranchService } from '../github/github-branch.service.js';
 
 type Service = ReturnType<typeof createGitHubService>;
 
@@ -95,5 +96,64 @@ test('github routes reject malformed paths and bodies before the service runs, a
     assert.equal((await fetch(`${anonymous.origin}/merges`)).status, 401);
   } finally {
     await anonymous.close();
+  }
+});
+
+test('fix routes parse the PR address and body, pass the signed-in user, and audit rejected bodies', async () => {
+  const seen: unknown[][] = [];
+  const result = { message: 'ok', pull: null };
+  const service: Partial<Service> = {
+    updateBranch: async (userId, ref, request) => { seen.push(['update', userId, ref, request]); return result; },
+    markReady: async (userId, ref) => { seen.push(['ready', userId, ref]); return result; },
+    approveRuns: async (userId, ref, request) => { seen.push(['approve', userId, ref, request]); return result; },
+    recordInvalidAction: (userId, ref, action, error) => { seen.push(['invalid', userId, action, error instanceof AppError ? error.code : null]); },
+  };
+  const server = await serve(service);
+  const base = `${server.origin}/prs/Jineggegg/super-professor/114`;
+  const ref = { owner: 'Jineggegg', repo: 'super-professor', number: 114 };
+  try {
+    assert.equal((await post(`${base}/update-branch`, { expectedHeadSha: HEAD })).status, 200);
+    assert.equal((await post(`${base}/ready`, {})).status, 200);
+    assert.equal((await post(`${base}/approve-runs`, { runIds: [7, 7, 8] })).status, 200);
+    assert.equal((await post(`${base}/update-branch`, { expectedHeadSha: 'main' })).status, 400);
+    assert.equal((await post(`${base}/approve-runs`, { runIds: ['7; rm'] })).status, 400);
+    assert.equal((await post(`${server.origin}/prs/-x/super-professor/114/ready`, {})).status, 400);
+    assert.deepEqual(seen, [
+      ['update', 7, ref, { expectedHeadSha: HEAD }],
+      ['ready', 7, ref],
+      ['approve', 7, ref, { runIds: [7, 8] }],
+      ['invalid', 7, 'update-branch', 'INVALID_SHA'],
+      ['invalid', 7, 'approve-runs', 'INVALID_RUN_IDS'],
+    ]);
+  } finally {
+    await server.close();
+  }
+});
+
+test('the branch PR route validates the project id and needs a signed-in user', async () => {
+  const asked: unknown[][] = [];
+  const branches = {
+    branchPull: async (projectId: string, force: boolean) => { asked.push([projectId, force]); return null; },
+  } as unknown as ReturnType<typeof createGitHubBranchService>;
+  const app = express();
+  app.use((req, _res, next) => { if (req.headers['x-user']) (req as express.Request & { user?: { id: number } }).user = { id: 7 }; next(); });
+  app.use('/github', createGitHubRouter({} as Service, branches));
+  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    res.status(error instanceof AppError ? error.statusCode : 500).json({});
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}/github`;
+  try {
+    const signedIn = { headers: { 'x-user': '1' } };
+    const ok = await fetch(`${origin}/branch-pr?projectId=0f9b6c1e-1b0f&refresh=1`, signedIn);
+    assert.equal(ok.status, 200);
+    assert.equal(await ok.text(), 'null');
+    assert.equal((await fetch(`${origin}/branch-pr?projectId=..%2Fx`, signedIn)).status, 400);
+    assert.equal((await fetch(`${origin}/branch-pr`, signedIn)).status, 400);
+    assert.equal((await fetch(`${origin}/branch-pr?projectId=p-1`)).status, 401);
+    assert.deepEqual(asked, [['0f9b6c1e-1b0f', true]]);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });
