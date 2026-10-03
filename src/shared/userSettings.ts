@@ -30,6 +30,8 @@ export type UserPreferences = {
   selectedProvider: string;
   // Studio settings: each CLI's default model and effort, and models hidden from the menus (modelDefaults.ts).
   modelDefaults: unknown;
+  // Studio home screen: the names typed under icons, by tile id (modules/studio/utils/homeLayout.ts).
+  homeNames: unknown;
 };
 
 export type UserPreferenceKey = keyof UserPreferences;
@@ -71,6 +73,7 @@ const LEGACY_STORAGE_KEYS: Record<UserPreferenceKey, string> = {
   selectedProvider: 'selected-provider',
   // Unused: new with Studio settings, so there is nothing to migrate.
   modelDefaults: '',
+  homeNames: '',
 };
 
 const PREFERENCE_KEYS = Object.keys(LEGACY_STORAGE_KEYS) as UserPreferenceKey[];

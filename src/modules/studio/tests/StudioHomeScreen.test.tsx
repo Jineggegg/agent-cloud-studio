@@ -5,16 +5,19 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest';
 vi.mock('@/shared/context/ThemeContext', () => ({ useTheme: () => ({ isDarkMode: false, setThemeMode: vi.fn() }) }));
 vi.mock('@/modules/studio/StudioWidgets', () => ({ StudioWidgets: () => null }));
 vi.mock('@/modules/studio/StudioFluidBackground', () => ({ StudioFluidBackground: () => null }));
+// Names typed under icons sync through the user's preferences; the server write is a stub.
+vi.mock('@/shared/api', () => ({ api: { user: { savePreferences: vi.fn(async () => Response.json({})), preferences: vi.fn() } } }));
 // Reduced motion as motion reads it, switched per test.
 const motionPreference = vi.hoisted(() => ({ reduced: false }));
 vi.mock('motion/react', async importOriginal => ({ ...await importOriginal<Record<string, unknown>>(), useReducedMotion: () => motionPreference.reduced }));
 
 import type { StudioHomeTile } from '@/shared/types';
 import { StudioHomeScreen } from '@/modules/studio/StudioHomeScreen';
+import { readUserPreference, resetUserPreferences } from '@/shared/userSettings';
 import { installPointerEvent, layOutSortablesInARow, moveOnePlaceWithKeyboard } from '@/modules/studio/tests/sortableTestHelpers';
 
 beforeAll(installPointerEvent);
-beforeEach(() => { localStorage.clear(); motionPreference.reduced = false; });
+beforeEach(() => { localStorage.clear(); resetUserPreferences(); motionPreference.reduced = false; });
 afterEach(() => {
   cleanup();
   // A drag leaves short-lived click guards on document and window that remove themselves on a timer; run those
@@ -81,7 +84,7 @@ test('labels and hidden tiles are customised in edit mode and remembered on this
   fireEvent.click(screen.getByRole('button', { name: '从主屏幕隐藏 DeepSeek' }));
   expect(screen.queryByRole('button', { name: 'DeepSeek' })).toBeNull();
   // No icon has been dragged yet, so no order is saved and the layout keeps its original shape.
-  expect(JSON.parse(localStorage.getItem('studio-home-layout-v1') ?? '{}')).toEqual({ hidden: ['deepseek'], labels: false, large: false });
+  expect(JSON.parse(localStorage.getItem('studio-home-layout-v1') ?? '{}')).toEqual({ hidden: ['deepseek'], labels: false, large: false, folders: [] });
 
   fireEvent.click(screen.getByRole('button', { name: '资源库' }));
   const library = screen.getByRole('dialog', { name: 'App 资源库' });
@@ -275,4 +278,82 @@ test('icons are cards with the official mark for built-in products and a line gl
   expect(markOf('DeepSeek')?.getAttribute('data-brand')).toBe('deepseek');
   expect(markOf('SNR 3.0，在线')?.getAttribute('data-icon')).toBe('activity');
   expect(markOf('超级教授')?.getAttribute('data-icon')).toBe('school');
+});
+
+test('in edit mode a tap on a name renames the icon in place; an empty name goes back to the original', () => {
+  renderHome();
+  fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
+  const apps = screen.getByRole('navigation', { name: '应用' });
+  fireEvent.click(within(within(apps).getByRole('button', { name: '超级教授' })).getByText('超级教授'));
+  const field = screen.getByRole('textbox', { name: '超级教授 的名称' });
+  fireEvent.change(field, { target: { value: '  AJ   教授 ' } });
+  fireEvent.keyDown(field, { key: 'Enter' });
+  expect(screen.queryByRole('textbox', { name: '超级教授 的名称' })).toBeNull();
+  expect(within(apps).getByRole('button', { name: 'AJ 教授' })).toBeTruthy();
+  // Names follow the account to every device.
+  expect(readUserPreference('homeNames', {})).toEqual({ 'project:prof': 'AJ 教授' });
+
+  // VoiceOver reaches the same field through the hidden 重命名 button; Esc keeps the name.
+  fireEvent.click(screen.getByRole('button', { name: '重命名 AJ 教授' }));
+  fireEvent.change(screen.getByRole('textbox', { name: '超级教授 的名称' }), { target: { value: '别的' } });
+  fireEvent.keyDown(screen.getByRole('textbox', { name: '超级教授 的名称' }), { key: 'Escape' });
+  expect(within(apps).getByRole('button', { name: 'AJ 教授' })).toBeTruthy();
+
+  fireEvent.click(screen.getByRole('button', { name: '重命名 AJ 教授' }));
+  const again = screen.getByRole('textbox', { name: '超级教授 的名称' });
+  fireEvent.change(again, { target: { value: '' } });
+  fireEvent.blur(again);
+  expect(within(apps).getByRole('button', { name: '超级教授' })).toBeTruthy();
+  expect(readUserPreference('homeNames', {})).toEqual({});
+});
+
+test('a folder shows its apps, opens them, and gives them back to the home screen one by one', () => {
+  localStorage.setItem('studio-home-layout-v1', JSON.stringify({
+    hidden: [], labels: true, large: false, order: ['project:snr', 'folder:tools', 'project:prof'],
+    folders: [{ id: 'tools', name: '工具', items: ['deepseek', 'workspace'] }],
+  }));
+  const props = renderHome();
+  expect(shownOrder()).toEqual(['project:snr', 'folder:tools', 'project:prof']);
+  fireEvent.click(screen.getByRole('button', { name: '文件夹「工具」，2 个应用' }));
+  const folder = screen.getByRole('dialog', { name: '工具' });
+  fireEvent.click(within(folder).getByRole('button', { name: 'DeepSeek' }));
+  expect(props.onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: 'deepseek' }), expect.anything());
+  expect(screen.queryByRole('dialog', { name: '工具' })).toBeNull();
+
+  // In edit mode an app leaves the folder through its badge and lands right after it; the last one takes its place.
+  fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
+  fireEvent.click(screen.getByRole('button', { name: '文件夹「工具」，2 个应用' }));
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '把 DeepSeek 移出文件夹' }));
+  expect(shownOrder()).toEqual(['project:snr', 'folder:tools', 'deepseek', 'project:prof']);
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '把 工作台 移出文件夹' }));
+  expect(shownOrder()).toEqual(['project:snr', 'workspace', 'deepseek', 'project:prof']);
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(JSON.parse(localStorage.getItem('studio-home-layout-v1') ?? '{}').folders).toEqual([]);
+});
+
+test('a folder is renamed in edit mode and dissolves back into its place', () => {
+  localStorage.setItem('studio-home-layout-v1', JSON.stringify({
+    hidden: [], labels: true, large: false, order: ['folder:tools', 'project:snr', 'project:prof'],
+    folders: [{ id: 'tools', name: '工具', items: ['deepseek', 'workspace'] }],
+  }));
+  renderHome();
+  fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
+  fireEvent.click(screen.getByRole('button', { name: '文件夹「工具」，2 个应用' }));
+  const title = screen.getByRole('textbox', { name: '文件夹名称' });
+  fireEvent.change(title, { target: { value: '常用' } });
+  fireEvent.keyDown(title, { key: 'Enter' });
+  fireEvent.blur(title);
+  fireEvent.keyDown(window, { key: 'Escape' });
+  expect(screen.getByRole('button', { name: '文件夹「常用」，2 个应用' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '解散文件夹「常用」' }));
+  expect(shownOrder()).toEqual(['deepseek', 'workspace', 'project:snr', 'project:prof']);
+});
+
+test('apps of a deleted project leave their folder once projects have loaded', () => {
+  localStorage.setItem('studio-home-layout-v1', JSON.stringify({
+    hidden: [], labels: true, large: false, folders: [{ id: 'old', name: '旧', items: ['project:gone'] }, { id: 'tools', name: '工具', items: ['deepseek', 'project:gone'] }],
+  }));
+  renderHome();
+  expect(JSON.parse(localStorage.getItem('studio-home-layout-v1') ?? '{}').folders).toEqual([{ id: 'tools', name: '工具', items: ['deepseek'] }]);
+  expect(screen.getByRole('button', { name: '文件夹「工具」，1 个应用' })).toBeTruthy();
 });

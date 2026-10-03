@@ -54,8 +54,11 @@ function BuildRow({ title, build, note }: { title: string; build: StudioBuildInf
   </div>;
 }
 
-/** Used by StudioConnections to distinguish loaded, deployed and source versions without changing code. */
-export function StudioSettingsRuntime() {
+/**
+ * Used by Settings → 关于本机 → 版本与运行状态 to distinguish loaded, deployed and source versions without changing
+ * code. `onOpenNetwork` opens Settings → 网络与远程主机.
+ */
+export function StudioSettingsRuntime({ onOpenNetwork }: { onOpenNetwork?: () => void } = {}) {
   // Keep the last good snapshot visible if a later refresh fails.
   const [info, setInfo] = useState<StudioRuntimeInfo | null>(null);
   // A request locks refresh and provides an explicit loading state.
@@ -84,7 +87,7 @@ export function StudioSettingsRuntime() {
     || browserBuild.builtAt !== deployed.builtAt || browserBuild.dirty !== deployed.dirty || browserBuild.version !== deployed.version);
   const backendDiffers = deployed?.commit && info?.backend.build?.commit && deployed.commit !== info.backend.build.commit;
 
-  return <section className="ios-section studio-runtime" aria-labelledby="studio-runtime-heading">
+  return <section className="ios-section first studio-runtime" aria-labelledby="studio-runtime-heading">
     <div className="ios-section-header">
       <h2 id="studio-runtime-heading">版本与运行状态</h2>
       <button type="button" className="studio-runtime-action" disabled={busy} onClick={() => void refresh()}>
@@ -124,7 +127,7 @@ export function StudioSettingsRuntime() {
     {backendDiffers && <p className="studio-runtime-notice" role="status">前端与后台来自不同提交，请核对部署版本。</p>}
     <div className="ios-section-footer">
       <p>{info ? `本次读取 ${dateLabel(info.checkedAt)}。` : ''}GitHub 显示 origin 仓库默认分支，检查结果最多缓存 1 分钟。</p>
-      <div className="studio-runtime-links"><a href="#studio-network-heading" className="studio-runtime-action">查看连接方式</a><a href="#studio-remote-heading" className="studio-runtime-action">查看远程主机</a></div>
+      {onOpenNetwork && <div className="studio-runtime-links"><button type="button" className="studio-runtime-action" onClick={onOpenNetwork}>查看连接方式与远程主机</button></div>}
     </div>
   </section>;
 }

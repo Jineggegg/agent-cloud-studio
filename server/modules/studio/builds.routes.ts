@@ -4,6 +4,7 @@ import type { StudioBuildInput } from '@/shared/types.js';
 import { AppError, asyncHandler } from '@/shared/utils.js';
 
 import type { createStudioBuildsService } from './builds.service.js';
+import { createBuildNameSuggester } from './build-name.service.js';
 
 function text(value: unknown) {
   if (typeof value !== 'string') throw new AppError('字段格式无效', { statusCode: 400 });
@@ -18,8 +19,14 @@ function buildInput(body: Record<string, unknown>): StudioBuildInput {
   return { name: text(body.name), tone: text(body.tone), glyph: text(body.glyph), prompt: text(body.prompt) };
 }
 
-/** Mounted by the Studio builds wiring at /api/studio/builds behind authentication; transport validation only. */
-export function createStudioBuildsRouter(builds: ReturnType<typeof createStudioBuildsService>) {
+/**
+ * Mounted by the Studio builds wiring at /api/studio/builds behind authentication; transport validation only.
+ * Without a name suggester, names are suggested by the local rule alone.
+ */
+export function createStudioBuildsRouter(
+  builds: ReturnType<typeof createStudioBuildsService>,
+  names: ReturnType<typeof createBuildNameSuggester> = createBuildNameSuggester({ deepseekKey: () => null }),
+) {
   const router = express.Router();
   router.use((_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
   router.get('/', asyncHandler(async (req, res) => { res.json(builds.list(user(req))); }));
@@ -28,6 +35,15 @@ export function createStudioBuildsRouter(builds: ReturnType<typeof createStudioB
   router.get('/environment', asyncHandler(async (req, res) => {
     user(req);
     res.json(builds.environment());
+  }));
+  // The composer's name suggestion for a description: always a name, from DeepSeek or the local rule.
+  router.post('/suggest-name', asyncHandler(async (req, res) => {
+    const userId = user(req);
+    const prompt = text(req.body?.prompt);
+    // A newer keystroke aborts the browser's request; the DeepSeek call it started is dropped with it.
+    const controller = new AbortController();
+    res.on('close', () => { if (!res.writableEnded) controller.abort(); });
+    res.json(await names.suggest(userId, prompt, controller.signal));
   }));
   router.get('/:id', asyncHandler(async (req, res) => { res.json(builds.get(user(req), String(req.params.id))); }));
   router.post('/:id/continue', asyncHandler(async (req, res) => {

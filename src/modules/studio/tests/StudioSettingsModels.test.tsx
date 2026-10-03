@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 
 const providers = vi.hoisted(() => ({ models: vi.fn(), createModel: vi.fn(), updateModel: vi.fn(), deleteModel: vi.fn() }));
 vi.mock('@/shared/api', () => ({ api: { providers, user: { preferences: vi.fn(), savePreferences: vi.fn(async () => Response.json({})) } } }));
@@ -20,6 +21,10 @@ const BUILT_IN: Option[] = [
 ];
 let claudeOptions: Option[] = BUILT_IN;
 const envelope = (models: unknown) => Response.json({ success: true, data: { models } });
+// 模型 (the defaults) and, one level in, 模型列表 (the list); both together where a test spans the two.
+const renderDefaults = (onOpenCatalog = vi.fn()) => render(<MemoryRouter><StudioSettingsModels onOpenCatalog={onOpenCatalog} /></MemoryRouter>);
+const renderCatalog = () => render(<MemoryRouter><StudioSettingsModels view="catalog" /></MemoryRouter>);
+const renderBoth = () => render(<MemoryRouter><StudioSettingsModels /><StudioSettingsModels view="catalog" /></MemoryRouter>);
 
 beforeEach(() => {
   resetUserPreferences();
@@ -32,7 +37,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 test('the default model and effort are saved for new sessions and seed this device\'s composer', async () => {
-  render(<StudioSettingsModels />);
+  renderDefaults();
   const model = await screen.findByLabelText('默认模型');
   fireEvent.change(model, { target: { value: 'claude-opus-5-5' } });
   fireEvent.change(screen.getByLabelText('推理强度'), { target: { value: 'max' } });
@@ -46,7 +51,7 @@ test('the default model and effort are saved for new sessions and seed this devi
 });
 
 test('built-in models are hidden from the menus and can be restored', async () => {
-  render(<StudioSettingsModels />);
+  renderBoth();
   fireEvent.click(await screen.findByRole('button', { name: '隐藏 Opus 5.5' }));
   expect(readModelDefaults().claude?.hidden).toEqual(['claude-opus-5-5']);
   expect(within(screen.getByLabelText('默认模型')).queryByText('Opus 5.5')).toBeNull();
@@ -65,7 +70,7 @@ test('custom models are added and deleted through the model API', async () => {
     claudeOptions = claudeOptions.filter(option => !option.isCustom);
     return Response.json({ success: true });
   });
-  render(<StudioSettingsModels />);
+  renderCatalog();
   fireEvent.click(await screen.findByRole('button', { name: '添加模型' }));
   fireEvent.change(screen.getByLabelText('模型 ID'), { target: { value: 'claude-test-1' } });
   fireEvent.change(screen.getByLabelText('名称'), { target: { value: '测试模型' } });
@@ -79,7 +84,7 @@ test('custom models are added and deleted through the model API', async () => {
 });
 
 test('each CLI has its own list', async () => {
-  render(<StudioSettingsModels />);
+  renderDefaults();
   await screen.findByLabelText('默认模型');
   fireEvent.click(screen.getByRole('radio', { name: 'Codex' }));
   expect(await screen.findByRole('option', { name: 'GPT-6 Sol' })).toBeTruthy();
@@ -93,7 +98,7 @@ test('the Claude list shows one row per family with its description, and a legac
     { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', description: '最快、最省', aliases: ['haiku'] },
   ] as Option[];
   writeProviderModelPreferences('claude', { model: 'opus[1m]', effort: 'max' });
-  render(<StudioSettingsModels />);
+  renderBoth();
 
   const model = await screen.findByLabelText('默认模型') as HTMLSelectElement;
   expect(model.value).toBe('claude-opus-5-5');
@@ -114,4 +119,16 @@ test('the Claude list shows one row per family with its description, and a legac
   fireEvent.change(model, { target: { value: 'claude-haiku-4-5-20251001' } });
   expect(readModelDefaults().claude?.model).toBe('claude-haiku-4-5-20251001');
   expect(screen.queryByRole('switch', { name: '1M 上下文' })).toBeNull();
+});
+
+test('模型 keeps the list one level in, with how many models are available', async () => {
+  const openCatalog = vi.fn();
+  renderDefaults(openCatalog);
+  const row = await screen.findByRole('button', { name: /管理模型列表/ });
+  expect(row.textContent).toContain('3 个可用');
+  expect(screen.queryByRole('button', { name: /^隐藏 / })).toBeNull();
+  fireEvent.click(row);
+  expect(openCatalog).toHaveBeenCalledTimes(1);
+  // The workbench shortcuts for new Claude and Codex sessions sit on the same page.
+  expect(screen.getByRole('link', { name: /Claude Code/ }).getAttribute('href')).toBe('/work?new=claude');
 });

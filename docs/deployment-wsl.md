@@ -69,7 +69,7 @@ bash scripts/wsl/install-studio-service.sh
 
 ## 6. 首页的模型额度小组件（可选）
 
-主屏幕的额度小组件和工作台左下角的「用量」面板显示 Claude、Codex 的 5 小时 / 每周（以及各模型的每周）用量、Claude 云端额度和 DeepSeek 余额，每分钟最多刷新一次。数据来源不同，可信度也不同，小组件会标出来源和「可能已过期」：
+主屏幕的额度小组件和工作台左下角的「用量」面板显示 Claude、Codex 的 5 小时 / 每周（以及各模型的每周）用量、Claude 云端额度和 DeepSeek 余额，每分钟刷新一次（Claude 用量每 5 分钟最多向接口查一次）。数据来源不同，可信度也不同，小组件会标出来源和「可能已过期」：
 
 - **显示方式**：默认显示剩余（如「剩余 91%」，进度条也表示剩余），可在 设置 → 额度显示 或工作台用量面板顶部切换为「已用」；剩余 = 100 − 四舍五入后的已用。重置时间按 Europe/London 时区显示（「3 小时 36 分后重置」「周一 7:00 重置」）。
 - **显示哪些项目**：设置 → 额度显示 里每一项都有开关。默认打开 Claude 5 小时、Claude 每周、Codex 每周和 DeepSeek 余额；各模型的每周额度、Claude 云端额度等在账号返回后出现，默认关闭。选择和主屏幕布局一样保存在这台设备的浏览器里。
@@ -77,14 +77,17 @@ bash scripts/wsl/install-studio-service.sh
 - **DeepSeek**：用你在「连接」中保存的密钥查询官方余额接口，不需要额外配置。
 - **Claude**：自动读取，不需要配置。Studio 用服务器上这台机器的 Claude 登录（也就是 Studio 自己的 Claude 会话用的那个）发出和 Claude Code `/usage` 相同的只读查询（`GET https://api.anthropic.com/api/oauth/usage`），小组件标为「官方」。
   - 登录凭据默认读 `~/.claude/.credentials.json`（设置了 `CLAUDE_CONFIG_DIR` 时读那个目录下的同名文件），可用 `STUDIO_CLAUDE_CREDENTIALS_FILE` 改位置。Studio 只在每次查询时读出其中的访问令牌放进这一个请求，不记日志、不返回给浏览器、不写盘，也从不续期——令牌过期时这次就不查，等 Claude CLI 下次运行时自己续期。
-  - 每分钟最多查一次，同一时间只有一个请求，5 秒超时；被拒绝（401/403）、限流（429）、服务出错、超时或答复格式不对时，5 分钟内不再查（Claude 重新登录后会立刻重试）。
+  - 查到的结果保留 5 分钟，也就是每 5 分钟最多查一次；同一时间只有一个请求，5 秒超时。被拒绝（401/403）、服务出错、超时或答复格式不对时，5 分钟内不再查（被拒绝后 Claude 重新登录会立刻重试）。限流（429）连续出现时依次等 5、10、20、40 分钟，之后每次 60 分钟；接口的 `Retry-After` 要求更久时按它等（最多 60 分钟）；查成功一次后重新从 5 分钟算。日志里会有 `[quota] Claude usage API returned 429 (2 in a row); next attempt in 10 min` 这样的一行。
+  - 最近一次查到的结果保存在 `claude-usage-last.json`（和快照文件在同一目录，默认 `~/.claude/claude-usage-last.json`，可用 `STUDIO_CLAUDE_USAGE_LAST_FILE` 改位置），只有百分比、重置时间和额度金额，没有令牌，权限 0600；服务重启后读回来，5 分钟内的直接用，不重新查。接口限流、暂时不可用、超时或登录已过期时，只要它比快照新，小组件就继续显示它（仍标「官方」），并提示「Claude 用量接口暂时限流，显示 12 分钟前的读数。」；超过 15 分钟或重置时间已过会标为可能过期。登录被拒（401/403）时不显示它，因为可能已经退出或换了账号。
+  - 每次查成功后，还会把 5 小时和每周两个窗口按 statusLine 脚本的格式写进下面的快照文件（`source` 为 `"usage-api"`），本机读这个文件的额度小插件也能看到官方数字。写之前先读出原文件，只替换 `observedAt`、`source` 和这两个窗口，其它字段保留；写失败只在日志里记一行警告。
   - 除 5 小时 / 每周外，答复里的 `seven_day_<模型>` 和 `limits` 中的各模型每周额度显示为「每周 · <模型>」，一次性的 Claude Code / Cowork 额度（`cinder_cove`）显示为「云端额度」，开启了额外用量时 `extra_usage` 显示为「额外用量」（金额按美分换算）。这个答复的格式没有公开文档，所以每个进程第一次读到时会在日志（info 级别）里记一行它的顶层字段名（`[quota] Claude usage API answer keys: …`），只有字段名，不含任何数值或令牌，可用 `journalctl` 核对。
   - 不想让 Studio 调用这个接口时设 `STUDIO_CLAUDE_USAGE_API=off`。
-  - 读不到时（未登录、登录已过期、用 API 密钥登录、接口暂时不可用或已关闭），退回到下面的快照文件，小组件的提示会说明原因。
+  - 读不到又没有可用的上次结果时（未登录、用 API 密钥登录、登录被拒、已关闭，或刚部署还没查到过），退回到下面的快照文件，小组件的提示会说明原因。未登录、登录被拒或用 API 密钥登录时，快照里由 Studio 自己写入的那份（`source` 为 `"usage-api"`）也不显示。
 
-  快照文件 `~/.claude/studio-rate-limits.json`（可用 `STUDIO_CLAUDE_RATE_FILE` 改位置）里只有用量百分比和重置时间，没有任何密钥。快照有两个来源：
-  1. 在 Studio 里进行的 Claude 对话会自动更新它。
-  2. 在终端直接用 Claude Code 时，需要把状态栏（statusLine）指向仓库里的脚本。请你自己编辑 `~/.claude/settings.json`，加入：
+  快照文件 `~/.claude/studio-rate-limits.json`（可用 `STUDIO_CLAUDE_RATE_FILE` 改位置）里只有用量百分比和重置时间，没有任何密钥。快照有三个来源：
+  1. Studio 每次成功查到 Claude 用量后写入（见上）。
+  2. 在 Studio 里进行的 Claude 对话会自动更新它。
+  3. 在终端直接用 Claude Code 时，需要把状态栏（statusLine）指向仓库里的脚本。请你自己编辑 `~/.claude/settings.json`，加入：
 
      ```json
      "statusLine": {
@@ -95,9 +98,9 @@ bash scripts/wsl/install-studio-service.sh
 
      如果已经配置过其他 statusLine，这会替换它。之后 Claude Code 底部会显示类似 `Opus · 5h 42% · 周 18%` 的一行，同时写入快照。脚本出错时只会显示模型名，不会影响 Claude Code。
 
-  只有 Claude 订阅账号（Pro / Max）才有 5 小时 / 每周限额；用 API 密钥登录时小组件会显示「暂无数据」。快照超过 6 小时未更新，或者重置时间已过，会标为过期。
+  只有 Claude 订阅账号（Pro / Max）才有 5 小时 / 每周限额；用 API 密钥登录时小组件会显示「暂无数据」。快照超过 6 小时未更新（Studio 从接口写入的超过 15 分钟），或者重置时间已过，会标为过期。
 
-`STUDIO_CLAUDE_RATE_FILE`、`STUDIO_CLAUDE_CREDENTIALS_FILE` 和 `STUDIO_CODEX_SESSIONS_DIRS` 里的 `~` 会展开成你的主目录，相对路径也按主目录解析（不按当前目录），所以在 systemd 的 `Environment=` 里写 `~/.claude/x.json` 也能用；服务和 statusLine 脚本会落到同一个文件。修改后需要重启服务才会生效。
+`STUDIO_CLAUDE_RATE_FILE`、`STUDIO_CLAUDE_CREDENTIALS_FILE`、`STUDIO_CLAUDE_USAGE_LAST_FILE` 和 `STUDIO_CODEX_SESSIONS_DIRS` 里的 `~` 会展开成你的主目录，相对路径也按主目录解析（不按当前目录），所以在 systemd 的 `Environment=` 里写 `~/.claude/x.json` 也能用；服务和 statusLine 脚本会落到同一个文件。修改后需要重启服务才会生效。
 
 ## 7. SNR 实验室（可选）
 

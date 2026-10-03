@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 
-import { IconEyeOff, IconLoader2, IconPencil, IconPlus, IconRotate, IconTrash } from '@/modules/studio/icons/tabler';
+import { IconChevronRight, IconEyeOff, IconLoader2, IconPencil, IconPlus, IconRotate, IconTrash } from '@/modules/studio/icons/tabler';
+import { StudioBrandMark } from '@/modules/studio/brandIcons';
+import { SettingsIcon, SettingsLinkRow } from '@/modules/studio/StudioSettingsRows';
 import { api } from '@/shared/api';
 import type { LLMProvider, ProviderModelOption, ProviderModelsDefinition } from '@/shared/types';
 import { applyModelDefaults, MODEL_PROVIDERS, readModelDefaults, writeProviderModelPreferences } from '@/shared/modelDefaults';
@@ -32,12 +35,18 @@ async function loadCatalog(provider: LLMProvider) {
 }
 
 /**
- * Used by StudioConnections (设置): each CLI's default model and reasoning effort for new sessions, and the model
- * list itself. Built-in models can be hidden from the menus and restored; models the user added can be edited and
- * deleted. Choices sync through the user's preferences (modelDefaults.ts).
+ * Used by Settings → 模型 in two views. `defaults`: each CLI's default model, 1M context and reasoning effort for new
+ * sessions, one tap each, with a row into the list and shortcuts into the workbench. `catalog` (模型列表, one level
+ * in): the model list itself — built-in models can be hidden from the menus and restored; models the user added can
+ * be edited and deleted. Choices sync through the user's preferences (modelDefaults.ts). Settings pass `provider`
+ * and `onProviderChange` so both views show the CLI picked last.
  */
-export function StudioSettingsModels() {
-  const [provider, setProvider] = useState<LLMProvider>('claude');
+export function StudioSettingsModels({ view = 'defaults', onOpenCatalog, provider: chosenProvider, onProviderChange }: {
+  view?: 'defaults' | 'catalog'; onOpenCatalog?: () => void;
+  provider?: LLMProvider; onProviderChange?: (provider: LLMProvider) => void;
+}) {
+  const [ownProvider, setOwnProvider] = useState<LLMProvider>('claude');
+  const provider = chosenProvider ?? ownProvider;
   // The provider's full catalog (hidden models included); null while loading.
   const [catalog, setCatalog] = useState<ProviderModelsDefinition | null>(null);
   const [defaults, setDefaults] = useState(readModelDefaults);
@@ -57,7 +66,8 @@ export function StudioSettingsModels() {
 
   const switchProvider = (next: LLMProvider) => {
     if (next === provider) return;
-    setProvider(next); setCatalog(null); setError(''); setDraft(null); setExpanded(false);
+    setOwnProvider(next); onProviderChange?.(next);
+    setCatalog(null); setError(''); setDraft(null); setExpanded(false);
   };
 
   const choice = defaults[provider] ?? {};
@@ -120,35 +130,67 @@ export function StudioSettingsModels() {
       () => { if (choice.model === option.value) save({ model: undefined, effort: undefined }); });
   };
 
-  return <section className="ios-section" aria-labelledby="studio-models-heading">
-    <div className="ios-section-header"><h2 id="studio-models-heading">模型</h2><span className="caption">新会话的默认设置</span></div>
-    <div className="segmented model-providers" role="radiogroup" aria-label="CLI">
-      {MODEL_PROVIDERS.map(item => <button type="button" role="radio" key={item} aria-checked={provider === item} onClick={() => switchProvider(item)}>{NAMES[item]}</button>)}
-    </div>
+  const providers = <div className="segmented model-providers" role="radiogroup" aria-label="CLI">
+    {MODEL_PROVIDERS.map(item => <button type="button" role="radio" key={item} aria-checked={provider === item} onClick={() => switchProvider(item)}>{NAMES[item]}</button>)}
+  </div>;
+  const loadingRow = catalog === null && !error && <div className="ios-row no-icon"><StudioSpinner size={16} /><span className="ios-row-body"><small>读取中</small></span></div>;
 
-    <div className="ios-list">
-      {catalog === null && !error && <div className="ios-row no-icon"><StudioSpinner size={16} /><span className="ios-row-body"><small>读取中</small></span></div>}
-      {catalog && <>
-        <div className="ios-field">
-          <label htmlFor="studio-default-model">默认模型</label>
-          <select id="studio-default-model" value={defaultModel} onChange={event => chooseModel(event.target.value)}>
-            {visible.map(option => <option key={option.value} value={option.value}>{option.label}{option.recommended ? '（推荐）' : ''}</option>)}
-          </select>
-        </div>
-        {longContextValue && <label className="ios-row no-icon switch-row">
-          <span className="ios-row-body"><strong>1M 上下文</strong><small>适合超长会话和大型仓库，用量更高</small></span>
-          <input type="checkbox" role="switch" className="ios-switch" aria-label="1M 上下文" checked={Boolean(defaultChoice?.longContext)}
-            onChange={event => setLongContext(event.target.checked)} />
-        </label>}
-        <div className="ios-field">
-          <label htmlFor="studio-default-effort">推理强度</label>
-          <select id="studio-default-effort" value={effort} disabled={!efforts.length} onChange={event => save({ effort: event.target.value === 'default' ? undefined : event.target.value })}>
-            <option value="default">{efforts.length ? '模型默认' : '这个模型不支持调节'}</option>
-            {efforts.map(item => <option key={item.value} value={item.value}>{reasoningEffortLabel(item.value)}</option>)}
-          </select>
-        </div>
-      </>}
-    </div>
+  if (view === 'defaults') return <>
+    <section className="ios-section first" aria-labelledby="studio-models-heading">
+      <div className="ios-section-header"><h2 id="studio-models-heading">新会话的默认设置</h2></div>
+      {providers}
+      <div className="ios-list">
+        {loadingRow}
+        {catalog && <>
+          <div className="ios-field">
+            <label htmlFor="studio-default-model">默认模型</label>
+            <select id="studio-default-model" value={defaultModel} onChange={event => chooseModel(event.target.value)}>
+              {visible.map(option => <option key={option.value} value={option.value}>{option.label}{option.recommended ? '（推荐）' : ''}</option>)}
+            </select>
+          </div>
+          {longContextValue && <label className="ios-row no-icon switch-row">
+            <span className="ios-row-body"><strong>1M 上下文</strong><small>适合超长会话和大型仓库，用量更高</small></span>
+            <input type="checkbox" role="switch" className="ios-switch" aria-label="1M 上下文" checked={Boolean(defaultChoice?.longContext)}
+              onChange={event => setLongContext(event.target.checked)} />
+          </label>}
+          <div className="ios-field">
+            <label htmlFor="studio-default-effort">推理强度</label>
+            <select id="studio-default-effort" value={effort} disabled={!efforts.length} onChange={event => save({ effort: event.target.value === 'default' ? undefined : event.target.value })}>
+              <option value="default">{efforts.length ? '模型默认' : '这个模型不支持调节'}</option>
+              {efforts.map(item => <option key={item.value} value={item.value}>{reasoningEffortLabel(item.value)}</option>)}
+            </select>
+          </div>
+        </>}
+      </div>
+      {error && <p className="studio-feedback error" role="alert">{error}</p>}
+      <p className="ios-section-footer">首页 Claude、Codex 小组件新建的会话使用这里的默认模型与推理强度；工作台里仍可随时切换。</p>
+    </section>
+    {onOpenCatalog && <section className="ios-section" aria-label="模型列表">
+      <div className="ios-list">
+        <SettingsLinkRow title="管理模型列表" subtitle="隐藏、恢复或添加菜单里的模型" detail={catalog ? `${visible.length} 个可用` : undefined} onClick={onOpenCatalog} />
+      </div>
+    </section>}
+    <section className="ios-section" aria-labelledby="studio-agents-heading">
+      <div className="ios-section-header"><h2 id="studio-agents-heading">在工作台中对话</h2><span className="caption">本机订阅登录</span></div>
+      <div className="ios-list">
+        <Link to="/work?new=claude" className="ios-row">
+          <SettingsIcon><StudioBrandMark brand="claude" size={18} /></SettingsIcon>
+          <span className="ios-row-body"><strong>Claude Code</strong><small>Claude 订阅 · 新建会话</small></span>
+          <IconChevronRight size={18} className="chevron" aria-hidden="true" />
+        </Link>
+        <Link to="/work?new=codex" className="ios-row">
+          <SettingsIcon><StudioBrandMark brand="openai" size={18} /></SettingsIcon>
+          <span className="ios-row-body"><strong>Codex</strong><small>ChatGPT 订阅 · 新建会话</small></span>
+          <IconChevronRight size={18} className="chevron" aria-hidden="true" />
+        </Link>
+      </div>
+      <p className="ios-section-footer">工作台直接调用这台电脑上已登录的 Claude Code 与 Codex CLI，不替换凭据，也不会转为 API 计费。</p>
+    </section>
+  </>;
+
+  return <section className="ios-section first" aria-label="模型列表">
+    {providers}
+    {loadingRow && <div className="ios-list">{loadingRow}</div>}
     {error && <p className="studio-feedback error" role="alert">{error}</p>}
 
     {catalog && <>
@@ -187,7 +229,7 @@ export function StudioSettingsModels() {
         </div>
       </>}
     </>}
-    <p className="ios-section-footer">首页 Claude、Codex 小组件新建的会话使用这里的默认模型与推理强度；工作台里仍可随时切换。内置模型只能隐藏，随时可以恢复。</p>
+    <p className="ios-section-footer">隐藏的模型不会出现在工作台的模型菜单里。内置模型只能隐藏，随时可以恢复；自己添加的模型可以编辑和删除。</p>
 
     {deleting && <StudioConfirmSheet title={`删除「${deleting.label}」？`} message="使用这个模型的会话会改回默认模型。" confirmLabel="删除"
       onConfirm={() => remove(deleting)} onCancel={() => setDeleting(null)} />}

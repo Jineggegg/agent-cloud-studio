@@ -1,200 +1,234 @@
-import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import type { ReactElement, UIEvent } from 'react';
+import { m } from 'motion/react';
 
-import { IconChartCandle, IconChevronRight, IconExternalLink, IconInfoCircle, IconKey, IconLoader2, IconMessages, IconRefresh, IconServer, IconShieldCheck, IconTerminal2 } from '@/modules/studio/icons/tabler';
+import { IconChartCandle, IconChartPie, IconChevronLeft, IconChevronRight, IconCpu, IconCursorText, IconGauge, IconInfoCircle, IconLayoutGrid, IconMail, IconMoon, IconRoute, IconWorld } from '@/modules/studio/icons/tabler';
+import { useAuth } from '@/modules/auth';
 import { api, readApiJson } from '@/shared/api';
 import { useTheme } from '@/shared/context/ThemeContext';
-import type { StudioRemoteHost, StudioRemoteStatus, StudioStatus, T212Status, ThemeMode } from '@/shared/types';
-import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
+import { useQuotaPreferences } from '@/shared/hooks/useQuotaPreferences';
+import { readModelDefaults } from '@/shared/modelDefaults';
+import type { LLMProvider, QuotaDisplayMode, StudioStatus, T212Status, ThemeMode } from '@/shared/types';
+import { subscribeToUserPreferences } from '@/shared/userSettings';
+import { StudioBrandMark } from '@/modules/studio/brandIcons';
+import { StudioSettingsAbout } from '@/modules/studio/StudioSettingsAbout';
+import { StudioSettingsAccount } from '@/modules/studio/StudioSettingsAccount';
+import { StudioSettingsAjExit } from '@/modules/studio/StudioSettingsAjExit';
+import { StudioSettingsDeepSeek } from '@/modules/studio/StudioSettingsDeepSeek';
+import { StudioSettingsHome } from '@/modules/studio/StudioSettingsHome';
 import { StudioSettingsMail } from '@/modules/studio/StudioSettingsMail';
 import { StudioSettingsModels } from '@/modules/studio/StudioSettingsModels';
 import { StudioSettingsNetwork } from '@/modules/studio/StudioSettingsNetwork';
 import { StudioSettingsQuota } from '@/modules/studio/StudioSettingsQuota';
+import { StudioSettingsRemote } from '@/modules/studio/StudioSettingsRemote';
+import { SettingsIcon, SettingsLinkRow } from '@/modules/studio/StudioSettingsRows';
 import { StudioSettingsRuntime } from '@/modules/studio/StudioSettingsRuntime';
-import { StudioSettingsSecurity } from '@/modules/studio/StudioSettingsSecurity';
 import { StudioSettingsTrading } from '@/modules/studio/StudioSettingsTrading';
-import { StudioSpinner } from '@/modules/studio/StudioSpinner';
+import { useAjExitState } from '@/modules/studio/hooks/useAjExit';
+import { useHomeLayout } from '@/modules/studio/utils/homeLayout';
+import { DEFAULT_SETTINGS_PAGE, SETTINGS_PAGES, browserBuild } from '@/modules/studio/settingsPages';
+import type { SettingsPageId } from '@/modules/studio/settingsPages';
+import '@/modules/studio/studio-settings.css';
 
-const THEMES: [ThemeMode, string][] = [['light', '浅色'], ['dark', '深色'], ['system', '跟随系统']];
+const THEMES: [ThemeMode, string][] = [['light', '浅色'], ['dark', '深色'], ['system', '自动']];
+const QUOTA_MODES: [QuotaDisplayMode, string][] = [['remaining', '剩余'], ['used', '已用']];
 
-function RemoteHostRow({ host }: { host: StudioRemoteHost }) {
-  // Result of the last SSH check; null while a check is running (it can take a few seconds).
-  const [status, setStatus] = useState<StudioRemoteStatus | null>(null);
-  const check = () => {
-    setStatus(null);
-    void api.studio.remote.status(host.name).then(readApiJson<StudioRemoteStatus>)
-      .then(setStatus)
-      .catch((reason: unknown) => setStatus({ name: host.name, online: false, latencyMs: null, checkedAt: new Date().toISOString(), tools: { claude: false, codex: false, tmux: false }, error: reason instanceof Error ? reason.message : '检查失败' }));
-  };
-  // Checked once on open; the button re-checks on demand.
-  useEffect(check, [host.name]); // eslint-disable-line react-hooks/exhaustive-deps
-  const tools = status?.online ? (['claude', 'codex', 'tmux'] as const).map(tool => `${tool} ${status.tools[tool] ? '✓' : '✗'}`).join(' · ') : status?.error;
-  return <div className="ios-row">
-    <span className="home-icon small tone-graphite" aria-hidden="true"><IconServer size={18} strokeWidth={1.6} /></span>
-    <span className="ios-row-body"><strong>{host.label}</strong><small className="mono">{host.target}{tools ? ` — ${tools}` : ''}</small></span>
-    {status === null ? <StudioSpinner size={16} label="正在检查" />
-      : <span className={`status-badge ${status.online ? 'good' : 'warn'}`}>{status.online ? `在线 ${status.latencyMs ?? '–'} ms` : '离线'}</span>}
-    <button type="button" className="icon-button" aria-label={`重新检查 ${host.label}`} disabled={status === null} onClick={check}><IconRefresh size={17} aria-hidden="true" /></button>
-  </div>;
+// "claude-opus-5-5[1m]" → "Opus 5.5 · 1M", "sonnet" → "Sonnet"; anything else as it is.
+function modelLabel(id: string | undefined) {
+  if (!id) return '默认';
+  const long = /\[1m\]$/i.test(id);
+  const base = id.replace(/\[1m\]$/i, '');
+  const family = /^(?:claude-)?(opus|sonnet|haiku|fable)(?:-(\d+)(?:-(\d+))?)?$/i.exec(base);
+  const name = family ? `${family[1][0].toUpperCase()}${family[1].slice(1).toLowerCase()}${family[2] ? ` ${family[2]}${family[3] ? `.${family[3]}` : ''}` : ''}` : base;
+  return long ? `${name} · 1M` : name;
 }
 
-/** Used by StudioPage for local secret provisioning without ever reading a saved key back to the browser. */
-export function StudioConnections({ status, onChange }: { status: StudioStatus | null; onChange: () => Promise<void> }) {
-  // The unsaved credential is cleared immediately after successful provisioning.
-  const [key, setKey] = useState('');
-  // Pending requests lock credential controls and avoid repeated verification.
-  const [busy, setBusy] = useState<'save' | 'test' | 'remove' | null>(null);
-  // Verified status is transient and not confused with merely saving a key.
-  const [result, setResult] = useState('');
-  // Configuration errors are shown next to the credential input.
-  const [error, setError] = useState('');
-  // Removing a key waits for an explicit confirmation in the alert.
-  const [confirmRemove, setConfirmRemove] = useState(false);
-  // Which Trading 212 key files the server found; the keys themselves are never sent.
+// Which front door this page came in through, for the 网络 row.
+function entryLabel() {
+  const host = window.location.hostname;
+  if (/\.ts\.net$/i.test(host)) return 'Tailscale';
+  if (host === 'localhost' || host === '127.0.0.1') return '本机';
+  return '公网';
+}
+
+/** Trading 212's key files as the server found them (whether each is set up; the keys themselves are never sent). */
+function T212KeyStatus() {
   const [t212, setT212] = useState<T212Status[] | null>(null);
   useEffect(() => {
     let active = true;
     void api.studio.trading212.status().then(readApiJson<T212Status[]>).then(value => { if (active) setT212(value); }).catch(() => { if (active) setT212([]); });
     return () => { active = false; };
   }, []);
-  const configured = Boolean(status?.deepseek.configured);
+  return <section className="ios-section first" aria-labelledby="studio-t212-heading">
+    <div className="ios-section-header"><h2 id="studio-t212-heading">账户</h2><span className="caption">密钥文件</span></div>
+    <div className="ios-list">
+      {(t212 ?? []).map(item => <div className="ios-row" key={item.env}>
+        <SettingsIcon><IconChartCandle size={18} strokeWidth={1.6} /></SettingsIcon>
+        <span className="ios-row-body"><strong>{item.env === 'live' ? '实盘账户' : '模拟账户'}</strong><small>{item.source ? `密钥文件 · ${item.source}` : '未设置密钥文件'}</small></span>
+        <span className={`status-badge ${item.configured ? 'good' : ''}`}>{item.configured ? '已接入' : '未接入'}</span>
+      </div>)}
+      {t212 === null && <div className="ios-row no-icon"><span className="ios-row-body"><small>正在检查…</small></span></div>}
+    </div>
+    <p className="ios-section-footer">密钥只保存在服务器指定的 .env 文件里（STUDIO_T212_ENV_FILE / STUDIO_T212_DEMO_ENV_FILE），下单默认关闭，开启方式和安全设置见下方「交易安全」。</p>
+  </section>;
+}
+
+/** One settings page's content, by id. */
+function SettingsPageContent({ page, status, onChange, onNavigate, onSignOut, modelProvider, onModelProvider }: {
+  page: SettingsPageId; status: StudioStatus | null; onChange: () => Promise<void>;
+  onNavigate: (page: SettingsPageId | null) => void; onSignOut: () => void;
+  // The CLI shown on 模型 and 模型列表, kept while moving between the two.
+  modelProvider: LLMProvider; onModelProvider: (provider: LLMProvider) => void;
+}) {
+  switch (page) {
+    case 'account': return <StudioSettingsAccount onSignOut={onSignOut} />;
+    case 'models': return <StudioSettingsModels provider={modelProvider} onProviderChange={onModelProvider} onOpenCatalog={() => onNavigate('model-list')} />;
+    case 'model-list': return <StudioSettingsModels view="catalog" provider={modelProvider} onProviderChange={onModelProvider} />;
+    case 'quota': return <StudioSettingsQuota />;
+    case 'deepseek': return <StudioSettingsDeepSeek status={status} onChange={onChange} />;
+    case 'network': return <><StudioSettingsNetwork /><StudioSettingsRemote /></>;
+    case 'aj-exit': return <StudioSettingsAjExit />;
+    case 'mail': return <StudioSettingsMail />;
+    case 'trading': return <><T212KeyStatus /><StudioSettingsTrading /></>;
+    case 'home': return <StudioSettingsHome />;
+    case 'about': return <StudioSettingsAbout onOpenRuntime={() => onNavigate('runtime')} />;
+    case 'runtime': return <StudioSettingsRuntime onOpenNetwork={() => onNavigate('network')} />;
+  }
+}
+
+/**
+ * The first screen (on a wide screen, the sidebar): who is signed in, the settings changed most often as one-tap
+ * controls (theme, quota figures, icon names), then a row per page with its current value, grouped as on iOS.
+ */
+function SettingsRootList({ status, selected, onOpen }: { status: StudioStatus | null; selected: SettingsPageId | null; onOpen: (page: SettingsPageId) => void }) {
+  const { user } = useAuth();
   const { themeMode, isDarkMode, setThemeMode } = useTheme();
-  // SSH hosts configured on the server (names, labels and targets only).
-  const [hosts, setHosts] = useState<StudioRemoteHost[] | null>(null);
-  useEffect(() => {
-    let active = true;
-    void api.studio.remote.hosts().then(readApiJson<StudioRemoteHost[]>).then(value => { if (active) setHosts(value); }).catch(() => { if (active) setHosts([]); });
-    return () => { active = false; };
-  }, []);
+  const { preferences, setMode } = useQuotaPreferences();
+  const [layout, updateLayout] = useHomeLayout();
+  const aj = useAjExitState();
+  const claudeModel = useSyncExternalStore(subscribeToUserPreferences, () => readModelDefaults().claude?.model ?? '');
+  const build = browserBuild();
+  const name = user?.username ?? '';
+  const row = (page: SettingsPageId, icon: ReactElement, detail?: string, subtitle?: string) =>
+    <SettingsLinkRow key={page} icon={icon} title={SETTINGS_PAGES[page].title} subtitle={subtitle} detail={detail} selected={selected === page} onClick={() => onOpen(page)} />;
 
-  const act = async (kind: 'save' | 'test' | 'remove', operation: () => Promise<void>) => {
-    setBusy(kind); setError(''); setResult('');
-    try { await operation(); await onChange(); }
-    catch (failure) { setError(failure instanceof Error ? failure.message : '连接失败'); }
-    finally { setBusy(null); }
-  };
-
-  return <>
-    <section className="ios-section first" aria-labelledby="studio-appearance-heading">
-      <div className="ios-section-header"><h2 id="studio-appearance-heading">外观</h2></div>
+  return <div className="settings-root">
+    <section className="ios-section first" aria-label="账户">
       <div className="ios-list">
-        <div className="ios-row no-icon appearance-row">
-          <span className="ios-row-body"><strong>主题</strong><small>{themeMode === 'system' ? `跟随系统 · 当前${isDarkMode ? '深色' : '浅色'}` : '固定外观，不随系统变化'}</small></span>
-          <div className="segmented" role="radiogroup" aria-label="主题">
+        <button type="button" className="ios-row settings-link settings-account" aria-current={selected === 'account' ? 'page' : undefined} onClick={() => onOpen('account')}>
+          <span className="settings-avatar" aria-hidden="true">{Array.from(name)[0]?.toUpperCase() ?? '?'}</span>
+          <span className="ios-row-body"><strong>{name || '账户'}</strong><small>登录、通行密钥与安全记录</small></span>
+          <IconChevronRight size={18} className="chevron" aria-hidden="true" />
+        </button>
+      </div>
+    </section>
+
+    <section className="ios-section" aria-label="常用">
+      <div className="ios-list">
+        <div className="ios-row settings-quick">
+          <SettingsIcon><IconMoon size={18} /></SettingsIcon>
+          <span className="ios-row-body"><strong>外观</strong>{themeMode === 'system' && <small>当前{isDarkMode ? '深色' : '浅色'}</small>}</span>
+          <div className="segmented small" role="radiogroup" aria-label="外观">
             {THEMES.map(([mode, label]) => <button type="button" role="radio" key={mode} aria-checked={themeMode === mode} onClick={() => setThemeMode(mode)}>{label}</button>)}
           </div>
         </div>
-      </div>
-    </section>
-
-    <StudioSettingsRuntime />
-
-    <StudioSettingsNetwork />
-
-    <StudioSettingsSecurity />
-
-    <section className="ios-section" aria-labelledby="studio-remote-heading">
-      <div className="ios-section-header"><h2 id="studio-remote-heading">远程主机</h2><span className="caption">Tailscale + SSH</span></div>
-      <div className="ios-list">
-        {hosts === null && <div className="ios-row no-icon"><StudioSpinner size={16} /><span className="ios-row-body"><small>读取中</small></span></div>}
-        {hosts?.map(host => <RemoteHostRow key={host.name} host={host} />)}
-        {hosts?.length === 0 && <div className="ios-row no-icon"><span className="ios-row-body"><small>服务器还没有配置远程主机（.env 里的 STUDIO_SSH_HOSTS）</small></span></div>}
-      </div>
-      <p className="ios-section-footer">在「新建」或项目「设置 → 运行位置」里选择主机后，项目里的 Claude Code / Codex / 终端会在那台主机上运行。</p>
-    </section>
-
-    <StudioSettingsMail />
-
-    <section className="ios-section" aria-labelledby="studio-deepseek-heading">
-      <div className="ios-section-header"><h2 id="studio-deepseek-heading">DeepSeek API</h2><span className="caption">本地密钥库</span></div>
-      <div className="ios-list">
-        <div className="ios-row">
-          <span className="home-icon small tone-slate" aria-hidden="true"><IconMessages size={22} /></span>
-          <span className="ios-row-body"><strong>DeepSeek</strong><small>{status?.deepseek.source === 'file' ? '来自服务器密钥文件（STUDIO_DEEPSEEK_ENV_FILE）' : status?.deepseek.baseUrl ?? 'https://api.deepseek.com'}</small></span>
-          <span className={`status-badge ${configured ? 'good' : 'warn'}`}>{configured ? '已配置' : '未配置'}</span>
-        </div>
-        <form className="ios-row-group" onSubmit={event => { event.preventDefault(); void act('save', async () => { await api.studio.saveKey(key).then(readApiJson); setKey(''); setResult('密钥已保存'); }); }}>
-          <div className="ios-field">
-            <label htmlFor="studio-api-key">API 密钥</label>
-            <input id="studio-api-key" type="password" autoComplete="new-password" autoCapitalize="off" autoCorrect="off" spellCheck={false}
-              value={key} onChange={event => setKey(event.target.value)} placeholder={configured ? '输入新密钥以替换' : '必填'} disabled={busy !== null} />
-            <button className="ios-button filled" disabled={busy !== null || !key.trim()}>
-              {busy === 'save' ? <IconLoader2 size={16} className="spin" aria-hidden="true" /> : <IconKey size={16} aria-hidden="true" />}保存
-            </button>
+        <div className="ios-row settings-quick">
+          <SettingsIcon><IconGauge size={18} /></SettingsIcon>
+          <span className="ios-row-body"><strong>额度</strong></span>
+          <div className="segmented small" role="radiogroup" aria-label="额度显示方式">
+            {QUOTA_MODES.map(([mode, label]) => <button type="button" role="radio" key={mode} aria-checked={preferences.mode === mode} onClick={() => setMode(mode)}>{label}</button>)}
           </div>
-        </form>
-        <button type="button" className="ios-row action left no-icon" disabled={busy !== null || !configured}
-          onClick={() => void act('test', async () => { await api.studio.testKey().then(readApiJson); setResult('连接验证通过'); })}>
-          {busy === 'test' && <IconLoader2 size={18} className="spin" aria-hidden="true" />}验证连接
-        </button>
-        <button type="button" className="ios-row action left destructive no-icon" disabled={busy !== null || status?.deepseek.source !== 'vault'} onClick={() => setConfirmRemove(true)}>
-          {busy === 'remove' && <IconLoader2 size={18} className="spin" aria-hidden="true" />}移除密钥
-        </button>
+        </div>
+        <label className="ios-row settings-quick switch-row">
+          <SettingsIcon><IconCursorText size={18} /></SettingsIcon>
+          <span className="ios-row-body"><strong>图标名称</strong></span>
+          <input type="checkbox" role="switch" className="ios-switch" aria-label="显示图标名称" checked={layout.labels} onChange={event => updateLayout({ labels: event.target.checked })} />
+        </label>
       </div>
-      {result && <p className="studio-feedback good" role="status">{result}</p>}
-      {error && <p className="studio-feedback error" role="alert">{error}</p>}
-      <p className="ios-section-footer">凭据在本机加密保存，不会回传到浏览器。验证只调用模型列表接口，不产生对话费用；对话费用计入你的 DeepSeek API 账户。</p>
     </section>
 
-    <section className="ios-section" aria-labelledby="studio-agents-heading">
-      <div className="ios-section-header"><h2 id="studio-agents-heading">Claude · Codex</h2><span className="caption">本机订阅登录</span></div>
+    <section className="ios-section" aria-label="AI">
       <div className="ios-list">
-        <Link to="/work?new=claude" className="ios-row">
-          <span className="home-icon small tone-clay" aria-hidden="true">C</span>
-          <span className="ios-row-body"><strong>Claude Code</strong><small>Claude 订阅 · 在工作台中对话</small></span>
-          <IconChevronRight size={18} className="chevron" aria-hidden="true" />
-        </Link>
-        <Link to="/work?new=codex" className="ios-row">
-          <span className="home-icon small tone-graphite" aria-hidden="true"><IconTerminal2 size={20} /></span>
-          <span className="ios-row-body"><strong>Codex</strong><small>ChatGPT 订阅 · 在工作台中对话</small></span>
-          <IconChevronRight size={18} className="chevron" aria-hidden="true" />
-        </Link>
-        {status?.agentWorkbenchUrl && <a className="ios-row" href={status.agentWorkbenchUrl} target="_blank" rel="noreferrer">
-          <span className="home-icon small tone-stone" aria-hidden="true"><IconExternalLink size={18} /></span>
-          <span className="ios-row-body"><strong>外部工作台</strong><small>{status.agentWorkbenchUrl}</small></span>
-          <IconChevronRight size={18} className="chevron" aria-hidden="true" />
-        </a>}
+        {row('models', <IconCpu size={18} />, modelLabel(claudeModel || undefined))}
+        {row('quota', <IconChartPie size={18} />, undefined, '首页小组件和工作台显示哪些')}
+        {row('deepseek', <StudioBrandMark brand="deepseek" size={17} />, status ? status.deepseek.configured ? '已配置' : '未配置' : undefined)}
       </div>
-      <p className="ios-section-footer">工作台直接调用这台电脑上已登录的 Claude Code 与 Codex CLI，不替换凭据，也不会转为 API 计费。</p>
     </section>
 
-    <StudioSettingsModels />
-
-    <StudioSettingsQuota />
-
-    <section className="ios-section" aria-labelledby="studio-t212-heading">
-      <div className="ios-section-header"><h2 id="studio-t212-heading">Trading 212</h2><span className="caption">密钥文件</span></div>
+    <section className="ios-section" aria-label="连接">
       <div className="ios-list">
-        {(t212 ?? []).map(item => <div className="ios-row" key={item.env}>
-          <span className="home-icon small tone-moss" aria-hidden="true"><IconChartCandle size={17} strokeWidth={1.6} /></span>
-          <span className="ios-row-body"><strong>{item.env === 'live' ? '实盘账户' : '模拟账户'}</strong><small>{item.source ? `密钥文件 · ${item.source}` : '未设置密钥文件'}</small></span>
-          <span className={`status-badge ${item.configured ? 'good' : ''}`}>{item.configured ? '已接入' : '未接入'}</span>
-        </div>)}
-        {t212 === null && <div className="ios-row no-icon"><span className="ios-row-body"><small>正在检查…</small></span></div>}
+        {row('network', <IconWorld size={18} />, entryLabel())}
+        {row('aj-exit', <IconRoute size={18} />, !aj.ready ? '未设置' : aj.on ? '已开启' : '未开启')}
+        {row('mail', <IconMail size={18} />)}
+        {row('trading', <IconChartCandle size={18} />)}
       </div>
-      <p className="ios-section-footer">密钥只保存在服务器指定的 .env 文件里（STUDIO_T212_ENV_FILE / STUDIO_T212_DEMO_ENV_FILE），下单默认关闭，开启方式和安全设置见下方「交易安全」。</p>
     </section>
 
-    <StudioSettingsTrading />
-
-    <section className="ios-section" aria-labelledby="studio-about-heading">
-      <div className="ios-section-header"><h2 id="studio-about-heading">关于</h2></div>
+    <section className="ios-section" aria-label="通用">
       <div className="ios-list">
-        <a className="ios-row" href="https://github.com/Jineggegg/agent-cloud-studio" target="_blank" rel="noreferrer">
-          <span className="home-icon small tone-slate" aria-hidden="true"><IconInfoCircle size={20} /></span>
-          <span className="ios-row-body"><strong>Agent Cloud Studio</strong><small>修改版源码</small></span>
-          <IconExternalLink size={16} className="chevron" aria-hidden="true" />
-        </a>
-        <a className="ios-row" href="https://github.com/siteboon/claudecodeui" target="_blank" rel="noreferrer">
-          <span className="home-icon small tone-stone" aria-hidden="true"><IconShieldCheck size={20} /></span>
-          <span className="ios-row-body"><strong>CloudCLI UI</strong><small>上游项目 · AGPL-3.0-or-later</small></span>
-          <IconExternalLink size={16} className="chevron" aria-hidden="true" />
-        </a>
+        {row('home', <IconLayoutGrid size={18} />, layout.folders.length ? `${layout.folders.length} 个文件夹` : undefined)}
+        {row('about', <IconInfoCircle size={18} />, build ? `v${build.version}` : '开发')}
       </div>
     </section>
+  </div>;
+}
 
-    {confirmRemove && <StudioConfirmSheet title="移除 DeepSeek 密钥？" message="本地保存的密钥将被删除，之后需要重新输入才能对话。" confirmLabel="移除"
-      onCancel={() => setConfirmRemove(false)}
-      onConfirm={() => { setConfirmRemove(false); void act('remove', async () => { await api.studio.removeKey().then(readApiJson); setResult('密钥已移除'); }); }} />}
-  </>;
+/**
+ * Used by StudioPage for Studio's settings app (/apps/connections?tab=<page>), laid out like iOS Settings. A wide
+ * screen shows the list beside the chosen page, as on iPadOS; a phone shows one screen at a time, pushed in from the
+ * side. The settings changed most often are one tap on the list itself; everything else is a page, and what is
+ * rarely touched is one level further in (模型 → 模型列表, 关于本机 → 版本与运行状态). Secrets are provisioned
+ * without ever being read back to the browser (StudioSettingsDeepSeek).
+ */
+export function StudioConnections({ status, onChange, page, split, onNavigate, onScroll, onSignOut }: {
+  status: StudioStatus | null; onChange: () => Promise<void>;
+  // The page asked for in the URL; null is the list (a wide screen then shows the first page beside it).
+  page: SettingsPageId | null;
+  // Whether the list and the page sit side by side (settingsPages.useSettingsSplit).
+  split: boolean;
+  onNavigate: (page: SettingsPageId | null) => void;
+  // Lets the navigation bar turn to glass once the page's large title scrolls away.
+  onScroll: (event: UIEvent<HTMLDivElement>) => void;
+  onSignOut: () => void;
+}) {
+  const shown = page ?? (split ? DEFAULT_SETTINGS_PAGE : null);
+  const [modelProvider, setModelProvider] = useState<LLMProvider>('claude');
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Pages deeper in slide in from the right, going back from the left.
+  const depth = shown ? SETTINGS_PAGES[shown].parent ? 2 : 1 : 0;
+  const [travel, setTravel] = useState({ depth, direction: 1 });
+  // Adjusted while rendering (not in an effect), so the new page already starts from the right side.
+  if (travel.depth !== depth) setTravel({ depth, direction: depth >= travel.depth ? 1 : -1 });
+  const direction = travel.depth !== depth ? (depth >= travel.depth ? 1 : -1) : travel.direction;
+  // A new page starts at its top.
+  useLayoutEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0; }, [shown]);
+
+  const parent = shown ? SETTINGS_PAGES[shown].parent : undefined;
+  const content = shown && <SettingsPageContent page={shown} status={status} onChange={onChange} onNavigate={onNavigate} onSignOut={onSignOut}
+    modelProvider={modelProvider} onModelProvider={setModelProvider} />;
+  const pageBody = shown && <m.div key={shown} className="settings-page" initial={{ opacity: 0, x: split ? 0 : 28 * direction }} animate={{ opacity: 1, x: 0 }}
+    transition={{ type: 'spring', stiffness: 260, damping: 30 }}>
+    {/* On a wide screen, a page one level in has its own way back (a phone's is in the navigation bar). */}
+    {split && parent && <button type="button" className="settings-back ios-press" onClick={() => onNavigate(parent)}>
+      <IconChevronLeft size={22} aria-hidden="true" />{SETTINGS_PAGES[parent].title}</button>}
+    <div className="studio-large-title"><h1>{SETTINGS_PAGES[shown].title}</h1></div>
+    {content}
+  </m.div>;
+
+  if (split) return <div className="settings-split">
+    <nav className="settings-sidebar" aria-label="设置">
+      <SettingsRootList status={status} selected={parent ?? shown} onOpen={onNavigate} />
+    </nav>
+    <div ref={scrollRef} className="settings-detail" onScroll={onScroll}>{pageBody}</div>
+  </div>;
+
+  return <div ref={scrollRef} className="studio-scroll settings-single" onScroll={onScroll}>
+    <div className="studio-content">
+      {shown ? pageBody : <m.div key="root" className="settings-page" initial={{ opacity: 0, x: -28 * (direction < 0 ? 1 : 0) }} animate={{ opacity: 1, x: 0 }}
+        transition={{ type: 'spring', stiffness: 260, damping: 30 }}>
+        <div className="studio-large-title"><h1>设置</h1></div>
+        <SettingsRootList status={status} selected={null} onOpen={onNavigate} />
+      </m.div>}
+    </div>
+  </div>;
 }

@@ -1,3 +1,7 @@
+import { randomUUID } from 'node:crypto';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+
 import {
   CLAUDE_RATE_SNAPSHOT_MAX_BYTES,
   readEpochMilliseconds,
@@ -35,11 +39,22 @@ const LOGGABLE_KEY = /^[A-Za-z0-9_.-]{1,64}$/;
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const USAGE_BETA = 'oauth-2025-04-20';
 const USAGE_TIMEOUT_MS = 5_000;
-// Widgets poll every minute; one answer serves every caller for this long.
-const USAGE_CACHE_MS = 60_000;
-// After a refusal or an outage the API is left alone this long (a 429 may ask for longer, up to the cap).
+// Widgets poll every minute; one answer serves every caller for this long (the owner prefers few requests).
+const USAGE_CACHE_MS = 5 * 60_000;
+// After a refusal or an outage the API is left alone this long; it is also the first wait of a run of 429s.
 const USAGE_BACKOFF_MS = 5 * 60_000;
+// Each 429 in a row doubles the wait (5, 10, 20, 40 min) up to this cap; a longer Retry-After wins, up to the cap too.
 const USAGE_MAX_BACKOFF_MS = 60 * 60_000;
+// The last good reading, standing in while the API cannot be read, is flagged as possibly out of date after this.
+const LAST_READING_STALE_MS = 15 * 60_000;
+// A saved reading is a few windows and credits (about 2 KB); a file far larger is not one of ours.
+const LAST_READING_MAX_BYTES = 64 * 1024;
+const LAST_READING_VERSION = 1;
+// A saved reading timed further ahead than this (a wrong clock, a hand-edited file) is ignored.
+const LAST_READING_CLOCK_SKEW_MS = 5 * 60_000;
+// Bounds on what a saved reading may hold, well above any real answer.
+const LAST_READING_MAX_ITEMS = 64;
+const STORED_TEXT_MAX_CHARS = 80;
 // The real answer is a few hundred bytes; anything far larger is not one.
 const USAGE_RESPONSE_MAX_CHARS = 64 * 1024;
 // The credentials file also holds MCP servers' OAuth sessions, so it may be a few KB; this is a generous bound.
@@ -65,10 +80,35 @@ const USAGE_NOTES = {
   empty: 'Claude 账号没有返回 5 小时 / 每周用量（API 密钥登录没有这些限额）。',
 } as const;
 
-type UsageReading =
-  | { kind: 'windows'; windows: StudioQuotaWindow[]; credits: StudioQuotaCredit[]; observedAt: number }
-  | { kind: 'skipped'; note: string };
-type Credential = { kind: 'token'; accessToken: string; expiresAt: number | null } | { kind: 'skipped'; note: string };
+type UsageCause = keyof typeof USAGE_NOTES;
+
+/**
+ * The failures for which the last good reading may stand in, each with the start of the note that says so. None of
+ * them says anything about which account is signed in or what it may use: a 429, an outage, a timeout or a malformed
+ * answer (also while backing off from one), and an access token that expired before the Claude CLI renewed it (the
+ * same login, renewed on the CLI's next run).
+ *
+ * A refusal (401/403) is left out on purpose. The login in the file was turned down, so it may have been signed out or
+ * replaced by another account: earlier figures could belong to someone else, and showing them would hide that the
+ * owner has to sign in again. A statusLine or SDK snapshot (written by whichever login Claude Code actually runs with)
+ * or the refusal note is shown instead; the saved reading is kept and replaced by the next good one. The other causes
+ * in ACCOUNT_IN_DOUBT are left out for the same reason, and STUDIO_CLAUDE_USAGE_API=off never has a last reading.
+ */
+const LAST_READING_REASONS: Partial<Record<UsageCause, string>> = {
+  rateLimited: 'Claude 用量接口暂时限流',
+  unavailable: 'Claude 用量接口暂时无法访问',
+  expired: 'Claude 登录已过期（下次运行 Claude 时会自动续期）',
+};
+
+// After these, earlier usage figures may belong to another account or contradict the latest answer, so neither the
+// last good reading nor Studio's own copy of it in the snapshot file (source 'usage-api') is shown.
+const ACCOUNT_IN_DOUBT = new Set<UsageCause>(['rejected', 'signedOut', 'notSubscription', 'unreadable', 'empty']);
+
+// Figures from one successful answer, as shown to the owner; never the token or anything else from the credentials.
+type LastUsageReading = { windows: StudioQuotaWindow[]; credits: StudioQuotaCredit[]; observedAt: number };
+type Skipped = { kind: 'skipped'; cause: UsageCause; note: string };
+type UsageReading = ({ kind: 'windows' } & LastUsageReading) | Skipped;
+type Credential = { kind: 'token'; accessToken: string; expiresAt: number | null } | Skipped;
 type SnapshotReading =
   | { kind: 'snapshot'; snapshot: StudioQuotaSnapshot }
   | { kind: 'missing' }
@@ -80,8 +120,8 @@ function unavailable(note: string): StudioQuotaSnapshot {
 }
 
 // Fits both UsageReading and Credential.
-function skipped(note: string): { kind: 'skipped'; note: string } {
-  return { kind: 'skipped', note };
+function skipped(cause: UsageCause): Skipped {
+  return { kind: 'skipped', cause, note: USAGE_NOTES[cause] };
 }
 
 // Reads the OAuth access token the Claude CLI keeps in its credentials file. Error messages are never kept:
@@ -91,20 +131,20 @@ async function readCredential(credentialsFile: string, now: number): Promise<Cre
   try {
     raw = await readSmallRegularFile(credentialsFile, CREDENTIALS_MAX_BYTES);
   } catch (error) {
-    return skipped((error as { code?: unknown } | null)?.code === 'ENOENT' ? USAGE_NOTES.signedOut : USAGE_NOTES.unreadable);
+    return skipped((error as { code?: unknown } | null)?.code === 'ENOENT' ? 'signedOut' : 'unreadable');
   }
   let oauth: Record<string, unknown> | null;
   try {
     oauth = readObjectRecord(readObjectRecord(JSON.parse(raw))?.claudeAiOauth);
   } catch {
-    return skipped(USAGE_NOTES.unreadable);
+    return skipped('unreadable');
   }
   const accessToken = typeof oauth?.accessToken === 'string' ? oauth.accessToken.trim() : '';
-  if (!accessToken) return skipped(USAGE_NOTES.notSubscription);
-  if (!TOKEN_PATTERN.test(accessToken)) return skipped(USAGE_NOTES.unreadable);
+  if (!accessToken) return skipped('notSubscription');
+  if (!TOKEN_PATTERN.test(accessToken)) return skipped('unreadable');
   // Milliseconds in the file; never refreshed here, so a passed expiry simply means "not now".
   const expiresAt = readEpochMilliseconds(oauth?.expiresAt);
-  if (expiresAt !== null && expiresAt - EXPIRY_MARGIN_MS <= now) return skipped(USAGE_NOTES.expired);
+  if (expiresAt !== null && expiresAt - EXPIRY_MARGIN_MS <= now) return skipped('expired');
   return { kind: 'token', accessToken, expiresAt };
 }
 
@@ -219,6 +259,144 @@ function retryAfterMs(response: Response) {
   return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
 }
 
+// ── The last good reading, saved for the next process ──
+
+// A non-empty string of bounded length, or null.
+function storedText(value: unknown) {
+  return typeof value === 'string' && value.length > 0 && value.length <= STORED_TEXT_MAX_CHARS ? value : null;
+}
+
+// null stays null and a finite number is kept; anything else is undefined (malformed).
+function storedNumber(value: unknown) {
+  return value === null ? null : finiteNumber(value) ?? undefined;
+}
+
+// null stays null and a readable time string comes back as ISO; anything else is undefined (malformed).
+function storedTime(value: unknown) {
+  return value === null ? null : typeof value === 'string' ? isoOrNull(value) ?? undefined : undefined;
+}
+
+function storedWindow(value: unknown): StudioQuotaWindow | null {
+  const record = readObjectRecord(value);
+  const id = storedText(record?.id);
+  const label = storedText(record?.label);
+  const used = finiteNumber(record?.usedPercent);
+  const windowMinutes = storedNumber(record?.windowMinutes);
+  const resetsAt = storedTime(record?.resetsAt);
+  const model = record?.model === undefined ? undefined : storedText(record.model);
+  if (!id || !label || used === null || windowMinutes === undefined || resetsAt === undefined || model === null) return null;
+  return { id, label, usedPercent: clampPercent(used), windowMinutes, resetsAt, ...(model ? { model } : {}) };
+}
+
+function storedCredit(value: unknown): StudioQuotaCredit | null {
+  const record = readObjectRecord(value);
+  const id = storedText(record?.id);
+  const label = storedText(record?.label);
+  const used = storedNumber(record?.usedPercent);
+  const currency = record?.currency === null ? null : typeof record?.currency === 'string' && /^[A-Z]{3}$/.test(record.currency) ? record.currency : undefined;
+  const limit = storedNumber(record?.limit);
+  const spent = storedNumber(record?.used);
+  const remaining = storedNumber(record?.remaining);
+  const endsAt = storedTime(record?.endsAt);
+  const endKind = record?.endKind === 'expires' || record?.endKind === 'resets' ? record.endKind : null;
+  if (!id || !label || !endKind || used === undefined || currency === undefined || limit === undefined
+    || spent === undefined || remaining === undefined || endsAt === undefined) return null;
+  return { id, label, usedPercent: used === null ? null : clampPercent(used), currency, limit, used: spent, remaining, endsAt, endKind };
+}
+
+// Every entry read back, or null when the list is missing, too long or holds one malformed entry.
+function storedList<T>(value: unknown, read: (entry: unknown) => T | null): T[] | null {
+  if (!Array.isArray(value) || value.length > LAST_READING_MAX_ITEMS) return null;
+  const items: T[] = [];
+  for (const entry of value) {
+    const item = read(entry);
+    if (!item) return null;
+    items.push(item);
+  }
+  return items;
+}
+
+/**
+ * The reading saved by `saveLastReading`, or null when there is none or the file is not one: missing, not a small
+ * regular file (read with readSmallRegularFile, so a FIFO cannot block it), not JSON, another version, a time that
+ * is unreadable or too far ahead, no figures at all, or any malformed window or credit (one bad entry discards the
+ * whole file, which is then no longer what this code wrote). Every entry is rebuilt field by field, so nothing else
+ * in the file reaches a widget. Never throws.
+ */
+async function readLastReading(file: string, now: number): Promise<LastUsageReading | null> {
+  let record: Record<string, unknown> | null;
+  try {
+    record = readObjectRecord(JSON.parse(await readSmallRegularFile(file, LAST_READING_MAX_BYTES)));
+  } catch {
+    return null;
+  }
+  if (!record || record.version !== LAST_READING_VERSION || typeof record.observedAt !== 'string') return null;
+  const observedAt = readEpochMilliseconds(record.observedAt);
+  if (observedAt === null || observedAt > now + LAST_READING_CLOCK_SKEW_MS) return null;
+  const windows = storedList(record.windows, storedWindow);
+  const credits = storedList(record.credits, storedCredit);
+  if (!windows || !credits || (!windows.length && !credits.length)) return null;
+  return { windows, credits, observedAt };
+}
+
+// Replaces `file` with `body` as JSON atomically, through a new owner-only (0600) temporary file and a rename, so a
+// reader never sees half of it. Rejects on a disk problem.
+async function replaceJsonFile(file: string, body: unknown) {
+  // One level only (normally ~/.claude), as the snapshot writers do it.
+  await mkdir(path.dirname(file)).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'EEXIST') throw error;
+  });
+  const temporaryPath = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    // `wx`: a fresh file, never one planted at that name beforehand.
+    await writeFile(temporaryPath, `${JSON.stringify(body, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    await rename(temporaryPath, file);
+  } catch (error) {
+    await rm(temporaryPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+/**
+ * Saves the last good reading for the next process as `{ version, observedAt, windows, credits }`: only the figures
+ * shown to the owner (percentages, reset times, credit amounts), never the token or anything else from the
+ * credentials. Atomic (replaceJsonFile); rejects on a disk problem.
+ */
+async function saveLastReading(file: string, reading: LastUsageReading) {
+  await replaceJsonFile(file, { version: LAST_READING_VERSION, observedAt: new Date(reading.observedAt).toISOString(), windows: reading.windows, credits: reading.credits });
+}
+
+/**
+ * Copies the plan-wide 5-hour and weekly windows of a successful answer into the statusLine snapshot, so the owner's
+ * local tools reading that file see the official figures too. The shape is the one scripts/claude-statusline-snapshot.mjs
+ * writes (and readSnapshot reads): `observedAt` and each window's `observed_at` as ISO strings, `used_percentage`
+ * 0..100 and `resets_at` in Unix seconds, with `source: 'usage-api'`.
+ *
+ * The statusLine script and the SDK writer (recordClaudeRateLimitEvent) write this file too, so it is read first and
+ * only `observedAt`, `source` and the windows this answer has are replaced; every other field (a window the answer
+ * lacks, anything a local tool added) is kept. A file that is missing or not a small regular JSON object starts
+ * afresh, as with those writers. Their writes are not queued with this one, so a write landing in between can still
+ * replace these windows with its own; the next answer writes them again. Nothing else from the answer (per-model
+ * windows, credits) and nothing from the credentials is written. Atomic (replaceJsonFile); rejects on a disk problem.
+ */
+async function copyToSnapshot(file: string, reading: LastUsageReading) {
+  const windows = PLAN_WINDOWS.flatMap(({ key }) => reading.windows.filter(window => window.id === key).slice(0, 1));
+  if (!windows.length) return;
+  let existing: Record<string, unknown> = {};
+  try {
+    existing = readObjectRecord(JSON.parse(await readSmallRegularFile(file, CLAUDE_RATE_SNAPSHOT_MAX_BYTES))) ?? {};
+  } catch {
+    // Missing, unreadable or not a plain file: start a fresh snapshot.
+  }
+  const observedAt = new Date(reading.observedAt).toISOString();
+  const next: Record<string, unknown> = { ...existing, observedAt, source: 'usage-api' };
+  for (const window of windows) {
+    const resetsAtMs = window.resetsAt === null ? null : Date.parse(window.resetsAt);
+    next[window.id] = { used_percentage: window.usedPercent, resets_at: resetsAtMs === null ? null : Math.round(resetsAtMs / 1000), observed_at: observedAt };
+  }
+  await replaceJsonFile(file, next);
+}
+
 /**
  * Used by the Studio quota service to read Claude plan usage live, the way Claude Code's /usage does:
  * `GET https://api.anthropic.com/api/oauth/usage` with the claude.ai OAuth access token from the
@@ -228,11 +406,21 @@ function retryAfterMs(response: Response) {
  *   Authorization header: it is never logged, returned, cached or written anywhere, and failures
  *   are reported as fixed notes, never as error messages (which could quote it).
  * - An expired token is not used and never refreshed (the Claude CLI owns the refresh); the
- *   reading is then skipped so the caller falls back to the snapshot.
- * - At most one request is in flight; an answer is reused for a minute. A refusal (401/403), a 429,
- *   a 5xx, a timeout (5 s), a network error or a malformed answer backs off for five minutes. A
+ *   reading is then skipped so the caller falls back to the last good reading or the snapshot.
+ * - At most one request is in flight; an answer is reused for five minutes. A refusal (401/403), a
+ *   5xx, a timeout (5 s), a network error or a malformed answer backs off for five minutes. A
  *   401/403 backoff ends early once the CLI has stored a different login (another expiry time).
- * - `enabled` false (STUDIO_CLAUDE_USAGE_API=off) skips every request. `read` never rejects.
+ *   429s in a row back off for 5, 10, 20, 40 and then 60 minutes each, or for as long as their
+ *   Retry-After asks if that is longer (still at most 60 minutes); only a successful answer starts
+ *   the run over, other failures neither extend nor end it.
+ * - The last answer with figures is kept (`last`) for the caller to show while the API cannot be
+ *   read. With `lastReadingFile` it is also saved there after every successful answer and read back
+ *   when the reader is created; a saved answer still within its five minutes is served as the answer
+ *   cache, so a restart costs no request. With `snapshotFile`, every successful answer also copies
+ *   its 5-hour and weekly windows into the statusLine snapshot (copyToSnapshot). Writes run one at a
+ *   time and are never awaited by a read; a failed one logs one warning (with its error code only).
+ * - `enabled` false (STUDIO_CLAUDE_USAGE_API=off) skips every request and never touches either
+ *   file. `read` never rejects.
  * - The answer's shape is undocumented, so the first successful answer logs (at info level) the
  *   sorted names of its top-level keys, once per reader; the quota service keeps one reader for the
  *   process's lifetime, so that is once per process. Values are never logged.
@@ -243,19 +431,61 @@ export function createClaudeUsageReader(options: {
   request: typeof fetch;
   now: () => number;
   timeoutMs?: number;
+  // Where the last good reading survives a restart (the quota service: claude-usage-last.json next to the snapshot).
+  lastReadingFile?: string | null;
+  // The statusLine snapshot (studio-rate-limits.json) that each successful answer's plan windows are copied into.
+  snapshotFile?: string | null;
 }) {
   const timeoutMs = options.timeoutMs ?? USAGE_TIMEOUT_MS;
+  const lastReadingFile = options.enabled ? options.lastReadingFile ?? null : null;
+  const snapshotFile = options.enabled ? options.snapshotFile ?? null : null;
   let keysLogged = false;
   let answer: { reading: UsageReading; until: number } | null = null;
   // `expiresAt` set: the backoff belongs to that login (a refused token) and ends when the login changes.
-  let backoff: { until: number; note: string; login: { expiresAt: number | null } | null } | null = null;
+  let backoff: { until: number; cause: UsageCause; login: { expiresAt: number | null } | null } | null = null;
   let inFlight: Promise<UsageReading> | null = null;
+  // The last answer with figures, from this process or saved by an earlier one.
+  let last: LastUsageReading | null = null;
+  // 429s since the last successful answer; each one doubles the next wait.
+  let rateLimitStreak = 0;
+  // Saves run one after another, so an older reading can never land after a newer one.
+  let saving: Promise<void> = Promise.resolve();
+  // Started at once; every read waits for it, so the saved reading is back before the first request.
+  const restoring = lastReadingFile ? restore(lastReadingFile).catch(() => {}) : Promise.resolve();
 
-  function fail(note: string, reason: string, login: { expiresAt: number | null } | null, delayMs = USAGE_BACKOFF_MS): UsageReading {
-    backoff = { until: options.now() + delayMs, note, login };
+  async function restore(file: string) {
+    const saved = await readLastReading(file, options.now());
+    if (!saved || (last && last.observedAt >= saved.observedAt)) return;
+    last = saved;
+    const until = saved.observedAt + USAGE_CACHE_MS;
+    if (!answer && options.now() < until) answer = { reading: { kind: 'windows', ...saved }, until };
+  }
+
+  // Queues one write after the others; its failure is logged with the error code only and stops nothing.
+  function queueWrite(what: string, write: () => Promise<void>) {
+    saving = saving.then(write).catch((error: unknown) => {
+      const code = (error as { code?: unknown } | null)?.code;
+      console.warn(`[quota] Could not write ${what} (${typeof code === 'string' && LOGGABLE_KEY.test(code) ? code : 'error'})`);
+    });
+  }
+
+  function remember(reading: LastUsageReading) {
+    last = reading;
+    if (lastReadingFile) {
+      const file = lastReadingFile;
+      queueWrite('the last Claude usage reading', () => saveLastReading(file, reading));
+    }
+    if (snapshotFile) {
+      const file = snapshotFile;
+      queueWrite('Claude usage to the snapshot file', () => copyToSnapshot(file, reading));
+    }
+  }
+
+  function fail(cause: UsageCause, reason: string, login: { expiresAt: number | null } | null, delayMs = USAGE_BACKOFF_MS): UsageReading {
+    backoff = { until: options.now() + delayMs, cause, login };
     // The reason is a fixed phrase or a status code: nothing from the response or the credentials.
     console.warn(`[quota] Claude usage API ${reason}; next attempt in ${Math.round(delayMs / 60_000)} min`);
-    return skipped(note);
+    return skipped(cause);
   }
 
   async function request(accessToken: string, expiresAt: number | null): Promise<UsageReading> {
@@ -279,18 +509,21 @@ export function createClaudeUsageReader(options: {
       ]);
     } catch {
       clearTimeout(timer);
-      return fail(USAGE_NOTES.unavailable, controller.signal.aborted ? 'timed out' : 'request failed', null);
+      return fail('unavailable', controller.signal.aborted ? 'timed out' : 'request failed', null);
     }
     try {
       if (!response.ok) {
         void response.body?.cancel().catch(() => {});
         const status = response.status;
-        if (status === 401 || status === 403) return fail(USAGE_NOTES.rejected, `returned ${status}`, { expiresAt });
+        if (status === 401 || status === 403) return fail('rejected', `returned ${status}`, { expiresAt });
         if (status === 429) {
-          const delay = Math.min(USAGE_MAX_BACKOFF_MS, Math.max(USAGE_BACKOFF_MS, retryAfterMs(response) ?? 0));
-          return fail(USAGE_NOTES.rateLimited, 'returned 429', null, delay);
+          rateLimitStreak += 1;
+          // 5, 10, 20, 40, then 60 minutes; the exponent is bounded so a long run cannot overflow.
+          const doubled = USAGE_BACKOFF_MS * 2 ** Math.min(rateLimitStreak - 1, 8);
+          const delay = Math.min(USAGE_MAX_BACKOFF_MS, Math.max(doubled, retryAfterMs(response) ?? 0));
+          return fail('rateLimited', `returned 429 (${rateLimitStreak} in a row)`, null, delay);
         }
-        return fail(USAGE_NOTES.unavailable, `returned ${status}`, null);
+        return fail('unavailable', `returned ${status}`, null);
       }
       const text = await Promise.race([response.text(), abandoned]);
       let payload: Record<string, unknown> | null = null;
@@ -299,48 +532,62 @@ export function createClaudeUsageReader(options: {
       } catch {
         payload = null;
       }
-      if (!payload) return fail(USAGE_NOTES.unavailable, 'returned a malformed answer', null);
+      if (!payload) return fail('unavailable', 'returned a malformed answer', null);
       const observedAt = options.now();
       backoff = null;
+      rateLimitStreak = 0;
       if (!keysLogged) {
         keysLogged = true;
         console.info(`[quota] Claude usage API answer keys: ${describeKeys(payload)}`);
       }
       const windows = usageWindows(payload);
       const credits = usageCredits(payload);
-      const reading: UsageReading = windows.length || credits.length ? { kind: 'windows', windows, credits, observedAt } : skipped(USAGE_NOTES.empty);
+      const reading: UsageReading = windows.length || credits.length ? { kind: 'windows', windows, credits, observedAt } : skipped('empty');
       answer = { reading, until: observedAt + USAGE_CACHE_MS };
+      if (reading.kind === 'windows') remember({ windows, credits, observedAt });
       return reading;
     } catch {
-      return fail(USAGE_NOTES.unavailable, controller.signal.aborted ? 'timed out' : 'answer could not be read', null);
+      return fail('unavailable', controller.signal.aborted ? 'timed out' : 'answer could not be read', null);
     } finally {
       clearTimeout(timer);
     }
   }
 
   async function load(): Promise<UsageReading> {
+    await restoring;
+    if (answer && options.now() < answer.until) return answer.reading;
     const credential = await readCredential(options.credentialsFile, options.now());
     if (credential.kind === 'skipped') return credential;
     const current = backoff;
     if (current && options.now() < current.until && (!current.login || current.login.expiresAt === credential.expiresAt)) {
-      return skipped(current.note);
+      return skipped(current.cause);
     }
     return request(credential.accessToken, credential.expiresAt);
   }
 
   return {
-    /** Live windows, or why there are none this time (the caller then falls back to the snapshot). */
+    /** Live windows, or why there are none this time (the caller then shows `last` or the snapshot). */
     read(): Promise<UsageReading> {
-      if (!options.enabled) return Promise.resolve(skipped(USAGE_NOTES.disabled));
+      if (!options.enabled) return Promise.resolve(skipped('disabled'));
       if (answer && options.now() < answer.until) return Promise.resolve(answer.reading);
-      inFlight ??= load().catch(() => skipped(USAGE_NOTES.unavailable)).finally(() => { inFlight = null; });
+      inFlight ??= load().catch(() => skipped('unavailable')).finally(() => { inFlight = null; });
       return inFlight;
+    },
+    /** The last answer with figures (from this process or saved by an earlier one), or null; never the token. */
+    last(): LastUsageReading | null {
+      return last;
+    },
+    /** Resolves once the saved reading has been read back and every write started so far has finished (or failed). */
+    async flush(): Promise<void> {
+      await restoring;
+      await saving;
     },
   };
 }
 
-// The statusLine / SDK snapshot (`{ observedAt, source, five_hour?, seven_day? }`, `resets_at` in Unix
-// seconds, optional per-window `observed_at`).
+// The statusLine / SDK / usage-API snapshot (`{ observedAt, source, five_hour?, seven_day? }`, `resets_at` in Unix
+// seconds, optional per-window `observed_at`). A `usage-api` one is Studio's own copy of an answer (copyToSnapshot),
+// refreshed every few minutes while the API answers, so it is flagged after 15 minutes like the last good reading.
 async function readSnapshot(snapshotFile: string, now: number): Promise<SnapshotReading> {
   let record: Record<string, unknown> | null;
   try {
@@ -376,6 +623,8 @@ async function readSnapshot(snapshotFile: string, now: number): Promise<Snapshot
   if (!windows.length) return { kind: 'empty' };
 
   const resetPassed = windows.some(window => window.resetsAt !== null && Date.parse(window.resetsAt) <= now);
+  const source = record.source === 'sdk-event' || record.source === 'usage-api' ? record.source : 'statusline';
+  const staleAfterMs = source === 'usage-api' ? LAST_READING_STALE_MS : OBSERVATION_STALE_MS;
   return {
     kind: 'snapshot',
     snapshot: {
@@ -383,11 +632,52 @@ async function readSnapshot(snapshotFile: string, now: number): Promise<Snapshot
       available: true,
       windows,
       balances: [],
-      source: record.source === 'sdk-event' ? 'sdk-event' : 'statusline',
+      source,
       observedAt: observedMs === null ? null : new Date(observedMs).toISOString(),
-      stale: resetPassed || oldestObservedMs === null || now - oldestObservedMs > OBSERVATION_STALE_MS,
+      stale: resetPassed || oldestObservedMs === null || now - oldestObservedMs > staleAfterMs,
     },
   };
+}
+
+// A window past its reset time no longer describes the current window.
+function resetPassed(windows: StudioQuotaWindow[], now: number) {
+  return windows.some(window => window.resetsAt !== null && Date.parse(window.resetsAt) <= now);
+}
+
+function usageApiSnapshot(reading: LastUsageReading, stale: boolean, note: string | null): StudioQuotaSnapshot {
+  return {
+    provider: 'claude',
+    available: true,
+    windows: reading.windows,
+    balances: [],
+    ...(reading.credits.length ? { credits: reading.credits } : {}),
+    source: 'usage-api',
+    observedAt: new Date(reading.observedAt).toISOString(),
+    stale,
+    ...(note ? { note } : {}),
+  };
+}
+
+function lastReadingStale(reading: LastUsageReading, now: number) {
+  return now - reading.observedAt > LAST_READING_STALE_MS || resetPassed(reading.windows, now);
+}
+
+// "12 分钟前", "3 小时前", "2 天前": how long ago a reading was taken, counted from `now`.
+function readingAge(ms: number) {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return '不到 1 分钟前';
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 48 ? `${hours} 小时前` : `${Math.floor(hours / 24)} 天前`;
+}
+
+// The last good reading stands in when there is no usable snapshot, when it is at least as recent as the snapshot,
+// or when the snapshot is flagged as possibly out of date and the reading is not.
+function prefersLastReading(reading: LastUsageReading, snapshot: SnapshotReading, now: number) {
+  if (snapshot.kind !== 'snapshot') return true;
+  if (snapshot.snapshot.stale && !lastReadingStale(reading, now)) return true;
+  const snapshotAt = snapshot.snapshot.observedAt === null ? null : Date.parse(snapshot.snapshot.observedAt);
+  return snapshotAt === null || reading.observedAt >= snapshotAt;
 }
 
 /**
@@ -395,13 +685,21 @@ async function readSnapshot(snapshotFile: string, now: number): Promise<Snapshot
  *
  * With a `usage` reader (createClaudeUsageReader), the live figures from the machine's Claude login
  * come first (`source: 'usage-api'`): the 5-hour and weekly windows, any per-model weekly windows
- * (each with its `model`), and any credit allowances as `credits`. When they cannot be read (signed out, expired login, API-key
- * login, the API refusing or down, or STUDIO_CLAUDE_USAGE_API=off), the snapshot written by the
- * Claude Code statusLine script or by Studio's own Agent SDK sessions is used, and if that is missing
- * too, the note says why and how to enable one. A snapshot used as the fallback carries the reason
- * as its note. An oversized snapshot or anything but a regular file (a FIFO would block a plain read
- * forever) is refused without being read. The snapshot is stale once a window's reset time has
- * passed or any window was observed more than six hours ago. Never throws.
+ * (each with its `model`), and any credit allowances as `credits`. When they cannot be read because
+ * of a 429, an outage, a timeout, a malformed answer (also while backing off from one) or a login
+ * that expired before the CLI renewed it, the reader's last good reading stands in, unless the
+ * snapshot below is more recent (see prefersLastReading): still `source: 'usage-api'` with the
+ * `observedAt` of that read, a note saying why and how old it is ("Claude 用量接口暂时限流，显示
+ * 12 分钟前的读数。", counted from `now`), and `stale` once it is more than 15 minutes old or a
+ * window's reset time has passed. A refusal (401/403) never lets it stand in (LAST_READING_REASONS
+ * says why). Otherwise (signed out, API-key login, a refusal, STUDIO_CLAUDE_USAGE_API=off, or no
+ * last reading), the snapshot written by the Claude Code statusLine script, by Studio's own Agent
+ * SDK sessions or by this reader's successful answers (`source: 'usage-api'`, passed over with the
+ * account in doubt, see ACCOUNT_IN_DOUBT) is used, and if that is missing too, the note says why and
+ * how to enable one. A snapshot used as the fallback carries the reason as its note. An oversized
+ * snapshot or anything but a regular file (a FIFO would block a plain read forever) is refused
+ * without being read. The snapshot is stale once a window's reset time has passed or any window was
+ * observed more than six hours ago (15 minutes for a `usage-api` one). Never throws.
  */
 export async function readClaudeQuota(input: {
   snapshotFile: string;
@@ -409,24 +707,28 @@ export async function readClaudeQuota(input: {
   usage?: ReturnType<typeof createClaudeUsageReader> | null;
 }): Promise<StudioQuotaSnapshot> {
   let usageNote: string | null = null;
+  let usageCause: UsageCause | null = null;
+  let standIn: { reading: LastUsageReading; reason: string } | null = null;
   if (input.usage) {
-    const reading = await input.usage.read().catch(() => skipped(USAGE_NOTES.unavailable));
-    if (reading.kind === 'windows') {
-      return {
-        provider: 'claude',
-        available: true,
-        windows: reading.windows,
-        balances: [],
-        ...(reading.credits.length ? { credits: reading.credits } : {}),
-        source: 'usage-api',
-        observedAt: new Date(reading.observedAt).toISOString(),
-        stale: reading.windows.some(window => window.resetsAt !== null && Date.parse(window.resetsAt) <= input.now),
-      };
-    }
+    const reading = await input.usage.read().catch(() => skipped('unavailable'));
+    if (reading.kind === 'windows') return usageApiSnapshot(reading, resetPassed(reading.windows, input.now), null);
     usageNote = reading.note;
+    usageCause = reading.cause;
+    const reason = LAST_READING_REASONS[reading.cause];
+    const last = reason ? input.usage.last() : null;
+    if (reason && last) standIn = { reading: last, reason };
   }
 
-  const snapshot = await readSnapshot(input.snapshotFile, input.now);
+  let snapshot = await readSnapshot(input.snapshotFile, input.now);
+  // Studio's own copy of an earlier answer is no more trustworthy than the last good reading: with the account itself
+  // in doubt it is passed over like a missing snapshot.
+  if (usageCause && ACCOUNT_IN_DOUBT.has(usageCause) && snapshot.kind === 'snapshot' && snapshot.snapshot.source === 'usage-api') {
+    snapshot = { kind: 'missing' };
+  }
+  if (standIn && prefersLastReading(standIn.reading, snapshot, input.now)) {
+    const { reading, reason } = standIn;
+    return usageApiSnapshot(reading, lastReadingStale(reading, input.now), `${reason}，显示 ${readingAge(input.now - reading.observedAt)}的读数。`);
+  }
   // With a known reason the general "Studio reads your login" sentence would only repeat it.
   const hint = usageNote ? `${usageNote}${SNAPSHOT_HINT}` : ENABLE_HINT;
   switch (snapshot.kind) {

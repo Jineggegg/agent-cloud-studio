@@ -10,7 +10,7 @@ import { IconArrowDownRight, IconArrowUpRight, IconEye, IconEyeOff, IconMinus } 
 import { api, readApiJson } from '@/shared/api';
 import type { QuotaDisplayItem, QuotaDisplayMode, StudioGitHubInbox, StudioQuotaSnapshot, StudioSnr, T212Overview, T212Point } from '@/shared/types';
 import { useQuotaPreferences } from '@/shared/hooks/useQuotaPreferences';
-import { isQuotaItemShown, listQuotaItems, quotaAmountText, quotaEndText, quotaShownPercent } from '@/shared/utils';
+import { isQuotaItemShown, listQuotaItems, quotaAgeText, quotaAmountText, quotaEndText, quotaShownPercent } from '@/shared/utils';
 import { StudioTileIcon } from '@/modules/studio/StudioTileIcon';
 import { useGitHubReading } from '@/modules/studio/hooks/useGitHubReading';
 import { useHomeSortableItem, useHomeSortableList } from '@/modules/studio/hooks/useHomeSortable';
@@ -133,6 +133,9 @@ function money(value: number, currency: string, digits = 2) {
 /**
  * Claude or Codex: a ring for each item the owner shows (one on small, up to three otherwise), and on large a row
  * per shown item with its reset time and figure. `items` are this provider's shown items, already filtered.
+ * Figures from an earlier read (the last good Claude reading while its API is rate limited, a snapshot, Codex logs)
+ * are drawn as usual: the badge says how old they are ("12 分钟前", orange once flagged stale) with the server's note
+ * as its tooltip, and a large card shows that note in its footnote.
  */
 function QuotaWidget({ snapshot, items, mode, size, title, product, tone, glyph, still }: {
   snapshot: StudioQuotaSnapshot | undefined; items: QuotaDisplayItem[]; mode: QuotaDisplayMode;
@@ -142,11 +145,17 @@ function QuotaWidget({ snapshot, items, mode, size, title, product, tone, glyph,
   const now = useNow(30_000);
   const rings = items.filter(item => item.usedPercent !== null).slice(0, size === 'small' ? 1 : 3);
   const reported = Boolean(snapshot?.windows.length || snapshot?.credits?.length);
+  const age = snapshot?.available ? quotaAgeText(snapshot.observedAt, now) : null;
+  // With figures on the card the note is not shown in its body, so the badge carries it (with the source) as a tooltip.
+  const badgeTitle = snapshot?.available && reported ? [SOURCE_LABEL[snapshot.source], snapshot.note].filter(Boolean).join('：') : undefined;
+  // Large: why these figures are not a fresh read ("…显示 12 分钟前的读数。"), otherwise when they were read.
+  const footnote = snapshot?.note ?? (snapshot?.observedAt ? `更新于 ${shortClock.format(new Date(snapshot.observedAt))}` : null);
   return <>
     <header className="widget-head">
       <StudioTileIcon tone={tone} glyph={glyph} product={product} size={14} variant="small" />
       <span>{title}</span>
-      {snapshot && <span className={`widget-source ${snapshot.stale ? 'is-stale' : ''}`}>{snapshot.stale ? '可能过期' : SOURCE_LABEL[snapshot.source]}</span>}
+      {snapshot && <span className={`widget-source ${snapshot.stale ? 'is-stale' : ''}`} title={badgeTitle}>
+        {age ?? (snapshot.stale ? '可能过期' : SOURCE_LABEL[snapshot.source])}</span>}
     </header>
     {!snapshot ? <div className="widget-loading" aria-label="读取中"><span /><span /></div>
       : !snapshot.available || !reported ? <p className="widget-note" title={snapshot.note}>{snapshot.note ?? '暂时没有额度数据'}</p>
@@ -166,7 +175,7 @@ function QuotaWidget({ snapshot, items, mode, size, title, product, tone, glyph,
             </ul>}
             {/* A medium widget whose items are all amounts (a credit without a percentage) still shows them. */}
             {size !== 'large' && !rings.length && <div className="widget-figure"><strong>{quotaAmountText(items[0], mode)}</strong><small>{items[0].label}</small></div>}
-            {size === 'large' && items.length < LARGE_ROWS && snapshot.observedAt && <p className="widget-footnote">更新于 {shortClock.format(new Date(snapshot.observedAt))}</p>}
+            {size === 'large' && items.length < LARGE_ROWS && footnote && <p className="widget-footnote">{footnote}</p>}
           </>}
   </>;
 }

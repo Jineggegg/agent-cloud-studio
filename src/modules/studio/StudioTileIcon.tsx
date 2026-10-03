@@ -25,7 +25,8 @@ const PRODUCT_BRANDS = new Map<string, StudioBrand>([
  * `children` are drawn on the icon's face, clipped to its rounded shape (the AI build veil and ring).
  */
 export function StudioTileIcon({ tone, glyph, product, size = 40, variant, children }: {
-  tone: string; glyph: Glyph | string; product?: string; size?: number; variant?: 'small' | 'large'; children?: ReactNode;
+  // `mini` is an icon in miniature on a home-screen folder.
+  tone: string; glyph: Glyph | string; product?: string; size?: number; variant?: 'small' | 'large' | 'mini'; children?: ReactNode;
 }) {
   const brand = product ? PRODUCT_BRANDS.get(product) : undefined;
   const Icon = ICONS[glyph as Glyph] ?? IconFolder;

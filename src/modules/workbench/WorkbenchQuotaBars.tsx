@@ -58,13 +58,23 @@ function linesOf(snapshots: StudioQuotaSnapshot[], preferences: QuotaPreferences
   return lines;
 }
 
-function QuotaLine({ item, mode, now }: { item: QuotaDisplayItem; mode: QuotaDisplayMode; now: number }) {
+// The server's note on each provider whose figures are shown, e.g. why they come from an earlier read
+// ("Claude 用量接口暂时限流，显示 12 分钟前的读数。"); a provider without figures shows its own line instead.
+function notesOf(snapshots: StudioQuotaSnapshot[]) {
+  const notes = new Map<StudioQuotaSnapshot['provider'], string>();
+  for (const snapshot of snapshots) if (snapshot.available && snapshot.note) notes.set(snapshot.provider, snapshot.note);
+  return notes;
+}
+
+// `note` (from notesOf) joins the tooltip, so figures from an earlier read still say how old they are.
+function QuotaLine({ item, mode, now, note }: { item: QuotaDisplayItem; mode: QuotaDisplayMode; now: number; note?: string }) {
   const label = `${item.providerName} ${item.label}`;
   const endText = quotaEndText(item.endsAt, now, item.endKind);
   const amount = quotaAmountText(item, mode);
-  const staleNote = item.stale ? '（可能过期）' : '';
+  // After the figures in the tooltip: the stale flag, then the note on its own line.
+  const titleTail = `${item.stale ? '（可能过期）' : ''}${note ? `\n${note}` : ''}`;
   if (item.usedPercent === null) {
-    return <li className={`wb-quota-line is-balance is-${item.provider}`} data-stale={item.stale || undefined} title={`${label} ${amount ?? ''}${staleNote}`}>
+    return <li className={`wb-quota-line is-balance is-${item.provider}`} data-stale={item.stale || undefined} title={`${label} ${amount ?? ''}${titleTail}`}>
       <span className="wb-quota-label">{label}</span>
       <span className="wb-quota-meta">{endText && <span className="wb-quota-reset">{endText}</span>}<strong>{amount ?? '—'}</strong></span>
     </li>;
@@ -75,7 +85,7 @@ function QuotaLine({ item, mode, now }: { item: QuotaDisplayItem; mode: QuotaDis
   const detail = item.kind === 'credit' && amount ? amount : endText;
   const word = mode === 'used' ? '已用' : '剩余';
   return <li className={`wb-quota-line is-${item.provider}`} data-high={used >= HIGH_USED_PERCENT || undefined} data-stale={item.stale || undefined}
-    title={`${label} ${word} ${shown}%${[amount, endText].filter(Boolean).map(text => `，${text}`).join('')}${staleNote}`}>
+    title={`${label} ${word} ${shown}%${[amount, endText].filter(Boolean).map(text => `，${text}`).join('')}${titleTail}`}>
     <span className="wb-quota-label">{label}</span>
     <span className="wb-quota-meta">
       {detail && <span className="wb-quota-reset">{detail}</span>}
@@ -91,8 +101,9 @@ function QuotaLine({ item, mode, now }: { item: QuotaDisplayItem; mode: QuotaDis
  * Used by the workbench sidebar (bottom-left) for model usage at a glance, like the Claude app's usage panel: one
  * row per item the owner shows (Settings → 额度显示) with its label, a thin bar, when it resets and its percentage,
  * reading 剩余 or 已用 as chosen (the switch in the header changes it everywhere). Balances show their amount.
- * The panel folds to its header (remembered per device); stale readings are dimmed and flagged. The gear opens
- * Studio Settings.
+ * The panel folds to its header (remembered per device); stale readings are dimmed and flagged, and figures served
+ * from an earlier read (the last good Claude reading while its API is rate limited) keep their bars, with the
+ * server's note ("…显示 12 分钟前的读数。") in their tooltip and the flag's. The gear opens Studio Settings.
  */
 export function WorkbenchQuotaBars({ snapshots, onOpenSettings }: { snapshots: StudioQuotaSnapshot[] | null; onOpenSettings: () => void }) {
   const now = useNow();
@@ -101,8 +112,12 @@ export function WorkbenchQuotaBars({ snapshots, onOpenSettings }: { snapshots: S
   // Whether only the header shows, so the history above gets the room; kept per device.
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const lines = snapshots ? linesOf(snapshots, preferences) : null;
+  const notes = notesOf(snapshots ?? []);
   const shownItems = (lines ?? []).flatMap(line => line.kind === 'item' ? [line.item] : []);
   const stale = shownItems.some(item => item.stale);
+  // The badge's tooltip says why: the notes of the providers whose shown figures are flagged.
+  const staleProviders = [...new Set(shownItems.filter(item => item.stale).map(item => item.provider))];
+  const staleTitle = staleProviders.flatMap(provider => notes.get(provider) ?? []).join('\n') || '最近没有新数据';
   // Folded, the header still tells the first figure ("5 小时 91%").
   const first = shownItems.find(item => item.usedPercent !== null);
   const summary = first && first.usedPercent !== null ? `${first.label} ${quotaShownPercent(first.usedPercent, preferences.mode)}%` : null;
@@ -118,7 +133,7 @@ export function WorkbenchQuotaBars({ snapshots, onOpenSettings }: { snapshots: S
         <span>用量</span><ChevronDown size={14} className="wb-quota-chevron" aria-hidden="true" />
         {collapsed && summary && <span className="wb-quota-summary">{summary}</span>}
       </button>
-      {stale && <span className="wb-quota-stale" title="最近没有新数据">可能过期</span>}
+      {stale && <span className="wb-quota-stale" title={staleTitle}>可能过期</span>}
       <div className="segmented small wb-quota-mode" role="radiogroup" aria-label="额度显示方式">
         {MODES.map(entry => <button type="button" role="radio" key={entry.mode} aria-checked={preferences.mode === entry.mode}
           onClick={() => setMode(entry.mode)}>{entry.label}</button>)}
@@ -134,7 +149,7 @@ export function WorkbenchQuotaBars({ snapshots, onOpenSettings }: { snapshots: S
           ? <li key={line.key} className="wb-quota-line is-note">
             <span className="wb-quota-label">{line.label}</span><span className="wb-quota-meta">{line.text}</span>
           </li>
-          : <QuotaLine key={line.item.key} item={line.item} mode={preferences.mode} now={now} />)}
+          : <QuotaLine key={line.item.key} item={line.item} mode={preferences.mode} now={now} note={notes.get(line.item.provider)} />)}
         {!lines.length && <li className="wb-quota-line is-note"><span className="wb-quota-label">没有要显示的额度</span></li>}
       </ul>)}
   </section>;

@@ -1,0 +1,75 @@
+/*
+ * Studio's settings app, laid out like iOS Settings (StudioConnections). A wide screen shows the list as a sidebar
+ * beside the chosen page, as on iPadOS; a phone shows one screen at a time inside the usual scrolling content.
+ */
+
+/* ---------- Split view ---------- */
+.settings-split { flex: 1; min-height: 0; display: flex; }
+.settings-sidebar {
+  width: 360px; flex-shrink: 0; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain;
+  padding: calc(var(--chrome-top) + 4px) 16px calc(28px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  background: var(--ios-surface-2); border-right: .5px solid var(--ios-separator);
+}
+.settings-detail {
+  flex: 1; min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior-y: contain;
+  padding: calc(var(--chrome-top) + 4px) max(32px, env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) 32px;
+}
+.settings-detail .settings-page { max-width: 720px; margin: 0 auto; }
+/* The sidebar's rows are a little denser, and its sections closer together, as on iPadOS. */
+.settings-sidebar .ios-section { margin-top: 18px; }
+.settings-sidebar .ios-section.first { margin-top: 6px; }
+.settings-sidebar .ios-row { min-height: 46px; padding: 7px 12px; gap: 12px; }
+.settings-sidebar .ios-row + .ios-row::before { left: 54px; }
+.settings-sidebar .ios-row-body strong { font-size: 16px; }
+.settings-sidebar .ios-row-detail { font-size: 14px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- Rows ---------- */
+.settings-icon {
+  display: inline-grid; place-items: center; flex-shrink: 0; width: 30px; height: 30px; border-radius: 8px;
+  color: var(--ios-label); background: var(--ios-fill); border: .5px solid var(--ios-separator);
+}
+.settings-icon svg { opacity: .82; }
+.ios-row.settings-link { cursor: pointer; }
+.ios-row.settings-link .ios-row-detail { margin-left: auto; }
+/* The page shown beside the list: a quiet neutral highlight, not a coloured one. */
+.ios-row.settings-link[aria-current="page"] { background: color-mix(in srgb, var(--ios-label) 9%, transparent); }
+.ios-row.settings-link[aria-current="page"] + .ios-row::before, .ios-row.settings-link[aria-current="page"]::before { opacity: 0; }
+@media (hover: hover) {
+  .ios-row.settings-link:not([aria-current="page"]):hover { background: color-mix(in srgb, var(--ios-label) 4%, transparent); }
+}
+.ios-row.settings-link:active { background: var(--ios-fill-pressed); }
+/* One-tap settings on the list itself: the control sits at the row's end. */
+.settings-quick .segmented { flex-shrink: 0; }
+.settings-quick .segmented button { min-height: 28px; font-size: 12px; }
+.settings-sidebar .settings-quick .segmented.small button { padding: 3px 8px; }
+.settings-value .ios-row-detail { max-width: 62%; overflow: hidden; text-overflow: ellipsis; }
+.settings-value .ios-row-detail.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 14px; }
+.ios-row.settings-center { justify-content: center; }
+
+/* The account card at the top of the list. */
+.ios-row.settings-account { min-height: 72px; }
+.settings-avatar {
+  display: inline-grid; place-items: center; flex-shrink: 0; width: 48px; height: 48px; border-radius: 50%;
+  font-family: var(--serif); font-size: 22px; color: var(--ios-label); background: var(--ios-fill); border: .5px solid var(--ios-separator);
+}
+.settings-sidebar .ios-row.settings-account { min-height: 64px; }
+.settings-sidebar .settings-avatar { width: 42px; height: 42px; font-size: 19px; }
+
+/* A page one level in, beside the list: its way back to the page it belongs to. */
+.settings-back { display: inline-flex; align-items: center; gap: 2px; min-height: 40px; margin: 0 0 -6px -6px; color: var(--ios-tint); font-size: 17px; }
+
+/* Prose inside a page (AJ 出口's setup steps). */
+.settings-prose-body { padding: 4px 18px 16px; border-radius: var(--radius-card); background: var(--ios-surface); }
+.settings-prose-body > p { margin-top: 12px; font-size: 15px; line-height: 1.6; color: var(--ios-label-2); }
+.settings-prose-body > p.aj-note { font-size: 13px; color: var(--ios-label-3); }
+.settings-prose-body > p.aj-note.is-warning { color: var(--ios-orange); }
+
+/* Field labels and the CLI picker stay on one line (默认模型, 推理强度, Claude Code). */
+.settings-page .ios-field label { width: auto; min-width: 76px; white-space: nowrap; }
+.settings-page .segmented button { white-space: nowrap; }
+
+/* ---------- Phone ---------- */
+.settings-single .studio-content { max-width: 720px; }
+@media (max-width: 699px) {
+  .settings-quick .ios-row-body small { display: none; }
+}

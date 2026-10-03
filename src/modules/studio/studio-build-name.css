@@ -1,0 +1,21 @@
+/* The build composer's name field: the AI's suggested name, a pill that takes it, and the activity while one is on its way. */
+.build-name-field { gap: 8px; }
+.build-name-adopt {
+  flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; min-height: 30px; padding: 0 11px;
+  border: 0; border-radius: 999px; background: var(--ios-tint-soft); color: var(--ios-tint);
+  font: inherit; font-size: 13px; font-weight: 600; line-height: 1; white-space: nowrap; cursor: pointer;
+  transition: background var(--dur-fast, .15s) ease, transform var(--dur-fast, .15s) ease;
+}
+.build-name-adopt > span { font-size: 14px; }
+.build-name-adopt:active { transform: scale(.96); }
+.build-name-adopt:focus-visible { outline: 2px solid var(--ios-tint); outline-offset: 2px; }
+@media (hover: hover) {
+  .build-name-adopt:hover { background: color-mix(in srgb, var(--ios-tint) 18%, transparent); }
+}
+.build-name-status { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ios-label-2); white-space: nowrap; }
+/* The preview's name is the suggestion until the owner types or takes one. */
+.build-composer-name[data-suggested] { color: var(--ios-label-2); }
+@media (prefers-reduced-motion: reduce) {
+  .build-name-adopt { transition: none; }
+  .build-name-adopt:active { transform: none; }
+}

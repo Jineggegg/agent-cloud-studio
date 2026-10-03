@@ -13,7 +13,7 @@ const build = (patch: Partial<StudioBuild> = {}): StudioBuild => ({
 });
 const mocks = vi.hoisted(() => ({
   projects: [] as unknown[],
-  builds: { list: vi.fn(), environment: vi.fn(), create: vi.fn(), resume: vi.fn(), cancel: vi.fn() },
+  builds: { list: vi.fn(), environment: vi.fn(), create: vi.fn(), resume: vi.fn(), cancel: vi.fn(), suggestName: vi.fn() },
 }));
 
 vi.mock('@/modules/auth', () => ({ useAuth: () => ({ user: { username: 'tester' }, logout: vi.fn() }) }));
@@ -41,12 +41,14 @@ if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => 
 
 const { StudioPage } = await import('@/modules/studio/StudioPage');
 const { StudioHomeScreen } = await import('@/modules/studio/StudioHomeScreen');
+const { StudioBuildComposer } = await import('@/modules/studio/StudioBuildComposer');
 
 beforeEach(() => {
   localStorage.clear();
   mocks.projects = [];
   mocks.builds.list.mockImplementation(() => json([]));
   mocks.builds.environment.mockImplementation(() => json({ mode: 'sandbox', missing: [], available: true }));
+  mocks.builds.suggestName.mockImplementation(() => json({ name: '番茄钟', source: 'local' }));
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
@@ -297,4 +299,157 @@ test('a sandboxed server promises installs and tests, and a server that cannot s
   sheet = await screen.findByRole('dialog', { name: '新建项目' });
   expect(await within(sheet).findByText(/它只在这个文件夹里工作，不会推送或发布/)).toBeTruthy();
   expect(within(sheet).queryByText(/沙箱/)).toBeNull();
+});
+
+// The build composer on its own, with the name suggestion it asks the server for.
+function renderComposer() {
+  const onStarted = vi.fn();
+  render(<StudioBuildComposer onStarted={onStarted} onCancel={vi.fn()} />);
+  return {
+    onStarted,
+    prompt: screen.getByRole('textbox', { name: '想做什么' }) as HTMLTextAreaElement,
+    name: screen.getByRole('textbox', { name: '名称' }) as HTMLInputElement,
+    start: screen.getByRole('button', { name: '开始开发' }) as HTMLButtonElement,
+  };
+}
+const suggestion = (name: string) => new Response(JSON.stringify({ name, source: 'deepseek' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+test('the description comes first and is named once typing pauses for 700 ms; the name field shows the suggestion', async () => {
+  mocks.builds.suggestName.mockImplementation(() => Promise.resolve(suggestion('喝水打卡')));
+  const { prompt, name, start } = renderComposer();
+  expect(prompt.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(name.placeholder).toBe('比如：喝水打卡');
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  // Too short to be worth a name.
+  fireEvent.change(prompt, { target: { value: '喝水' } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(mocks.builds.suggestName).not.toHaveBeenCalled();
+  fireEvent.change(prompt, { target: { value: '记录每天喝水' } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(699); });
+  // Each keystroke starts the pause again.
+  fireEvent.change(prompt, { target: { value: '记录每天喝水的网页' } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(699); });
+  expect(mocks.builds.suggestName).not.toHaveBeenCalled();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  expect(mocks.builds.suggestName).toHaveBeenCalledTimes(1);
+  expect(mocks.builds.suggestName).toHaveBeenCalledWith('记录每天喝水的网页', expect.any(AbortSignal));
+  vi.useRealTimers();
+
+  await waitFor(() => expect(name.placeholder).toBe('喝水打卡'));
+  expect(name.value).toBe('');
+  expect(screen.getByRole('button', { name: '采用「喝水打卡」' }).textContent).toBe('↵采用');
+  expect(document.querySelector('.build-composer-name')?.textContent).toBe('喝水打卡');
+  // An empty name with a suggestion can start.
+  expect(start.disabled).toBe(false);
+  // Only what the owner typed is kept as the draft.
+  expect(JSON.parse(localStorage.getItem('studio-build-draft') ?? '{}')).toMatchObject({ name: '', prompt: '记录每天喝水的网页' });
+  // A description cut back to almost nothing drops the suggestion.
+  fireEvent.change(prompt, { target: { value: '喝' } });
+  expect(name.placeholder).toBe('比如：喝水打卡');
+  expect(start.disabled).toBe(true);
+});
+
+test('Return in the empty name field takes the suggestion without starting; Return again starts the build', async () => {
+  mocks.builds.suggestName.mockImplementation(() => Promise.resolve(suggestion('喝水打卡')));
+  mocks.builds.create.mockImplementation(() => json({ build: build(), project: PROJECT }, 201));
+  const { prompt, name, onStarted } = renderComposer();
+  fireEvent.change(prompt, { target: { value: '记录每天喝水，能设目标' } });
+  await waitFor(() => expect(name.placeholder).toBe('喝水打卡'), { timeout: 3000 });
+
+  name.focus();
+  // Handled here, so the form is not submitted and focus does not move on.
+  expect(fireEvent.keyDown(name, { key: 'Enter' })).toBe(false);
+  expect(name.value).toBe('喝水打卡');
+  expect(document.activeElement).toBe(name);
+  expect(mocks.builds.create).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: /^采用/ })).toBeNull();
+
+  // The Return that confirms an input method's candidate is left to the IME.
+  fireEvent.keyDown(name, { key: 'Enter', isComposing: true });
+  expect(mocks.builds.create).not.toHaveBeenCalled();
+  fireEvent.keyDown(name, { key: 'Enter' });
+  await waitFor(() => expect(mocks.builds.create).toHaveBeenCalledWith({ name: '喝水打卡', tone: 'slate', glyph: 'sparkles', prompt: '记录每天喝水，能设目标' }));
+  await waitFor(() => expect(onStarted).toHaveBeenCalled());
+});
+
+test('Tab and the 采用 pill take the suggestion too, and an empty name starts with it', async () => {
+  mocks.builds.suggestName.mockImplementation(() => Promise.resolve(suggestion('番茄钟')));
+  mocks.builds.create.mockImplementation(() => json({ build: build(), project: { ...PROJECT, name: '番茄钟' } }, 201));
+  const { prompt, name, start } = renderComposer();
+  fireEvent.change(prompt, { target: { value: '一个番茄钟，25 分钟一轮' } });
+  await waitFor(() => expect(name.placeholder).toBe('番茄钟'), { timeout: 3000 });
+  expect(fireEvent.keyDown(name, { key: 'Tab' })).toBe(false);
+  expect(name.value).toBe('番茄钟');
+
+  fireEvent.change(name, { target: { value: '' } });
+  fireEvent.click(await screen.findByRole('button', { name: '采用「番茄钟」' }));
+  expect(name.value).toBe('番茄钟');
+
+  // Left empty, the build is started with the suggested name.
+  fireEvent.change(name, { target: { value: '' } });
+  fireEvent.click(start);
+  await waitFor(() => expect(mocks.builds.create).toHaveBeenCalledWith({ name: '番茄钟', tone: 'slate', glyph: 'sparkles', prompt: '一个番茄钟，25 分钟一轮' }));
+  // Clearing the name reuses the suggestion: the description was asked about only once.
+  expect(mocks.builds.suggestName).toHaveBeenCalledTimes(1);
+});
+
+test('a typed name asks for no suggestion, and Return with a name and description starts', async () => {
+  mocks.builds.create.mockImplementation(() => json({ build: build(), project: PROJECT }, 201));
+  const { prompt, name } = renderComposer();
+  fireEvent.change(name, { target: { value: '我的打卡' } });
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  fireEvent.change(prompt, { target: { value: '记录每天喝水的网页' } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  vi.useRealTimers();
+  expect(mocks.builds.suggestName).not.toHaveBeenCalled();
+  expect(screen.queryByRole('status')).toBeNull();
+  fireEvent.keyDown(name, { key: 'Enter' });
+  await waitFor(() => expect(mocks.builds.create).toHaveBeenCalledWith({ name: '我的打卡', tone: 'slate', glyph: 'sparkles', prompt: '记录每天喝水的网页' }));
+});
+
+test('newer input aborts the pending suggestion and a late answer for the old description is dropped', async () => {
+  let answerFirst: (response: Response) => void = () => {};
+  mocks.builds.suggestName
+    .mockImplementationOnce(() => new Promise<Response>(resolve => { answerFirst = resolve; }))
+    .mockImplementationOnce(() => Promise.resolve(suggestion('番茄钟')));
+  mocks.builds.create.mockImplementation(() => json({ build: build(), project: PROJECT }, 201));
+  const { prompt, name, start } = renderComposer();
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  fireEvent.change(prompt, { target: { value: '记录每天喝水的网页' } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+  expect(mocks.builds.suggestName).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole('status').textContent).toBe('正在起名…');
+  const firstSignal = mocks.builds.suggestName.mock.calls[0][1] as AbortSignal;
+
+  fireEvent.change(prompt, { target: { value: '一个番茄钟，25 分钟一轮' } });
+  expect(firstSignal.aborted).toBe(true);
+  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+  expect(mocks.builds.suggestName).toHaveBeenCalledTimes(2);
+  expect(mocks.builds.suggestName).toHaveBeenLastCalledWith('一个番茄钟，25 分钟一轮', expect.any(AbortSignal));
+  vi.useRealTimers();
+  await waitFor(() => expect(name.placeholder).toBe('番茄钟'));
+  expect(screen.queryByRole('status')).toBeNull();
+
+  // The first request answers after all; its name belongs to a description that is gone.
+  await act(async () => {
+    answerFirst(suggestion('喝水打卡'));
+    await new Promise(resolve => setTimeout(resolve, 50));
+  });
+  expect(name.placeholder).toBe('番茄钟');
+  fireEvent.click(start);
+  await waitFor(() => expect(mocks.builds.create).toHaveBeenCalledWith(expect.objectContaining({ name: '番茄钟', prompt: '一个番茄钟，25 分钟一轮' })));
+});
+
+test('without a suggestion an empty name cannot start, and a failed suggestion leaves the field as it was', async () => {
+  mocks.builds.suggestName.mockImplementation(() => json({ error: 'unavailable' }, 500));
+  const { prompt, name, start } = renderComposer();
+  fireEvent.change(prompt, { target: { value: '记录每天喝水的网页' } });
+  await waitFor(() => expect(mocks.builds.suggestName).toHaveBeenCalled(), { timeout: 3000 });
+  await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+  expect(name.placeholder).toBe('比如：喝水打卡');
+  expect(screen.queryByRole('button', { name: /^采用/ })).toBeNull();
+  expect(start.disabled).toBe(true);
+  // Return in the empty name field does nothing then.
+  expect(fireEvent.keyDown(name, { key: 'Enter' })).toBe(false);
+  expect(mocks.builds.create).not.toHaveBeenCalled();
 });

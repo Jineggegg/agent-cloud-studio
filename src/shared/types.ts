@@ -2413,6 +2413,12 @@ export type StudioBuildCreated = { build: StudioBuild; project: HubProject };
  * the packages to install for it. Shown by the build composer.
  */
 export type StudioBuildEnvironment = { mode: 'sandbox' | 'restricted'; missing: string[]; available: boolean };
+/**
+ * A suggested name for the app a description asks for (POST /api/studio/builds/suggest-name): from DeepSeek with the
+ * owner's key, or from the server's local rule (no key, a short description, a failure or the per-minute limit).
+ * Shown by the build composer as the name field's placeholder and used when the name is left empty.
+ */
+export type StudioBuildNameSuggestion = { name: string; source: 'deepseek' | 'local' };
 // ── v6 track: memory — types below this line ──
 /** Which agent wrote a shared-memory note (from its tags); null when the note is untagged. */
 export type StudioMemorySource = 'claude' | 'codex' | 'deepseek';

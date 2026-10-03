@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest';
 
 import type { QuotaPreferences, StudioQuotaSnapshot } from '@/shared/types';
-import { isQuotaItemShown, listQuotaItems, quotaAmountText, quotaEndText, quotaShownPercent } from '@/shared/utils';
+import { isQuotaItemShown, listQuotaItems, quotaAgeText, quotaAmountText, quotaEndText, quotaShownPercent } from '@/shared/utils';
 
 // Saturday 3 October 2026, 11:24 in London (BST).
 const NOW = Date.parse('2026-10-03T10:24:00Z');
@@ -64,6 +64,19 @@ test('reset and expiry times read in Chinese on the London clock', () => {
   expect(quotaEndText(at(0), NOW, 'expires')).toBe('已到期');
   expect(quotaEndText(null, NOW)).toBeNull();
   expect(quotaEndText('not a date', NOW)).toBeNull();
+});
+
+test('the age of an earlier reading is told from ten minutes on, in minutes, hours and then days', () => {
+  expect(quotaAgeText(at(0), NOW)).toBeNull();
+  expect(quotaAgeText(at(-9.9), NOW)).toBeNull();
+  expect(quotaAgeText(at(-10), NOW)).toBe('10 分钟前');
+  expect(quotaAgeText(at(-12.7), NOW)).toBe('12 分钟前');
+  expect(quotaAgeText(at(-59), NOW)).toBe('59 分钟前');
+  expect(quotaAgeText(at(-60), NOW)).toBe('1 小时前');
+  expect(quotaAgeText(at(-47 * 60 - 59), NOW)).toBe('47 小时前');
+  expect(quotaAgeText(at(-3 * 24 * 60), NOW)).toBe('3 天前');
+  expect(quotaAgeText(null, NOW)).toBeNull();
+  expect(quotaAgeText('not a date', NOW)).toBeNull();
 });
 
 test('items list every window, credit and balance, with the owner\'s defaults and switch titles', () => {

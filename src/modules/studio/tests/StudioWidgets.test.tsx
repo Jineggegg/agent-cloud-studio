@@ -379,3 +379,37 @@ test('a large quota widget lists every chosen item, credits with their amounts, 
   renderWidgets(false);
   expect(await screen.findByText('已在 设置 → 额度显示 中隐藏')).toBeTruthy();
 });
+
+test('figures from an earlier read stay on the card, with their age in the badge and the server note in its tooltip and the footnote', async () => {
+  const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+  const claudeFrom = (minutes: number, stale: boolean) => ({
+    ...QUOTA_SNAPSHOTS[0], observedAt: ago(minutes), stale, note: `Claude 用量接口暂时限流，显示 ${minutes} 分钟前的读数。`,
+  });
+  const show = async (claude: object) => {
+    cleanup();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([{ id: 'w-medium', type: 'claude', size: 'medium' }, { id: 'w-large', type: 'claude', size: 'large' }]));
+    mocks.quota.mockImplementation(async () => Response.json([claude, QUOTA_SNAPSHOTS[1], QUOTA_SNAPSHOTS[2]]));
+    renderWidgets(false);
+    expect((await screen.findAllByTitle('5 小时 剩余 91%')).length).toBe(2);
+    return (id: string) => card(id).querySelector('.widget-source');
+  };
+
+  let badge = await show(claudeFrom(12, false));
+  for (const id of ['w-medium', 'w-large']) {
+    expect(badge(id)?.textContent).toBe('12 分钟前');
+    expect(badge(id)?.getAttribute('title')).toBe('官方：Claude 用量接口暂时限流，显示 12 分钟前的读数。');
+    expect(badge(id)?.classList.contains('is-stale')).toBe(false);
+    expect(card(id).querySelector('.widget-note')).toBeNull();
+  }
+  expect(card('w-large').querySelector('.widget-footnote')?.textContent).toBe('Claude 用量接口暂时限流，显示 12 分钟前的读数。');
+
+  // Flagged stale: the rings stay, the badge turns orange.
+  badge = await show(claudeFrom(38, true));
+  expect(badge('w-medium')?.textContent).toBe('38 分钟前');
+  expect(badge('w-medium')?.classList.contains('is-stale')).toBe(true);
+
+  // A fresh read keeps its source badge and the time it was read.
+  badge = await show(QUOTA_SNAPSHOTS[0]);
+  expect(badge('w-medium')?.textContent).toBe('官方');
+  expect(card('w-large').querySelector('.widget-footnote')?.textContent).toMatch(/^更新于 /);
+});
