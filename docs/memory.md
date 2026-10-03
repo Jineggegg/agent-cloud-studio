@@ -81,6 +81,7 @@ Studio 通过 Agent SDK 启动的 Claude 会话（`server/modules/providers/list
 `<!-- studio-memory:begin -->` / `<!-- studio-memory:end -->` 包起来的说明，大意是：
 
 - 开始处理某个项目前，先用 `search_notes` 搜索该项目的文件夹和 `global`，读相关笔记再动手。
+- 记忆范围默认只用「当前项目文件夹 + `global`」：搜索结果里只读这两个文件夹的笔记，其他项目文件夹（例如不在云工作台项目时的 `agent-cloud-studio`）默认不读；确实需要别的项目的信息时，再有针对性地去读。
 - 把持久的事实、决定和偏好写成笔记：项目相关放在以项目目录名（小写）命名的文件夹，如 `agent-cloud-studio`；跨项目的放 `global`。同一主题先搜索，优先更新已有笔记。
 - tags 写上自己（`claude` 或 `codex`），「记忆」应用据此显示是谁记的。
 - 中文笔记末尾加一行 `关键词：` 和 3–8 个用空格分隔的词。
