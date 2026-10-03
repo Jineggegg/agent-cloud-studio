@@ -2011,12 +2011,40 @@ export type StudioNetworkInfo = {
 export type T212OrderSide = 'buy' | 'sell';
 /** A Face ID / Touch ID passkey registered for one Studio domain (its RP ID); a passkey never authorizes another domain. */
 export type T212Passkey = { id: string; rpId: string; label: string | null; createdAt: string; lastUsedAt: string | null };
-/** Server order-safety settings shared by the order sheet and Settings: tradable accounts, the per-order cap and passkeys. */
+/** A pair of order caps in the account currency: per order, and for all orders in any rolling 24 hours. */
+export type T212CapLimits = { maxOrderValue: number; dailyLimit: number };
+/**
+ * New caps for one account, as sent to POST /caps/challenge and PUT /caps (Settings → 交易安全). Values are positive
+ * with at most two decimals; the server also enforces the ceiling and that the per-order cap fits in the daily one.
+ */
+export type T212CapsInput = T212CapLimits & { env: T212Env };
+/**
+ * The caps in force for one account and how much of the daily cap is used: placed and unknown-outcome orders in
+ * the last 24 hours plus confirmations in flight. `custom` is false while the server defaults apply. Read by the
+ * order sheet (remaining allowance) and the cap editor in Settings.
+ */
+export type T212AccountCaps = T212CapLimits & {
+  custom: boolean; updatedAt: string | null; dailyUsed: number; dailyRemaining: number; currency?: string;
+};
+/**
+ * One audited cap entry in Settings → 交易安全, newest first. `applied`: a saved change (lowering with the session,
+ * raising with Face ID / Touch ID). `refused`: a raise attempt that was turned down, with its reason; `method` is
+ * 'passkey' when it named a challenge. Account and values are null only for a malformed attempt naming no challenge.
+ */
+export type T212CapChange = {
+  id: number; env: T212Env | null; direction: 'raise' | 'lower'; method: 'passkey' | 'session'; status: 'applied' | 'refused';
+  from: T212CapLimits | null; to: T212CapLimits | null; reason: string | null; origin: string | null; createdAt: string;
+};
+/** Server order-safety settings shared by the order sheet and Settings: tradable accounts, per-user caps and passkeys. */
 export type T212TradingConfig = {
   // Accounts STUDIO_T212_TRADING allows to trade; empty means trading is off.
   allowedEnvs: T212Env[];
-  // STUDIO_T212_MAX_ORDER_VALUE, in the account currency.
-  maxOrderValue: number;
+  // Per-account caps; `defaults` come from STUDIO_T212_MAX_ORDER_VALUE / _MAX_DAILY_VALUE, nothing exceeds `ceiling`.
+  caps: { ceiling: number; defaults: T212CapLimits; envs: Record<T212Env, T212AccountCaps> };
+  // This user's latest applied cap changes, newest first; refused raises are listed apart so they cannot crowd them out.
+  capChanges: T212CapChange[];
+  // This user's latest refused raise attempts, newest first.
+  capRefusals: T212CapChange[];
   // Account currency from the last stored balance snapshot; absent before the account was first read.
   currency?: string;
   // This user's passkeys on every domain; once there is one, a domain without its own passkey cannot trade.

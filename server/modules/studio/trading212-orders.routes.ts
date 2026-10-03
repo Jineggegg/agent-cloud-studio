@@ -2,7 +2,7 @@ import express from 'express';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 import { AppError, asyncHandler } from '@/shared/utils.js';
-import type { StudioRequestClient, StudioT212OrderInput } from '@/shared/types.js';
+import type { StudioRequestClient, StudioT212CapsInput, StudioT212CapsRequest, StudioT212OrderInput } from '@/shared/types.js';
 
 import type { createTrading212OrdersService } from './trading212-orders.service.js';
 
@@ -12,6 +12,8 @@ const ID = /^[0-9a-f-]{36}$/;
 const MAX_QUANTITY = 1_000_000;
 const MAX_PRICE = 10_000_000;
 const MAX_PASSWORD_LENGTH = 1024;
+// Transport bound for a cap; the real limit is STUDIO_T212_CAP_CEILING, checked by the caps service.
+const MAX_CAP = 10_000_000;
 
 type AuthenticatedRequest = express.Request & { user?: { id?: number; username?: string } };
 
@@ -79,6 +81,45 @@ function stepUp(body: unknown) {
   if (input.assertion !== undefined) return { assertion: credentialJson(input.assertion) as unknown as AuthenticationResponseJSON };
   return { password: password(body) };
 }
+function capsInput(body: unknown): StudioT212CapsInput {
+  const input = record(body);
+  if (input.env !== 'live' && input.env !== 'demo') invalid('账户必须为 live 或 demo');
+  const values = [input.maxOrderValue, input.dailyLimit];
+  for (const value of values) {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > MAX_CAP || !hasDecimals(value, 2)) {
+      invalid('上限必须是大于 0 的数字，最多 2 位小数');
+    }
+  }
+  return { env: input.env, maxOrderValue: input.maxOrderValue as number, dailyLimit: input.dailyLimit as number };
+}
+// PUT /caps: the challenge id is read first and passed on verbatim, so the service can spend it (and audit the
+// attempt) even when the rest of the body is malformed; that case is reported as `invalid` instead of thrown here.
+// A raise carries the challenge id and its assertion together; a lowering carries neither.
+function capsRequest(body: unknown): StudioT212CapsRequest {
+  const input = record(body);
+  const named = input.challengeId !== undefined || input.assertion !== undefined;
+  const challengeId = typeof input.challengeId === 'string' ? input.challengeId.slice(0, 64) : named ? '' : undefined;
+  const spend = challengeId === undefined ? {} : { challengeId };
+  try {
+    const caps = capsInput(input);
+    if (challengeId === undefined) return { input: caps };
+    if (!ID.test(challengeId)) invalid('面容 ID 验证编号无效，请重新提交');
+    return { ...spend, input: caps, assertion: credentialJson(input.assertion) as unknown as AuthenticationResponseJSON };
+  } catch (error) {
+    if (error instanceof AppError) return { ...spend, invalid: error.message };
+    throw error;
+  }
+}
+// A 429 from the caps service carries its wait, which also goes out as Retry-After.
+async function withRetryAfter<T>(res: express.Response, work: () => Promise<T>) {
+  try {
+    return await work();
+  } catch (error) {
+    const wait = error instanceof AppError && error.statusCode === 429 ? (error.details as { retryAfterSeconds?: unknown } | undefined)?.retryAfterSeconds : undefined;
+    if (typeof wait === 'number') res.setHeader('Retry-After', String(wait));
+    throw error;
+  }
+}
 function passkeyId(value: unknown) {
   const id = String(value);
   if (!ID.test(id)) throw new AppError('找不到这把通行密钥', { statusCode: 404 });
@@ -93,7 +134,8 @@ function previewId(value: unknown) {
 /**
  * Used by studio.module, mounted at /api/studio/trading212 behind authentication next to the read-only
  * router, for passkey-gated order placement and passkey management. Read paths stay on the read-only router.
- * Every passkey change needs a step-up (the Studio password, or that passkey for its own removal).
+ * Every passkey change needs a step-up (the Studio password, or that passkey for its own removal). Order caps are
+ * lowered with the session alone; raising them needs a Face ID / Touch ID challenge for the exact new values.
  */
 export function createTrading212OrdersRouter(
   service: ReturnType<typeof createTrading212OrdersService>,
@@ -137,6 +179,19 @@ export function createTrading212OrdersRouter(
     const userId = user(req);
     const origin = service.trustedOrigin(req.get('origin'));
     res.json(await service.removePasskey(userId, origin, passkeyId(req.params.id), stepUp(req.body), stepUpWho(req)));
+  }));
+  router.post('/caps/challenge', asyncHandler(async (req, res) => {
+    const userId = user(req);
+    const origin = service.trustedOrigin(req.get('origin'));
+    const input = capsInput(req.body);
+    res.json(await withRetryAfter(res, () => service.capsChallenge(userId, origin, input)));
+  }));
+  router.put('/caps', asyncHandler(async (req, res) => {
+    const userId = user(req);
+    // Lowering works from any signed-in page; raising is refused by the service unless the origin is trusted.
+    const origin = service.optionalTrustedOrigin(req.get('origin'));
+    const request = capsRequest(req.body);
+    res.json(await withRetryAfter(res, () => service.updateCaps(userId, origin, request)));
   }));
   return router;
 }

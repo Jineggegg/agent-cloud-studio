@@ -315,6 +315,37 @@ export const getQuickSettingsTabPanelId = (tab: QuickSettingsTab): string => `qu
 
 // ---------------------------
 
+//----------------- DECIMAL INPUT ------------
+
+// Digits with an optional decimal point (after normalising a comma); no sign, exponent or grouping.
+const DECIMAL_INPUT = /^(\d+(\.\d*)?|\.\d+)$/;
+
+/**
+ * Parses typed decimal text such as "12.5", "12," or ".5" (a comma counts as the decimal point) into a positive,
+ * finite number with at most `places` decimals, or null when it is not one. Used by the Trading 212 order sheet
+ * (quantities and limit prices) and the cap editor in Settings, which keep the field as text while it is typed.
+ */
+export function parseDecimalInput(value: string, places: number): number | null {
+  const normalized = value.trim().replace(',', '.');
+  if (!DECIMAL_INPUT.test(normalized)) return null;
+  const parsed = Number(normalized);
+  const fraction = normalized.split('.')[1] ?? '';
+  return Number.isFinite(parsed) && parsed > 0 && fraction.length <= places ? parsed : null;
+}
+
+/**
+ * Why typed decimal text is not a valid amount for `parseDecimalInput`, prefixed with the field `label` (Chinese UI
+ * copy); empty while the field is empty or valid. Used next to `parseDecimalInput` by the same two forms.
+ */
+export function decimalInputProblem(value: string, places: number, label: string): string {
+  const normalized = value.trim().replace(',', '.');
+  if (!normalized || parseDecimalInput(value, places) !== null) return '';
+  if (DECIMAL_INPUT.test(normalized) && (normalized.split('.')[1] ?? '').length > places) return `${label}最多 ${places} 位小数`;
+  return `${label}必须是大于 0 的数字`;
+}
+
+// ---------------------------
+
 //----------------- ERROR MESSAGES ------------
 
 /**
