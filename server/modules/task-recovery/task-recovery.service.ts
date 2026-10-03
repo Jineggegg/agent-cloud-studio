@@ -9,8 +9,16 @@ export const taskRecoveryService = {
   findRequest(userId: string | number, requestId: string): TaskRunRecord | null {
     return taskRunsDb.getByRequestId(userId, requestId);
   },
-  resolve(userId: string | number, runId: string): boolean {
-    return taskRunsDb.resolve(userId, runId);
+  /**
+   * Acknowledging is idempotent for the owner: a record that was already resolved, or claimed by a
+   * continuation (possibly from another device), has nothing left to review. Records that do not
+   * exist or belong to another user stay indistinguishable ('not_found').
+   */
+  resolve(userId: string | number, runId: string): 'resolved' | 'already_handled' | 'not_found' {
+    if (taskRunsDb.resolve(userId, runId)) return 'resolved';
+    const run = taskRunsDb.getByRunId(runId);
+    if (!run || run.userId !== String(userId)) return 'not_found';
+    return run.resolvedAt !== null || run.claimedByRunId !== null ? 'already_handled' : 'not_found';
   },
 };
 

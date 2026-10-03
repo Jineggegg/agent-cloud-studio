@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 
-import { act, renderHook } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen } from '@testing-library/react';
 import { beforeEach, test, vi } from 'vitest';
 
+import '@/modules/i18n';
+import { ChatRecoveryBanner } from '@/modules/chat/composer/ChatRecoveryBanner';
 import { useTaskRecovery } from '@/modules/chat/hooks/useTaskRecovery';
 import { api } from '@/shared/api';
 import type { ServerEvent, TaskRecoveryRun } from '@/shared/types';
@@ -177,4 +179,117 @@ test('finishing a review from the previous conversation does not invalidate the 
   const currentRun = { ...RUN, runId: 'current-run', projectPath: '/projects/two', sessionId: 'session-two' };
   await act(async () => { currentLookup.resolve(response([currentRun])); });
   assert.deepEqual(view.result.current.runs, [currentRun]);
+});
+
+const emit = (listeners: Set<(event: ServerEvent) => void>, event: ServerEvent) => {
+  listeners.forEach((listener) => listener(event));
+};
+
+test('a continuation receipt closes the claimed card at once and refetches the list', async () => {
+  vi.mocked(api.taskRecovery.list).mockResolvedValueOnce(response([RUN]));
+  const { view, listeners } = renderRecovery();
+  await act(async () => undefined);
+  assert.deepEqual(view.result.current.runs, [RUN]);
+
+  // The refetch is still in flight: the card must not wait for it.
+  const refetch = deferredResponse();
+  vi.mocked(api.taskRecovery.list).mockReturnValueOnce(refetch.promise);
+  await act(async () => {
+    emit(listeners, { kind: 'run_accepted', sessionId: RUN.sessionId!, runId: 'continuation-run', recoveryOfRunId: RUN.runId });
+  });
+  assert.deepEqual(view.result.current.runs, []);
+  assert.equal(vi.mocked(api.taskRecovery.list).mock.calls.length, 2);
+  await act(async () => { refetch.resolve(response([])); });
+  assert.deepEqual(view.result.current.runs, []);
+  assert.equal(view.result.current.error, false);
+});
+
+test('a lookup that started before the claim cannot bring the claimed card back', async () => {
+  vi.mocked(api.taskRecovery.list).mockResolvedValueOnce(response([RUN]));
+  const { view, listeners } = renderRecovery();
+  await act(async () => undefined);
+
+  const staleLookup = deferredResponse();
+  vi.mocked(api.taskRecovery.list).mockReturnValueOnce(staleLookup.promise).mockResolvedValueOnce(response([]));
+  await act(async () => { void view.result.current.refresh(); });
+  await act(async () => {
+    emit(listeners, { kind: 'run_accepted', sessionId: RUN.sessionId!, runId: 'continuation-run', recoveryOfRunId: RUN.runId });
+  });
+  await act(async () => { staleLookup.resolve(response([RUN])); });
+  assert.deepEqual(view.result.current.runs, []);
+});
+
+test('reviewing a record already claimed elsewhere closes the card without an error', async () => {
+  vi.mocked(api.taskRecovery.list).mockResolvedValueOnce(response([RUN]));
+  vi.mocked(api.taskRecovery.resolve).mockResolvedValueOnce(
+    new Response(JSON.stringify({ resolved: true, alreadyHandled: true }), { status: 200 }),
+  );
+  const { view } = renderRecovery();
+  await act(async () => undefined);
+
+  await act(async () => { await view.result.current.resolve(RUN.runId); });
+  assert.deepEqual(view.result.current.runs, []);
+  assert.deepEqual(vi.mocked(api.taskRecovery.resolve).mock.calls[0], [RUN.runId]);
+  assert.equal(vi.mocked(api.taskRecovery.list).mock.calls.length, 2);
+  assert.equal(view.result.current.error, false);
+});
+
+test('reviewing a record the server no longer has closes the card without an error', async () => {
+  vi.mocked(api.taskRecovery.list).mockResolvedValueOnce(response([RUN]));
+  vi.mocked(api.taskRecovery.resolve).mockResolvedValueOnce(
+    new Response(JSON.stringify({ error: 'Recoverable task not found', code: 'RECOVERY_NOT_FOUND' }), { status: 404 }),
+  );
+  const { view } = renderRecovery();
+  await act(async () => undefined);
+
+  await act(async () => { await view.result.current.resolve(RUN.runId); });
+  assert.deepEqual(view.result.current.runs, []);
+  assert.equal(vi.mocked(api.taskRecovery.list).mock.calls.length, 2);
+});
+
+test('the banner shows no update error when the record was already handled', async () => {
+  vi.mocked(api.taskRecovery.list).mockResolvedValueOnce(response([RUN]));
+  vi.mocked(api.taskRecovery.resolve).mockResolvedValueOnce(new Response('{}', { status: 404 }));
+  const subscribe = () => () => undefined;
+  function RecoveryCard() {
+    const recovery = useTaskRecovery({ projectPath: RUN.projectPath, sessionId: RUN.sessionId, subscribe });
+    return <ChatRecoveryBanner runs={recovery.runs} error={recovery.error} onRefresh={recovery.refresh}
+      onViewRecords={() => undefined} onPrepare={() => undefined} onResolve={recovery.resolve} />;
+  }
+  render(<RecoveryCard />);
+  await act(async () => undefined);
+  assert.ok(screen.getByText(RUN.content));
+
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Mark reviewed' })); });
+  assert.equal(screen.queryByRole('alert'), null);
+  assert.equal(screen.queryByText(RUN.content), null);
+});
+
+test('run start and finish events in the conversation refetch the list once per run', async () => {
+  const { listeners } = renderRecovery();
+  await act(async () => undefined);
+  const lookups = () => vi.mocked(api.taskRecovery.list).mock.calls.length;
+  assert.equal(lookups(), 1);
+
+  // A continuation started on another device is first seen as a new run's stream.
+  await act(async () => {
+    emit(listeners, { kind: 'stream_delta', sessionId: RUN.sessionId!, runId: 'continuation-run', seq: 1 });
+    emit(listeners, { kind: 'stream_delta', sessionId: RUN.sessionId!, runId: 'continuation-run', seq: 2 });
+  });
+  assert.equal(lookups(), 2);
+  await act(async () => { emit(listeners, { kind: 'complete', sessionId: RUN.sessionId!, runId: 'continuation-run', success: true }); });
+  assert.equal(lookups(), 3);
+  await act(async () => { emit(listeners, { kind: 'chat_subscribed', sessionId: RUN.sessionId!, isProcessing: true }); });
+  assert.equal(lookups(), 4);
+  await act(async () => { emit(listeners, { kind: 'chat_subscribed', sessionId: RUN.sessionId!, isProcessing: false }); });
+  assert.equal(lookups(), 4);
+  await act(async () => { emit(listeners, { kind: 'run_accepted', sessionId: RUN.sessionId!, runId: 'next-run', requestId: 'next' }); });
+  assert.equal(lookups(), 5);
+
+  // Other conversations' runs do not affect this list.
+  await act(async () => {
+    emit(listeners, { kind: 'stream_delta', sessionId: 'session-two', runId: 'other-run', seq: 1 });
+    emit(listeners, { kind: 'complete', sessionId: 'session-two', runId: 'other-run', success: true });
+  });
+  assert.equal(lookups(), 5);
 });

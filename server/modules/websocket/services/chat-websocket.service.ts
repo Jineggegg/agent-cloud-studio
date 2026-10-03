@@ -327,6 +327,8 @@ async function dispatchRun(
     runId: admission.run.runId, sessionId,
     duplicate: admission.kind === 'duplicate',
     state: admission.kind === 'duplicate' ? admission.run.state : 'running',
+    // Names the interrupted run this continuation claimed so its recovery card can close at once.
+    ...(admission.run.recoveryOfRunId ? { recoveryOfRunId: admission.run.recoveryOfRunId } : {}),
   });
   if (admission.kind === 'duplicate' || !run) {
     return { started: false, error: null, errorCode: 'DUPLICATE_REQUEST' };

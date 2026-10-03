@@ -111,6 +111,32 @@ test('busy admission rolls back its receipt and recovery claim', async () => {
   });
 });
 
+test('a continuation receipt names the interrupted run it claimed', async () => {
+  await fixture(async ({ userId, projectPath }) => {
+    const old = taskRunsDb.accept({ userId, requestId: 'claimed', sessionId: SESSION, provider: 'claude', projectPath, content: 'old', options: {} });
+    assert.notEqual(old.kind, 'rejected');
+    if (old.kind === 'rejected') return;
+    taskRunsDb.interrupt(old.run.runId);
+    let finish!: () => void;
+    const ws = socket();
+    handleChatConnection(ws as never, { user: { id: userId } } as never, {
+      runtime: gateway(async () => { await new Promise<void>((resolve) => { finish = resolve; }); }),
+    });
+    send(ws, 'continue-claimed', 'continue', { recoveryOfRunId: old.run.runId });
+    await tick();
+    const receipt = ws.frames.find((frame) => frame.kind === 'run_accepted' && frame.requestId === 'continue-claimed');
+    assert.equal(receipt?.recoveryOfRunId, old.run.runId);
+    assert.equal(taskRunsDb.getByRunId(old.run.runId)?.claimedByRunId, receipt?.runId);
+    finish();
+    await tick();
+    send(ws, 'plain-send');
+    await tick();
+    const plain = ws.frames.find((frame) => frame.kind === 'run_accepted' && frame.requestId === 'plain-send');
+    assert.ok(plain);
+    assert.equal('recoveryOfRunId' in plain, false);
+  });
+});
+
 test('an early complete with held background work stays durably running even if a later turn starts', async () => {
   await fixture(async ({ userId }) => {
     const ws = socket();

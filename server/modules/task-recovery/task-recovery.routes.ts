@@ -67,10 +67,11 @@ taskRecoveryRouter.post('/:runId/resolve', (req, res, next) => {
     return;
   }
   try {
-    if (!taskRecoveryService.resolve(userId, runId)) {
+    const outcome = taskRecoveryService.resolve(userId, runId);
+    if (outcome === 'not_found') {
       res.status(404).json({ error: 'Recoverable task not found', code: 'RECOVERY_NOT_FOUND' });
       return;
     }
-    res.json({ resolved: true });
+    res.json(outcome === 'already_handled' ? { resolved: true, alreadyHandled: true } : { resolved: true });
   } catch (error) { next(error); }
 });
