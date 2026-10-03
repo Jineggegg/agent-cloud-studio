@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 import { IconArrowUp, IconCheck, IconCopy, IconMessages, IconSquare } from '@/modules/studio/icons/tabler';
-import type { StudioConversation } from '@/shared/types';
+import { useSuggestedPrompt } from '@/shared/hooks/useSuggestedPrompt';
+import type { PromptSuggestionTurn, StudioConversation } from '@/shared/types';
 
 // The composer grows with its text up to roughly seven lines, then scrolls.
 const COMPOSER_MAX_HEIGHT = 168;
@@ -57,9 +58,18 @@ export function StudioChat({ assistant = 'DeepSeek', tone = 'slate', active, mod
     return () => window.clearTimeout(timer);
   }, [copied]);
 
+  const conversationTurns = useMemo<PromptSuggestionTurn[]>(() => (active?.messages ?? [])
+    .filter(message => message.status !== 'error' && message.content.trim())
+    .map(message => ({ role: message.role === 'user' ? 'user' : 'assistant', text: message.content })), [active?.messages]);
+  // The faint next message in the empty field once the reply is in; Send sends it as it is.
+  const nextPrompt = useSuggestedPrompt({ conversationKey: active?.id ?? null, assistant: 'deepseek', turns: conversationTurns, ready: !sending });
+  // Typing hides the suggestion; clearing the field brings it back.
+  const shownSuggestion = draft.trim() ? null : nextPrompt.suggestion;
+
   const submit = async () => {
-    const text = draft;
+    const text = draft.trim() ? draft : shownSuggestion ?? '';
     if (!text.trim() || sending) return;
+    if (!draft.trim()) nextPrompt.dismiss();
     setDraft('');
     if (!await onSend(text, active?.model ?? model, includeSnr)) setDraft(text);
   };
@@ -101,15 +111,19 @@ export function StudioChat({ assistant = 'DeepSeek', tone = 'slate', active, mod
     <div className="studio-composer-wrap">
       <form className="studio-composer" onSubmit={event => { event.preventDefault(); void submit(); }}>
         <div className="composer-field">
-          <textarea ref={textarea} aria-label="消息" placeholder="输入消息" rows={1} maxLength={16000} value={draft} disabled={sending}
-            enterKeyHint="send"
-            onCompositionStart={() => { composing.current = true; }}
-            onCompositionEnd={() => { composing.current = false; compositionEndedAt.current = performance.now(); }}
-            onKeyDown={onKeyDown}
-            onChange={event => setDraft(event.target.value)} />
+          <div className={`composer-input${shownSuggestion ? ' has-suggestion' : ''}`}>
+            {shownSuggestion && <div className="composer-suggestion" aria-hidden="true">{shownSuggestion}</div>}
+            <textarea ref={textarea} aria-label="消息" placeholder={shownSuggestion ? '' : '输入消息'} rows={1} maxLength={16000} value={draft} disabled={sending}
+              aria-description={shownSuggestion ? `建议的下一条：${shownSuggestion}。直接发送即可` : undefined}
+              enterKeyHint="send"
+              onCompositionStart={() => { composing.current = true; }}
+              onCompositionEnd={() => { composing.current = false; compositionEndedAt.current = performance.now(); }}
+              onKeyDown={onKeyDown}
+              onChange={event => setDraft(event.target.value)} />
+          </div>
           {sending
             ? <button type="button" className="send-button stop" title="停止回复" aria-label="停止回复" onClick={onStop}><IconSquare size={14} fill="currentColor" /></button>
-            : <button className="send-button" title="发送消息" aria-label="发送消息" disabled={!draft.trim()}><IconArrowUp size={20} strokeWidth={2.6} /></button>}
+            : <button className="send-button" title={shownSuggestion ? '发送建议的消息' : '发送消息'} aria-label={shownSuggestion ? '发送建议的消息' : '发送消息'} disabled={!draft.trim() && !shownSuggestion}><IconArrowUp size={20} strokeWidth={2.6} /></button>}
         </div>
         <div className="composer-options">
           <select aria-label="对话模型" value={activeModel} disabled={sending || Boolean(active)} onChange={event => setModel(event.target.value)}>

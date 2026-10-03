@@ -268,6 +268,21 @@
 }
 :is(.studio, .studio-layer) .gh-body p { font-size: 15px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 
+/* ---------- Detail step: one-tap fixes next to the blockers ---------- */
+:is(.studio, .studio-layer) .gh-fixes { margin: 0; padding: 0; list-style: none; }
+:is(.studio, .studio-layer) .gh-fix { position: relative; display: flex; align-items: center; gap: 12px; min-height: 60px; padding: 8px 12px 8px 14px; }
+:is(.studio, .studio-layer) .gh-fix + .gh-fix::before { content: ""; position: absolute; top: 0; right: 0; left: 56px; height: .5px; background: var(--ios-separator); }
+:is(.studio, .studio-layer) .gh-fix-icon {
+  display: grid; place-items: center; flex-shrink: 0; width: 30px; height: 30px; border-radius: 9px;
+  background: var(--ios-tint-soft); color: var(--ios-tint);
+}
+:is(.studio, .studio-layer) .gh-fix-icon.is-approve-runs { background: color-mix(in srgb, var(--ios-orange) 14%, transparent); color: var(--ios-orange); }
+:is(.studio, .studio-layer) .gh-fix-body { flex: 1; min-width: 0; }
+:is(.studio, .studio-layer) .gh-fix-body strong { display: block; font-size: 15px; font-weight: 500; }
+:is(.studio, .studio-layer) .gh-fix-body small { display: block; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--ios-label-2); }
+:is(.studio, .studio-layer) .ios-button.gh-fix-button { flex-shrink: 0; min-height: 36px; padding: 0 14px; border-radius: 999px; font-size: 14px; white-space: nowrap; }
+:is(.studio, .studio-layer) .ios-button.gh-fix-button .studio-spinner { color: inherit; }
+
 /* ---------- Merge step: the confluence drawing ---------- */
 :is(.studio, .studio-layer) .gh-confluence { margin: 0; padding: 10px 14px; border-radius: var(--radius-card); background: var(--ios-surface); }
 :is(.studio, .studio-layer) .gh-confluence-art { position: relative; width: 100%; max-width: 440px; margin: 0 auto; aspect-ratio: 320 / 108; }

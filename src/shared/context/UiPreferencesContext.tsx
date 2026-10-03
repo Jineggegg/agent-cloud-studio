@@ -84,6 +84,14 @@ export function useUiPreferences(): UiPreferences {
   return preferences;
 }
 
+/**
+ * Reads the UI preferences, or null outside the provider. Used by useSuggestedPrompt, whose chat components are
+ * also rendered on their own in tests, where no suggestion should be asked for.
+ */
+export function useOptionalUiPreferences(): UiPreferences | null {
+  return useContext(UiPreferencesStateContext);
+}
+
 /** Stable setter, so writers never re-render on a preference change. */
 export function useSetUiPreference(): UiPreferenceActions['setPreference'] {
   const actions = useContext(UiPreferencesActionsContext);

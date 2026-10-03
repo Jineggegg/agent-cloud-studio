@@ -15,6 +15,8 @@ export type UiPreferences = {
   sendByCtrlEnter: boolean;
   sidebarVisible: boolean;
   voiceEnabled: boolean;
+  // The faint DeepSeek-suggested next message in the chat composers, sent with one tap on Send.
+  suggestNextPrompt: boolean;
 };
 
 export type UiPreferenceKey = keyof UiPreferences;
@@ -29,6 +31,7 @@ const DEFAULTS: UiPreferences = {
   sendByCtrlEnter: false,
   sidebarVisible: true,
   voiceEnabled: false,
+  suggestNextPrompt: true,
 };
 
 const PREFERENCE_KEYS = Object.keys(DEFAULTS) as UiPreferenceKey[];

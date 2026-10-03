@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  github: { status: vi.fn(), pulls: vi.fn(), pull: vi.fn(), merge: vi.fn(), merges: vi.fn() },
+  github: { status: vi.fn(), pulls: vi.fn(), pull: vi.fn(), merge: vi.fn(), merges: vi.fn(), updateBranch: vi.fn(), markReady: vi.fn(), approveRuns: vi.fn() },
   toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
 }));
 vi.mock('@/shared/api', () => ({
@@ -49,7 +49,7 @@ function detail(overrides: Partial<StudioGitHubPullDetail> = {}): StudioGitHubPu
     ...pull(), state: 'open', body: 'Adds the inbox.', bodyTruncated: false, createdAt: recent(5),
     checkItems: [{ name: 'Unit tests', workflow: 'CI', state: 'passing', required: true, url: 'https://github.com/x/actions' }],
     checksTruncated: false, files: [{ path: 'src/modules/studio/StudioGitHub.tsx', additions: 400, deletions: 0, change: 'added' }], filesTotal: 1,
-    mergeMethods: ['squash', 'merge'], deleteBranchOnMerge: false, isCrossRepository: false, viewerCanMerge: true, mergeQueue: false, blockers: [], mergeCommitSha: null,
+    mergeMethods: ['squash', 'merge'], deleteBranchOnMerge: false, isCrossRepository: false, viewerCanMerge: true, mergeQueue: false, blockers: [], mergeCommitSha: null, pendingRuns: [],
     ...overrides,
   };
 }
@@ -182,9 +182,9 @@ test('failing checks that are not required must be acknowledged, and blockers di
   expect(await within(sheet).findByText('#42 已进入合并队列')).toBeTruthy();
   cleanup();
 
-  mocks.github.pull.mockImplementation(json(detail({ isDraft: true, blockers: [{ code: 'PR_DRAFT', message: '草稿 PR 不能合并：请先在 GitHub 上标记为可审查' }] })));
+  mocks.github.pull.mockImplementation(json(detail({ isDraft: true, blockers: [{ code: 'PR_DRAFT', message: '草稿 PR 不能合并：请先标记为可审查' }] })));
   const blocked = await openPull('GitHub PR inbox');
-  expect(await within(blocked).findByText('草稿 PR 不能合并：请先在 GitHub 上标记为可审查')).toBeTruthy();
+  expect(await within(blocked).findByText('草稿 PR 不能合并：请先标记为可审查')).toBeTruthy();
   expect((within(blocked).getByRole('button', { name: '合并' }) as HTMLButtonElement).disabled).toBe(true);
 });
 
@@ -313,7 +313,7 @@ test('GitHub reporting UNSTABLE needs the acknowledgement even when no listed ch
 
 test('a branch that is behind shows the reason up front and 合并 stays disabled', async () => {
   mocks.github.pull.mockImplementation(json(detail({
-    mergeState: 'behind', blockers: [{ code: 'HEAD_BEHIND', message: 'wip6/github 落后于 main，仓库要求先更新分支：请在 GitHub 上更新后再合并' }],
+    mergeState: 'behind', blockers: [{ code: 'HEAD_BEHIND', message: 'wip6/github 落后于 main，仓库要求先更新分支后再合并' }],
   })));
   const sheet = await openPull('GitHub PR inbox');
   expect(await within(sheet).findByText(/wip6\/github 落后于 main/)).toBeTruthy();
@@ -341,4 +341,69 @@ test('forgetting a merged PR updates a widget that is already showing it', async
   await waitFor(() => expect(card.textContent).not.toContain('Session export'));
   expect(card.textContent).toContain('共 2 个');
   expect(mocks.github.pulls).toHaveBeenCalledTimes(1);
+});
+
+// ------------------------------------------------------------------ one-tap fixes next to the blockers
+
+test('a branch behind its base offers 更新分支: confirmed in the sheet, sent with the seen head, then re-read', async () => {
+  const behind = detail({ mergeState: 'behind', blockers: [{ code: 'HEAD_BEHIND', message: 'wip6/github 落后于 main，仓库要求先更新分支后再合并' }] });
+  mocks.github.pull.mockImplementation(json(behind));
+  mocks.github.updateBranch.mockImplementation(json({ message: '已把 main 的最新提交合并进 wip6/github，检查会重新运行', pull: detail() }));
+  const sheet = await openPull('GitHub PR inbox');
+  const fixes = await within(sheet).findByRole('region', { name: '可以在这里处理' });
+  expect(within(fixes).getByText('分支需要更新')).toBeTruthy();
+  fireEvent.click(within(fixes).getByRole('button', { name: '更新分支' }));
+  const alert = await screen.findByRole('alertdialog', { name: '更新 #42 的分支？' });
+  expect(alert.textContent).toContain('6a86614');
+  expect(mocks.github.updateBranch).not.toHaveBeenCalled();
+  fireEvent.click(within(alert).getByRole('button', { name: '更新分支' }));
+  await waitFor(() => expect(mocks.github.updateBranch).toHaveBeenCalledWith('Jineggegg', 'agent-cloud-studio', 42, HEAD));
+  expect(mocks.toast.success).toHaveBeenCalledWith('已把 main 的最新提交合并进 wip6/github，检查会重新运行');
+  // The answer carries the fresh PR: the fix and the blocker are gone and 合并 unlocks.
+  expect(await within(sheet).findByRole('button', { name: '合并…' })).toBeTruthy();
+  expect(within(sheet).queryByRole('region', { name: '可以在这里处理' })).toBeNull();
+  await waitFor(() => expect(mocks.github.pulls).toHaveBeenLastCalledWith(true));
+});
+
+test('a draft offers 标记为可审查, and a refused fix shows why in the sheet and re-reads the PR', async () => {
+  mocks.github.pull.mockImplementation(json(detail({ isDraft: true, blockers: [{ code: 'PR_DRAFT', message: '草稿 PR 不能合并：请先标记为可审查' }] })));
+  mocks.github.markReady.mockImplementation(json({ error: { code: 'NO_PERMISSION', message: '当前 gh 账号没有权限执行这个操作' } }, 403));
+  const sheet = await openPull('GitHub PR inbox');
+  fireEvent.click(await within(sheet).findByRole('button', { name: '标记为可审查' }));
+  const alert = await screen.findByRole('alertdialog', { name: '把 #42 标记为可审查？' });
+  const reads = mocks.github.pull.mock.calls.length;
+  fireEvent.click(within(alert).getByRole('button', { name: '标记为可审查' }));
+  await waitFor(() => expect(mocks.github.markReady).toHaveBeenCalledWith('Jineggegg', 'agent-cloud-studio', 42));
+  const error = await within(sheet).findByRole('alert');
+  expect(error.textContent).toContain('当前 gh 账号没有权限执行这个操作');
+  await waitFor(() => expect(mocks.github.pull.mock.calls.length).toBeGreaterThan(reads));
+  expect(mocks.toast.success).not.toHaveBeenCalled();
+});
+
+test('runs waiting for approval are listed with a destructive confirmation naming them, and approved together', async () => {
+  mocks.github.pull.mockImplementation(json(detail({ pendingRuns: [
+    { id: 501, name: 'CI', kind: 'contributor', environments: [] },
+    { id: 502, name: 'Deploy', kind: 'deployment', environments: ['production'] },
+  ] })));
+  mocks.github.approveRuns.mockImplementation(json({ message: '已批准 2 个运行', pull: null }));
+  const sheet = await openPull('GitHub PR inbox');
+  expect(await within(sheet).findByText('2 个运行等待批准')).toBeTruthy();
+  expect(within(sheet).getByText('CI、Deploy')).toBeTruthy();
+  fireEvent.click(within(sheet).getByRole('button', { name: '批准运行' }));
+  const alert = await screen.findByRole('alertdialog', { name: '批准 2 个运行？' });
+  expect(alert.textContent).toContain('Deploy（production）');
+  expect(alert.textContent).toContain('外部贡献者的代码');
+  fireEvent.click(within(alert).getByRole('button', { name: '批准运行' }));
+  await waitFor(() => expect(mocks.github.approveRuns).toHaveBeenCalledWith('Jineggegg', 'agent-cloud-studio', 42, [501, 502]));
+  expect(mocks.toast.success).toHaveBeenCalledWith('已批准 2 个运行');
+  // Without a PR in the answer the sheet reads it itself.
+  await waitFor(() => expect(mocks.github.pull).toHaveBeenLastCalledWith('Jineggegg', 'agent-cloud-studio', 42, true));
+});
+
+test('no fixes are offered when the gh token cannot write', async () => {
+  mocks.github.status.mockImplementation(json({ ...STATUS, canMerge: false, message: 'gh 令牌缺少 repo 权限' }));
+  mocks.github.pull.mockImplementation(json(detail({ isDraft: true, blockers: [{ code: 'PR_DRAFT', message: '草稿 PR 不能合并：请先标记为可审查' }] })));
+  const sheet = await openPull('GitHub PR inbox');
+  expect(await within(sheet).findByText('草稿 PR 不能合并：请先标记为可审查')).toBeTruthy();
+  expect(within(sheet).queryByRole('button', { name: '标记为可审查' })).toBeNull();
 });

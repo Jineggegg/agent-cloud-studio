@@ -5,9 +5,10 @@ import { Activity, AlertTriangle, KeyRound, Sparkle, X } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { LazyMessageRow, useLazyRowObserver } from '@/modules/chat';
+import { useSuggestedPrompt } from '@/shared/hooks/useSuggestedPrompt';
 import { writeDeviceModelChoice } from '@/shared/modelDefaults';
 import type {
-  ChatMessage, Project, ProviderModelOption, StudioConversation, WorkbenchChatChrome, WorkbenchHandoffRequest, WorkbenchModelCatalogs,
+  ChatMessage, Project, PromptSuggestionTurn, ProviderModelOption, StudioConversation, WorkbenchChatChrome, WorkbenchHandoffRequest, WorkbenchModelCatalogs,
   WorkbenchNewChatChoice, WorkbenchNewProvider, WorkbenchSessionItem,
 } from '@/shared/types';
 import { useDeepSeekConversation } from '@/modules/workbench/chat/hooks/useDeepSeekConversation';
@@ -18,6 +19,7 @@ import { WorkbenchAssistantMessage, WorkbenchTurnLabel, WorkbenchUserMessage } f
 import { WorkbenchMicButton } from '@/modules/workbench/chat/WorkbenchMicButton';
 import { WorkbenchProviderMark } from '@/modules/workbench/WorkbenchProviderMark';
 import { WorkbenchSendButton } from '@/modules/workbench/chat/WorkbenchSendButton';
+import { WorkbenchSuggestedInput } from '@/modules/workbench/chat/WorkbenchSuggestedInput';
 import { WorkbenchSpinner } from '@/modules/workbench/chat/WorkbenchSpinner';
 import { menuProvidersFor, oneModelMenuSections } from '@/modules/workbench/chat/utils/workbenchModelMenu';
 
@@ -193,9 +195,24 @@ export function WorkbenchDeepSeekChat({
     field.style.height = `${Math.min(field.scrollHeight, INPUT_MAX_HEIGHT)}px`;
   }, [draft]);
 
+  const conversationTurns = useMemo<PromptSuggestionTurn[]>(() => (chat.conversation?.messages ?? [])
+    .filter((message) => message.status !== 'error' && message.content.trim())
+    .map((message) => ({ role: message.role === 'user' ? 'user' : 'assistant', text: message.content })), [chat.conversation?.messages]);
+  // The faint next message in the empty field once DeepSeek has answered; Send sends it as it is.
+  const nextPrompt = useSuggestedPrompt({
+    conversationKey: chat.conversation?.id ?? null,
+    assistant: 'deepseek',
+    turns: conversationTurns,
+    ready: configured && !chat.sending && !chat.loading,
+  });
+  // Typing hides the suggestion; clearing the field brings it back.
+  const shownSuggestion = draft.trim() ? null : nextPrompt.suggestion;
+
   const submit = async () => {
-    const text = draft;
+    const typed = draft;
+    const text = typed.trim() ? typed : shownSuggestion ?? '';
     if (!text.trim() || chat.sending) return;
+    if (!typed.trim()) nextPrompt.dismiss();
     setDraft('');
     let message = text;
     // A handoff's first message carries the summary; without one the send waits for the owner to retry.
@@ -284,22 +301,25 @@ export function WorkbenchDeepSeekChat({
         </AnimatePresence>
         <div className="wbc-composer-wrap">
           <form className="wbc-composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-            <textarea
-              ref={inputRef}
-              className="wbc-input"
-              rows={1}
-              dir="auto"
-              aria-label="消息"
-              enterKeyHint="send"
-              maxLength={prepareFirstMessage && !chat.conversation ? MAX_HANDOFF_MESSAGE : MAX_MESSAGE}
-              placeholder={configured ? '给 DeepSeek 发消息' : '先添加 DeepSeek 密钥'}
-              value={draft}
-              disabled={chat.sending}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={onKeyDown}
-              onCompositionStart={() => { composingRef.current = true; }}
-              onCompositionEnd={() => { composingRef.current = false; compositionEndedAtRef.current = performance.now(); }}
-            />
+            <WorkbenchSuggestedInput suggestion={shownSuggestion}>
+              <textarea
+                ref={inputRef}
+                className="wbc-input"
+                rows={1}
+                dir="auto"
+                aria-label="消息"
+                aria-description={shownSuggestion ? `建议的下一条：${shownSuggestion}。直接发送即可` : undefined}
+                enterKeyHint="send"
+                maxLength={prepareFirstMessage && !chat.conversation ? MAX_HANDOFF_MESSAGE : MAX_MESSAGE}
+                placeholder={shownSuggestion ? '' : configured ? '给 DeepSeek 发消息' : '先添加 DeepSeek 密钥'}
+                value={draft}
+                disabled={chat.sending}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={onKeyDown}
+                onCompositionStart={() => { composingRef.current = true; }}
+                onCompositionEnd={() => { composingRef.current = false; compositionEndedAtRef.current = performance.now(); }}
+              />
+            </WorkbenchSuggestedInput>
             <div className="wbc-composer-bar">
               {dictation.supported && <WorkbenchMicButton listening={dictation.listening} disabled={chat.sending} onToggle={dictation.toggle} />}
               <button
@@ -331,7 +351,7 @@ export function WorkbenchDeepSeekChat({
               <span className="wbc-composer-spacer" />
               <WorkbenchSendButton
                 mode={chat.sending ? 'stop' : 'send'}
-                disabled={chat.sending ? false : !draft.trim()}
+                disabled={chat.sending ? false : !draft.trim() && !shownSuggestion}
                 onStop={chat.stop}
               />
             </div>

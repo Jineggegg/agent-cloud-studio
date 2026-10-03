@@ -799,6 +799,15 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
 }
 .wbc .wbc-input::placeholder { color: var(--wbc-label-3) !important; -webkit-text-fill-color: var(--wbc-label-3) !important; opacity: 1 !important; }
 .wbc .wbc-input:disabled { opacity: .6; }
+/* The suggested next message: faint tinted text in the empty field, sized by the suggestion so it never clips;
+   the transparent textarea lies over it and still takes the caret and typing. */
+.wbc-input-wrap { position: relative; }
+.wbc-composer:has(.wbc-input-wrap.has-suggestion) { background: color-mix(in srgb, var(--wbc-tint) 5%, var(--wbc-raised)); }
+.wbc-suggestion {
+  min-height: 52px; padding: 14px 18px 4px; font-size: 16px; line-height: 24px; white-space: pre-wrap; overflow-wrap: anywhere;
+  color: color-mix(in srgb, var(--wbc-tint) 62%, var(--wbc-label-3)); pointer-events: none;
+}
+.wbc .wbc-input-wrap.has-suggestion .wbc-input { position: absolute; inset: 0; height: 100% !important; min-height: 0; }
 .wbc-composer-bar { display: flex; align-items: center; gap: 6px; padding: 4px 8px 8px; min-width: 0; }
 /* The attachment and microphone buttons sit together like an iOS toolbar pair. */
 .wbc-composer-bar > .wbc-tool-button + .wbc-tool-button { margin-left: -4px; }

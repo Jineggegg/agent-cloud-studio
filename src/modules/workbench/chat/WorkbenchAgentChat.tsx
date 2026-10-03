@@ -12,12 +12,14 @@ import {
   PermissionContext,
   TranscriptSessionContext,
 } from '@/modules/chat';
+import { useSuggestedPrompt } from '@/shared/hooks/useSuggestedPrompt';
 import type {
   ChatMessage,
   LLMProvider,
   PendingPermissionRequest,
   Project,
   ProjectSession,
+  PromptSuggestionTurn,
   WorkbenchChatChrome,
   WorkbenchHandoffRequest,
   WorkbenchModelCatalogs,
@@ -65,6 +67,41 @@ function currentTurnTodos(messages: ChatMessage[]): WorkbenchTodoItem[] | null {
     }
   }
   return null;
+}
+
+// A handoff's first prompt carries the earlier conversation's summary; the suggestion only needs the owner's words.
+const HANDOFF_BLOCK = /\n*<handoff>[\s\S]*<\/handoff>\s*$/;
+// Tool calls in a row are folded into one line naming at most this many of the latest.
+const TOOL_CALLS_PER_TURN = 5;
+
+/**
+ * The conversation as the suggested-next-message service reads it: the owner's messages, the agent's prose and,
+ * between them, one line of what the agent did (编辑 App.tsx；运行 npm test). Thinking, local command output and
+ * compaction rows are left out.
+ */
+function suggestionTurns(messages: ChatMessage[]): PromptSuggestionTurn[] {
+  const turns: PromptSuggestionTurn[] = [];
+  let tools: string[] = [];
+  const flushTools = () => {
+    if (!tools.length) return;
+    const shown = tools.slice(-TOOL_CALLS_PER_TURN).join('；');
+    turns.push({ role: 'tool', text: tools.length > TOOL_CALLS_PER_TURN ? `（共 ${tools.length} 步，最近的：）${shown}` : shown });
+    tools = [];
+  };
+  for (const message of messages) {
+    if (message.isThinking || message.isLocalCommand || message.isLocalCommandStdout || message.isCompactSummary || message.compact) continue;
+    if (message.isToolUse && message.toolName) {
+      const call = describeToolCall(String(message.toolName), message.toolInput);
+      tools.push(call.target ? `${call.verb} ${call.target}` : call.verb);
+      continue;
+    }
+    const text = (message.content ?? '').replace(HANDOFF_BLOCK, '').trim();
+    if (!text || (message.type !== 'user' && message.type !== 'assistant')) continue;
+    flushTools();
+    turns.push({ role: message.type, text });
+  }
+  flushTools();
+  return turns;
 }
 
 type WorkbenchAgentChatProps = {
@@ -174,6 +211,14 @@ export function WorkbenchAgentChat({
   // The dots stand for the model composing; a running tool row already shows its own spinner.
   const toolInFlight = Boolean(lastMessage?.isToolUse && !lastMessage.toolResult && lastMessage.toolStatus !== 'completed');
   const showTyping = isProcessing && pending.length === 0 && !lastMessage?.isStreaming && !toolInFlight;
+  const conversationTurns = useMemo(() => suggestionTurns(messages), [messages]);
+  // The faint next message in the empty composer, asked for once the run has finished and nothing waits on the owner.
+  const nextPrompt = useSuggestedPrompt({
+    conversationKey: engine.sessionId,
+    assistant: provider === 'codex' ? 'codex' : 'claude',
+    turns: conversationTurns,
+    ready: !isProcessing && !deliveryPending && pending.length === 0 && !composer.preparedRecovery && !lastMessage?.isStreaming,
+  });
 
   const handleSelectModel = useCallback((model: string) => {
     engine.selectModel(model).catch(() => toast.error('没能切换模型，请再试一次'));
@@ -386,6 +431,8 @@ export function WorkbenchAgentChat({
               isProcessing={isProcessing}
               canAbort={sessionState.canAbortSession}
               onAbort={composer.handleAbortSession}
+              suggestion={nextPrompt.suggestion}
+              onSuggestionUsed={nextPrompt.dismiss}
             />
           )}
         </div>

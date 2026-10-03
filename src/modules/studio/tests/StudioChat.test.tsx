@@ -2,6 +2,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, expect, test, vi } from 'vitest';
 
 import { StudioChat } from '@/modules/studio/StudioChat';
+import { api } from '@/shared/api';
+import { UiPreferencesProvider } from '@/shared/context/UiPreferencesContext';
+import type { StudioConversation } from '@/shared/types';
 
 if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
 
@@ -56,4 +59,34 @@ test('a hardware Enter sends, but Shift+Enter and IME confirmation do not', asyn
   } finally {
     window.matchMedia = original;
   }
+});
+
+test('after a reply, the suggested next message shows faintly and one tap on Send sends it; typing hides it, clearing restores it', async () => {
+  const request = vi.spyOn(api.studio, 'suggestions').mockImplementation(async () => Response.json({ suggestion: '再举一个例子', source: 'deepseek' }));
+  const send = vi.fn().mockResolvedValue(true);
+  const active = {
+    id: 'conversation-1', title: '问答', model: 'deepseek-flash',
+    messages: [
+      { id: 1, role: 'user', content: '解释一下闭包', status: 'complete' },
+      { id: 2, role: 'assistant', content: '闭包是函数和它捕获的变量……', status: 'complete' },
+    ],
+  } as unknown as StudioConversation;
+  render(<UiPreferencesProvider>
+    <StudioChat active={active} models={['deepseek-flash']} sending={false} onSend={send} onStop={vi.fn()} />
+  </UiPreferencesProvider>);
+  await waitFor(() => expect(screen.getByText('再举一个例子')).toBeTruthy(), { timeout: 3000 });
+  expect(request.mock.calls[0][0]).toEqual({
+    assistant: 'deepseek',
+    turns: [{ role: 'user', text: '解释一下闭包' }, { role: 'assistant', text: '闭包是函数和它捕获的变量……' }],
+  });
+
+  const field = screen.getByRole('textbox', { name: '消息' });
+  fireEvent.change(field, { target: { value: '换个问题' } });
+  expect(screen.queryByText('再举一个例子')).toBeNull();
+  fireEvent.change(field, { target: { value: '' } });
+  expect(screen.getByText('再举一个例子')).toBeTruthy();
+
+  fireEvent.click(screen.getByRole('button', { name: '发送建议的消息' }));
+  await waitFor(() => expect(send).toHaveBeenCalledWith('再举一个例子', 'deepseek-flash', false));
+  expect(send).toHaveBeenCalledTimes(1);
 });

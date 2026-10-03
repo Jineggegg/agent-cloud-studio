@@ -22,6 +22,7 @@ import { WorkbenchChat } from '@/modules/workbench/chat/WorkbenchChat';
 import { WorkbenchChatBoundary } from '@/modules/workbench/WorkbenchChatBoundary';
 import { WorkbenchInspector } from '@/modules/workbench/WorkbenchInspector';
 import { WorkbenchProviderMark } from '@/modules/workbench/WorkbenchProviderMark';
+import { WorkbenchPullChip } from '@/modules/workbench/WorkbenchPullChip';
 import { WorkbenchSidebar } from '@/modules/workbench/WorkbenchSidebar';
 import { useWorkbenchLayout } from '@/modules/workbench/hooks/useWorkbenchLayout';
 import { useWorkbenchProjects } from '@/modules/workbench/hooks/useWorkbenchProjects';
@@ -305,7 +306,7 @@ export function WorkbenchShell() {
     {sidebarDocked && <button type="button" className="icon-button plain" onClick={() => navigate('/')} aria-label="返回 Studio 主屏幕">
       <LayoutGrid size={18} aria-hidden="true" /></button>}
   </>;
-  const barTrailing = !project ? null : viewport === 'phone'
+  const inspectorTools = viewport === 'phone'
     ? <button type="button" className="icon-button plain" onClick={() => showInspectorTab(layout.inspectorTab)} aria-label="打开文件、终端、Git 与预览">
       <PanelRight size={19} aria-hidden="true" /></button>
     : <div className="wb-toolbar" role="group" aria-label="检查器">
@@ -318,6 +319,11 @@ export function WorkbenchShell() {
         </button>;
       })}
     </div>;
+  // The open PR of the project's branch sits before the inspector tools; it re-reads when the session's run ends.
+  const barTrailing = !project ? null : <>
+    <WorkbenchPullChip key={project.projectId} projectId={project.projectId} running={Boolean(session?.running)} />
+    {inspectorTools}
+  </>;
   // The bar of the states without a chat (loading, empty, missing, a crashed column).
   const shellBar = <header className="wb-bar">
     <div className="wb-bar-leading">{barLeading}</div>

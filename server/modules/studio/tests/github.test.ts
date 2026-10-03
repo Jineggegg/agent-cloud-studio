@@ -7,7 +7,11 @@ import type { StudioGhExecFile, StudioGhResult, StudioGhRun } from '@/shared/typ
 import { AppError } from '@/shared/utils.js';
 
 import { createGhRunner, resolveGhPath } from '../github/github-cli.adapter.js';
-import { createGitHubService, parseGitHubMergeRequest, parseGitHubPullRef } from '../github/github.service.js';
+import { createGitHubBranchService, parseWorkbenchProjectId } from '../github/github-branch.service.js';
+import {
+  createGitHubService, parseGitHubApproveRunsRequest, parseGitHubMergeRequest, parseGitHubPullRef, parseGitHubUpdateBranchRequest,
+} from '../github/github.service.js';
+import { createLocalRepoReader } from '../github/git-local.adapter.js';
 
 const HEAD = '6a86614f929c0d67be9d4124b066832715d7d698';
 const MOVED = '1111111111111111111111111111111111111111';
@@ -59,25 +63,46 @@ function detailData({ pull = {}, repository = {}, checks = [] as Check[] }: { pu
   };
 }
 
-function fakeGh(responders: Record<string, Responder>) {
+type GhKind = 'status' | 'inbox' | 'detail' | 'merge' | 'ready' | 'branch' | 'runs' | 'deployments' | 'write';
+
+// Which gh command an argv is, as the fake below answers it.
+function kindOf(args: string[]): GhKind | null {
+  if (args[0] === 'auth') return 'status';
+  if (args[0] === 'pr') return args[1] === 'merge' ? 'merge' : args[1] === 'ready' ? 'ready' : args[1] === 'list' ? 'branch' : null;
+  if (args[0] !== 'api') return null;
+  if (args[1] === '-X') return 'write';
+  if (args[1] === 'graphql') return (args[3] ?? '').includes('search(') ? 'inbox' : (args[3] ?? '').includes('pullRequest(number') ? 'detail' : null;
+  if (args[1].endsWith('/pending_deployments')) return 'deployments';
+  if (args[1].includes('/actions/runs?')) return 'runs';
+  return null;
+}
+
+const NO_RUNS = ok({ total_count: 0, workflow_runs: [] });
+
+function fakeGh(responders: Partial<Record<GhKind, Responder>>) {
   const calls: Call[] = [];
+  const defaults: Record<GhKind, Responder> = {
+    status: () => STATUS_OK,
+    inbox: () => ok({ data: { authored: { issueCount: 0, nodes: [] }, review: { issueCount: 0, nodes: [] }, owned: { issueCount: 0, nodes: [] } } }),
+    detail: () => ok(detailData()),
+    merge: () => ok(''),
+    ready: () => ok(''),
+    branch: () => ok([]),
+    runs: () => NO_RUNS,
+    deployments: () => ok([]),
+    write: () => ok('{}'),
+  };
   const run: StudioGhRun = async (args, options) => {
     calls.push({ args, timeoutMs: options.timeoutMs });
-    if (args[0] === 'auth') return (responders.status ?? (() => STATUS_OK))(args);
-    if (args[0] === 'pr' && args[1] === 'merge') return (responders.merge ?? (() => ok('')))(args);
-    const query = args[3] ?? '';
-    if (query.includes('search(')) return (responders.inbox ?? (() => ok({ data: { authored: { issueCount: 0, nodes: [] }, review: { issueCount: 0, nodes: [] }, owned: { issueCount: 0, nodes: [] } } })))(args);
-    if (query.includes('pullRequest(number')) return (responders.detail ?? (() => ok(detailData())))(args);
-    throw new Error(`unexpected gh call ${args.join(' ')}`);
+    const kind = kindOf(args);
+    if (!kind) throw new Error(`unexpected gh call ${args.join(' ')}`);
+    return (responders[kind] ?? defaults[kind])(args);
   };
-  const of = (kind: 'status' | 'inbox' | 'detail' | 'merge') => calls.filter(call =>
-    kind === 'status' ? call.args[0] === 'auth'
-      : kind === 'merge' ? call.args[0] === 'pr'
-        : call.args[0] === 'api' && call.args[3].includes(kind === 'inbox' ? 'search(' : 'pullRequest(number'));
+  const of = (kind: GhKind) => calls.filter(call => kindOf(call.args) === kind);
   return { calls, run, of };
 }
 
-function setup(responders: Record<string, Responder> = {}) {
+function setup(responders: Partial<Record<GhKind, Responder>> = {}) {
   const gh = fakeGh(responders);
   let clock = Date.parse('2026-10-02T12:00:00Z');
   const database = new Database(':memory:');
@@ -632,4 +657,285 @@ test('gh is found through STUDIO_GH_PATH, the usual install locations, then PATH
   assert.equal(logs.length, 1);
   assert.equal(resolveGhPath(undefined, { ...options, exists: file => file === '/home/me/.local/bin/gh' }), '/home/me/.local/bin/gh');
   assert.equal(resolveGhPath('  ', { ...options, exists: () => false }), 'gh');
+});
+
+// ------------------------------------------------------------------ one-tap fixes: update branch, mark ready, approve runs
+
+type ActionRow = { user_id: number; action: string; subject: string; outcome: string; code: string | null; message: string | null; finished_at: string | null };
+const actionRows = (database: Database.Database) => database.prepare('SELECT * FROM studio_github_actions ORDER BY id').all() as ActionRow[];
+
+const RUNS_PATH = `repos/Jineggegg/super-professor/actions/runs?head_sha=${HEAD}&per_page=50`;
+const workflowRun = (id: number, status: string, overrides: Record<string, unknown> = {}) => ({ id, name: `Run ${id}`, status, head_sha: HEAD, ...overrides });
+const RUNS_WAITING = ok({ total_count: 4, workflow_runs: [
+  workflowRun(501, 'action_required', { name: 'CI\u0007' }),
+  workflowRun(502, 'waiting', { name: 'Deploy' }),
+  workflowRun(503, 'completed'),
+  workflowRun(504, 'action_required', { head_sha: MOVED }),
+  workflowRun(-5, 'action_required'),
+] });
+const DEPLOYMENTS = ok([
+  { environment: { id: 77, name: 'production' }, current_user_can_approve: true },
+  { environment: { id: 78, name: 'staging' }, current_user_can_approve: false },
+]);
+
+test('the detail lists runs waiting for approval, from exact Actions reads, and never fails because of them', async () => {
+  const { gh, service } = setup({ runs: () => RUNS_WAITING, deployments: () => DEPLOYMENTS });
+  const detail = await service.pull(REF);
+  assert.deepEqual(gh.of('runs')[0].args, ['api', RUNS_PATH]);
+  assert.deepEqual(gh.of('deployments')[0].args, ['api', 'repos/Jineggegg/super-professor/actions/runs/502/pending_deployments']);
+  assert.deepEqual(detail.pendingRuns, [
+    { id: 501, name: 'CI', kind: 'contributor', environments: [] },
+    { id: 502, name: 'Deploy', kind: 'deployment', environments: ['production'] },
+  ]);
+  assert.ok(!JSON.stringify(detail).includes('environmentIds'));
+
+  // Read-only access cannot approve a contributor's run; a deployment nobody here may approve is left out.
+  const readOnly = setup({ runs: () => RUNS_WAITING, deployments: () => ok([{ environment: { id: 78, name: 'staging' }, current_user_can_approve: false }]), detail: () => ok(detailData({ repository: { viewerPermission: 'READ' } })) });
+  assert.deepEqual((await readOnly.service.pull(REF)).pendingRuns, []);
+
+  const broken = setup({ runs: () => failed('HTTP 500: boom') });
+  const fallback = await broken.service.pull(REF);
+  assert.deepEqual(fallback.pendingRuns, []);
+  assert.equal(fallback.number, 114);
+
+  const lookupFails = setup({ runs: () => RUNS_WAITING, deployments: () => failed('HTTP 502') });
+  assert.deepEqual((await lookupFails.service.pull(REF)).pendingRuns.map(run => run.id), [501]);
+
+  const closed = setup({ runs: () => RUNS_WAITING, detail: () => ok(detailData({ pull: { state: 'MERGED' } })) });
+  assert.deepEqual((await closed.service.pull(REF)).pendingRuns, []);
+  assert.equal(closed.gh.of('runs').length, 0);
+});
+
+test('update branch calls GitHub with the SHA the user saw, then drops the caches and re-reads, all audited', async () => {
+  let updated = false;
+  const { gh, service, database } = setup({
+    detail: () => ok(detailData({ pull: updated ? {} : { mergeStateStatus: 'BEHIND' } })),
+    write: () => { updated = true; return ok({ message: 'Updating pull request branch.', url: 'https://github.com/x' }); },
+  });
+  await service.pull(REF);
+  const result = await service.updateBranch(7, REF, { expectedHeadSha: HEAD });
+  assert.deepEqual(gh.of('write')[0].args, ['api', '-X', 'PUT', 'repos/Jineggegg/super-professor/pulls/114/update-branch', '-f', `expected_head_sha=${HEAD}`]);
+  assert.equal(gh.of('write')[0].timeoutMs, 30_000);
+  assert.equal(result.message, '已把 main 的最新提交合并进 feat/lotus，检查会重新运行');
+  assert.equal(result.pull?.mergeState, 'clean');
+  // The sheet's read, the strict read the decision is made on, and the read after the update.
+  assert.equal(gh.of('detail').length, 3);
+  assert.deepEqual(actionRows(database).map(row => [row.user_id, row.action, row.subject, row.outcome]), [[7, 'update-branch', HEAD, 'done']]);
+  assert.ok(actionRows(database)[0].finished_at);
+  for (const args of gh.calls.map(call => call.args)) assert.ok(!args.some(arg => /--admin|--auto/.test(arg)), args.join(' '));
+});
+
+test('update branch refuses a moved head or a branch that is not behind without calling GitHub', async () => {
+  const cases = [
+    { name: 'moved', pull: { mergeStateStatus: 'BEHIND', headRefOid: MOVED }, code: 'HEAD_MOVED', message: /现在是 1111111/ },
+    { name: 'not behind', pull: {}, code: 'NOT_BEHIND', message: /不需要更新分支/ },
+    { name: 'closed', pull: { mergeStateStatus: 'BEHIND', state: 'CLOSED' }, code: 'PR_NOT_OPEN', message: /已关闭/ },
+  ];
+  for (const item of cases) {
+    const { gh, service, database } = setup({ detail: () => ok(detailData({ pull: item.pull })) });
+    await assert.rejects(service.updateBranch(3, REF, { expectedHeadSha: HEAD }), (error: unknown) => {
+      assert.ok(error instanceof AppError, item.name);
+      assert.equal(error.code, item.code, item.name);
+      assert.match(error.message, item.message, item.name);
+      return true;
+    });
+    assert.equal(gh.of('write').length, 0, item.name);
+    assert.deepEqual(actionRows(database).map(row => [row.outcome, row.code]), [['refused', item.code]], item.name);
+  }
+});
+
+test('GitHub refusing a fix is classified in Chinese, never leaks tokens, and a timeout is recorded as unknown', async () => {
+  const behind = () => ok(detailData({ pull: { mergeStateStatus: 'BEHIND' } }));
+  const cases: Array<{ name: string; result: StudioGhResult; code: string; status: number }> = [
+    { name: 'moved', result: failed('gh: expected head sha didn\'t match current head ref. (HTTP 422)', JSON.stringify({ message: "expected head sha didn't match current head ref." })), code: 'HEAD_MOVED', status: 409 },
+    { name: 'conflict', result: failed('gh: merge conflict between base and head (HTTP 422)'), code: 'MERGE_CONFLICT', status: 409 },
+    { name: 'permission', result: failed('gh: Resource not accessible by integration (HTTP 403)'), code: 'NO_PERMISSION', status: 403 },
+    { name: 'signed out', result: failed('HTTP 401: Bad credentials (https://api.github.com/)'), code: 'GH_NOT_AUTHENTICATED', status: 409 },
+    { name: 'generic', result: failed(`gh: something odd ${TOKEN} (HTTP 500)`), code: 'GH_FAILED', status: 502 },
+    { name: 'timeout', result: { ok: false, reason: 'timeout', stdout: '', stderr: '', exitCode: null }, code: 'ACTION_OUTCOME_UNKNOWN', status: 504 },
+  ];
+  for (const item of cases) {
+    const { service, database } = setup({ detail: behind, write: () => item.result });
+    await assert.rejects(service.updateBranch(3, REF, { expectedHeadSha: HEAD }), (error: unknown) => {
+      assert.ok(error instanceof AppError, item.name);
+      assert.equal(error.code, item.code, item.name);
+      assert.equal(error.statusCode, item.status, item.name);
+      assert.ok(!error.message.includes(TOKEN), item.name);
+      return true;
+    });
+    const [row] = actionRows(database);
+    assert.equal(row.outcome, item.code === 'ACTION_OUTCOME_UNKNOWN' ? 'unknown' : 'failed', item.name);
+    assert.equal(row.code, item.code, item.name);
+  }
+});
+
+test('mark ready runs gh pr ready with exact args and refuses a pull request that is not a draft', async () => {
+  let ready = false;
+  const { gh, service, database } = setup({
+    detail: () => ok(detailData({ pull: { isDraft: !ready } })),
+    ready: () => { ready = true; return ok(''); },
+  });
+  const result = await service.markReady(7, REF);
+  assert.deepEqual(gh.of('ready')[0].args, ['pr', 'ready', '114', '--repo', 'Jineggegg/super-professor']);
+  assert.equal(result.message, '#114 已标记为可审查');
+  assert.equal(result.pull?.isDraft, false);
+  await assert.rejects(service.markReady(7, REF), /已经是可审查状态/);
+  assert.equal(gh.of('ready').length, 1);
+  assert.deepEqual(actionRows(database).map(row => [row.action, row.outcome, row.code]), [['ready', 'done', null], ['ready', 'refused', 'NOT_DRAFT']]);
+});
+
+test('approve runs accepts only runs a fresh read lists as pending, with exact API calls for each kind', async () => {
+  const { gh, service, database } = setup({ runs: () => RUNS_WAITING, deployments: () => DEPLOYMENTS });
+  const result = await service.approveRuns(7, REF, { runIds: [502, 501] });
+  assert.deepEqual(gh.of('write').map(call => call.args), [
+    ['api', '-X', 'POST', 'repos/Jineggegg/super-professor/actions/runs/502/pending_deployments', '-F', 'environment_ids[]=77', '-f', 'state=approved', '-f', 'comment=Approved from Studio'],
+    ['api', '-X', 'POST', 'repos/Jineggegg/super-professor/actions/runs/501/approve'],
+  ]);
+  assert.equal(result.message, '已批准 2 个运行');
+  assert.deepEqual(actionRows(database).map(row => [row.action, row.subject, row.outcome]), [['approve-runs', '502,501', 'done']]);
+
+  // A completed run, another commit's run or an unknown id is refused before anything is approved.
+  for (const runIds of [[503], [504], [501, 999]]) {
+    const other = setup({ runs: () => RUNS_WAITING, deployments: () => DEPLOYMENTS });
+    await assert.rejects(other.service.approveRuns(7, REF, { runIds }), (error: unknown) => error instanceof AppError && error.code === 'RUN_NOT_PENDING');
+    assert.equal(other.gh.of('write').length, 0, JSON.stringify(runIds));
+  }
+
+  // A failure after one approval says which went through.
+  let writes = 0;
+  const partial = setup({ runs: () => RUNS_WAITING, deployments: () => DEPLOYMENTS, write: () => (writes++ ? failed('gh: Resource not accessible by integration (HTTP 403)') : ok('{}')) });
+  await assert.rejects(partial.service.approveRuns(7, REF, { runIds: [501, 502] }), (error: unknown) => {
+    assert.ok(error instanceof AppError);
+    assert.equal(error.code, 'NO_PERMISSION');
+    assert.equal(error.message, '已批准「CI」，「Deploy」没有批准：当前 gh 账号没有权限执行这个操作');
+    return true;
+  });
+  assert.equal(actionRows(partial.database)[0].outcome, 'failed');
+});
+
+test('fixes and merges on one pull request never overlap, and nothing runs without an audit row', async () => {
+  let release: () => void = () => {};
+  const { gh, service, database } = setup({
+    detail: () => ok(detailData({ pull: { mergeStateStatus: 'BEHIND' } })),
+    write: () => new Promise(resolve => { release = () => resolve(ok('{}')); }),
+  });
+  const first = service.updateBranch(3, REF, { expectedHeadSha: HEAD });
+  for (let index = 0; index < 5; index += 1) await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  await rejectsWith(service.markReady(3, REF), 'ACTION_IN_PROGRESS', 409);
+  await rejectsWith(service.merge(3, REF, MERGE), 'ACTION_IN_PROGRESS', 409);
+  release();
+  await first;
+  assert.equal(gh.of('merge').length, 0);
+  assert.deepEqual(actionRows(database).map(row => [row.action, row.outcome]), [['update-branch', 'done'], ['ready', 'refused']]);
+
+  service.recordInvalidAction(3, REF, 'approve-runs', new AppError('runIds 无效', { statusCode: 400, code: 'INVALID_RUN_IDS' }));
+  const last = actionRows(database).at(-1);
+  assert.deepEqual([last?.action, last?.outcome, last?.code], ['approve-runs', 'invalid', 'INVALID_RUN_IDS']);
+
+  database.close();
+  await rejectsWith(service.markReady(3, REF), 'AUDIT_FAILED', 500);
+  assert.equal(gh.of('ready').length, 0);
+});
+
+test('fix bodies are validated before anything reaches gh', () => {
+  assert.deepEqual(parseGitHubUpdateBranchRequest({ expectedHeadSha: HEAD }), { expectedHeadSha: HEAD });
+  for (const body of [null, {}, { expectedHeadSha: HEAD.toUpperCase() }, { expectedHeadSha: `-${HEAD.slice(1)}` }]) {
+    assert.throws(() => parseGitHubUpdateBranchRequest(body), AppError, JSON.stringify(body));
+  }
+  assert.deepEqual(parseGitHubApproveRunsRequest({ runIds: [5, 5, 9] }), { runIds: [5, 9] });
+  for (const body of [null, { runIds: [] }, { runIds: '5' }, { runIds: [0] }, { runIds: [-1] }, { runIds: [1.5] }, { runIds: ['5'] },
+    { runIds: [Number.MAX_SAFE_INTEGER + 1] }, { runIds: Array.from({ length: 21 }, (_, index) => index + 1) }]) {
+    assert.throws(() => parseGitHubApproveRunsRequest(body), AppError, JSON.stringify(body));
+  }
+});
+
+// ------------------------------------------------------------------ the open PR of a workbench project's branch
+
+function branchSetup({ local = { branch: 'feat/lotus', remoteUrl: 'git@github.com:Jineggegg/super-professor.git' } as { branch: string | null; remoteUrl: string | null },
+  responders = {} as Partial<Record<GhKind, Responder>>, directory = '/home/me/projects/super-professor' as string | null } = {}) {
+  const base = setup({ branch: () => ok([{ number: 9, isCrossRepository: true }, { number: 114, isCrossRepository: false }]), ...responders });
+  let clock = Date.parse('2026-10-02T12:00:00Z');
+  const reads: string[] = [];
+  const branches = createGitHubBranchService({
+    github: base.service,
+    projectDirectory: id => (id === 'p-1' ? directory : null),
+    readLocalRepo: async dir => { reads.push(dir); return local; },
+    now: () => clock,
+  });
+  return { ...base, branches, reads, tick: (ms: number) => { clock += ms; base.advance(ms); } };
+}
+
+test('the branch PR comes from the project directory, its github.com origin and gh pr list, skipping forks', async () => {
+  const { gh, branches, reads } = branchSetup();
+  const found = await branches.branchPull('p-1');
+  assert.deepEqual(reads, ['/home/me/projects/super-professor']);
+  assert.deepEqual(gh.of('branch')[0].args, ['pr', 'list', '--repo', 'Jineggegg/super-professor', '--head=feat/lotus', '--state', 'open', '--json', 'number,isCrossRepository', '--limit', '5']);
+  assert.equal(found?.branch, 'feat/lotus');
+  assert.equal(found?.canMerge, true);
+  assert.equal(found?.pull.number, 114);
+  assert.deepEqual(found?.pull.blockers, []);
+  assert.ok(found && !('files' in found.pull) && !('body' in found.pull));
+  await rejectsWith(branches.branchPull('nope'), 'PROJECT_NOT_FOUND', 404);
+});
+
+test('the branch PR is cached for 30 s per project, and a forced refresh only looks again after 5 s', async () => {
+  const { gh, branches, tick } = branchSetup();
+  await Promise.all([branches.branchPull('p-1'), branches.branchPull('p-1')]);
+  assert.equal(gh.of('branch').length, 1);
+  tick(2_000);
+  await branches.branchPull('p-1', true);
+  assert.equal(gh.of('branch').length, 1);
+  tick(4_000);
+  await branches.branchPull('p-1', true);
+  assert.equal(gh.of('branch').length, 2);
+  tick(31_000);
+  await branches.branchPull('p-1');
+  assert.equal(gh.of('branch').length, 3);
+});
+
+test('no chip: other hosts, odd remotes, detached HEAD, unsafe branch names, signed-out gh, no PR or a closed one', async () => {
+  for (const remoteUrl of ['https://gitlab.com/Jineggegg/super-professor.git', 'git@github.com:-x/evil.git', 'https://github.com.evil.io/a/b', 'https://github.com/a/b/c', '/srv/git/repo.git']) {
+    const { gh, branches } = branchSetup({ local: { branch: 'main', remoteUrl } });
+    assert.equal(await branches.branchPull('p-1'), null, remoteUrl);
+    assert.equal(gh.of('branch').length, 0, remoteUrl);
+  }
+  for (const remoteUrl of ['https://github.com/Jineggegg/super-professor', 'https://x-access:secret@github.com/Jineggegg/super-professor.git', 'ssh://git@github.com/Jineggegg/super-professor.git']) {
+    const { branches } = branchSetup({ local: { branch: 'feat/lotus', remoteUrl } });
+    assert.equal((await branches.branchPull('p-1'))?.pull.number, 114, remoteUrl);
+  }
+  for (const branch of [null, '-x', 'a..b', 'feat/x.lock', 'bad name']) {
+    const { gh, branches } = branchSetup({ local: { branch, remoteUrl: 'git@github.com:Jineggegg/super-professor.git' } });
+    assert.equal(await branches.branchPull('p-1'), null, String(branch));
+    assert.equal(gh.of('branch').length, 0, String(branch));
+  }
+  const signedOut = branchSetup({ responders: { status: () => ok({ hosts: {} }) } });
+  assert.equal(await signedOut.branches.branchPull('p-1'), null);
+  assert.equal(signedOut.gh.of('branch').length, 0);
+  const none = branchSetup({ responders: { branch: () => ok([]) } });
+  assert.equal(await none.branches.branchPull('p-1'), null);
+  const closed = branchSetup({ responders: { detail: () => ok(detailData({ pull: { state: 'CLOSED' } })) } });
+  assert.equal(await closed.branches.branchPull('p-1'), null);
+  assert.throws(() => parseWorkbenchProjectId('../x'), AppError);
+  assert.throws(() => parseWorkbenchProjectId(undefined), AppError);
+  assert.equal(parseWorkbenchProjectId('0f9b6c1e-1b0f-4b8e-9f0a-1c2d3e4f5a6b'), '0f9b6c1e-1b0f-4b8e-9f0a-1c2d3e4f5a6b');
+});
+
+test('the local repo reader runs git with an exact argv and no shell, and never rejects', async () => {
+  const calls: Array<{ file: string; args: string[]; options: Record<string, unknown> }> = [];
+  const read = createLocalRepoReader({
+    env: { HOME: '/home/me' },
+    execFile: (file, args, options, done) => {
+      calls.push({ file, args, options });
+      if (args[0] === 'symbolic-ref') done(null, 'feat/lotus\n', '');
+      else done(Object.assign(new Error('no origin'), { code: 2 }), '', 'error: No such remote');
+    },
+  });
+  assert.deepEqual(await read('/srv/project'), { branch: 'feat/lotus', remoteUrl: null });
+  assert.deepEqual(calls.map(call => [call.file, ...call.args]), [['git', 'symbolic-ref', '--quiet', '--short', 'HEAD'], ['git', 'remote', 'get-url', 'origin']]);
+  assert.equal(calls[0].options.cwd, '/srv/project');
+  assert.equal((calls[0].options.env as Record<string, string>).GIT_TERMINAL_PROMPT, '0');
+  assert.ok(!('shell' in calls[0].options));
+  const throwing = createLocalRepoReader({ execFile: () => { throw new Error('spawn EAGAIN'); } });
+  assert.deepEqual(await throwing('/srv/project'), { branch: null, remoteUrl: null });
 });

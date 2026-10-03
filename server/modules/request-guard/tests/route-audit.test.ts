@@ -136,7 +136,7 @@ test('the route walk found the whole route table', (context) => {
   assert.ok(uniqueProbes.length > 150, `only ${uniqueProbes.length} routes found`);
   for (const mount of ['/api/auth', '/api/studio', '/api/projects', '/api/git', '/api/settings', '/api/agent', '/api/browser-use-mcp', '/api/task-recovery', '/api/studio/runtime',
     // Studio v6 routers, all inside the authenticated /api/studio router.
-    '/api/studio/workbench', '/api/studio/github', '/api/studio/builds', '/api/studio/memory']) {
+    '/api/studio/workbench', '/api/studio/github', '/api/studio/builds', '/api/studio/memory', '/api/studio/suggestions']) {
     assert.ok(uniqueProbes.some((probe) => probe.path.startsWith(`${mount}/`)), `no routes found under ${mount}`);
   }
 });

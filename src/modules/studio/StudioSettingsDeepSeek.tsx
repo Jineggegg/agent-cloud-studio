@@ -1,7 +1,8 @@
 import { useState } from 'react';
 
-import { IconKey, IconLoader2 } from '@/modules/studio/icons/tabler';
+import { IconKey, IconLoader2, IconSparkles } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
+import { useSetUiPreference, useUiPreferences } from '@/shared/context/UiPreferencesContext';
 import type { StudioStatus } from '@/shared/types';
 import { StudioBrandMark } from '@/modules/studio/brandIcons';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
@@ -20,6 +21,8 @@ export function StudioSettingsDeepSeek({ status, onChange }: { status: StudioSta
   // Removing a key waits for an explicit confirmation in the alert.
   const [confirmRemove, setConfirmRemove] = useState(false);
   const configured = Boolean(status?.deepseek.configured);
+  const { suggestNextPrompt } = useUiPreferences();
+  const setPreference = useSetUiPreference();
 
   const act = async (kind: 'save' | 'test' | 'remove', operation: () => Promise<void>) => {
     setBusy(kind); setError(''); setResult('');
@@ -28,7 +31,8 @@ export function StudioSettingsDeepSeek({ status, onChange }: { status: StudioSta
     finally { setBusy(null); }
   };
 
-  return <section className="ios-section first" aria-labelledby="studio-deepseek-heading">
+  return <>
+  <section className="ios-section first" aria-labelledby="studio-deepseek-heading">
     <div className="ios-section-header"><h2 id="studio-deepseek-heading">API 密钥</h2><span className="caption">本地密钥库</span></div>
     <div className="ios-list">
       <div className="ios-row">
@@ -61,5 +65,18 @@ export function StudioSettingsDeepSeek({ status, onChange }: { status: StudioSta
     {confirmRemove && <StudioConfirmSheet title="移除 DeepSeek 密钥？" message="本地保存的密钥将被删除，之后需要重新输入才能对话。" confirmLabel="移除"
       onCancel={() => setConfirmRemove(false)}
       onConfirm={() => { setConfirmRemove(false); void act('remove', async () => { await api.studio.removeKey().then(readApiJson); setResult('密钥已移除'); }); }} />}
-  </section>;
+  </section>
+  <section className="ios-section" aria-labelledby="studio-suggest-heading">
+    <div className="ios-section-header"><h2 id="studio-suggest-heading">输入建议</h2></div>
+    <div className="ios-list">
+      <label className="ios-row switch-row">
+        <SettingsIcon><IconSparkles size={18} /></SettingsIcon>
+        <span className="ios-row-body"><strong>建议下一句</strong><small>回复完成后，在输入框里淡淡显示建议的下一条消息，点发送即可</small></span>
+        <input type="checkbox" role="switch" className="ios-switch" aria-label="建议下一句" checked={suggestNextPrompt}
+          onChange={event => setPreference('suggestNextPrompt', event.target.checked)} />
+      </label>
+    </div>
+    <p className="ios-section-footer">适用于工作台里的 Claude Code、Codex、DeepSeek 对话和 DeepSeek 应用。只把最近几轮对话（代码块省略）发给 deepseek-chat，每次约千分之一元；没有密钥时只在助手问「要我继续吗？」时建议「好的，继续」。</p>
+  </section>
+  </>;
 }
