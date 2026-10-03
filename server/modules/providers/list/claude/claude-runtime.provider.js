@@ -41,6 +41,7 @@ import {
   createCompleteMessage,
   createNormalizedMessage,
   recordClaudeRateLimitEvent,
+  resolveClaudeContextWindow,
   resolveProviderModelSelection
 } from '@/shared/utils.js';
 
@@ -542,25 +543,90 @@ function readNumber(value) {
  */
 
 /**
+ * What one run knows about its session's context window.
+ * @typedef {Object} ContextWindowSource
+ * @property {string[]} [models] - Model ids known for the session: the one the
+ *   run asked for and the one the CLI announced in its `init` message
+ * @property {number|null} [reportedContextWindow] - The window the SDK reported
+ *   in a turn's `result.modelUsage`; wins over anything derived from `models`
+ */
+
+/**
+ * The context window a budget of `usedTokens` is measured against.
+ *
+ * `CONTEXT_WINDOW` stays an explicit override; otherwise the SDK-reported
+ * window, otherwise one derived from the session's model (a `[1m]` model has
+ * 1M tokens, the others 200K). See `resolveClaudeContextWindow`.
+ * @param {ContextWindowSource} [source]
+ * @param {number} usedTokens
+ * @returns {number}
+ */
+function resolveBudgetContextWindow(source, usedTokens) {
+  return resolveClaudeContextWindow({
+    configuredContextWindow: process.env.CONTEXT_WINDOW,
+    reportedContextWindow: source?.reportedContextWindow,
+    models: source?.models ?? [],
+    usedTokens,
+  });
+}
+
+/** A model id without the long-context suffix, lower-cased, for matching `modelUsage` keys. */
+function baseModelId(model) {
+  return String(model).replace(/\[1m\]$/i, '').trim().toLowerCase();
+}
+
+/**
+ * The context window the SDK reports in a turn's `result.modelUsage`.
+ *
+ * `modelUsage` has one entry per model the turn used, subagents' included,
+ * each carrying that model's `contextWindow`. The session's own model is the
+ * entry whose id matches one of `sessionModels`; failing that, the entry that
+ * carried the most prompt tokens, which is the main conversation's.
+ * @param {Object} sdkMessage - SDK stream message
+ * @param {string[]} [sessionModels] - Model ids known for the session
+ * @returns {number|null} The reported window, or null when none is reported
+ */
+function readReportedContextWindow(sdkMessage, sessionModels = []) {
+  if (sdkMessage?.type !== 'result' || !sdkMessage.modelUsage || typeof sdkMessage.modelUsage !== 'object') {
+    return null;
+  }
+
+  const candidates = Object.entries(sdkMessage.modelUsage)
+    .filter(([, usage]) => usage && typeof usage === 'object' && readNumber(usage.contextWindow) > 0);
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const wanted = new Set(sessionModels.filter((model) => typeof model === 'string' && model.trim()).map(baseModelId));
+  const promptTokens = (usage) => readNumber(usage.inputTokens)
+    + readNumber(usage.cacheReadInputTokens)
+    + readNumber(usage.cacheCreationInputTokens);
+  const [, usage] = candidates.find(([model]) => wanted.has(baseModelId(model)))
+    ?? candidates.reduce((best, entry) => (promptTokens(entry[1]) > promptTokens(best[1]) ? entry : best));
+  return readNumber(usage.contextWindow);
+}
+
+/**
  * Builds a context-window budget from an Anthropic-shaped usage payload.
  *
  * `input_tokens + cache_read + cache_creation` is one request's whole prompt,
  * which is exactly what the context window holds at that moment.
  * @param {Object} messageUsage - Anthropic usage payload
+ * @param {ContextWindowSource} [contextWindowSource] - What the window is resolved from
  * @returns {TokenBudget} Token budget object
  */
-function buildTokenBudget(messageUsage) {
+function buildTokenBudget(messageUsage, contextWindowSource) {
   const directInputTokens = readNumber(messageUsage.input_tokens ?? messageUsage.inputTokens);
   const cacheCreationTokens = readNumber(messageUsage.cache_creation_input_tokens ?? messageUsage.cacheCreationInputTokens ?? messageUsage.cacheCreationTokens);
   const cacheReadTokens = readNumber(messageUsage.cache_read_input_tokens ?? messageUsage.cacheReadInputTokens ?? messageUsage.cacheReadTokens);
   const cacheTokens = cacheCreationTokens + cacheReadTokens;
   const inputTokens = directInputTokens + cacheTokens;
   const outputTokens = readNumber(messageUsage.output_tokens ?? messageUsage.outputTokens);
-  const contextWindow = parseInt(process.env.CONTEXT_WINDOW, 10) || 160000;
+  const used = inputTokens + outputTokens;
 
   return {
-    used: inputTokens + outputTokens,
-    total: contextWindow,
+    used,
+    total: resolveBudgetContextWindow(contextWindowSource, used),
     inputTokens,
     outputTokens,
     cacheReadTokens,
@@ -580,9 +646,10 @@ function buildTokenBudget(messageUsage) {
  * prompt its own request carried. The turn-ending `result` is deliberately not
  * a source here — see `extractCumulativeTokenBudget`.
  * @param {Object} sdkMessage - SDK stream message
+ * @param {ContextWindowSource} [contextWindowSource] - What the window is resolved from
  * @returns {TokenBudget|null} Token budget object or null
  */
-function extractTokenBudget(sdkMessage) {
+function extractTokenBudget(sdkMessage, contextWindowSource) {
   if (!sdkMessage || typeof sdkMessage !== 'object') {
     return null;
   }
@@ -607,7 +674,7 @@ function extractTokenBudget(sdkMessage) {
     return null;
   }
 
-  return buildTokenBudget(messageUsage);
+  return buildTokenBudget(messageUsage, contextWindowSource);
 }
 
 /**
@@ -624,15 +691,25 @@ function extractTokenBudget(sdkMessage) {
  * message ever emits, so it stays available for the caller to use when a turn
  * produced no assistant budget at all.
  * @param {Object} sdkMessage - SDK stream message
+ * @param {ContextWindowSource} [contextWindowSource] - What the window is resolved from
  * @returns {TokenBudget|null} Token budget object or null
  */
-function extractCumulativeTokenBudget(sdkMessage) {
+function extractCumulativeTokenBudget(sdkMessage, contextWindowSource) {
   if (!sdkMessage || typeof sdkMessage !== 'object' || sdkMessage.type !== 'result') {
     return null;
   }
 
+  // The result reports the window its own turn ran with; that beats any
+  // earlier report and anything derived from the model id.
+  const source = {
+    ...contextWindowSource,
+    reportedContextWindow: readReportedContextWindow(sdkMessage, contextWindowSource?.models)
+      ?? contextWindowSource?.reportedContextWindow
+      ?? null,
+  };
+
   if (sdkMessage.usage && typeof sdkMessage.usage === 'object') {
-    return buildTokenBudget(sdkMessage.usage);
+    return buildTokenBudget(sdkMessage.usage, source);
   }
 
   if (!sdkMessage.modelUsage || typeof sdkMessage.modelUsage !== 'object') {
@@ -650,11 +727,10 @@ function extractCumulativeTokenBudget(sdkMessage) {
   const inputTokens = readNumber(modelData.cumulativeInputTokens ?? modelData.inputTokens);
   const outputTokens = readNumber(modelData.cumulativeOutputTokens ?? modelData.outputTokens);
   const totalUsed = inputTokens + outputTokens;
-  const contextWindow = parseInt(process.env.CONTEXT_WINDOW, 10) || 160000;
 
   return {
     used: totalUsed,
-    total: contextWindow,
+    total: resolveBudgetContextWindow(source, totalUsed),
     inputTokens,
     outputTokens,
     breakdown: {
@@ -1015,6 +1091,12 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   // Set once a turn publishes a budget read from an assistant message, so the
   // turn-ending `result` is only mined for usage when nothing better arrived.
   let assistantBudgetSent = false;
+  // The newest budget read from an assistant message, kept so it can be
+  // republished when a turn's `result` reports the real context window.
+  let lastAssistantBudget = null;
+  // What this run's context window is resolved from; filled in as the run
+  // learns its model (requested, then announced) and the SDK-reported window.
+  const contextWindowSource = { models: [], reportedContextWindow: null };
 
   // A new turn supersedes any earlier one still holding this session's process
   // open, so held runs cannot stack up across a conversation.
@@ -1055,6 +1137,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       model: resolvedModel || options.model,
       effortModels,
     });
+    contextWindowSource.models.push(sdkOptions.model);
 
     const mcpServers = await loadMcpConfig(options.cwd);
     if (mcpServers) {
@@ -1258,14 +1341,37 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         ws.send(msg);
       }
 
+      // The model the CLI actually runs (it may differ from the requested
+      // one, e.g. a `[1m]` default from the user's own settings).
+      if (message.type === 'system' && message.subtype === 'init' && typeof message.model === 'string' && message.model.trim()) {
+        contextWindowSource.models.push(message.model.trim());
+      }
+
+      // A turn's result reports the window the CLI really ran with. It replaces
+      // the model-derived guess, and the turn's last assistant budget is
+      // republished against it so the ring stops showing the guess.
+      let correctedBudget = null;
+      const reportedContextWindow = readReportedContextWindow(message, contextWindowSource.models);
+      if (reportedContextWindow && reportedContextWindow !== contextWindowSource.reportedContextWindow) {
+        contextWindowSource.reportedContextWindow = reportedContextWindow;
+        const correctedTotal = lastAssistantBudget
+          ? resolveBudgetContextWindow(contextWindowSource, lastAssistantBudget.used)
+          : null;
+        if (correctedTotal && correctedTotal !== lastAssistantBudget.total) {
+          correctedBudget = { ...lastAssistantBudget, total: correctedTotal };
+          lastAssistantBudget = correctedBudget;
+        }
+      }
+
       // Extract and send token budget updates from assistant usage payloads,
       // falling back to the turn's cumulative bill only for SDK builds that
       // report no per-assistant usage at all.
-      const tokenBudgetData = extractTokenBudget(message)
-        || (assistantBudgetSent ? null : extractCumulativeTokenBudget(message));
+      const tokenBudgetData = extractTokenBudget(message, contextWindowSource)
+        || (assistantBudgetSent ? correctedBudget : extractCumulativeTokenBudget(message, contextWindowSource));
       if (tokenBudgetData) {
         if (message.type === 'assistant') {
           assistantBudgetSent = true;
+          lastAssistantBudget = tokenBudgetData;
         }
         ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
       }

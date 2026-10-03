@@ -448,9 +448,9 @@ function CostContent({ data }: { data: CostCommandData }) {
             icon: TerminalSquare,
           },
         ]),
-    // Only when it is consistent with what was actually used. The window comes
-    // from the CONTEXT_WINDOW setting, which cannot know whether a session is
-    // running a 200K or a 1M variant of the same model name — and a row reading
+    // Only when it is consistent with what was actually used. The server
+    // resolves the window per session, but a CONTEXT_WINDOW override can still
+    // be smaller than the session's real window — and a row reading
     // "used 404,009 / window 160,000" is worse than no row at all.
     ...(total > used
       ? [{ label: 'Context window', value: formatNumber(total), icon: Gauge }]

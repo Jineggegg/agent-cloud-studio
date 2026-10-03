@@ -198,7 +198,7 @@ test('the Claude summarizer reads the newest assistant turn, not the whole conve
     { type: 'assistant', message: { usage: { input_tokens: 3, cache_read_input_tokens: 4000, cache_creation_input_tokens: 100, output_tokens: 80 } } },
   ];
 
-  assert.deepEqual(summarizeClaudeTokenUsage(entries, '200000'), {
+  assert.deepEqual(summarizeClaudeTokenUsage(entries, { configuredContextWindow: '200000' }), {
     used: 4183,
     total: 200_000,
     inputTokens: 4103,
@@ -230,7 +230,7 @@ test('the Claude summarizer skips synthetic rows that carry an all-zero usage bl
     },
   ];
 
-  assert.equal(summarizeClaudeTokenUsage(entries, '200000').used, 4083);
+  assert.equal(summarizeClaudeTokenUsage(entries, { configuredContextWindow: '200000' }).used, 4083);
 });
 
 test('the Claude summarizer skips a subagent sidechain turn', () => {
@@ -245,11 +245,11 @@ test('the Claude summarizer skips a subagent sidechain turn', () => {
     },
   ];
 
-  assert.equal(summarizeClaudeTokenUsage(entries, '200000').used, 4083);
+  assert.equal(summarizeClaudeTokenUsage(entries, { configuredContextWindow: '200000' }).used, 4083);
 });
 
 test('the Claude summarizer reports zero for a transcript with no assistant turn yet', () => {
-  const usage = summarizeClaudeTokenUsage([{ type: 'user', message: { role: 'user', content: 'hi' } }], '200000');
+  const usage = summarizeClaudeTokenUsage([{ type: 'user', message: { role: 'user', content: 'hi' } }], { configuredContextWindow: '200000' });
 
   assert.equal(usage.used, 0);
   assert.equal(usage.total, 200_000);
@@ -370,4 +370,47 @@ test('Codex token usage falls back to the whole file when the tail has no token_
   } finally {
     await rm(tempDirectory, { recursive: true, force: true });
   }
+});
+
+test('stored Claude usage is measured against the window of the session model', async () => {
+  const tempDirectory = await mkdtemp(path.join(tmpdir(), 'provider-token-usage-claude-window-'));
+  const sessionFilePath = path.join(tempDirectory, 'provider-session.jsonl');
+
+  try {
+    // Transcript rows name the API model, which never carries the `[1m]` suffix.
+    await writeFile(sessionFilePath, JSON.stringify({
+      type: 'assistant',
+      message: { model: 'claude-opus-5-5', usage: { input_tokens: 10, cache_read_input_tokens: 175_990, output_tokens: 0 } },
+    }));
+
+    const usageFor = (model: string | null) => createProviderTokenUsageService({
+      getSessionById: () => createSessionRow({ jsonl_path: sessionFilePath, model }),
+      getClaudeContextWindow: () => undefined,
+    }).getSessionTokenUsage('app-session');
+
+    const longContext = await usageFor('claude-opus-5-5[1m]');
+    assert.equal(longContext.used, 176_000);
+    assert.equal(longContext.total, 1_000_000);
+
+    assert.equal((await usageFor('claude-opus-5-5')).total, 200_000);
+    assert.equal((await usageFor(null)).total, 200_000);
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test('stored Claude usage beyond the standard window implies the 1M variant', () => {
+  const usage = summarizeClaudeTokenUsage([
+    { type: 'assistant', message: { model: 'claude-opus-5-5', usage: { input_tokens: 404_009, output_tokens: 0 } } },
+  ], { configuredContextWindow: undefined });
+
+  assert.equal(usage.total, 1_000_000);
+});
+
+test('CONTEXT_WINDOW overrides the stored session model window', () => {
+  const usage = summarizeClaudeTokenUsage([
+    { type: 'assistant', message: { usage: { input_tokens: 1_000, output_tokens: 0 } } },
+  ], { configuredContextWindow: '180000', sessionModel: 'claude-opus-5-5[1m]' });
+
+  assert.equal(usage.total, 180_000);
 });

@@ -7,7 +7,7 @@ import Database from 'better-sqlite3';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import type { AnyRecord } from '@/shared/types.js';
-import { AppError, getOpenCodeDatabasePath } from '@/shared/utils.js';
+import { AppError, getOpenCodeDatabasePath, resolveClaudeContextWindow } from '@/shared/utils.js';
 
 type SessionRow = NonNullable<ReturnType<typeof sessionsDb.getSessionById>>;
 
@@ -193,15 +193,24 @@ function emptyCodexTokenUsage(): TokenUsageResult {
  * cache_creation` is that one request's whole prompt, i.e. what the context
  * window currently holds. Summing turns would count the same cached prefix
  * once per turn.
+ *
+ * The window comes from `resolveClaudeContextWindow`: `configuredContextWindow`
+ * (the `CONTEXT_WINDOW` override) when set, otherwise derived from
+ * `sessionModel` — the model stored for the session, whose `[1m]` suffix the
+ * transcript's own per-row model ids do not carry — and that row's model.
  */
 export function summarizeClaudeTokenUsage(
   entries: AnyRecord[],
-  configuredContextWindow: string | undefined = process.env.CONTEXT_WINDOW,
+  {
+    configuredContextWindow = process.env.CONTEXT_WINDOW,
+    sessionModel = null,
+  }: { configuredContextWindow?: string; sessionModel?: string | null } = {},
 ): TokenUsageResult {
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheReadTokens = 0;
   let cacheCreationTokens = 0;
+  let rowModel: string | null = null;
 
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
@@ -241,16 +250,20 @@ export function summarizeClaudeTokenUsage(
     cacheCreationTokens = rowCacheCreationTokens;
     inputTokens = rowInputTokens;
     outputTokens = rowOutputTokens;
+    rowModel = typeof entry.message?.model === 'string' ? entry.message.model : null;
     break;
   }
 
-  const parsedContextWindow = Number.parseInt(configuredContextWindow ?? '', 10);
-  const contextWindow = Number.isFinite(parsedContextWindow) ? parsedContextWindow : 160_000;
+  const used = inputTokens + outputTokens;
   const cacheTokens = cacheReadTokens + cacheCreationTokens;
 
   return {
-    used: inputTokens + outputTokens,
-    total: contextWindow,
+    used,
+    total: resolveClaudeContextWindow({
+      configuredContextWindow,
+      models: [sessionModel, rowModel],
+      usedTokens: used,
+    }),
     inputTokens,
     outputTokens,
     cacheReadTokens,
@@ -473,7 +486,10 @@ export function createProviderTokenUsageService(
       if (!claudeEntriesHaveUsage(entries) && !tail.isComplete) {
         entries = parseClaudeUsageEntries(await dependencies.readTextFile(sessionFilePath));
       }
-      return summarizeClaudeTokenUsage(entries, dependencies.getClaudeContextWindow());
+      return summarizeClaudeTokenUsage(entries, {
+        configuredContextWindow: dependencies.getClaudeContextWindow(),
+        sessionModel: session.model,
+      });
     },
   };
 }
