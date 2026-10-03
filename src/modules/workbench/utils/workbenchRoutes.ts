@@ -67,7 +67,8 @@ export function toAgentItem(row: { id: string; provider?: string; summary?: stri
     id: row.id,
     kind: 'agent',
     provider: row.provider && AGENT_PROVIDERS.includes(row.provider) ? row.provider as WorkbenchSessionItem['provider'] : 'claude',
-    title: row.summary?.trim() || UNTITLED_SESSION,
+    // A summary with no letters or digits (a probe's "." prompt) says nothing; such rows read as untitled.
+    title: /[\p{L}\p{N}]/u.test(row.summary ?? '') ? row.summary!.trim() : UNTITLED_SESSION,
     updatedAt: row.lastActivity ?? null,
   };
 }

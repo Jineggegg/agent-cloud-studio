@@ -69,6 +69,11 @@ test('route helpers build workbench URLs and accept only workbench providers', (
   expect(parseNewProvider('rm -rf')).toBeNull();
   expect(parseNewProvider(null)).toBeNull();
   expect(toAgentItem({ id: 's', provider: 'mystery', summary: '  ' })).toEqual({ id: 's', kind: 'agent', provider: 'claude', title: '新会话', updatedAt: null });
+  // A probe's "." (or any summary without letters or digits) reads as untitled; real titles keep their text.
+  expect(toAgentItem({ id: 's', summary: '.' }).title).toBe('新会话');
+  expect(toAgentItem({ id: 's', summary: '…?!' }).title).toBe('新会话');
+  expect(toAgentItem({ id: 's', summary: ' 修复登录 ' }).title).toBe('修复登录');
+  expect(toAgentItem({ id: 's', summary: 'v2' }).title).toBe('v2');
 });
 
 test('one new-chat rule for the sidebar menu and the chat header: DeepSeek needs a hub project', () => {
