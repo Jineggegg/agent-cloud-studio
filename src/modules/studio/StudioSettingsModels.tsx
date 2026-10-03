@@ -171,7 +171,7 @@ export function StudioSettingsModels() {
         </div>
       </>}
     </>}
-    <p className="ios-section-footer">首页 Claude、Codex 小组件新建的会话使用这里的默认模型与推理强度；开发工具里仍可随时切换。内置模型只能隐藏，随时可以恢复。</p>
+    <p className="ios-section-footer">首页 Claude、Codex 小组件新建的会话使用这里的默认模型与推理强度；工作台里仍可随时切换。内置模型只能隐藏，随时可以恢复。</p>
 
     {deleting && <StudioConfirmSheet title={`删除「${deleting.label}」？`} message="使用这个模型的会话会改回默认模型。" confirmLabel="删除"
       onConfirm={() => remove(deleting)} onCancel={() => setDeleting(null)} />}

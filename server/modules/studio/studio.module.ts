@@ -24,12 +24,22 @@ import { createTrading212Router } from './trading212.routes.js';
 import { createTrading212OrdersService } from './trading212-orders.service.js';
 import { createTrading212OrdersRouter } from './trading212-orders.routes.js';
 import { createLinkChecker } from './link-check.service.js';
+import { createStudioBuildsRoutes } from './builds.module.js';
 import { createRemoteHostsService } from './remote-hosts.service.js';
 import { createRemoteHostsRouter } from './remote-hosts.routes.js';
+import { createGhRunner, resolveGhPath } from './github/github-cli.adapter.js';
+import { createGitHubService } from './github/github.service.js';
+import { createGitHubRouter } from './github/github.routes.js';
 import { createStudioNetworkService } from './network.service.js';
 import { createStudioNetworkRouter } from './network.routes.js';
 import { createQuotaService } from './quota/quota.service.js';
 import { createQuotaRouter } from './quota/quota.routes.js';
+import { createWorkbenchService } from './workbench.service.js';
+import { createWorkbenchRouter } from './workbench.routes.js';
+import { createMemoryMcpClient } from './memory/memory-client.adapter.js';
+import { createMemoryService, findWindowsHome, memoryFolderName } from './memory/memory.service.js';
+import { createMemoryChatBridge } from './memory/memory-chat.service.js';
+import { createMemoryRouter } from './memory/memory.routes.js';
 import { createStudioRuntimeService } from './runtime.service.js';
 import { createStudioRuntimeRouter } from './runtime.routes.js';
 
@@ -194,6 +204,67 @@ export function createStudioModule() {
     },
   });
   routes.use('/mail', createMailRouter(mailAccounts));
+  // ── v6 track: shell — create its service and mount its router below this line ──
+  // The workbench (/work) asks which IDE project each local hub project lives in; looking it up never registers one.
+  const workbench = createWorkbenchService({
+    listHubProjects: userId => hub.list(userId),
+    findProjectId(directory) {
+      if (!existsSync(directory)) return null;
+      const row = projectsDb.getProjectPath(realpathSync(directory));
+      return row && !row.isArchived ? row.project_id : null;
+    },
+  });
+  routes.use('/workbench', createWorkbenchRouter(workbench));
+  // ── v6 track: chat — create its service and mount its router below this line ──
+  // ── v6 track: github — create its service and mount its router below this line ──
+  // The owner's GitHub through the gh CLI already signed in on this machine (gh keeps the token; Studio never reads
+  // it). STUDIO_GH_PATH points at gh when it is not in ~/.local/bin, /usr/local/bin, /usr/bin or on PATH.
+  const github = createGitHubService({
+    database: getConnection(),
+    run: createGhRunner({ ghPath: resolveGhPath(process.env.STUDIO_GH_PATH) }),
+  });
+  routes.use('/github', createGitHubRouter(github));
+  // ── v6 track: builder — create its service and mount its router below this line ──
+  // App Store-style AI builds: a new ~/projects folder, a hub project (the icon) and an unattended Claude Code
+  // session per build (STUDIO_BUILDS_ROOT, STUDIO_BUILDS_MAX_PARALLEL, STUDIO_BUILD_MODEL; see builds.module.ts).
+  routes.use('/builds', createStudioBuildsRoutes(hub));
+  // ── v6 track: memory — create its service and mount its router below this line ──
+  // One MCP session with the shared basic-memory server (scripts/wsl/install-memory.sh, docs/memory.md) serves the
+  // 记忆 app and the DeepSeek bridge. STUDIO_MEMORY_URL overrides the endpoint; STUDIO_MEMORY_DEEPSEEK=0 keeps
+  // DeepSeek replies away from memory. A hub project's notes live in the folder named after its workspace.
+  // The status card also checks the Windows Claude Code and Codex apps: their home is found under /mnt/c/Users,
+  // or named by STUDIO_MEMORY_WINDOWS_HOME (empty or 0 turns the Windows checks off).
+  const memoryUrl = process.env.STUDIO_MEMORY_URL?.trim() || 'http://127.0.0.1:8770/mcp';
+  const memoryOff = (value: string) => ['0', 'false', 'off', 'no'].includes(value.trim().toLowerCase());
+  const memoryForDeepseek = !memoryOff(process.env.STUDIO_MEMORY_DEEPSEEK ?? '');
+  const memoryWindowsSetting = process.env.STUDIO_MEMORY_WINDOWS_HOME;
+  const memoryWindowsHome = memoryWindowsSetting === undefined ? findWindowsHome()
+    : memoryOff(memoryWindowsSetting) || !memoryWindowsSetting.trim() ? null : memoryWindowsSetting.trim();
+  const memoryFolder = (item: { id: string; name: string; workspacePath: string; remoteDir: string }) =>
+    memoryFolderName([item.workspacePath, item.remoteDir, item.name], item.id);
+  const memory = createMemoryService({
+    client: createMemoryMcpClient({ url: memoryUrl }),
+    url: memoryUrl,
+    deepseekEnabled: memoryForDeepseek,
+    windowsHome: memoryWindowsHome,
+    projects: userId => hub.list(userId).map(item => ({ id: item.id, name: item.name, tone: item.tone, glyph: item.glyph, folder: memoryFolder(item) })),
+  });
+  if (memoryForDeepseek) {
+    service.attachMemory(createMemoryChatBridge({
+      memory,
+      scope(userId, space) {
+        const projectId = /^project:(.+)$/.exec(space)?.[1];
+        if (!projectId) return { folder: null, project: null };
+        try {
+          const project = hub.get(userId, projectId);
+          return { folder: memoryFolder(project), project: project.name };
+        } catch {
+          return { folder: null, project: null };
+        }
+      },
+    }));
+  }
+  routes.use('/memory', createMemoryRouter(memory));
   return {
     routes,
     snrRoutes: createSnrGatewayRouter(gateway),

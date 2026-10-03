@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { api } from '@/shared/api';
 import type { ServerEvent, TaskRecoveryRun } from '@/shared/types';
 
-/** Chat uses this scoped list to offer reviewed continuation after a server restart. */
+/** Chat and the workbench chat engine use this scoped list to offer reviewed continuation after a server restart. */
 export function useTaskRecovery({ projectPath, sessionId, subscribe }: {
   projectPath: string;
   sessionId: string | null;

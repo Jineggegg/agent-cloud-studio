@@ -92,7 +92,7 @@ self.addEventListener('push', event => {
   };
 
   event.waitUntil(
-    self.registration.showNotification(payload.title || 'CloudCLI', options)
+    self.registration.showNotification(payload.title || 'Agent Cloud Studio', options)
   );
 });
 

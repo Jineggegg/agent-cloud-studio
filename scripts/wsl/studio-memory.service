@@ -1,0 +1,24 @@
+[Unit]
+Description=Studio shared memory (basic-memory MCP server for Claude Code, Codex and DeepSeek)
+After=network.target
+
+[Service]
+Type=simple
+# __BASIC_MEMORY__, __PORT__ and __PROJECT__ are filled in by scripts/wsl/install-memory.sh (see docs/memory.md).
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=BASIC_MEMORY_NO_PROMOS=1
+Environment=BASIC_MEMORY_LOG_LEVEL=WARNING
+# Reject requests whose Host or Origin is not loopback (DNS-rebinding guard; Windows reaches WSL loopback too).
+Environment=FASTMCP_HTTP_HOST_ORIGIN_PROTECTION=true
+Environment='FASTMCP_HTTP_ALLOWED_HOSTS=["127.0.0.1","localhost"]'
+Environment=FASTMCP_SHOW_SERVER_BANNER=false
+# Loopback only and restricted to one project, so every client reads and writes the same notes.
+ExecStart=__BASIC_MEMORY__ mcp --transport streamable-http --host 127.0.0.1 --port __PORT__ --path /mcp --project __PROJECT__
+Restart=on-failure
+RestartSec=5
+# Notes are plain files under the project folder; nothing else needs write access.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

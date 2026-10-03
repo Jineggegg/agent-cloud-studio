@@ -1,8 +1,6 @@
 import type { ReactNode } from 'react';
-import { useTranslation } from 'react-i18next';
 
 import { LaunchMark } from '@/shared/ui/LaunchScreen';
-import { IS_PLATFORM } from '@/shared/utils';
 import '@/modules/auth/auth-studio.css';
 
 type AuthScreenLayoutProps = {
@@ -16,6 +14,7 @@ type AuthScreenLayoutProps = {
 /**
  * Wraps the auth module's LoginForm and SetupForm so both full-screen auth pages share one layout:
  * the launch screen's backdrop and glass mark, so the splash hands over without a visible change.
+ * (The upstream CloudCLI UI attribution required by the license lives in the README and Settings → 关于.)
  */
 export default function AuthScreenLayout({
   title,
@@ -24,7 +23,6 @@ export default function AuthScreenLayout({
   footerText,
   logo,
 }: AuthScreenLayoutProps) {
-  const { t } = useTranslation('auth');
   return (
     <div className="auth-studio">
       <div aria-hidden className="auth-studio-wallpaper"><span /><span /><span /></div>
@@ -41,13 +39,6 @@ export default function AuthScreenLayout({
 
           <div className="auth-studio-foot">
             <p>{footerText}</p>
-            {!IS_PLATFORM && (
-              <p>
-                <a href="https://github.com/siteboon/claudecodeui" target="_blank" rel="noopener noreferrer">
-                  {t('misc.openSource')}
-                </a>
-              </p>
-            )}
           </div>
         </div>
       </main>

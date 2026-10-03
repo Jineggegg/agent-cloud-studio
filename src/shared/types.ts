@@ -1,5 +1,5 @@
 import type { TFunction } from 'i18next';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
 
 //----------------- LLM PROVIDER MODEL CATALOG ------------
@@ -127,21 +127,6 @@ export type LoadingProgress = {
   currentProject?: string;
   [key: string]: unknown;
 };
-
-// ---------------------------
-
-//----------------- RELEASES ------------
-
-/** The latest GitHub release for the app, rendered by the update prompt and the About tab. */
-export type ReleaseInfo = {
-  title: string;
-  body: string;
-  htmlUrl: string;
-  publishedAt: string;
-};
-
-/** How this CloudCLI install was obtained; decides whether the UI offers a self-update action. */
-export type InstallMode = 'git' | 'npm';
 
 // ---------------------------
 
@@ -1873,18 +1858,22 @@ export type StudioStatus = {
   agentWorkbenchUrl: string | null;
   snrRemoteUrl: string | null;
 };
-/** Built-in home-screen apps that are not projects; `workspace` routes to the inherited IDE. */
-export type StudioSystemApp = 'deepseek' | 'workspace' | 'connections';
+/** Built-in home-screen apps that are not projects; `workspace` is the 工作台 tile and routes to the workbench (/work). */
+export type StudioSystemApp = 'deepseek' | 'workspace' | 'connections' | 'github' | 'memory';
 /** Icon glyphs a home-screen tile can show; the server accepts exactly this list. */
 export type StudioGlyph = 'activity' | 'graduation' | 'candles' | 'mail' | 'folder' | 'terminal' | 'sparkles' | 'book' | 'chart' | 'globe';
 /** One icon on the Studio home screen: a project (`project:<id>`) or a system app. */
 export type StudioHomeTile = {
-  id: string; name: string; tone: string; glyph: StudioGlyph | 'settings' | 'plug';
+  id: string; name: string; tone: string; glyph: StudioGlyph | 'settings' | 'plug' | 'pull-request';
   // Short live state under the label, such as 在线 or 待配置.
   status?: string;
-  // Tiles with an href navigate away (the IDE) instead of zooming open inside Studio.
+  // Tiles with an href navigate away (the workbench) instead of zooming open inside Studio.
   href?: string;
+  // App Store-style progress while an AI builds this project: the icon dims and a ring fills.
+  progress?: StudioTileProgress;
 };
+/** Build progress drawn on a home tile; `value` runs from 0 to 1 and follows the AI's task list. */
+export type StudioTileProgress = { value: number; state: 'queued' | 'building' | 'done' | 'failed'; label?: string };
 /** A DeepSeek conversation space: the general app or one project; histories never cross spaces. */
 export type StudioChatSpace = 'deepseek' | `project:${string}`;
 /** A persisted Studio conversation summary shared by its history and chat views. */
@@ -2099,6 +2088,216 @@ export type StudioMailInbox = { messages: StudioMailMessage[]; errors: StudioMai
 export type StudioMailDeviceStart = { pollId: string; userCode: string; verificationUri: string; expiresAt: string; interval: number };
 /** One poll of an Outlook device-code sign-in. */
 export type StudioMailDevicePoll = { status: 'pending' | 'connected' | 'expired' | 'error'; account?: StudioMailAccount; message?: string };
+// ---------------------------
+
+//----------------- STUDIO V6: WORKBENCH, GITHUB, AI BUILDS, MEMORY ------------
+/** One row of the workbench sidebar: a Claude Code / Codex session or a DeepSeek conversation of the current project. */
+export type WorkbenchSessionItem = {
+  id: string; kind: 'agent' | 'deepseek'; provider: 'claude' | 'codex' | 'cursor' | 'opencode' | 'deepseek';
+  title: string; updatedAt: string | null; running?: boolean;
+};
+/** What the workbench shell hands its chat column (src/modules/workbench/chat/WorkbenchChat). */
+export type WorkbenchChatProps = {
+  // The IDE project (projectId + filesystem path) the chat runs in.
+  project: Project;
+  // The open session, or null for a new chat.
+  session: WorkbenchSessionItem | null;
+  // Provider preselected for a new chat. Cursor and OpenCode come from the Studio project app's launch cards.
+  provider: 'claude' | 'codex' | 'cursor' | 'opencode' | 'deepseek';
+  // The Studio hub project with this path, if any (DeepSeek project space, memory scope, icon).
+  hubProjectId: string | null;
+  // Called once a new chat has a real session id, so the shell can list and route to it.
+  onSessionCreated: (item: WorkbenchSessionItem) => void;
+  // Opens a file in the shell's file panel.
+  onOpenFile: (path: string) => void;
+};
+// ── v6 track: shell — types below this line ──
+/** A provider a new workbench chat can start with; also the `?new=` value of a workbench URL. */
+export type WorkbenchNewProvider = WorkbenchChatProps['provider'];
+/** A panel of the workbench inspector (the right slide-out): files, terminal, Git or preview. */
+export type WorkbenchInspectorTab = 'files' | 'terminal' | 'git' | 'preview';
+/** The workbench layout one device remembers: sidebar, inspector visibility, its tab and its width in px. */
+export type WorkbenchLayout = { sidebarCollapsed: boolean; inspectorOpen: boolean; inspectorTab: WorkbenchInspectorTab; inspectorWidth: number };
+/** One day bucket of the workbench history (今天 / 昨天 / 本周 / 更早), rows newest first; empty buckets are omitted. */
+export type WorkbenchSessionGroup = { id: 'today' | 'yesterday' | 'week' | 'earlier'; label: string; items: WorkbenchSessionItem[] };
+/** An IDE project in the workbench switcher with the Studio hub project whose directory matches it, if any. */
+export type WorkbenchProjectEntry = { project: Project; hub: HubProject | null };
+/** Width class of the workbench viewport: phones get sheets, tablets an overlay inspector, desktops dock both columns. */
+export type WorkbenchViewport = 'phone' | 'tablet' | 'desktop';
+/** A local hub project and the IDE project registered for its directory (null until the first launch registers one). */
+export type WorkbenchHubLink = { hubId: string; projectId: string | null };
+/**
+ * One agent a new workbench chat can start with, as the sidebar's new-session menu and the chat header's provider
+ * menu list it. `unavailableReason` (short Chinese) is set when the agent cannot run here, e.g. DeepSeek in a
+ * directory without a Studio project; both menus show it disabled with that reason.
+ */
+export type WorkbenchNewChatChoice = { provider: WorkbenchNewProvider; unavailableReason: string | null };
+/**
+ * What the workbench shell lends its chat column so the column's glass header is the workbench's only title bar:
+ * the shell's controls on either side (sidebar and Studio buttons, the inspector toolbar), the project's display
+ * name under the title, and a callback when a new chat switches provider in the header so the shell remembers it.
+ */
+export type WorkbenchChatChrome = {
+  leading?: ReactNode;
+  trailing?: ReactNode;
+  projectName?: string;
+  onProviderChange?: (provider: WorkbenchNewProvider) => void;
+};
+// ── v6 track: chat — types below this line ──
+/**
+ * Answers one or more pending tool-permission prompts of the workbench chat: allow or deny, optionally
+ * remembering an allow rule for the run or replacing the tool input (AskUserQuestion answers). Called by its
+ * permission sheet, question sheet and plan card; the engine forwards it as `chat.permission-response`.
+ */
+export type WorkbenchPermissionDecision = (
+  requestIds: string | string[],
+  decision: { allow?: boolean; message?: string; rememberEntry?: string | null; updatedInput?: unknown },
+) => void;
+/** One step of an agent's running checklist (Claude TodoWrite, Codex update_plan) as the workbench chat's run island and tool cards draw it. */
+export type WorkbenchTodoItem = { content: string; activeForm?: string; status: 'pending' | 'in_progress' | 'completed' };
+/**
+ * A tool call reduced to the workbench chat's compact card: `kind` picks the icon, `verb` and `target` are the
+ * one-line description, `status` drives the spinner, tick or cross. `idle` is a call with no result in a session
+ * that is no longer running (interrupted), so it neither spins nor claims success.
+ */
+export type WorkbenchToolSummary = {
+  kind: 'command' | 'read' | 'edit' | 'write' | 'search' | 'web' | 'todo' | 'agent' | 'plan' | 'question' | 'think' | 'other';
+  verb: string;
+  target: string;
+  // The file the call touched, when it touched one; tapping it opens the shell's file panel.
+  filePath?: string;
+  status: 'running' | 'done' | 'error' | 'denied' | 'idle';
+};
+// ── v6 track: github — types below this line ──
+/** How a pull request is merged: squashed into one commit, with a merge commit, or as rebased commits. */
+export type StudioGitHubMergeMethod = 'squash' | 'merge' | 'rebase';
+/**
+ * GET /api/studio/github/status: the gh account signed in on the server (never its token). `canMerge` is false when
+ * the OAuth token lacks the `repo` scope; `message` is short Chinese guidance when something needs the owner.
+ */
+export type StudioGitHubStatus = {
+  installed: boolean; authenticated: boolean; login: string | null; scopes: string[]; canMerge: boolean;
+  message: string | null; checkedAt: string;
+};
+/** CI checks of a head commit counted by outcome; `state` is the worst outcome present ('none' without checks). */
+export type StudioGitHubChecks = { state: 'passing' | 'failing' | 'pending' | 'none'; passing: number; failing: number; pending: number; total: number };
+/**
+ * One open pull request in the GitHub inbox. `id` is "owner/repo#number"; `headSha` is the full head commit a merge
+ * must match; `reasons` says why it is listed (opened by the account, awaiting its review, in a repository it owns).
+ */
+export type StudioGitHubPull = {
+  id: string; owner: string; repo: string; number: number; title: string; author: string; url: string; isDraft: boolean;
+  headRef: string; baseRef: string; headSha: string; additions: number; deletions: number; changedFiles: number;
+  mergeable: 'mergeable' | 'conflicting' | 'unknown';
+  // GitHub's mergeStateStatus in lower case: clean, unstable, blocked, behind, dirty, draft, has_hooks or unknown.
+  mergeState: string;
+  reviewDecision: 'approved' | 'changes_requested' | 'review_required' | null;
+  checks: StudioGitHubChecks; updatedAt: string; reasons: ('authored' | 'review' | 'owned')[];
+};
+/** GET /api/studio/github/prs: the inbox, newest activity first; `truncated` when a search had more than 50 results. */
+export type StudioGitHubInbox = { login: string; pulls: StudioGitHubPull[]; fetchedAt: string; truncated: boolean };
+/** One CI check of a pull request's head commit; `url` is https or null, and failing checks come first. */
+export type StudioGitHubCheck = { name: string; workflow: string | null; state: 'passing' | 'failing' | 'pending' | 'skipped'; required: boolean; url: string | null };
+/** One changed file; `change` is added, modified, deleted, renamed, copied or changed. */
+export type StudioGitHubFile = { path: string; additions: number; deletions: number; change: string };
+/**
+ * GET /api/studio/github/prs/:owner/:repo/:number: a pull request with its checks, up to 100 files, a plain-text
+ * description excerpt (render as text, never as HTML), the merge methods the repository allows and the server's
+ * blockers, which the merge endpoint enforces whatever the sheet shows. `mergeQueue` means the base branch requires a
+ * merge queue: the merge queues the PR and cannot delete its branch. A `mergeState` of 'unstable' needs the same
+ * acknowledgement as a failing check, since GitHub sees checks that do not pass.
+ */
+export type StudioGitHubPullDetail = StudioGitHubPull & {
+  state: 'open' | 'closed' | 'merged'; body: string; bodyTruncated: boolean; createdAt: string;
+  checkItems: StudioGitHubCheck[]; checksTruncated: boolean; files: StudioGitHubFile[]; filesTotal: number;
+  mergeMethods: StudioGitHubMergeMethod[]; deleteBranchOnMerge: boolean; isCrossRepository: boolean; viewerCanMerge: boolean;
+  mergeQueue: boolean; blockers: { code: string; message: string }[]; mergeCommitSha: string | null;
+};
+/**
+ * POST …/merge body. `expectedHeadSha` is the head the user reviewed (GitHub refuses a moved head);
+ * `acknowledgeFailing` confirms merging despite failing checks that branch protection does not require.
+ */
+export type StudioGitHubMergeInput = { method: StudioGitHubMergeMethod; expectedHeadSha: string; deleteBranch: boolean; acknowledgeFailing: boolean };
+/** POST …/merge result: merged, or accepted into a merge queue. */
+export type StudioGitHubMergeResult = { outcome: 'merged' | 'queued'; mergeCommitSha: string | null; message: string };
+/**
+ * GET /api/studio/github/merges: one audited merge attempt of the signed-in Studio user, newest first. An 'invalid'
+ * attempt is a request the server rejected before reading the PR; its `method` is null and `headSha` may be ''.
+ */
+export type StudioGitHubMergeRecord = {
+  id: number; owner: string; repo: string; number: number; method: StudioGitHubMergeMethod | null; headSha: string; deleteBranch: boolean;
+  outcome: 'pending' | 'merged' | 'queued' | 'refused' | 'failed' | 'unknown' | 'invalid'; code: string | null; message: string | null;
+  createdAt: string; finishedAt: string | null;
+};
+// ── v6 track: builder — types below this line ──
+/** Lifecycle of an App Store-style AI build (server `studio_builds.state`); drives the home tile's veil and ring. */
+export type StudioBuildState = 'queued' | 'building' | 'done' | 'failed';
+/**
+ * One AI build as `/api/studio/builds` returns it. `hubProjectId` is its home-screen icon; `ideProjectId` + `sessionId`
+ * open the workbench session doing the work. `total`/`completed`/`currentTask` follow the agent's checklist;
+ * `error` explains a failed build ('已取消' when the owner stopped it).
+ */
+export type StudioBuild = {
+  id: string; hubProjectId: string; ideProjectId: string; sessionId: string; workspacePath: string;
+  state: StudioBuildState; total: number; completed: number; currentTask: string | null;
+  createdAt: string; startedAt: string | null; finishedAt: string | null; error: string | null;
+};
+/** What starting an AI build returns: the build and the hub project that became its icon (added to the home screen at once). */
+export type StudioBuildCreated = { build: StudioBuild; project: HubProject };
+/**
+ * How the server runs AI builds right now (GET /api/studio/builds/environment): `sandbox` lets the agent install, run
+ * and test inside Claude Code's OS sandbox (opt-in with STUDIO_BUILD_SANDBOX=on); `restricted`, the default, only
+ * writes code and commits. `available` says whether the sandbox could run on the server at all, and `missing` names
+ * the packages to install for it. Shown by the build composer.
+ */
+export type StudioBuildEnvironment = { mode: 'sandbox' | 'restricted'; missing: string[]; available: boolean };
+// ── v6 track: memory — types below this line ──
+/** Which agent wrote a shared-memory note (from its tags); null when the note is untagged. */
+export type StudioMemorySource = 'claude' | 'codex' | 'deepseek';
+/**
+ * One note in the 记忆 app's lists. `id` is the basic-memory permalink and the only identifier the memory API
+ * accepts back; `folder` is a project folder or `global`; `snippet` is plain text (empty in recent lists).
+ */
+export type StudioMemoryNote = {
+  id: string; title: string; folder: string; source: StudioMemorySource | null; updatedAt: string | null; snippet: string;
+};
+/** An opened note: Markdown without frontmatter, written by a model or a person; render it escaped, never as HTML. */
+export type StudioMemoryNoteDetail = StudioMemoryNote & { content: string; tags: string[]; truncated: boolean };
+/** A top-level memory folder, with the hub project it belongs to (for its icon) when one matches. */
+export type StudioMemoryFolder = { name: string; project: { id: string; name: string; tone: string; glyph: string } | null };
+/**
+ * GET /api/studio/memory/notes: the newest notes (optionally of one folder), every folder, and `total`, the number
+ * of notes in the listed scope (the selected folder, or the whole memory).
+ */
+export type StudioMemoryRecent = { notes: StudioMemoryNote[]; folders: StudioMemoryFolder[]; total: number };
+/** Which agent installation a status row describes: Claude Code or Codex, inside WSL or on Windows. */
+export type StudioMemoryAgentId = 'claude-wsl' | 'codex-wsl' | 'claude-windows' | 'codex-windows';
+/**
+ * A setting that keeps an agent from using the shared server although its config names it: an unparsable config,
+ * a disabled entry (Codex `enabled = false`, a Claude Code project's `disabledMcpServers`), a Claude Code project
+ * entry of the same name that is not the shared server, or a `[::1]` URL the server (127.0.0.1 only) never answers.
+ */
+export type StudioMemoryAgentIssue = 'invalid-config' | 'disabled' | 'project-override' | 'ipv6-loopback';
+/**
+ * How one agent installation is wired, read from its own config: `shared` means registered over HTTP at the
+ * shared server's URL; `conventions` means the current usage rules are in its global instructions; `issue` is a
+ * setting that blocks it anyway; `config` is where the registration lives; `fix` is the exact step (where to run
+ * it and the command) that completes it, or null (also when the issue must be fixed by hand).
+ */
+export type StudioMemoryAgentStatus = {
+  id: StudioMemoryAgentId; installed: boolean; registered: boolean; transport: string | null; shared: boolean;
+  conventions: boolean; issue: StudioMemoryAgentIssue | null; config: string; fix: { where: string; command: string } | null;
+};
+/**
+ * GET /api/studio/memory/status: whether the shared server answers (`slow`: connected but no answer in time),
+ * where the notes live, each agent's wiring (Windows rows only when Studio runs under WSL) and whether Studio's
+ * own DeepSeek bridge is on.
+ */
+export type StudioMemoryStatus = {
+  reachable: boolean; slow: boolean; url: string; project: string | null; notesPath: string | null;
+  agents: StudioMemoryAgentStatus[];
+  deepseek: { enabled: boolean };
+};
 // ---------------------------
 
 //----------------- STUDIO RUNTIME IDENTITY ------------

@@ -3,7 +3,8 @@ import type { FormEvent } from 'react';
 import { Minus, Plus } from 'lucide-react';
 
 import { api, readApiJson } from '@/shared/api';
-import type { HubModule, HubProject, HubProjectInput, HubProvider, StudioGlyph, StudioRemoteHost } from '@/shared/types';
+import type { HubModule, HubProject, HubProjectInput, HubProvider, StudioRemoteHost } from '@/shared/types';
+import { StudioIconPicker } from '@/modules/studio/StudioIconPicker';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 import { StudioTileIcon } from '@/modules/studio/StudioTileIcon';
 
@@ -18,11 +19,6 @@ const PROVIDERS: { id: HubProvider; name: string }[] = [
   { id: 'claude', name: 'Claude Code' }, { id: 'codex', name: 'Codex' }, { id: 'cursor', name: 'Cursor' },
   { id: 'opencode', name: 'OpenCode' }, { id: 'deepseek', name: 'DeepSeek' },
 ];
-// Must match the server's allowed tones and glyphs.
-const TONES: Record<string, string> = { sage: '青灰绿', clay: '陶土', slate: '石板蓝', graphite: '石墨', sand: '沙色', stone: '岩灰', moss: '苔绿', rose: '灰玫瑰' };
-const GLYPHS: Record<StudioGlyph, string> = {
-  folder: '文件夹', activity: '波形', graduation: '学位帽', candles: 'K 线', chart: '折线', mail: '邮件', terminal: '终端', sparkles: '星芒', book: '书', globe: '地球',
-};
 // Must match the server's link limit.
 const MAX_LINKS = 8;
 const EMPTY: HubProjectInput = { name: '', description: '', workspacePath: '', modules: ['agents'], providers: ['claude', 'codex', 'deepseek'], tone: 'slate', glyph: 'folder', links: [], remoteHost: '', remoteDir: '' };
@@ -110,16 +106,7 @@ export function StudioProjectEditor({ project, onSaved, onCancel, onDelete }: {
 
     <section className="ios-section" aria-labelledby={`${formId}-icon`}>
       <div className="ios-section-header"><h2 id={`${formId}-icon`}>图标</h2></div>
-      <div className="ios-list picker-list">
-        <div className="tone-picker" role="radiogroup" aria-label="图标颜色">
-          {Object.entries(TONES).map(([tone, label]) => <button key={tone} type="button" role="radio" aria-checked={form.tone === tone} aria-label={label} className={`tone-swatch tone-${tone}`} onClick={() => setForm({ ...form, tone })} />)}
-        </div>
-        <div className="glyph-picker" role="radiogroup" aria-label="图标符号">
-          {(Object.entries(GLYPHS) as [StudioGlyph, string][]).map(([glyph, label]) => <button key={glyph} type="button" role="radio" aria-checked={form.glyph === glyph} aria-label={label} className="glyph-option" onClick={() => setForm({ ...form, glyph })}>
-            <StudioTileIcon tone={form.glyph === glyph ? form.tone : 'ghost'} glyph={glyph} size={18} variant="small" />
-          </button>)}
-        </div>
-      </div>
+      <StudioIconPicker tone={form.tone} glyph={form.glyph} onChange={patch => setForm({ ...form, ...patch })} />
     </section>
 
     <section className="ios-section" aria-labelledby={`${formId}-models`}>
@@ -151,6 +138,6 @@ export function StudioProjectEditor({ project, onSaved, onCancel, onDelete }: {
     </div>
     {onDelete && <section className="ios-section"><div className="ios-list">
       <button type="button" className="ios-row action destructive no-icon" disabled={busy} onClick={onDelete}>删除项目</button>
-    </div><p className="ios-section-footer">只删除 Studio 中的项目设置、草稿和 DeepSeek 对话，不会删除电脑上的文件或开发工具里的会话。</p></section>}
+    </div><p className="ios-section-footer">只删除 Studio 中的项目设置、草稿和 DeepSeek 对话，不会删除电脑上的文件或工作台里的会话。</p></section>}
   </form>;
 }

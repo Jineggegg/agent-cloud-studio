@@ -24,14 +24,14 @@ const TILES: StudioHomeTile[] = [
   { id: 'project:snr', name: 'SNR 3.0', tone: 'sage', glyph: 'activity', status: '在线' },
   { id: 'project:prof', name: '超级教授', tone: 'clay', glyph: 'graduation' },
   { id: 'deepseek', name: 'DeepSeek', tone: 'slate', glyph: 'sparkles' },
-  { id: 'workspace', name: '开发工具', tone: 'graphite', glyph: 'terminal', href: '/workspace' },
+  { id: 'workspace', name: '工作台', tone: 'graphite', glyph: 'terminal', href: '/work' },
 ];
 
 function renderHome(overrides: Partial<Parameters<typeof StudioHomeScreen>[0]> = {}) {
   const props = { tiles: TILES, loading: false, covered: false, snr: null, onOpen: vi.fn(), onOpenWidget: vi.fn(), onCreate: vi.fn(), onRefresh: vi.fn(), onSignOut: vi.fn(), refreshing: false, ...overrides };
   render(<MemoryRouter><Routes>
     <Route path="/" element={<StudioHomeScreen {...props} />} />
-    <Route path="/workspace" element={<div>IDE opened</div>} />
+    <Route path="/work" element={<div>Workbench opened</div>} />
   </Routes></MemoryRouter>);
   return props;
 }
@@ -54,7 +54,7 @@ test('each project is a large tile that opens its own app; the IDE tile is a rou
   const apps = screen.getByRole('navigation', { name: '应用' });
   fireEvent.click(within(apps).getByRole('button', { name: 'SNR 3.0，在线' }));
   expect(props.onOpen).toHaveBeenCalledWith(TILES[0], expect.anything());
-  expect(within(apps).getByRole('link', { name: '开发工具' }).getAttribute('href')).toBe('/workspace');
+  expect(within(apps).getByRole('link', { name: '工作台' }).getAttribute('href')).toBe('/work');
   fireEvent.click(within(apps).getByRole('button', { name: '新建项目' }));
   expect(props.onCreate).toHaveBeenCalledTimes(1);
 });
@@ -86,7 +86,7 @@ test('a long press lifts an icon into edit mode without also opening the app', (
 test('the click that ends a long press on a link tile does not navigate', () => {
   vi.useFakeTimers();
   renderHome();
-  const link = screen.getByRole('link', { name: '开发工具' });
+  const link = screen.getByRole('link', { name: '工作台' });
   fireEvent.pointerDown(link, { button: 0, isPrimary: true, pointerType: 'mouse' });
   act(() => { vi.advanceTimersByTime(500); });
   fireEvent.pointerUp(link);
@@ -94,7 +94,7 @@ test('the click that ends a long press on a link tile does not navigate', () => 
   const click = createEvent.click(link);
   fireEvent(link, click);
   expect(click.defaultPrevented).toBe(true);
-  expect(screen.queryByText('IDE opened')).toBeNull();
+  expect(screen.queryByText('Workbench opened')).toBeNull();
   expect(screen.getByRole('button', { name: '完成' })).toBeTruthy();
 });
 
@@ -138,7 +138,7 @@ test('in edit mode 前移/后移 move an icon for VoiceOver and Switch Control u
   fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
   // At either end the button stays focusable but says it has nowhere to go.
   expect(screen.getByRole('button', { name: '前移 SNR 3.0' }).getAttribute('aria-disabled')).toBe('true');
-  expect(screen.getByRole('button', { name: '后移 开发工具' }).getAttribute('aria-disabled')).toBe('true');
+  expect(screen.getByRole('button', { name: '后移 工作台' }).getAttribute('aria-disabled')).toBe('true');
 
   const later = screen.getByRole('button', { name: '后移 SNR 3.0' });
   later.focus();

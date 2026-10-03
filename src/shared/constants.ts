@@ -17,17 +17,6 @@ import type { UserPreferenceKey } from '@/shared/userSettings';
 /** The four buckets the git changes view sorts working-tree files into. */
 type GitStatusFileGroup = 'modified' | 'added' | 'deleted' | 'untracked';
 
-//----------------- BRANDING ------------
-
-/**
- * Font stack used to render the CloudCLI wordmark consistently wherever the brand name
- * appears as text. Apply it inline so the wordmark does not inherit a themed font.
- */
-export const CLOUDCLI_WORDMARK_FONT_FAMILY =
-  'ui-sans-serif, system-ui, sans-serif, Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol, Noto Color Emoji';
-
-// ---------------------------
-
 //----------------- APPLICATION VERSION ------------
 
 /**
@@ -218,3 +207,19 @@ export const PROVIDER_PERMISSION_PREFERENCE_KEYS: Record<LLMProvider, UserPrefer
   codex: 'codexPermissions',
   opencode: 'opencodePermissions',
 };
+
+// ---------------------------
+
+//----------------- WORKBENCH PANEL MOTION ------------
+
+/**
+ * How the workbench's floating panels (the phone's history sheet, the tablet and phone inspector) slide in: the
+ * Studio spring. They move by transform over the chat, so a long, soft settle costs nothing.
+ */
+export const WORKBENCH_PANEL_SPRING = { type: 'spring', stiffness: 260, damping: 32 } as const;
+
+/**
+ * How the workbench's docked columns (desktop sidebar and inspector) open and close. They change the chat's width,
+ * and every frame re-wraps the visible transcript, so a short ease replaces the half-second spring.
+ */
+export const WORKBENCH_DOCK_TWEEN = { type: 'tween', duration: 0.24, ease: [0.32, 0.72, 0, 1] } as const;

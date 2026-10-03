@@ -27,6 +27,8 @@ type UseShellConnectionOptions = {
   closeSocket: () => void;
   clearTerminalScreen: () => void;
   onOutputRef?: MutableRefObject<(() => void) | null>;
+  // Receives every http(s) address the server spotted in the output (its `auth_url` frames).
+  onUrlDetectedRef?: MutableRefObject<((url: string) => void) | null>;
 };
 
 type UseShellConnectionResult = {
@@ -52,6 +54,7 @@ export function useShellConnection({
   closeSocket,
   clearTerminalScreen,
   onOutputRef,
+  onUrlDetectedRef,
 }: UseShellConnectionOptions): UseShellConnectionResult {
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -101,6 +104,12 @@ export function useShellConnection({
         return;
       }
 
+      // The server announces each address it finds in the output, e.g. a dev server's "Local: http://…".
+      if (message.type === 'auth_url') {
+        if (typeof message.url === 'string' && message.url) onUrlDetectedRef?.current?.(message.url);
+        return;
+      }
+
       if (message.type === 'error') {
         // The server sends this instead of spawning a PTY, then keeps the
         // socket open — so without writing it out the terminal just stays
@@ -114,7 +123,7 @@ export function useShellConnection({
         return;
       }
     },
-    [handleProcessCompletion, onOutputRef, terminalRef],
+    [handleProcessCompletion, onOutputRef, onUrlDetectedRef, terminalRef],
   );
 
   const connectWebSocket = useCallback(

@@ -78,10 +78,10 @@ test('any project, including SNR, can enable every model; invalid models, icons 
     assert.throws(() => f.service.saveTask(1, project.id, { title: '任务', prompt: '查询', provider: 'claude' }), /未启用/);
     await assert.rejects(f.service.launch(1, project.id, 'codex'), /未启用/);
     await assert.rejects(f.service.launch(1, snr.id, 'deepseek'), /不在开发工具/);
-    assert.equal((await f.service.launch(1, project.id, 'claude')).url, '/workspace?projectId=native-project&provider=claude');
-    assert.equal((await f.service.launch(1, snr.id, 'cursor')).url, '/workspace?projectId=native-project&provider=cursor');
+    assert.equal((await f.service.launch(1, project.id, 'claude')).url, '/work/native-project?new=claude');
+    assert.equal((await f.service.launch(1, snr.id, 'cursor')).url, '/work/native-project?new=cursor');
     // Widgets open a new session in the workbench directory, outside any project.
-    assert.equal((await f.service.launchWorkbench('codex')).url, '/workspace?projectId=native-project&provider=codex');
+    assert.equal((await f.service.launchWorkbench('codex')).url, '/work/native-project?new=codex');
     await assert.rejects(f.service.launchWorkbench('deepseek'), /不在开发工具/);
     assert.deepEqual(f.registered, ['/projects/new', '/projects/snr3-lab', '/home/me/studio-workbench']);
   } finally { f.database.close(); }

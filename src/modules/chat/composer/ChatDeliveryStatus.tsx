@@ -2,7 +2,10 @@ import { useTranslation } from 'react-i18next';
 
 import type { ChatDeliveryState } from '@/shared/types';
 
-/** ChatComposer displays delivery uncertainty without pretending that a model execution has started. */
+/**
+ * Used by ChatComposer and the workbench chat column (WorkbenchAgentChat) to display delivery uncertainty without
+ * pretending that a model execution has started.
+ */
 export function ChatDeliveryStatus({ delivery, pendingContent, onCheck, onRetry, isConnected = true }: {
   delivery: ChatDeliveryState | null;
   pendingContent?: string | null;

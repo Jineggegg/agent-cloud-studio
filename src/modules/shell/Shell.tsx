@@ -34,6 +34,8 @@ type ShellProps = {
   minimal?: boolean;
   autoConnect?: boolean;
   isActive?: boolean;
+  // Called with each http(s) address detected in the terminal output (the workbench's preview panel).
+  onUrlDetected?: ((url: string) => void) | null;
 };
 
 /** Exported through the shell barrel: the standalone-shell module renders it as a full-page terminal and the task-master module embeds it in its setup modal to run TaskMaster's init command. */
@@ -46,6 +48,7 @@ export default function Shell({
   minimal = false,
   autoConnect = false,
   isActive = true,
+  onUrlDetected = null,
 }: ShellProps) {
   const { t } = useTranslation('chat');
   const [isRestarting, setIsRestarting] = useState(false);
@@ -59,6 +62,11 @@ export default function Shell({
   const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restartAfterInitRef = useRef(false);
   const onOutputRef = useRef<(() => void) | null>(null);
+  // Mirrors the latest onUrlDetected so the socket handler never needs to be rebuilt for a new callback.
+  const onUrlDetectedRef = useRef<((url: string) => void) | null>(onUrlDetected);
+  useEffect(() => {
+    onUrlDetectedRef.current = onUrlDetected;
+  }, [onUrlDetected]);
 
   const {
     terminalContainerRef,
@@ -80,6 +88,7 @@ export default function Shell({
     isRestarting,
     onProcessComplete,
     onOutputRef,
+    onUrlDetectedRef,
   });
 
   // Check xterm.js buffer for CLI prompt patterns (❯ N. label)

@@ -11,7 +11,8 @@ type StreamingMarkdownProps = {
 };
 
 /**
- * Used by chat's MessageComponent for an assistant reply, streaming or not.
+ * Used by chat's MessageComponent and the workbench chat column (via the chat barrel) for an assistant reply,
+ * streaming or not.
  *
  * The realtime handler republishes the whole accumulated reply every 100ms, so
  * a single <Markdown> would re-parse the entire message ten times a second.

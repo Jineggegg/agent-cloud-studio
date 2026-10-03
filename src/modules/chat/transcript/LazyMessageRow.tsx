@@ -19,6 +19,8 @@ import type { LazyRowObserver } from '@/modules/chat/hooks/useLazyRowObserver';
  * through previously seen content changes no scroll geometry at all; rows
  * never yet measured use an estimate and rely on browser scroll anchoring
  * while they settle.
+ *
+ * Used by chat's ChatMessagesPane and by the workbench chat column's transcript (via the chat barrel).
  */
 
 /** Placeholder height for rows that have never been measured. */

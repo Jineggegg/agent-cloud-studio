@@ -9,8 +9,10 @@ import { AuthProvider, ProtectedRoute } from '@/modules/auth';
 import { i18n } from '@/modules/i18n';
 import { StudioPage } from '@/modules/studio';
 
-// The IDE (editor, terminal, chat) is large; the Studio home screen loads without it. The IDE-wide
-// providers (chat websocket, plugins, TaskMaster) live inside this chunk too, in ProjectWorkspaceRoute.
+// The workbench (chat, editor, terminal, Git) is large; the Studio home screen loads without it. Its chat-wide
+// providers (websocket, plugins, TaskMaster) live inside the chunk too, in WorkbenchRoute.
+const WorkbenchRoute = lazy(() => import('@/modules/workbench').then(module => ({ default: module.WorkbenchRoute })));
+// The inherited CloudCLI IDE, kept only as a hidden fallback at /legacy/… (nothing links there).
 const ProjectWorkspaceRoute = lazy(() => import('@/modules/project-workspace').then(module => ({ default: module.ProjectWorkspaceRoute })));
 
 const DEPLOYMENT_ASSET_DIRECTORIES = new Set(['assets', 'static', 'icons', 'images']);
@@ -18,7 +20,7 @@ const DEPLOYMENT_ASSET_DIRECTORIES = new Set(['assets', 'static', 'icons', 'imag
 /**
  * Detect the router basename from explicit runtime config or deployment hints.
  *
- * CloudCLI can be served from a path prefix by a reverse proxy, for example:
+ * The app can be served from a path prefix by a reverse proxy, for example:
  *   /ai/manifest.json
  *   /ai/assets/index-abc123.js
  *   /ai/icons/icon-192x192.png
@@ -111,8 +113,8 @@ function detectRouterBasename() {
 /**
  * Rendered by main.tsx; mounts the shared providers, the auth gate and the routes. Every route
  * renders LaunchSplashRelease beside its screen so the index.html splash crossfades away only once
- * that screen has painted; the IDE's sits inside its Suspense boundary, so a cold start on
- * /workspace keeps the splash (not a spinner) up until the IDE itself is ready. An unknown path
+ * that screen has painted; the workbench's sits inside its Suspense boundary, so a cold start on
+ * /work keeps the splash (not a spinner) up until the workbench itself is ready. An unknown path
  * goes to the Studio home, and a screen that throws (or a chunk that fails to download) shows
  * LaunchErrorBoundary's error screen, so the splash can never be left up with nothing behind it.
  */
@@ -120,8 +122,22 @@ export default function App() {
   const routerBasename = detectRouterBasename();
   // One element shape for all three Studio routes, so opening an app keeps the home screen mounted.
   const studioScreen = <><StudioPage /><LaunchSplashRelease /></>;
-  const workspaceScreen = (
-    <Suspense fallback={<LaunchScreen label="正在打开开发工具" />}>
+  // One element for every /work route, so opening another session keeps the workbench (and its websocket) mounted.
+  const workbenchScreen = (
+    <Suspense fallback={<LaunchScreen label="正在打开工作台" />}>
+      <WorkbenchRoute />
+      <LaunchSplashRelease />
+    </Suspense>
+  );
+  // The inherited IDE's addresses (bookmarks, notifications, older Studio links) open in the workbench.
+  const legacyRedirect = (kind: 'workspace' | 'session') => (
+    <Suspense fallback={<LaunchScreen label="正在打开工作台" />}>
+      <WorkbenchRoute legacy={kind} />
+      <LaunchSplashRelease />
+    </Suspense>
+  );
+  const legacyIdeScreen = (
+    <Suspense fallback={<LaunchScreen label="正在打开旧版开发工具" />}>
       <ProjectWorkspaceRoute />
       <LaunchSplashRelease />
     </Suspense>
@@ -141,8 +157,14 @@ export default function App() {
                   <Route path="/" element={studioScreen} />
                   <Route path="/projects/:id" element={studioScreen} />
                   <Route path="/apps/:app" element={studioScreen} />
-                  <Route path="/workspace" element={workspaceScreen} />
-                  <Route path="/session/:sessionId" element={workspaceScreen} />
+                  <Route path="/work" element={workbenchScreen} />
+                  <Route path="/work/:projectId" element={workbenchScreen} />
+                  <Route path="/work/:projectId/s/:sessionId" element={workbenchScreen} />
+                  <Route path="/work/:projectId/d/:conversationId" element={workbenchScreen} />
+                  <Route path="/workspace" element={legacyRedirect('workspace')} />
+                  <Route path="/session/:sessionId" element={legacyRedirect('session')} />
+                  <Route path="/legacy/workspace" element={legacyIdeScreen} />
+                  <Route path="/legacy/session/:sessionId" element={legacyIdeScreen} />
                   {/* Old bookmarks and mistyped links land on the home screen instead of an empty page. */}
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>

@@ -4,7 +4,10 @@ import { AlertCircle } from 'lucide-react';
 
 import type { TaskRecoveryRun } from '@/shared/types';
 
-/** ChatInterface shows interrupted executions beside the composer for explicit review and continuation. */
+/**
+ * Used by ChatInterface and the workbench chat column (WorkbenchAgentChat) to show interrupted executions beside the
+ * composer for explicit review and continuation.
+ */
 export function ChatRecoveryBanner({ runs, error, disabled, onRefresh, onViewRecords, onPrepare, onResolve }: {
   runs: TaskRecoveryRun[];
   error?: boolean;

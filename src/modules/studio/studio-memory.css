@@ -1,0 +1,284 @@
+/* ==========================================================================
+ * Studio 记忆: the shared memory of Claude Code, Codex and DeepSeek.
+ * A notebook on paper: grouped lists, the writers' ink as quiet tinted tags,
+ * a reading sheet with a comfortable measure. Uses the --ios-* tokens from studio.css.
+ * ========================================================================== */
+
+.memory-app { display: grid; gap: 30px; }
+.memory-main { min-width: 0; }
+/* iPad landscape and desktop: notes on the left, the memory's health and a short guide alongside. */
+@media (min-width: 900px) {
+  .memory-app { grid-template-columns: minmax(0, 1fr) 296px; align-items: start; gap: 32px; }
+  .memory-aside { position: sticky; top: calc(var(--chrome-top, 52px) + 12px); }
+}
+.memory-app ::selection, .memory-reader ::selection { background: color-mix(in srgb, var(--ios-tint) 24%, transparent); }
+:is(.memory-app, .memory-reader) code {
+  padding: 1px 5px; border-radius: 6px; background: var(--ios-fill); color: var(--ios-label);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .9em; overflow-wrap: anywhere;
+}
+
+/* ---------- Search and folders ---------- */
+.memory-toolbar { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
+.memory-search { position: relative; flex: 1; min-height: 44px; border-radius: 14px; transition: box-shadow var(--dur-fast) ease, background-color var(--dur-fast) ease; }
+.memory-search input { min-height: 44px; }
+/* The whole field carries the focus ring below; a second ring on the bare input would box the text in. */
+.memory-search input:focus-visible { outline: none; }
+.memory-search:focus-within { background: var(--ios-surface); box-shadow: 0 0 0 3px var(--ios-tint-soft), var(--ios-shadow); }
+.memory-search .studio-spinner { margin-right: 2px; }
+.memory-search-clear {
+  position: relative; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%;
+  background: color-mix(in srgb, var(--ios-label-3) 55%, transparent); color: var(--ios-surface);
+}
+/* 20px glyph, 44px hit area. */
+.memory-search-clear::before { content: ""; position: absolute; inset: -12px; }
+
+.memory-folders {
+  display: flex; gap: 6px; margin: 0 -4px 6px; padding: 2px 4px 6px; overflow-x: auto; scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
+}
+.memory-folders::-webkit-scrollbar { display: none; }
+.memory-chip {
+  position: relative; flex-shrink: 0; display: inline-flex; align-items: center; min-height: 36px; max-width: 220px; padding: 6px 14px;
+  border-radius: 999px; font-size: 15px; font-weight: 500; color: var(--ios-label-2); background: var(--ios-fill);
+  transition: background-color var(--dur-fast) ease, color var(--dur-fast) ease, transform var(--dur-slow) var(--ease-spring);
+}
+.memory-chip::before { content: ""; position: absolute; inset: -4px -2px; }
+.memory-chip .memory-folder-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.memory-chip[aria-pressed="true"] { background: var(--ios-label); color: var(--ios-bg); font-weight: 600; }
+.memory-chip:not([aria-pressed="true"]):active { transform: scale(.94); transition-duration: var(--dur-press); }
+@media (hover: hover) { .memory-chip:not([aria-pressed="true"]):hover { background: var(--ios-fill-pressed); } }
+
+.memory-list-header { margin-top: 14px; padding-inline: 4px; }
+.memory-list-header .caption { font-variant-numeric: tabular-nums; }
+.memory-notice {
+  display: flex; align-items: flex-start; gap: 8px; margin-bottom: 10px; padding: 10px 14px; border-radius: 14px;
+  font-size: 14px; line-height: 1.45; color: var(--ios-orange); background: color-mix(in srgb, var(--ios-orange) 10%, transparent);
+}
+.memory-notice svg { margin-top: 2px; }
+
+/* ---------- Notes ---------- */
+.memory-list {
+  margin: 0; padding: 0; list-style: none; border-radius: var(--radius-card); background: var(--ios-surface); overflow: hidden;
+  transition: opacity var(--dur-fast) ease;
+}
+/* The previous results stay readable but recede while the new search runs. */
+.memory-list.is-stale { opacity: .5; }
+.memory-item { position: relative; overflow: hidden; }
+.memory-row {
+  position: relative; display: flex; align-items: flex-start; gap: 12px; width: 100%; min-height: 66px;
+  padding: 12px 12px 12px 14px; text-align: left; color: var(--ios-label); transition: background-color 420ms ease;
+}
+.memory-item + .memory-item .memory-row::before { content: ""; position: absolute; top: 0; right: 0; left: 58px; height: .5px; background: var(--ios-separator); }
+.memory-row:active { background-color: var(--ios-fill-pressed); transition-duration: 0s; }
+@media (hover: hover) { .memory-row:hover { background-color: color-mix(in srgb, var(--ios-fill) 55%, transparent); } }
+.memory-row > .home-icon { margin-top: 3px; }
+.memory-row-body { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.memory-row-top { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+/* Titles are whole sentences ("部署方式：systemd 用户服务与…"); two lines keep them readable on a phone. */
+.memory-row-top strong {
+  flex: 0 1 auto; min-width: 0; font-size: 17px; font-weight: 500; line-height: 1.35; letter-spacing: -.01em; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.memory-row-top .memory-writer { margin-top: 1px; }
+.memory-row small { display: block; font-size: 13px; color: var(--ios-label-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.memory-snippet {
+  margin-top: 2px; font-size: 14px; line-height: 1.45; color: var(--ios-label-2); overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.memory-mark { padding: 0 2px; border-radius: 4px; color: var(--ios-label); background: color-mix(in srgb, var(--ios-tint) 17%, transparent); }
+.memory-row .chevron { align-self: center; color: var(--ios-label-3); }
+
+/* The writer's ink: low-saturation tags in the agents' icon tones (clay, graphite, slate). */
+.memory-writer {
+  flex-shrink: 0; display: inline-flex; align-items: center; min-height: 22px; padding: 1px 8px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; letter-spacing: .01em; white-space: nowrap;
+}
+.writer-claude { color: #87573f; background: rgba(151, 101, 81, .13); }
+.writer-codex { color: #45464b; background: rgba(52, 53, 58, .09); }
+.writer-deepseek { color: #4a5e7e; background: rgba(90, 108, 137, .14); }
+.dark .writer-claude { color: #e3b8a1; background: rgba(207, 165, 140, .16); }
+.dark .writer-codex { color: #cfd0d5; background: rgba(200, 200, 208, .12); }
+.dark .writer-deepseek { color: #b3c3db; background: rgba(158, 173, 195, .16); }
+
+/* Loading rows sketch the list they stand in for. */
+.memory-list-skeleton { padding: 2px 0; }
+.memory-skeleton-row { display: flex; gap: 12px; padding: 14px; }
+.memory-skeleton-row + .memory-skeleton-row { border-top: .5px solid var(--ios-separator); }
+.memory-skeleton-row > i { flex-shrink: 0; width: 32px; height: 32px; border-radius: 9px; background: var(--ios-fill); }
+.memory-skeleton-row div { flex: 1; display: grid; gap: 8px; padding-top: 3px; }
+.memory-skeleton-row div i { display: block; height: 12px; border-radius: 6px; background: var(--ios-fill); }
+.memory-skeleton-row div i:first-child { width: 46%; height: 14px; }
+.memory-skeleton-row div i:last-child { width: 28%; }
+:is(.memory-skeleton-row, .memory-status-skeleton, .memory-reader-skeleton) i { animation: memory-pulse 1.4s ease-in-out infinite; }
+@keyframes memory-pulse { 50% { opacity: .45; } }
+
+.memory-empty { border-radius: var(--radius-card); background: var(--ios-surface); padding: 40px 24px; line-height: 1.5; }
+.memory-empty strong { font-size: 17px; font-weight: 600; color: var(--ios-label); }
+.memory-empty span { max-width: 34em; }
+
+/* ---------- Health and guide ---------- */
+.memory-card { border-radius: var(--radius-card); background: var(--ios-surface); box-shadow: var(--ios-shadow); overflow: hidden; }
+.memory-server { display: flex; align-items: flex-start; gap: 12px; padding: 16px 16px 12px; }
+.memory-server .status-dot { margin-top: 7px; }
+.memory-server h2 { font-size: 17px; font-weight: 600; }
+.memory-server p { margin-top: 2px; font-size: 13px; color: var(--ios-label-2); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.status-dot.bad { background: var(--ios-red); }
+/* Connected but not answering in time: busy or starting, not stopped. */
+.status-dot.warn { background: var(--ios-orange); }
+.memory-agents { margin: 0; padding: 0 0 4px; list-style: none; }
+.memory-agents li { position: relative; display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 8px 16px; }
+.memory-agents li::before { content: ""; position: absolute; top: 0; right: 0; left: 60px; height: .5px; background: var(--ios-separator); }
+.memory-agent-mark { font-size: 15px; font-weight: 700; color: #fff; }
+.memory-agent-body { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.memory-agent-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.memory-agent-body strong { font-size: 15px; font-weight: 500; white-space: nowrap; }
+/* Where the agent runs, as a quiet capsule: the same app appears once per environment. */
+.memory-agent-place {
+  flex-shrink: 0; padding: 0 6px; border-radius: 6px; font-size: 11.5px; font-weight: 600; line-height: 18px; letter-spacing: .01em;
+  color: var(--ios-label-2); background: var(--ios-fill);
+}
+.memory-agent-body small { font-size: 12.5px; line-height: 1.35; color: var(--ios-label-2); }
+.memory-agents li.ok .memory-agent-state { color: var(--ios-green); }
+.memory-agents li.warn :is(.memory-agent-state, small) { color: var(--ios-orange); }
+/* An app that is not installed is not a fault: it recedes instead of warning. */
+.memory-agents li.absent :is(strong, small, .memory-agent-state) { color: var(--ios-label-3); }
+.memory-agents li.absent .memory-agent-mark { opacity: .4; filter: saturate(.3); }
+
+/* The steps that finish the wiring, once per distinct command, selectable and copyable. */
+.memory-fixes { display: grid; gap: 14px; margin: 0; padding: 14px 16px 16px; list-style: none; border-top: .5px solid var(--ios-separator); }
+.memory-fixes p { font-size: 12.5px; line-height: 1.45; color: var(--ios-label-2); }
+.memory-fixes p strong { font-weight: 600; color: var(--ios-label); }
+.memory-fix-command { display: flex; align-items: center; gap: 4px; margin-top: 6px; padding: 5px 5px 5px 10px; border-radius: 10px; background: var(--ios-fill); }
+/* A long command (the Windows PowerShell line) stays four lines tall and scrolls inside its well instead of
+   taking over the card; copying or selecting still takes all of it. */
+.memory-status .memory-fix-command code {
+  flex: 1; min-width: 0; max-height: calc(1.45em * 4); overflow-y: auto; overscroll-behavior: contain; padding: 0; background: none;
+  font-size: 12.5px; line-height: 1.45; -webkit-user-select: all; user-select: all;
+  scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ios-label-3) 60%, transparent) transparent;
+}
+.memory-copy {
+  position: relative; flex-shrink: 0; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; color: var(--ios-tint);
+  transition: background-color var(--dur-fast) ease, transform var(--dur-slow) var(--ease-spring);
+}
+/* 32px glyph box, 44px hit area. */
+.memory-copy::before { content: ""; position: absolute; inset: -6px; }
+.memory-copy:active { transform: scale(.9); transition-duration: var(--dur-press); }
+.memory-copy:focus-visible { outline: 2px solid var(--ios-tint); outline-offset: 1px; }
+@media (hover: hover) { .memory-copy:hover { background: var(--ios-fill-pressed); } }
+.memory-status-error { display: flex; align-items: flex-start; gap: 8px; padding: 16px; font-size: 14px; color: var(--ios-red); }
+.memory-status-skeleton { display: grid; gap: 12px; padding: 18px 16px; }
+.memory-status-skeleton i { display: block; height: 12px; border-radius: 6px; background: var(--ios-fill); }
+.memory-status-skeleton i:first-child { width: 55%; height: 15px; }
+.memory-status-skeleton i:nth-child(2) { width: 80%; }
+.memory-status-skeleton i:nth-child(3) { width: 66%; }
+
+.memory-guide { margin-top: 24px; padding: 0 4px; }
+.memory-guide h2 { font-family: var(--serif); font-size: 21px; font-weight: 400; line-height: 1.2; }
+.memory-guide ul { display: grid; gap: 10px; margin: 12px 0 0; padding: 0; list-style: none; }
+.memory-guide li { position: relative; padding-left: 15px; font-size: 14px; line-height: 1.55; color: var(--ios-label-2); }
+.memory-guide li::before { content: ""; position: absolute; left: 1px; top: .66em; width: 5px; height: 5px; border-radius: 50%; background: var(--ios-label-3); }
+.memory-guide p { margin-top: 14px; font-size: 13px; line-height: 1.55; color: var(--ios-label-2); }
+
+/* ---------- Reader sheet ---------- */
+.memory-reader {
+  position: absolute; left: 50%; top: 50%; display: flex; flex-direction: column; overflow: hidden;
+  /* Most notes are a few lines: the sheet fits its note, from a comfortable minimum up to nearly the full screen. */
+  width: min(760px, calc(100% - 48px)); min-height: min(420px, calc(100dvh - 48px)); max-height: min(880px, calc(100dvh - 48px));
+  border-radius: 28px; background: var(--ios-bg); box-shadow: var(--ios-shadow-float);
+  translate: -50% -50%;
+}
+.memory-reader > header {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 56px; padding: 8px 12px 8px 16px;
+  background: var(--ios-glass); -webkit-backdrop-filter: saturate(160%) blur(20px); backdrop-filter: saturate(160%) blur(20px);
+  border-bottom: .5px solid var(--ios-separator);
+}
+.memory-reader-where { display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 14px; color: var(--ios-label-2); }
+.memory-reader-where .memory-folder-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.memory-reader-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.memory-reader-actions .ios-button { min-height: 44px; }
+.studio-layer .ios-button.memory-delete { gap: 6px; background: var(--ios-red-soft); color: var(--ios-red); }
+.memory-reader-scroll {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 26px 32px calc(30px + env(safe-area-inset-bottom));
+  scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ios-label-3) 60%, transparent) transparent;
+}
+.memory-reader-title { font-family: var(--serif); font-size: 30px; font-weight: 400; line-height: 1.18; letter-spacing: -.01em; overflow-wrap: anywhere; text-wrap: balance; }
+.memory-reader-meta {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 14px 0 22px; padding-bottom: 18px;
+  border-bottom: .5px solid var(--ios-separator); font-size: 13px; color: var(--ios-label-2); font-variant-numeric: tabular-nums;
+}
+.memory-tag { color: var(--ios-label-2); }
+.memory-reader-skeleton { display: grid; gap: 12px; }
+.memory-reader-skeleton i { display: block; height: 14px; border-radius: 7px; background: var(--ios-fill); }
+.memory-reader-skeleton i:nth-child(1) { width: 92%; }
+.memory-reader-skeleton i:nth-child(2) { width: 78%; }
+.memory-reader-skeleton i:nth-child(3) { width: 86%; }
+.memory-reader-skeleton i:nth-child(4) { width: 40%; }
+.memory-reader-state { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 48px 0; color: var(--ios-label-2); font-size: 15px; text-align: center; }
+.memory-reader-truncated { margin-top: 16px; font-size: 13px; color: var(--ios-label-2); }
+.memory-reader-boundary {
+  display: flex; align-items: flex-start; gap: 8px; margin-top: 28px; padding-top: 14px; border-top: .5px solid var(--ios-separator);
+  font-size: 12px; line-height: 1.5; color: var(--ios-label-3);
+}
+.memory-reader-boundary svg { margin-top: 2px; }
+
+/* The note itself: a reading measure, quiet headings, code on a second paper tone. */
+.memory-markdown {
+  max-width: 68ch; font-size: 17px; line-height: 1.68; overflow-wrap: anywhere;
+  -webkit-user-select: text; user-select: text;
+}
+.memory-markdown > :first-child { margin-top: 0; }
+.memory-markdown :where(p, ul, ol, pre, blockquote, table) { margin: 0 0 14px; }
+.memory-markdown :where(h1, h2, h3, h4) { margin: 26px 0 10px; line-height: 1.3; }
+.memory-markdown h1 { font-family: var(--serif); font-size: 23px; font-weight: 400; }
+.memory-markdown h2 { font-size: 19px; font-weight: 650; }
+.memory-markdown :where(h3, h4) { font-size: 17px; font-weight: 650; }
+.memory-markdown :where(h2, h3, h4) { font-family: inherit; }
+.memory-markdown :where(ul, ol) { padding-left: 1.3em; }
+/* The base reset strips list markers; notes are mostly bullet points, so they come back here. */
+.memory-markdown ul { list-style: disc; }
+.memory-markdown ol { list-style: decimal; }
+.memory-markdown :where(ul, ol) ul { list-style: circle; }
+.memory-markdown li:has(> input[type="checkbox"]) { list-style: none; margin-left: -1.3em; }
+.memory-markdown input[type="checkbox"] { margin-right: 6px; accent-color: var(--ios-tint); vertical-align: -1px; }
+.memory-markdown li + li { margin-top: 4px; }
+.memory-markdown li::marker { color: var(--ios-label-3); }
+.memory-markdown a { color: var(--ios-tint); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+/* Quotes sit on the second paper tone, like code, rather than behind a rule. */
+.memory-markdown blockquote { padding: 10px 16px; border-radius: 14px; background: var(--ios-surface-2); color: var(--ios-label-2); }
+.memory-markdown blockquote > :last-child { margin-bottom: 0; }
+.memory-markdown pre { overflow-x: auto; padding: 14px 16px; border-radius: 14px; background: var(--ios-surface-2); font-size: 14px; line-height: 1.5; }
+.memory-markdown pre code { padding: 0; background: none; font-size: inherit; overflow-wrap: normal; }
+.memory-markdown table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: 15px; }
+.memory-markdown :where(th, td) { padding: 8px 10px; border: .5px solid var(--ios-separator); text-align: left; }
+.memory-markdown hr { margin: 22px 0; border: 0; border-top: .5px solid var(--ios-separator); }
+.memory-md-image { display: inline-flex; padding: 1px 8px; border-radius: 6px; background: var(--ios-fill); color: var(--ios-label-2); font-size: 14px; }
+
+.memory-keywords { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.memory-keyword {
+  position: relative; display: inline-flex; align-items: center; min-height: 34px; padding: 5px 13px; border-radius: 999px;
+  font-size: 14px; font-weight: 500; color: var(--ios-tint); background: var(--ios-tint-soft);
+  transition: transform var(--dur-slow) var(--ease-spring), background-color var(--dur-fast) ease;
+}
+.memory-keyword::before { content: ""; position: absolute; inset: -5px -2px; }
+.memory-keyword:active { transform: scale(.94); transition-duration: var(--dur-press); }
+@media (hover: hover) { .memory-keyword:hover { background: color-mix(in srgb, var(--ios-tint) 18%, transparent); } }
+
+/* ---------- Phone ---------- */
+@media (max-width: 699px) {
+  .memory-app { gap: 26px; }
+  .memory-row { padding-right: 8px; }
+  /* A bottom sheet: half the screen for a short note, growing to the large detent for a long one. */
+  .memory-reader {
+    left: 0; right: 0; top: auto; bottom: 0; width: 100%; min-height: 56dvh; max-height: calc(100dvh - env(safe-area-inset-top) - 10px);
+    border-radius: 26px 26px 0 0; translate: none;
+  }
+  .memory-reader-scroll { padding: 20px 20px calc(28px + env(safe-area-inset-bottom)); }
+  .memory-reader-title { font-size: 25px; }
+  .memory-reader-actions .memory-delete { padding-inline: 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :is(.memory-skeleton-row, .memory-status-skeleton, .memory-reader-skeleton) i { animation: none !important; }
+  .memory-list { transition: none; }
+}

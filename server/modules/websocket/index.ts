@@ -9,6 +9,7 @@ export { chatRunRegistry } from './services/chat-run-registry.service.js';
 // uses, so both paths put the identical delta on the wire.
 export { broadcastSessionUpserted, broadcastSessionUpsertedBatch } from './services/session-upsert-broadcast.service.js';
 // runDetachedChatTurn: used by the scheduled-messages module to run a turn
-// from a timer, with no socket to stream to or report errors on.
+// from a timer, and by the studio module's AI builds to run unattended
+// Claude Code turns, with no socket to stream to or report errors on.
 export { runDetachedChatTurn } from './services/chat-websocket.service.js';
 export type { ProviderRuntimeGateway } from './services/chat-websocket.service.js';

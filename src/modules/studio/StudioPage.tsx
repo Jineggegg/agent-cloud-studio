@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { CSSProperties, UIEvent } from 'react';
-import { createPortal } from 'react-dom';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AnimatePresence, LazyMotion, MotionConfig, m } from 'motion/react';
 import { Toaster, toast } from 'sonner';
@@ -8,11 +7,13 @@ import { ChevronLeft, FolderX, Globe, LayoutGrid, RefreshCw, ShieldCheck, Square
 
 import { useAuth } from '@/modules/auth';
 import { api, readApiJson } from '@/shared/api';
-import type { HubProject, StudioChatSpace, StudioConversation, StudioHomeTile, T212Status } from '@/shared/types';
+import type { HubProject, StudioBuildCreated, StudioChatSpace, StudioConversation, StudioHomeTile, T212Status } from '@/shared/types';
 import { applyModelDefaults } from '@/shared/modelDefaults';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
 import { useStudio } from '@/modules/studio/hooks/useStudio';
+import { useStudioBuilds } from '@/modules/studio/hooks/useStudioBuilds';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
+import { StudioCreateSheet } from '@/modules/studio/StudioCreateSheet';
 import { StudioHomeScreen } from '@/modules/studio/StudioHomeScreen';
 import { lazyStudioPanel } from '@/modules/studio/lazyStudioPanel';
 import { StudioLinksSheet } from '@/modules/studio/StudioLinksSheet';
@@ -21,13 +22,17 @@ import '@/modules/studio/studio.css';
 
 // Sub-apps stay out of the home screen's first load (and are warmed once it is idle); same props as the originals.
 const StudioChatPane = lazyStudioPanel(() => import('@/modules/studio/StudioChatPane').then(module => module.StudioChatPane), 'chat');
+const StudioBuildComposer = lazyStudioPanel(() => import('@/modules/studio/StudioBuildComposer').then(module => module.StudioBuildComposer), 'form');
 const StudioConnections = lazyStudioPanel(() => import('@/modules/studio/StudioConnections').then(module => module.StudioConnections), 'list');
+const StudioMemory = lazyStudioPanel(() => import('@/modules/studio/StudioMemory').then(module => module.StudioMemory), 'list');
 const StudioProjectAgents = lazyStudioPanel(() => import('@/modules/studio/StudioProjectAgents').then(module => module.StudioProjectAgents), 'list');
 const StudioProjectEditor = lazyStudioPanel(() => import('@/modules/studio/StudioProjectEditor').then(module => module.StudioProjectEditor), 'form');
 const StudioProjectMail = lazyStudioPanel(() => import('@/modules/studio/StudioProjectMail').then(module => module.StudioProjectMail), 'list');
 const StudioProjectTasks = lazyStudioPanel(() => import('@/modules/studio/StudioProjectTasks').then(module => module.StudioProjectTasks), 'list');
 const StudioSnrPanel = lazyStudioPanel(() => import('@/modules/studio/StudioSnrPanel').then(module => module.StudioSnrPanel), 'list');
 const StudioTrading212 = lazyStudioPanel(() => import('@/modules/studio/StudioTrading212').then(module => module.StudioTrading212), 'dashboard');
+// ── v6 track: github — lazy panel (kept apart from the other tracks' insertions) ──
+const StudioGitHub = lazyStudioPanel(() => import('@/modules/studio/StudioGitHub').then(module => module.StudioGitHub), 'list');
 
 // Layout/drag features load after first paint; plain animations work immediately.
 const loadMotionFeatures = () => import('@/modules/studio/motionFeatures').then(module => module.default);
@@ -38,7 +43,8 @@ const APP_OPEN_MS = 560;
 const APP_CLOSE_MS = 420;
 // Scrolling past the large title collapses it into the glass navigation bar.
 const LARGE_TITLE_COLLAPSE_AT = 28;
-const SYSTEM_TITLES = { deepseek: 'DeepSeek', connections: '设置' } as const;
+const SYSTEM_TITLES = { deepseek: 'DeepSeek', connections: '设置', github: 'GitHub', memory: '记忆' } as const;
+const isSystemApp = (value: string | undefined): value is keyof typeof SYSTEM_TITLES => Boolean(value && value in SYSTEM_TITLES);
 
 type Target = { kind: 'project'; id: string } | { kind: 'app'; id: keyof typeof SYSTEM_TITLES } | null;
 type Tab = { id: string; label: string };
@@ -63,7 +69,7 @@ export function StudioPage() {
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const target: Target = params.id ? { kind: 'project', id: params.id }
-    : params.app === 'deepseek' || params.app === 'connections' ? { kind: 'app', id: params.app } : null;
+    : isSystemApp(params.app) ? { kind: 'app', id: params.app } : null;
   const chatSpace: StudioChatSpace = target?.kind === 'project' ? `project:${target.id}` : 'deepseek';
   const studio = useStudio(chatSpace);
   const { logout } = useAuth();
@@ -91,6 +97,8 @@ export function StudioPage() {
   const [creating, setCreating] = useState(false);
   // Deleting a project waits for an explicit confirmation in the alert.
   const [confirmProjectDelete, setConfirmProjectDelete] = useState(false);
+  // AI builds: progress rings on project icons, polled only while one is running.
+  const builds = useStudioBuilds(projects);
 
   const loadProjects = useCallback(async () => {
     try { setProjects(await api.studio.projects.list().then(readApiJson<HubProject[]>)); setProjectsError(''); }
@@ -137,6 +145,8 @@ export function StudioPage() {
       return;
     }
     if (type === 'deepseek') { openTile({ id: 'deepseek', name: 'DeepSeek', tone: 'slate', glyph: 'sparkles' }, card); return; }
+    // The GitHub widget opens the PR inbox system app, zooming out of the card like its home tile.
+    if (type === 'github') { openTile({ id: 'github', name: 'GitHub', tone: 'graphite', glyph: 'pull-request' }, card); return; }
     const module = type === 'trading212' ? 'trading212' : 'snr-lab';
     const found = projects?.find(item => item.modules.includes(module));
     if (!found) { toast.error(type === 'trading212' ? '没有启用股票分析的项目' : '没有启用 K 线实验室的项目'); return; }
@@ -144,6 +154,13 @@ export function StudioPage() {
   };
   // Home works even mid-zoom: the closing animation simply replaces the opening one.
   const goHome = () => { if (transition !== 'closing') setTransition('closing'); };
+  // An AI build lands on the home screen at once as a dimmed icon; the sheet closes and nothing zooms open.
+  const startBuild = ({ build, project: created }: StudioBuildCreated) => {
+    setProjects(previous => [...(previous ?? []), created]);
+    builds.track(build);
+    setCreating(false);
+    toast(`「${created.name}」开始开发`, { description: '完成后图标会亮起；随时点开图标就能看它在做什么。' });
+  };
   const refresh = async () => {
     setRefreshing(true);
     try { await Promise.all([studio.refresh(), loadProjects(), loadT212()]); } finally { setRefreshing(false); }
@@ -169,9 +186,16 @@ export function StudioPage() {
       id: `project:${item.id}`, name: item.name, tone: item.tone, glyph: item.glyph,
       status: item.modules.includes('snr-lab') ? (studio.loading ? undefined : snrOnline ? '在线' : '离线')
         : item.modules.includes('trading212') && t212Ready === false ? '未接入' : undefined,
+      // An AI build in progress dims the icon under a ring and links it to the live workbench session.
+      ...builds.tileFor(item.id),
     })),
+    // ── v6 track: github — home tile below this line ──
+    { id: 'github', name: 'GitHub', tone: 'graphite', glyph: 'pull-request' },
+    // ── v6 track: memory — home tile below this line ──
+    // The shared memory of Claude Code, Codex and DeepSeek: a notebook, in warm paper.
+    { id: 'memory', name: '记忆', tone: 'sand', glyph: 'book' },
     { id: 'deepseek', name: 'DeepSeek', tone: 'slate', glyph: 'sparkles', status: studio.loading || configured ? undefined : '待配置' },
-    { id: 'workspace', name: '开发工具', tone: 'graphite', glyph: 'terminal', href: '/workspace' },
+    { id: 'workspace', name: '工作台', tone: 'graphite', glyph: 'terminal', href: '/work' },
     { id: 'connections', name: '设置', tone: 'stone', glyph: 'settings', status: studio.loading || configured ? undefined : '1 项待配置' },
   ];
   // The app is revealed from the exact icon rectangle (clip-path, so content never distorts), like iOS; without an icon it fades and scales from centre.
@@ -201,7 +225,7 @@ export function StudioPage() {
     {/* The home screen stays mounted under an open app so its entrance animation and edit state persist. */}
     <div className={`home-layer ${target && !transition ? 'is-covered' : ''}`} aria-hidden={target ? true : undefined}>
       <StudioHomeScreen tiles={tiles} loading={projects === null} covered={Boolean(target && !transition)} snr={studio.snr} onOpen={openTile} onOpenWidget={(type, card) => void openWidget(type, card)} onCreate={() => setCreating(true)}
-        onRefresh={() => void refresh()} onSignOut={signOut} refreshing={refreshing} />
+        onRefresh={() => void refresh()} onSignOut={signOut} refreshing={refreshing} onBuildAction={(tile, action) => builds.act(tile.id.slice(8), action)} />
     </div>
 
     {target && <div className={`studio-app ${transition ?? ''} ${origin ? `has-origin tone-${origin.tone}` : ''}`} style={appStyle} role="region" aria-label={title || '应用'}>
@@ -239,6 +263,10 @@ export function StudioPage() {
               initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8, transition: { duration: 0.14 } }}>
               {!tabs.length && <div className="studio-large-title"><h1>{title}</h1></div>}
               {target.kind === 'app' && target.id === 'connections' && <StudioConnections status={studio.status} onChange={studio.refresh} />}
+              {/* ── v6 track: github — app content below this line ── */}
+              {target.kind === 'app' && target.id === 'github' && <StudioGitHub refreshing={refreshing} />}
+              {/* ── v6 track: memory — app content below this line ── */}
+              {target.kind === 'app' && target.id === 'memory' && <StudioMemory refreshing={refreshing} />}
               {target.kind === 'project' && !project && (projects === null
                 ? <div className="studio-skeleton" role="status" aria-label="正在加载项目"><div className="skeleton-block" style={{ height: 160 }} /></div>
                 : <div className="ios-empty"><FolderX size={32} strokeWidth={1.5} aria-hidden="true" /><span>这个项目不存在或已被删除</span>
@@ -250,21 +278,20 @@ export function StudioPage() {
       </main>
     </div>}
 
-    {creating && createPortal(<div className="studio-layer" onKeyDown={event => { if (event.key === 'Escape') setCreating(false); }}>
-      <div className="sheet-scrim" aria-hidden="true" onClick={() => setCreating(false)} />
-      <div className="library-sheet project-sheet" role="dialog" aria-modal="true" aria-labelledby="studio-new-project-title">
-        <div className="library-grabber" aria-hidden="true" />
-        <header><h2 id="studio-new-project-title">新建项目</h2></header>
-        <StudioProjectEditor onCancel={() => setCreating(false)} onSaved={saved => {
-          setProjects(previous => [...(previous ?? []), saved]);
-          setCreating(false);
-          toast.success(`已创建「${saved.name}」`);
-          setOrigin(null);
-          setTransition('opening');
-          navigate(`/projects/${encodeURIComponent(saved.id)}`, { state: { fromHome: true } });
-        }} />
-      </div>
-    </div>, document.body)}
+    {creating && <StudioCreateSheet onClose={() => setCreating(false)}
+      build={<StudioBuildComposer onCancel={() => setCreating(false)} onStarted={startBuild} />}
+      manual={<StudioProjectEditor onCancel={() => setCreating(false)} onSaved={saved => {
+        setProjects(previous => [...(previous ?? []), saved]);
+        setCreating(false);
+        toast.success(`已创建「${saved.name}」`);
+        setOrigin(null);
+        setTransition('opening');
+        navigate(`/projects/${encodeURIComponent(saved.id)}`, { state: { fromHome: true } });
+      }} />} />}
+
+    {builds.pendingStop && <StudioConfirmSheet title={`停止开发「${builds.pendingStop.name}」？`}
+      message="Claude Code 会立刻停下，已经写好的文件都会保留。之后可以在编辑主屏幕时继续开发。" confirmLabel="停止"
+      onCancel={builds.cancelStop} onConfirm={() => void builds.confirmStop()} />}
 
     {pendingDelete && <StudioConfirmSheet title="删除此对话？" message={`“${pendingDelete.title}”及全部消息将被删除，此操作无法撤销。`} confirmLabel="删除"
       onCancel={() => setPendingDelete(null)}
@@ -276,7 +303,7 @@ export function StudioPage() {
         void studio.remove(conversation.id);
       }} />}
 
-    {confirmProjectDelete && project && <StudioConfirmSheet title={`删除「${project.name}」？`} message="项目设置、自动化草稿和 DeepSeek 对话会被删除；电脑上的文件和开发工具会话不受影响。" confirmLabel="删除"
+    {confirmProjectDelete && project && <StudioConfirmSheet title={`删除「${project.name}」？`} message="项目设置、自动化草稿和 DeepSeek 对话会被删除；电脑上的文件和工作台会话不受影响。" confirmLabel="删除"
       onCancel={() => setConfirmProjectDelete(false)}
       onConfirm={() => {
         const removed = project;

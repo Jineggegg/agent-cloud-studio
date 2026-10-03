@@ -10,10 +10,11 @@ import type { HubProject } from '@/shared/types';
 const mocks = vi.hoisted(() => ({
   api: { list: vi.fn(), create: vi.fn(), update: vi.fn(), launch: vi.fn(), launchRemote: vi.fn(), sessions: vi.fn() },
   remote: { hosts: vi.fn(), status: vi.fn() },
+  workbench: { hubLinks: vi.fn() },
   writeSelectedProvider: vi.fn(),
 }));
 vi.mock('@/shared/api', () => ({
-  api: { studio: { projects: mocks.api, remote: mocks.remote } },
+  api: { studio: { projects: mocks.api, remote: mocks.remote, workbench: mocks.workbench } },
   readApiJson: async (response: Response) => {
     const value = await response.json();
     if (!response.ok) throw Error(value.error);
@@ -40,23 +41,36 @@ describe('Studio projects', () => {
     vi.clearAllMocks();
     mocks.api.sessions.mockResolvedValue(Response.json([{ id: 's1', provider: 'claude', title: '课程大纲' }]));
     mocks.remote.hosts.mockImplementation(async () => Response.json([{ name: 'aj', label: 'AJ 服务器', target: 'sp-remote' }]));
+    mocks.workbench.hubLinks.mockImplementation(async () => Response.json([{ hubId: 'professor', projectId: 'native' }]));
   });
 
-  it('starts an agent inside the project directory and chooses its provider before the IDE mounts', async () => {
-    mocks.api.launch.mockResolvedValue(Response.json({ url: '/workspace?projectId=native&provider=codex' }));
+  it('starts an agent inside the project directory and chooses its provider before the workbench mounts', async () => {
+    mocks.api.launch.mockResolvedValue(Response.json({ url: '/work/native?new=codex' }));
     const openChat = vi.fn();
     render(<MemoryRouter initialEntries={['/projects/professor']}><Routes>
       <Route path="/projects/:id" element={<StudioProjectAgents project={project} onOpenChat={openChat} />} />
-      <Route path="/workspace" element={<div>IDE opened</div>} />
+      <Route path="/work/:projectId" element={<div>Workbench opened</div>} />
     </Routes></MemoryRouter>);
     expect(await screen.findByText('课程大纲')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Cursor/ })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /DeepSeek/ }));
     expect(openChat).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole('button', { name: /Codex/ }));
-    expect(await screen.findByText('IDE opened')).toBeTruthy();
+    expect(await screen.findByText('Workbench opened')).toBeTruthy();
     expect(mocks.api.launch).toHaveBeenCalledWith('professor', 'codex');
     expect(mocks.writeSelectedProvider).toHaveBeenCalledWith('codex');
+  });
+
+  it('links existing sessions straight to the workbench, or through the /session redirect while the project is unknown', async () => {
+    const view = render(<MemoryRouter><StudioProjectAgents project={project} onOpenChat={vi.fn()} /></MemoryRouter>);
+    const row = await screen.findByRole('link', { name: /课程大纲/ });
+    await waitFor(() => expect(row.getAttribute('href')).toBe('/work/native/s/s1'));
+    view.unmount();
+    mocks.workbench.hubLinks.mockImplementation(async () => Response.json([{ hubId: 'professor', projectId: null }]));
+    // A Response body reads once, so the second render gets a fresh one.
+    mocks.api.sessions.mockImplementation(async () => Response.json([{ id: 's1', provider: 'claude', title: '课程大纲' }]));
+    render(<MemoryRouter><StudioProjectAgents project={project} onOpenChat={vi.fn()} /></MemoryRouter>);
+    expect((await screen.findByRole('link', { name: /课程大纲/ })).getAttribute('href')).toBe('/session/s1');
   });
 
   it('agents stay disabled until the project has a directory', async () => {

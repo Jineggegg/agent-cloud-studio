@@ -168,14 +168,16 @@ export function createProjectHubService(deps: Dependencies) {
       if (!project.modules.includes('agents') || !project.providers.includes(provider as StudioAgentProvider)) fail('该项目未启用此助手');
       if (!project.workspacePath) fail('请先在设置中填写项目工作目录');
       const workspace = await deps.resolveWorkspace(project.workspacePath);
-      return { url: `/workspace?projectId=${encodeURIComponent(workspace.projectId)}&provider=${encodeURIComponent(provider)}` };
+      // The workbench opens a new chat in the project with this agent preselected.
+      return { url: `/work/${encodeURIComponent(workspace.projectId)}?new=${encodeURIComponent(provider)}` };
     },
-    // A new agent session outside any project: the Claude and Codex widgets open the workbench directory in the IDE.
+    // A new agent session outside any project: the Claude and Codex widgets open the scratch directory in the
+    // workbench, with the same /work URL shape as launch so the browser never goes through the legacy redirect.
     async launchWorkbench(provider: string) {
       if (!AGENTS.includes(provider as StudioAgentProvider)) fail('该模型不在开发工具中运行');
       if (!deps.workbench) fail('工作台不可用', 503);
       const workspace = await deps.resolveWorkspace(await deps.workbench());
-      return { url: `/workspace?projectId=${encodeURIComponent(workspace.projectId)}&provider=${encodeURIComponent(provider)}` };
+      return { url: `/work/${encodeURIComponent(workspace.projectId)}?new=${encodeURIComponent(provider)}` };
     },
     // The server, never the browser, decides the remote command from the project's validated config.
     launchRemote(userId: number, id: string, agent: string) {

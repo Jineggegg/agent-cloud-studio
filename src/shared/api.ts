@@ -5,7 +5,7 @@ import {
 } from '@/shared/authToken';
 import { IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
-import type { HubAgentProvider, HubProjectInput, HubTaskInput, StudioChatSpace, StudioIngressId, T212CapsInput, T212Env } from '@/shared/types';
+import type { HubAgentProvider, HubProjectInput, HubTaskInput, StudioChatSpace, StudioGitHubMergeInput, StudioIngressId, T212CapsInput, T212Env } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -247,6 +247,44 @@ export const api = {
       messages: (params: { accountId?: string; q?: string; limit?: number } = {}) => get(`/api/studio/mail/messages${query(params)}`),
       message: (accountId: string, messageId: string) =>
         get(`/api/studio/mail/messages/${encodeURIComponent(accountId)}/${encodeURIComponent(messageId)}`),
+    },
+    // ── v6 track: shell — endpoints below this line ──
+    // Which IDE project each local hub project lives in: the workbench's project icons and DeepSeek space, and
+    // the project app's links to existing sessions. Read-only; it never registers a directory.
+    workbench: {
+      hubLinks: () => get('/api/studio/workbench/hub-links'),
+    },
+    // ── v6 track: chat — endpoints below this line ──
+    // ── v6 track: github — endpoints below this line ──
+    // The owner's GitHub through the server's gh CLI: account, PR inbox, one PR, merging (audited) and merge history.
+    // `refresh` bypasses the server's 45-second cache (it still reuses a fetch from the last few seconds).
+    github: {
+      status: (refresh = false) => get(`/api/studio/github/status${query({ refresh })}`),
+      pulls: (refresh = false) => get(`/api/studio/github/prs${query({ refresh })}`),
+      pull: (owner: string, repo: string, number: number, refresh = false) =>
+        get(`/api/studio/github/prs/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}${query({ refresh })}`),
+      merge: (owner: string, repo: string, number: number, input: StudioGitHubMergeInput) =>
+        post(`/api/studio/github/prs/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}/merge`, input),
+      merges: () => get('/api/studio/github/merges'),
+    },
+    // ── v6 track: builder — endpoints below this line ──
+    // App Store-style AI builds: poll the list, start one (name, icon, what to build), continue it with a follow-up, stop it;
+    // `environment` says whether builds run sandboxed or restricted.
+    builds: {
+      list: () => get('/api/studio/builds'),
+      environment: () => get('/api/studio/builds/environment'),
+      create: (input: { name: string; tone: string; glyph: string; prompt: string }) => post('/api/studio/builds', input),
+      resume: (id: string, message = '') => post(`/api/studio/builds/${encodeURIComponent(id)}/continue`, { message }),
+      cancel: (id: string) => post(`/api/studio/builds/${encodeURIComponent(id)}/cancel`),
+    },
+    // ── v6 track: memory — endpoints below this line ──
+    // The shared basic-memory server (Claude Code, Codex, DeepSeek) through Studio's MCP client; ids are permalinks.
+    memory: {
+      status: () => get('/api/studio/memory/status'),
+      recent: (folder?: string, signal?: AbortSignal) => get(`/api/studio/memory/notes${query({ folder })}`, { signal }),
+      search: (q: string, folder?: string, signal?: AbortSignal) => get(`/api/studio/memory/search${query({ q, folder })}`, { signal }),
+      note: (id: string, signal?: AbortSignal) => get(`/api/studio/memory/note${query({ id })}`, { signal }),
+      remove: (id: string) => del(`/api/studio/memory/note${query({ id })}`),
     },
     status: () => get('/api/studio/status'),
     snr: () => get('/api/studio/snr'),

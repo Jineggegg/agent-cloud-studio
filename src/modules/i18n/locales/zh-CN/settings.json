@@ -506,7 +506,7 @@
     },
     "managed": {
       "badge": "已托管",
-      "hint": "由 CloudCLI 管理。"
+      "hint": "由 Agent Cloud Studio 管理。"
     },
     "help": {
       "title": "关于 Codex MCP",

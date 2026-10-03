@@ -8,12 +8,14 @@ import { DndContext, DragOverlay, useDndContext } from '@dnd-kit/core';
 import { SortableContext } from '@dnd-kit/sortable';
 
 import { api, readApiJson } from '@/shared/api';
-import type { StudioQuotaSnapshot, StudioQuotaWindow, StudioSnr, T212Overview, T212Point } from '@/shared/types';
+import type { StudioGitHubInbox, StudioQuotaSnapshot, StudioQuotaWindow, StudioSnr, T212Overview, T212Point } from '@/shared/types';
 import { StudioTileIcon } from '@/modules/studio/StudioTileIcon';
+import { useGitHubReading } from '@/modules/studio/hooks/useGitHubReading';
 import { useHomeSortableItem, useHomeSortableList } from '@/modules/studio/hooks/useHomeSortable';
 import '@/modules/studio/studio-home.css';
+import '@/modules/studio/studio-github.css';
 
-export type WidgetType = 'claude' | 'codex' | 'deepseek' | 'trading212' | 'snr';
+export type WidgetType = 'claude' | 'codex' | 'deepseek' | 'trading212' | 'snr' | 'github';
 // iPadOS widget sizes: small is one grid cell, medium two cells wide, large two wide and two tall.
 type WidgetSize = 'small' | 'medium' | 'large';
 type WidgetConfig = { id: string; type: WidgetType; size: WidgetSize };
@@ -37,6 +39,7 @@ const CATALOG: { type: WidgetType; name: string; caption: string; tone: string; 
   { type: 'deepseek', name: 'DeepSeek 余额', caption: 'API 账户余额', tone: 'slate', glyph: 'sparkles' },
   { type: 'trading212', name: 'Trading 212', caption: '总资产、今日盈亏与走势', tone: 'moss', glyph: 'candles' },
   { type: 'snr', name: 'SNR 实验室', caption: '在线状态与研究阶段', tone: 'sage', glyph: 'activity' },
+  { type: 'github', name: 'GitHub', caption: '开放的 PR 与 CI 状态', tone: 'graphite', glyph: 'pull-request' },
 ];
 const QUOTA_REFRESH_MS = 60_000;
 const T212_REFRESH_MS = 5 * 60_000;
@@ -256,6 +259,43 @@ function TradingWidget({ size, reading: { overview, points }, still, masked, onT
   </>;
 }
 
+const CI_LABEL: Record<StudioGitHubInbox['pulls'][number]['checks']['state'], string> = { passing: '检查通过', failing: '检查失败', pending: '检查中', none: '没有检查' };
+
+function GitHubWidget({ size, reading: { inbox, problem }, still }: { size: WidgetSize; reading: ReturnType<typeof useGitHubReading>; still: boolean }) {
+  const pulls = inbox?.pulls ?? [];
+  const failing = pulls.filter(pull => pull.checks.state === 'failing').length;
+  const pending = pulls.filter(pull => pull.checks.state === 'pending').length;
+  const checked = pulls.filter(pull => pull.checks.state !== 'none').length;
+  const review = pulls.filter(pull => pull.reasons.includes('review')).length;
+  const ci = failing ? { tone: 'failing', text: `${failing} 个 PR 检查失败` }
+    : pending ? { tone: 'pending', text: `${pending} 个 PR 检查中` }
+      : checked ? { tone: 'passing', text: '检查都已通过' }
+        : { tone: 'none', text: pulls.length ? '没有 CI 检查' : '没有待处理的 PR' };
+  const figure = <div className="widget-figure">
+    <strong><NumberFlow value={pulls.length} animated={!still} /><span className="gh-widget-unit">个 PR</span></strong>
+    <small className="gh-widget-ci"><span className={`gh-dot ci-${ci.tone}`} aria-hidden="true" />{ci.text}</small>
+  </div>;
+  // Medium lists the first three PRs; large keeps the count and CI summary on top of the first four.
+  const list = (count: number) => <ul className="gh-widget-list">
+    {pulls.slice(0, count).map(pull => <li key={pull.id}>
+      <span className={`gh-dot ci-${pull.checks.state}`} role="img" aria-label={CI_LABEL[pull.checks.state]} />
+      <span className="gh-widget-pull"><strong>{pull.title}</strong><small>{pull.repo} #{pull.number}{pull.isDraft ? ' · 草稿' : ''}</small></span>
+    </li>)}
+  </ul>;
+  return <>
+    <header className="widget-head">
+      <StudioTileIcon tone="graphite" glyph="pull-request" size={14} variant="small" /><span>GitHub</span>
+      {inbox && problem ? <span className="widget-source is-stale" title={problem}>可能过期</span>
+        : size === 'medium' && pulls.length ? <span className="widget-source">共 {pulls.length} 个</span>
+          : review > 0 && <span className="widget-source">{review} 个待审</span>}
+    </header>
+    {!inbox ? (problem ? <p className="widget-note" title={problem}>{problem}</p> : <div className="widget-loading" aria-label="读取中"><span /><span /></div>)
+      : size === 'medium' && pulls.length ? list(3)
+        : size === 'large' && pulls.length ? <>{figure}{list(4)}</>
+          : figure}
+  </>;
+}
+
 function SnrWidget({ snr, size }: { snr: StudioSnr | null; size: WidgetSize }) {
   const online = Boolean(snr?.connected);
   const capabilities = snr?.manifest?.capabilities ?? [];
@@ -432,6 +472,7 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, onOpe
   }, [widgets]);
   const needsQuota = widgets.some(widget => widget.type === 'claude' || widget.type === 'codex' || widget.type === 'deepseek');
   const trading = useTradingReading(widgets.some(widget => widget.type === 'trading212'));
+  const github = useGitHubReading(widgets.some(widget => widget.type === 'github'), paused);
   const loadQuota = useCallback(async () => {
     const next = await api.studio.quota().then(readApiJson<StudioQuotaSnapshot[]>).catch(() => null);
     // A failed poll keeps the last reading (the per-snapshot "stale" flag still ages it); only a first failure shows the fallback.
@@ -473,6 +514,7 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, onOpe
     {widget.type === 'deepseek' && <DeepSeekWidget snapshot={find('deepseek')} size={widget.size} still={still} />}
     {widget.type === 'trading212' && <TradingWidget size={widget.size} reading={trading} still={still} masked={masked} onToggleMask={toggleMask} />}
     {widget.type === 'snr' && <SnrWidget snr={snr} size={widget.size} />}
+    {widget.type === 'github' && <GitHubWidget size={widget.size} reading={github} still={still} />}
   </>;
   const add = (type: WidgetType, size: WidgetSize) => {
     setWidgets(previous => [...previous, { id: newWidgetId(type), type, size }]);
