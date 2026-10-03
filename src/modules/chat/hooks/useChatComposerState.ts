@@ -67,6 +67,13 @@ type UseChatComposerStateArgs = {
    * /session/:id and records it as the current session.
    */
   onSessionEstablished?: (sessionId: string, context: SessionEstablishedContext) => void;
+  /**
+   * Rewrites the first message of a brand-new conversation before it goes out (the workbench appends a handoff
+   * summary when another provider's conversation continues here). The composer, the session name and the
+   * optimistic row keep the text as typed; only the prompt the provider receives changes. A rejection aborts the
+   * send with its message shown in the transcript, leaving the draft in place.
+   */
+  prepareNewSessionContent?: (content: string) => Promise<string>;
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   onShowSettings?: () => void;
   scrollToBottom: () => void;
@@ -194,6 +201,7 @@ export function useChatComposerState({
   sendByCtrlEnter,
   onSessionProcessing,
   onSessionEstablished,
+  prepareNewSessionContent,
   onFileOpen,
   onShowSettings,
   scrollToBottom,
@@ -912,7 +920,20 @@ export function useChatComposerState({
         }
       }
 
-      const messageContent = currentInput;
+      // What the provider receives; only the first message of a new conversation can differ from the typed text.
+      let messageContent = currentInput;
+      if (prepareNewSessionContent && !selectedSession?.id && !currentSessionId && !editingAnchorId) {
+        try {
+          messageContent = await prepareNewSessionContent(currentInput);
+        } catch (error) {
+          addMessage({
+            type: 'error',
+            content: error instanceof Error && error.message ? error.message : 'Failed to prepare the message.',
+            timestamp: new Date(),
+          });
+          return;
+        }
+      }
 
       let uploadedAttachments = previouslyUploadedAttachments;
       if (uploadedAttachments.length === 0 && currentAttachments.length > 0) {
@@ -945,7 +966,7 @@ export function useChatComposerState({
           const response = await api.providers.createSession({
             provider,
             projectPath: resolvedProjectPath,
-            initialMessage: messageContent,
+            initialMessage: currentInput,
           });
           if (!response.ok) {
             throw new Error(`Failed to create session (${response.status})`);
@@ -1011,7 +1032,7 @@ export function useChatComposerState({
         ...(editingAnchorId ? { anchorId: editingAnchorId } : {}),
         content: messageContent,
         options: {
-          ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
+          ...(queuedSubmission?.options ?? buildSendOptions(currentInput)),
           attachments: uploadedAttachments,
         },
       };
@@ -1047,6 +1068,7 @@ export function useChatComposerState({
       hasPendingDelivery,
       sendDelivery,
       preparedRecovery,
+      prepareNewSessionContent,
       setInput,
       setAttachedFiles,
     ],

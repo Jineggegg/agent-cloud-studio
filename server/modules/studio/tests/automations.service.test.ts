@@ -199,6 +199,7 @@ test('a mail digest reads only the chosen mailbox, summarises new mail without D
     assert.deepEqual(f.mailCalls, [{ accountId: 'gmail-1', query: '超级教授', limit: 30 }]);
     assert.equal(f.sent.length, 1);
     assert.equal(f.sent[0].title, '超级教授 · 邮件');
+    assert.equal(f.sent[0].url, '/projects/prof?tab=automations');
     assert.equal(f.sent[0].body, '2 封新的「超级教授」相关的邮件：王老师「期中考试安排」；王老师「课件更新」');
     assert.doesNotMatch(f.sent[0].body, /请查看附件/);
 
@@ -257,6 +258,8 @@ test('“构建失败时” automations run when the project’s AI build fails,
     assert.equal(await f.service.handleEvent(1, 'other-project', 'build-failed', 'x'), 0);
     assert.equal(await f.service.handleEvent(1, 'prof', 'build-failed', 'AI 没能完成开发'), 1);
     assert.deepEqual(f.sent.map(message => message.body), ['「超级教授」的 AI 开发失败了：AI 没能完成开发']);
+    // A failed build opens the project page itself; scheduled runs open its 自动化 tab.
+    assert.deepEqual(f.sent.map(message => message.url), ['/projects/prof']);
     f.service.setEnabled(1, event.id, false);
     assert.equal(await f.service.handleEvent(1, 'prof', 'build-failed', 'again'), 0);
     // Deleting the project removes its automations.

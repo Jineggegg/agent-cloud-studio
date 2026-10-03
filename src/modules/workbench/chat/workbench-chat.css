@@ -929,3 +929,34 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
 @media (prefers-reduced-motion: reduce) {
   .wbc-mic.is-listening::after { animation: none !important; box-shadow: 0 0 0 3px color-mix(in srgb, var(--wbc-red) 30%, transparent); }
 }
+
+/* ---------- Handoffs: a conversation carried on by another provider ---------- */
+/* The earlier stretches sit above the open chat, quieter than it; the divider marks where the next provider took over. */
+.wbc-handoff-prelude { display: flex; flex-direction: column; gap: 20px; }
+.wbc-handoff-stretch { display: flex; flex-direction: column; gap: 20px; }
+.wbc-handoff-stretch > .wbc-item { opacity: .78; }
+.wbc-handoff-loading, .wbc-handoff-missing {
+  display: inline-flex; align-items: center; gap: 8px; align-self: center; margin: 0;
+  font-size: 13px; color: var(--wbc-label-3);
+}
+.wbc-handoff-divider { padding: 4px 0; }
+.wbc-handoff-divider .wbc-divider-label { color: var(--wbc-label-2); font-weight: 600; }
+.wbc-handoff-divider .wbc-divider-label time { font-weight: 400; color: var(--wbc-label-3); font-variant-numeric: tabular-nums; }
+.wbc-handoff-divider.is-pending .wbc-divider-label { color: var(--wbc-tint); background: var(--wbc-tint-soft); }
+.wbc-handoff-links { display: inline-flex; align-items: center; gap: 4px; }
+.wbc-handoff-links a, .wbc-handoff-links button, .wbc-handoff-status button {
+  display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 0 10px; border-radius: 9px;
+  font-size: 12.5px; color: var(--wbc-tint); text-decoration: none;
+}
+.wbc-handoff-links a:hover, .wbc-handoff-links button:hover, .wbc-handoff-status button:hover { background: var(--wbc-fill); }
+.wbc-handoff-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--wbc-label-3); }
+.wbc-handoff-status.is-error { color: var(--wbc-red); }
+/* The summary a seeded first message carried, folded under the owner's bubble. */
+.wbc-handoff-carried { align-self: flex-end; max-width: min(82%, 620px); font-size: 13px; color: var(--wbc-label-3); }
+.wbc-handoff-carried summary { cursor: pointer; padding: 4px 2px; text-align: right; list-style: none; color: var(--wbc-tint); }
+.wbc-handoff-carried summary::-webkit-details-marker { display: none; }
+.wbc-handoff-carried[open] { padding: 4px 14px 10px; border-radius: 14px; background: var(--wbc-surface-2); }
+.wbc-handoff-carried[open] summary { text-align: left; }
+@media (prefers-reduced-motion: no-preference) {
+  .wbc-handoff-divider.is-pending .wbc-divider-label { animation: wbc-rise .32s cubic-bezier(.2, .8, .2, 1); }
+}

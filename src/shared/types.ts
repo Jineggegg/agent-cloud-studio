@@ -2268,6 +2268,40 @@ export type StudioMailDevicePoll = { status: 'pending' | 'connected' | 'expired'
 export type WorkbenchSessionItem = {
   id: string; kind: 'agent' | 'deepseek'; provider: 'claude' | 'codex' | 'deepseek';
   title: string; updatedAt: string | null; running?: boolean;
+  // Set on a history row that stands for a conversation handed between providers: the row is its latest session.
+  thread?: WorkbenchThread;
+};
+/**
+ * One stretch of a workbench conversation handed between providers (server: StudioWorkbenchThreadSegment): an agent
+ * session or a DeepSeek conversation, the model it took over with, and when (null for the first stretch).
+ */
+export type WorkbenchThreadSegment = {
+  kind: WorkbenchSessionItem['kind']; provider: WorkbenchSessionItem['provider']; sessionId: string;
+  modelLabel: string | null; handoffAt: string | null;
+};
+/**
+ * A workbench conversation that moved between providers (GET /api/studio/workbench/threads): its stretches in order,
+ * the last one continuing it. The history lists it as one row titled `title`; the chat shows the earlier stretches
+ * above the open one with a divider at each handoff.
+ */
+export type WorkbenchThread = {
+  id: string; projectId: string; title: string; segments: WorkbenchThreadSegment[]; createdAt: string; updatedAt: string;
+};
+/** What POST /api/studio/workbench/handoffs answers: the summary, and the `<handoff>` block appended to the next message. */
+export type WorkbenchHandoff = { summary: string; context: string };
+/**
+ * Another provider's model picked in a started workbench chat (agent or DeepSeek view), asking the chat column to
+ * hand the conversation over. `from` is the session being left as the view shows it (`id` null until the first send
+ * is confirmed); `busy` while a run or an unconfirmed send is in flight; `apply` records the picked model the way
+ * that view does, called only once the owner confirms.
+ */
+export type WorkbenchHandoffRequest = {
+  provider: 'claude' | 'codex' | 'deepseek';
+  model: string | null;
+  modelLabel: string | null;
+  from: { kind: WorkbenchSessionItem['kind']; id: string | null; provider: 'claude' | 'codex' | 'deepseek'; modelLabel: string };
+  busy: boolean;
+  apply: () => void;
 };
 /** What the workbench shell hands its chat column (src/modules/workbench/chat/WorkbenchChat). */
 export type WorkbenchChatProps = {
@@ -2283,6 +2317,10 @@ export type WorkbenchChatProps = {
   onSessionCreated: (item: WorkbenchSessionItem) => void;
   // Opens a file in the shell's file panel.
   onOpenFile: (path: string) => void;
+  // The conversation the open session belongs to when it was handed between providers; null (or absent) otherwise.
+  thread?: WorkbenchThread | null;
+  // Called when a handoff has been recorded, with the conversation as it now stands, so the history can group it.
+  onThreadChange?: (thread: WorkbenchThread) => void;
 };
 // ── v6 track: shell — types below this line ──
 /** A provider a new workbench chat can start with; also the `?new=` value of a workbench URL. */

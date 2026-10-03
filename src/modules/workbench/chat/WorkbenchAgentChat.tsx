@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from 'react';
-import type { KeyboardEvent } from 'react';
+import type { KeyboardEvent, ReactNode } from 'react';
 import { AnimatePresence, m } from 'motion/react';
 import { ArrowDown, AtSign, ImagePlus, Slash } from 'lucide-react';
 import { toast } from 'sonner';
@@ -19,6 +19,7 @@ import type {
   Project,
   ProjectSession,
   WorkbenchChatChrome,
+  WorkbenchHandoffRequest,
   WorkbenchModelCatalogs,
   WorkbenchNewChatChoice,
   WorkbenchNewProvider,
@@ -74,13 +75,24 @@ type WorkbenchAgentChatProps = {
   // Provider a new chat sends under.
   draftProvider: LLMProvider;
   newSessionTrigger: number;
-  // Providers a new chat may switch to before its first send; null once the shell has a session open.
+  // Providers the model menu offers besides this one (switched to before the first send, handed over to after it);
+  // null when the provider cannot change here.
   providerChoices: WorkbenchNewChatChoice[] | null;
+  // Another provider's model picked once the conversation has started: the column confirms and hands it over.
+  // Absent where a handoff is not possible, and the menu then keeps to this provider.
+  onRequestHandoff?: (request: WorkbenchHandoffRequest) => void;
+  // A handoff's first prompt: the owner's message with the earlier conversation's summary appended.
+  prepareNewSessionContent?: (content: string) => Promise<string>;
+  // Earlier stretches of a handed-over conversation, shown above this session's transcript.
+  prelude?: ReactNode;
+  // The conversation's title while a handoff waits for its first message (the session itself has none yet).
+  title?: string | null;
   // The other providers' models for the one model menu.
   catalogs: WorkbenchModelCatalogs;
   // A DeepSeek model picked here; the column switches to DeepSeek with it.
   onPickDeepSeekModel: (model: string) => void;
-  onSelectProvider: (provider: WorkbenchNewProvider) => void;
+  // Another provider picked before the first send (with the picked model's label, when there is one).
+  onSelectProvider: (provider: WorkbenchNewProvider, modelLabel?: string | null) => void;
   onSessionCreated: (item: WorkbenchSessionItem) => void;
   onOpenFile: (path: string) => void;
   // The shell's controls and project name for the title bar.
@@ -99,6 +111,10 @@ export function WorkbenchAgentChat({
   draftProvider,
   newSessionTrigger,
   providerChoices: newChatProviderChoices,
+  onRequestHandoff,
+  prepareNewSessionContent,
+  prelude,
+  title,
   catalogs,
   onPickDeepSeekModel,
   onSelectProvider,
@@ -127,6 +143,7 @@ export function WorkbenchAgentChat({
     newSessionTrigger,
     onSessionCreated,
     onOpenFile,
+    prepareNewSessionContent,
   });
   const { provider: providerState, session: sessionState, composer, recovery } = engine;
   const provider = providerState.provider;
@@ -136,8 +153,11 @@ export function WorkbenchAgentChat({
   // A send the server has not confirmed yet blocks another send (and recovery), as ChatComposer does.
   const deliveryPending = composer.delivery?.state === 'sending' || composer.delivery?.state === 'unknown';
 
-  const started = Boolean(engine.sessionId) || messages.length > 0;
-  const providerChoices = started ? null : newChatProviderChoices;
+  // An open session counts as started even before its history arrives, so the menu never offers an instant switch.
+  const started = Boolean(session) || Boolean(engine.sessionId) || messages.length > 0;
+  // Before the first send another provider's model switches this chat; afterwards it hands the conversation over.
+  const switchMode = !newChatProviderChoices ? 'locked' : !started ? 'switch' : onRequestHandoff ? 'handoff' : 'locked';
+  const providerChoices = switchMode === 'locked' ? null : newChatProviderChoices;
   const modelName = modelShortLabel(providerState.currentProviderModel, providerState.currentProviderModelOptions);
 
   const planRequest = pending.find((request) => PLAN_TOOL_NAMES.has(request.toolName)) ?? null;
@@ -161,16 +181,28 @@ export function WorkbenchAgentChat({
   const handleSelectEffort = useCallback((effort: string) => {
     engine.selectEffort(effort).catch(() => toast.error('没能切换思考强度，请再试一次'));
   }, [engine]);
-  // Another provider's model, picked before the first send: the chat becomes that provider's, with this model.
-  const handleSwitch = useCallback((target: WorkbenchNewProvider, model: string | null) => {
-    if (target === 'deepseek') {
-      if (model) onPickDeepSeekModel(model);
-    } else if (model) {
-      // No session yet: the pick only becomes that agent's model on this device, which the switch then shows.
-      void providerState.selectProviderModel(target, model, null);
+  // Records another provider's model as that provider's pick on this device (DeepSeek's in the column), which the
+  // chat shows once it is that provider's.
+  const recordPick = useCallback((target: WorkbenchNewProvider, model: string | null) => {
+    if (!model) return;
+    if (target === 'deepseek') onPickDeepSeekModel(model);
+    else void providerState.selectProviderModel(target, model, null);
+  }, [onPickDeepSeekModel, providerState]);
+  // Another provider's model: before the first send the chat becomes that provider's at once; afterwards the column
+  // asks to hand the conversation over, and the pick is recorded only if the owner agrees.
+  const handleSwitch = useCallback((target: WorkbenchNewProvider, model: string | null, modelLabel: string | null) => {
+    if (started && onRequestHandoff) {
+      onRequestHandoff({
+        provider: target, model, modelLabel,
+        from: { kind: 'agent', id: engine.sessionId ?? session?.id ?? null, provider: provider === 'codex' ? 'codex' : 'claude', modelLabel: modelName },
+        busy: isProcessing || deliveryPending,
+        apply: () => recordPick(target, model),
+      });
+      return;
     }
-    onSelectProvider(target);
-  }, [onPickDeepSeekModel, onSelectProvider, providerState]);
+    recordPick(target, model);
+    onSelectProvider(target, modelLabel);
+  }, [deliveryPending, engine.sessionId, isProcessing, modelName, onRequestHandoff, onSelectProvider, provider, recordPick, session?.id, started]);
   const menuProvider = provider === 'codex' ? 'codex' : 'claude';
   // The engine already holds both agents' catalogs (with the user's hidden models removed); DeepSeek's come from the column.
   const agentCatalog = providerState.providerModelCatalog;
@@ -183,7 +215,7 @@ export function WorkbenchAgentChat({
     providers: menuProvidersFor({ choices: providerChoices, current: menuProvider, currentOptions: providerState.currentProviderModelOptions, catalogs: menuCatalogs }),
     current: menuProvider,
     currentModel: providerState.currentProviderModel,
-    locked: providerChoices === null,
+    mode: switchMode,
     onSelectModel: handleSelectModel,
     onSwitch: handleSwitch,
     emptyNote: '正在读取模型…',
@@ -209,7 +241,7 @@ export function WorkbenchAgentChat({
       <WorkbenchProviderMark provider={provider} size={60} />
       <h2 className="wbc-empty-title">{displayName}</h2>
       <p className="wbc-empty-sub">{providerLabel(provider)} · {modelName} · {modeCopy.label}</p>
-      {providerChoices && <p className="wbc-empty-note">发送第一条消息前，可以在模型菜单里换成 Claude、Codex 或 DeepSeek 的任一模型；开始后要换服务请新建会话。</p>}
+      {providerChoices && <p className="wbc-empty-note">可以在模型菜单里换成 Claude、Codex 或 DeepSeek 的任一模型；对话开始后换服务，前面的内容会整理成摘要交给它。</p>}
       <ul className="wbc-empty-hints" aria-label="小提示">
         <li><Slash size={14} aria-hidden="true" /><span>输入 / 调用命令和技能</span></li>
         <li><AtSign size={14} aria-hidden="true" /><span>输入 @ 引用项目里的文件</span></li>
@@ -224,7 +256,7 @@ export function WorkbenchAgentChat({
         <WorkbenchChatHeader
           provider={provider}
           modelLabel={modelName}
-          title={session?.title}
+          title={session?.title ?? title}
           menuSections={menuSections}
           end={<WorkbenchTokenRing usage={sessionState.tokenBudget} onOpen={composer.showCostModal} />}
           chrome={chrome}
@@ -265,7 +297,8 @@ export function WorkbenchAgentChat({
               pendingPlanRequest={planRequest}
               onDecision={composer.handlePermissionDecision}
               onEditMessage={providerState.supportsMessageEditing && !isProcessing ? composer.beginEditMessage : undefined}
-              emptyState={emptyState}
+              emptyState={prelude ? null : emptyState}
+              prelude={prelude}
             />
           </TranscriptSessionContext.Provider>
         </MarkdownWorkspaceContext.Provider>

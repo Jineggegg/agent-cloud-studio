@@ -144,7 +144,7 @@ export function WorkbenchSessionList({
               {renamingId === item.id
                 ? <RenameField item={item} onRename={onRename} onDone={() => setRenamingId(null)} />
                 : <Link to={workbenchPath(projectId, item)} className="wb-row-link" aria-current={active ? 'page' : undefined} onClick={onNavigate}
-                  aria-label={`${item.title}，${meta.name}${item.running ? '，运行中' : ''}`}>
+                  aria-label={`${item.title}，${meta.name}${item.thread ? `，交接过 ${item.thread.segments.length - 1} 次` : ''}${item.running ? '，运行中' : ''}`}>
                   <WorkbenchProviderMark provider={item.provider} running={item.running} />
                   <span className="wb-row-title">{item.title}</span>
                   {item.running
@@ -165,14 +165,16 @@ export function WorkbenchSessionList({
     </button>}
 
     <WorkbenchPopover open={menuOpen && menu !== null} anchor={menu?.anchor ?? null} onClose={() => setMenuOpen(false)} label="会话操作" align="end" width={200}>
-      {menu?.item.kind === 'agent' && <>
-        <button type="button" role="menuitem" className="wb-popover-item is-compact" onClick={() => { const target = menu.item; setMenuOpen(false); setRenamingId(target.id); }}>
-          <Pencil size={16} aria-hidden="true" />重命名
-        </button>
-        <button type="button" role="menuitem" className="wb-popover-item is-compact" onClick={() => { const target = menu.item; setMenuOpen(false); onArchive(target); }}>
+      {/* A conversation handed between providers is renamed as a whole, and archived only when every one of its
+          sessions is an agent's (DeepSeek conversations cannot be archived). */}
+      {menu && (menu.item.thread || menu.item.kind === 'agent') && <button type="button" role="menuitem" className="wb-popover-item is-compact"
+        onClick={() => { const target = menu.item; setMenuOpen(false); setRenamingId(target.id); }}>
+        <Pencil size={16} aria-hidden="true" />重命名
+      </button>}
+      {menu && (menu.item.thread ? menu.item.thread.segments.every(segment => segment.kind === 'agent') : menu.item.kind === 'agent')
+        && <button type="button" role="menuitem" className="wb-popover-item is-compact" onClick={() => { const target = menu.item; setMenuOpen(false); onArchive(target); }}>
           <Archive size={16} aria-hidden="true" />归档
-        </button>
-      </>}
+        </button>}
       {menu && <button type="button" role="menuitem" className="wb-popover-item is-compact is-destructive" onClick={() => { const target = menu.item; setMenuOpen(false); onDelete(target); }}>
         <Trash2 size={16} aria-hidden="true" />删除
       </button>}

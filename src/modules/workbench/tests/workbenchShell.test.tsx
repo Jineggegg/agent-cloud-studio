@@ -21,6 +21,15 @@ const HUBS = [{
   id: 'professor', name: '超级教授', tone: 'clay', glyph: 'graduation', workspacePath: '/home/me/projects/professor', remoteHost: '',
   providers: ['claude', 'codex', 'cursor', 'deepseek'],
 }];
+// A conversation handed from Claude Code (修复登录) to Codex (重构侧栏) and on to DeepSeek (课程大纲).
+const CHAIN = {
+  id: 't1', projectId: 'p1', title: '登录与侧栏', createdAt: iso(3_600_000), updatedAt: iso(30_000),
+  segments: [
+    { kind: 'agent' as const, provider: 'claude' as const, sessionId: 's1', modelLabel: 'Opus', handoffAt: null },
+    { kind: 'agent' as const, provider: 'codex' as const, sessionId: 's2', modelLabel: 'GPT-5.5', handoffAt: iso(600_000) },
+    { kind: 'deepseek' as const, provider: 'deepseek' as const, sessionId: 'c1', modelLabel: 'deepseek-chat', handoffAt: iso(300_000) },
+  ],
+};
 const mocks = vi.hoisted(() => ({
   projectSessions: vi.fn(),
   sessionDetails: vi.fn(),
@@ -28,6 +37,10 @@ const mocks = vi.hoisted(() => ({
   restoreSession: vi.fn(),
   renameSession: vi.fn(),
   conversations: vi.fn(),
+  removeConversation: vi.fn(),
+  threads: vi.fn(),
+  renameThread: vi.fn(),
+  removeThread: vi.fn(),
   quota: vi.fn(),
   listeners: [] as ((event: ServerEvent) => void)[],
   busy: new Set<string>(),
@@ -48,10 +61,15 @@ vi.mock('@/shared/api', async original => ({
     getFiles: () => json([]),
     studio: {
       projects: { list: () => json(HUBS) },
-      workbench: { hubLinks: () => json([{ hubId: 'professor', projectId: 'p1' }]) },
+      workbench: {
+        hubLinks: () => json([{ hubId: 'professor', projectId: 'p1' }]),
+        threads: (projectId: string) => mocks.threads(projectId),
+        renameThread: (...args: unknown[]) => mocks.renameThread(...args),
+        removeThread: (id: string) => mocks.removeThread(id),
+      },
       conversations: (space: string) => mocks.conversations(space),
       conversation: () => json({ error: 'missing' }, 404),
-      removeConversation: () => json({ deleted: true }),
+      removeConversation: (id: string) => mocks.removeConversation(id),
       quota: () => mocks.quota(),
     },
   },
@@ -98,6 +116,19 @@ vi.mock('@/modules/workbench/chat/WorkbenchChat', async () => {
       return <section aria-label="chat">
         <header data-testid="chat-header">{props.chrome?.leading}<span>{props.chrome?.projectName}</span>{props.chrome?.trailing}</header>
         <span data-testid="chat-state">{`${props.project.projectId}|${props.session ? `${props.session.kind}:${props.session.id}:${props.session.title}` : 'new'}|${props.provider}|${props.hubProjectId}`}</span>
+        <span data-testid="chat-thread">{props.thread ? props.thread.segments.map(segment => segment.sessionId).join(',') : 'none'}</span>
+        <button type="button" onClick={() => {
+          // A handoff from the open session: the next provider's session is created, then the chain is recorded.
+          const created = { id: 's4', kind: 'agent' as const, provider: 'codex' as const, title: '接着修登录', updatedAt: new Date().toISOString() };
+          props.onSessionCreated(created);
+          props.onThreadChange?.({
+            id: 't9', projectId: 'p1', title: '修复登录', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+            segments: [
+              { kind: 'agent', provider: 'claude', sessionId: 's1', modelLabel: 'Opus', handoffAt: null },
+              { kind: 'agent', provider: 'codex', sessionId: 's4', modelLabel: 'GPT-5.5', handoffAt: new Date().toISOString() },
+            ],
+          });
+        }}>hand off</button>
         <button type="button" onClick={() => props.onSessionCreated({ id: 'created-1', kind: 'agent', provider: 'codex', title: '新建的会话', updatedAt: new Date().toISOString() })}>create session</button>
         <button type="button" onClick={() => props.chrome?.onProviderChange?.('codex')}>switch to codex</button>
       </section>;
@@ -150,6 +181,10 @@ beforeEach(() => {
   mocks.deleteSession.mockImplementation(() => json({ success: true }));
   mocks.restoreSession.mockImplementation(() => json({ success: true }));
   mocks.renameSession.mockImplementation(() => json({ success: true }));
+  mocks.removeConversation.mockImplementation(() => json({ deleted: true }));
+  mocks.threads.mockImplementation(() => json([]));
+  mocks.renameThread.mockImplementation((id: string, title: string) => json({ ...CHAIN, id, title }));
+  mocks.removeThread.mockImplementation(() => json({ ok: true }));
   mocks.quota.mockImplementation(() => json([
     { provider: 'claude', available: true, windows: [
       { id: 'five_hour', label: '5 小时', usedPercent: 42, windowMinutes: 300, resetsAt: new Date(NOW + 2 * 3_600_000 + 13 * 60_000).toISOString() },
@@ -272,6 +307,66 @@ test('deleting asks first and archiving removes the row; both leave an open sess
   fireEvent.click(await screen.findByRole('menuitem', { name: '归档' }));
   await waitFor(() => expect(mocks.deleteSession).toHaveBeenCalledWith('s2', false));
   await waitFor(() => expect(screen.queryByRole('link', { name: /重构侧栏/ })).toBeNull());
+});
+
+test('a conversation handed between providers is one history row with the latest provider and opens whole', async () => {
+  mocks.threads.mockImplementation(() => json([CHAIN]));
+  renderShell('/work/p1/d/c1');
+  const history = await screen.findByRole('navigation', { name: '会话历史' });
+  const chain = await within(history).findByRole('link', { name: '登录与侧栏，DeepSeek，交接过 2 次' });
+  expect(chain.getAttribute('href')).toBe('/work/p1/d/c1');
+  expect(chain.querySelector('[data-provider]')?.getAttribute('data-provider')).toBe('deepseek');
+  // Its sessions are not listed on their own; the unrelated one is.
+  expect(within(history).queryByRole('link', { name: /修复登录/ })).toBeNull();
+  expect(within(history).queryByRole('link', { name: /重构侧栏/ })).toBeNull();
+  expect(within(history).getByRole('link', { name: /整理旧接口/ })).toBeTruthy();
+  expect(mocks.threads).toHaveBeenCalledWith('p1');
+  // The chat gets the latest session under the conversation's title, with the whole chain.
+  await waitFor(() => expect(chatState()).toBe('p1|deepseek:c1:登录与侧栏|deepseek|professor'));
+  expect(screen.getByTestId('chat-thread').textContent).toBe('s1,s2,c1');
+});
+
+test('a handoff from the chat moves to the new session without remounting it and folds the history into one row', async () => {
+  renderShell('/work/p1/s/s1');
+  await waitFor(() => expect(chatState()).toBe('p1|agent:s1:修复登录|claude|professor'));
+  expect(mocks.chatMounts).toBe(1);
+  fireEvent.click(screen.getByRole('button', { name: 'hand off' }));
+  await waitFor(() => expect(location()).toBe('/work/p1/s/s4'));
+  expect(mocks.chatMounts).toBe(1);
+  await waitFor(() => expect(chatState()).toBe('p1|agent:s4:修复登录|codex|professor'));
+  expect(screen.getByTestId('chat-thread').textContent).toBe('s1,s4');
+  const history = screen.getByRole('navigation', { name: '会话历史' });
+  expect(within(history).getByRole('link', { name: '修复登录，Codex，交接过 1 次' }).getAttribute('aria-current')).toBe('page');
+  expect(within(history).queryByRole('link', { name: /接着修登录/ })).toBeNull();
+});
+
+test('a handed-over conversation is renamed as a whole and deleted with every session it went through', async () => {
+  mocks.threads.mockImplementation(() => json([CHAIN]));
+  renderShell('/work/p1');
+  const history = await screen.findByRole('navigation', { name: '会话历史' });
+  await within(history).findByRole('link', { name: /登录与侧栏/ });
+
+  fireEvent.click(screen.getByRole('button', { name: '「登录与侧栏」的更多操作' }));
+  // A chain with a DeepSeek conversation in it cannot be archived.
+  expect(screen.queryByRole('menuitem', { name: '归档' })).toBeNull();
+  fireEvent.click(await screen.findByRole('menuitem', { name: '重命名' }));
+  const field = screen.getByRole('textbox', { name: '会话名称' });
+  fireEvent.change(field, { target: { value: '登录、侧栏和大纲' } });
+  fireEvent.submit(field.closest('form')!);
+  await waitFor(() => expect(mocks.renameThread).toHaveBeenCalledWith('t1', '登录、侧栏和大纲'));
+  expect(mocks.renameSession).not.toHaveBeenCalled();
+  const renamed = await within(history).findByRole('link', { name: /登录、侧栏和大纲/ });
+
+  fireEvent.click(screen.getByRole('button', { name: '「登录、侧栏和大纲」的更多操作' }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: '删除' }));
+  const confirm = screen.getByRole('alertdialog', { name: '删除这段对话？' });
+  fireEvent.click(within(confirm).getByRole('button', { name: '删除' }));
+  await waitFor(() => expect(mocks.removeThread).toHaveBeenCalledWith('t1'));
+  expect(mocks.deleteSession).toHaveBeenCalledWith('s1', true);
+  expect(mocks.deleteSession).toHaveBeenCalledWith('s2', true);
+  expect(mocks.removeConversation).toHaveBeenCalledWith('c1');
+  await waitFor(() => expect(renamed.isConnected).toBe(false));
+  expect(within(history).getByRole('link', { name: /整理旧接口/ })).toBeTruthy();
 });
 
 test('the usage panel shows what is left by default, flips to 已用 everywhere, folds, and opens Studio Settings', async () => {

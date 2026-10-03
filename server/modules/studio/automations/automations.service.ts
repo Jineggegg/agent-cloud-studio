@@ -225,11 +225,13 @@ export function createAutomationsService(deps: Dependencies) {
   }
 
   // Pushes one message unless the project's notifications are off or no device can receive it; says what happened.
-  async function push(userId: number, project: StudioProjectRecord, automationId: string, title: string, body: string): Promise<Outcome> {
+  // A tap opens the project: a failed build (an event) on the project page itself, a scheduled run on its 自动化 tab.
+  async function push(userId: number, project: StudioProjectRecord, source: { automationId: string; event: boolean }, title: string, body: string): Promise<Outcome> {
     if (!project.automation.notify) return { status: 'skipped', summary: `${body}（这个项目的通知已在设置里关闭，没有推送）` };
+    const projectPath = `/projects/${encodeURIComponent(project.id)}`;
     const result = await deps.push.send(userId, {
-      title: oneLine(title, 80), body: body.slice(0, MAX_PUSH_BODY), tag: `automation:${automationId}`,
-      url: `/projects/${encodeURIComponent(project.id)}?tab=automations`,
+      title: oneLine(title, 80), body: body.slice(0, MAX_PUSH_BODY), tag: `automation:${source.automationId}`,
+      url: source.event ? projectPath : `${projectPath}?tab=automations`,
     });
     if (!result.enabled) return { status: 'skipped', summary: `${body}（推送通知已关闭，没有发出）` };
     if (!result.devices) return { status: 'skipped', summary: `${body}（还没有设备开启通知，没有发出）` };
@@ -270,7 +272,7 @@ export function createAutomationsService(deps: Dependencies) {
     }
     const wanted = action.notifyWhen === 'always' || (action.notifyWhen === 'new' && fresh.length > 0) || (action.notifyWhen === 'important' && important);
     if (!wanted) return { outcome: { status: 'quiet', summary: fresh.length ? `${summary}（不重要，没有通知）` : summary }, cursor };
-    return { outcome: await push(row.user_id, project, row.id, `${project.name} · 邮件`, summary), cursor };
+    return { outcome: await push(row.user_id, project, { automationId: row.id, event: false }, `${project.name} · 邮件`, summary), cursor };
   }
 
   // Runs one automation now and records the outcome; never throws.
@@ -285,7 +287,7 @@ export function createAutomationsService(deps: Dependencies) {
       const automation = config(row);
       if (automation.action.kind === 'notify') {
         const body = detail ? `${automation.action.message}：${oneLine(detail, 160)}` : automation.action.message;
-        return record(row, await push(row.user_id, project, row.id, project.name, body), at);
+        return record(row, await push(row.user_id, project, { automationId: row.id, event: automation.trigger.kind === 'event' }, project.name, body), at);
       }
       const { outcome, cursor } = await mailDigest(row, project, automation, at);
       return record(row, outcome, at, cursor);

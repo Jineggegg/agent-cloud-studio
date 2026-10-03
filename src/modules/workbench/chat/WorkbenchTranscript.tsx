@@ -155,6 +155,8 @@ type WorkbenchTranscriptProps = {
   onDecision: WorkbenchPermissionDecision;
   onEditMessage?: (message: ChatMessage) => void;
   emptyState: ReactNode;
+  // Earlier stretches of a conversation handed between providers, drawn above this session's own rows.
+  prelude?: ReactNode;
 };
 
 /**
@@ -184,6 +186,7 @@ export const WorkbenchTranscript = memo(function WorkbenchTranscript({
   onDecision,
   onEditMessage,
   emptyState,
+  prelude,
 }: WorkbenchTranscriptProps) {
   const lazyRows = useLazyRowObserver(scrollRef);
   const items = useMemo(() => buildTranscriptItems(messages), [messages]);
@@ -243,6 +246,7 @@ export const WorkbenchTranscript = memo(function WorkbenchTranscript({
       aria-busy={isLoading || runActive}
     >
       <div className="wbc-thread" role="log" aria-live="polite" aria-relevant="additions">
+        {prelude}
         {isLoading && messages.length === 0 && (
           <div className="wbc-skeleton" role="status" aria-label="正在载入对话">
             <span className="wbc-skel is-bubble" />

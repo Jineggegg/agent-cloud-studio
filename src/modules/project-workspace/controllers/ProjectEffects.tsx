@@ -3,12 +3,14 @@ import { useEffect } from 'react';
 import { usePaletteOpsRegister } from '@/modules/command-palette';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
 import { useProjectEffectsState } from '@/modules/project-workspace/context/ProjectsStateContext';
-import type { LLMProvider, ProjectWorkspaceShellProps } from '@/shared/types';
+import type { LLMProvider } from '@/shared/types';
 
-/** Headless controller rendered by ProjectWorkspaceShell to register palette operations and handle service-worker navigation messages. */
-export default function ProjectEffects({
-  navigate,
-}: Pick<ProjectWorkspaceShellProps, 'navigate'>) {
+/**
+ * Headless controller rendered by ProjectWorkspaceShell to register palette operations and to ready the legacy
+ * workspace for a tapped notification (chat tab, provider, fresh project list). The navigation itself is done by
+ * the app-wide useNotificationNavigation, which opens the page the notification names.
+ */
+export default function ProjectEffects() {
   const {
     openSettings,
     refreshProjectsSilently,
@@ -39,13 +41,6 @@ export default function ProjectEffects({
       setActiveTab('chat');
       setSidebarOpen(false);
       void refreshProjectsSilently();
-
-      if (typeof message.sessionId === 'string' && message.sessionId) {
-        navigate(`/session/${message.sessionId}`);
-        return;
-      }
-
-      navigate('/');
     };
 
     navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
@@ -53,7 +48,7 @@ export default function ProjectEffects({
     return () => {
       navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
     };
-  }, [navigate, refreshProjectsSilently, setActiveTab, setSidebarOpen]);
+  }, [refreshProjectsSilently, setActiveTab, setSidebarOpen]);
 
   return null;
 }
