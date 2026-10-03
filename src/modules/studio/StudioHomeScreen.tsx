@@ -943,8 +943,8 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
           <button type="button" className={`glass-icon ${refreshing ? 'refreshing' : ''}`} aria-label="刷新状态" title="刷新状态" disabled={refreshing} onClick={onRefresh}><IconRefresh size={18} className="refresh-icon" aria-hidden="true" /></button>
           <button type="button" className="glass-icon" aria-label="编辑主屏幕" title="编辑主屏幕" onClick={enterEdit}><IconAdjustmentsHorizontal size={18} aria-hidden="true" /></button>
           <button type="button" className="glass-icon" aria-label="退出登录" title="退出登录" onClick={onSignOut}><IconLogout size={18} aria-hidden="true" /></button>
-          {/* Settings, one size smaller, in the corner. */}
-          <button type="button" className="glass-icon home-gear" aria-label="设置" title="设置" onClick={event => onOpenSettings(event.currentTarget.getBoundingClientRect())}><IconSettings size={17} aria-hidden="true" /></button>
+          {/* Settings, at the toolbar's end: the same round glass button as its neighbours. */}
+          <button type="button" className="glass-icon" aria-label="设置" title="设置" onClick={event => onOpenSettings(event.currentTarget.getBoundingClientRect())}><IconSettings size={18} aria-hidden="true" /></button>
         </>}
       </div>
     </header>

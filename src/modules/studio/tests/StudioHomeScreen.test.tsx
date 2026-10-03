@@ -65,10 +65,17 @@ test('each project is a large tile that opens its own app; the IDE tile is a rou
   expect(props.onCreate).toHaveBeenCalledTimes(1);
 });
 
-test('a small gear at the end of the toolbar opens Studio settings; edit mode has no gear', () => {
+test('a gear at the end of the toolbar, just like its neighbours, opens Studio settings; edit mode has no gear', () => {
   const props = renderHome();
   const gear = screen.getByRole('button', { name: '设置' });
   expect(gear.parentElement?.lastElementChild).toBe(gear);
+  // The same round glass button and glyph size as the other four (no class of its own to shrink it).
+  const neighbours = ['切换到深色模式', '刷新状态', '编辑主屏幕', '退出登录'].map(name => screen.getByRole('button', { name }));
+  for (const neighbour of neighbours) {
+    expect(neighbour.classList.contains('glass-icon')).toBe(true);
+    expect(neighbour.querySelector('svg')?.getAttribute('width')).toBe(gear.querySelector('svg')?.getAttribute('width'));
+  }
+  expect(gear.className).toBe('glass-icon');
   fireEvent.click(gear);
   expect(props.onOpenSettings).toHaveBeenCalledTimes(1);
   // The settings app zooms out of the button.
