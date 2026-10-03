@@ -10,14 +10,12 @@ import { providerMeta } from '@/modules/workbench/utils/workbenchRoutes';
 const CAPTIONS: Record<WorkbenchNewProvider, string> = {
   claude: 'Claude 订阅 · 在项目目录运行',
   codex: 'ChatGPT 订阅 · 在项目目录运行',
-  cursor: 'Cursor Agent · 在项目目录运行',
-  opencode: 'OpenCode · 在项目目录运行',
   deepseek: 'API · 项目对话',
 };
 
 /**
- * Used by the workbench sidebar for "+ 新会话": opens a menu of the agents a new chat can start with (Claude Code,
- * Codex and DeepSeek, plus Cursor / OpenCode where the Studio project enables them), marking the one used last.
+ * Used by the workbench sidebar for "+ 新会话": opens a menu of the providers a new chat can start with (Claude Code,
+ * Codex and DeepSeek), marking the one used last. The chat's model menu can still switch before the first message.
  * The choices come from the shared new-chat rule, so an agent unavailable here (DeepSeek without a Studio project)
  * is disabled with the same reason the chat header gives.
  */

@@ -8,12 +8,10 @@ import { formatModelIdLabel, resolveModelChoice } from '@/shared/utils';
  * same things and must use the same words.
  */
 
-/** Product name of a provider as the owner knows it. */
+/** Product name of a provider as the owner knows it; anything unknown (a hidden Cursor or OpenCode) reads as Claude Code. */
 export function providerLabel(provider: string): string {
   switch (provider) {
     case 'codex': return 'Codex';
-    case 'cursor': return 'Cursor';
-    case 'opencode': return 'OpenCode';
     case 'deepseek': return 'DeepSeek';
     default: return 'Claude Code';
   }

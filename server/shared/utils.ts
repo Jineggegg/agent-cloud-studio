@@ -1967,3 +1967,16 @@ export function zonedTimeToInstant(parts: Omit<ZonedDateParts, 'weekday'>, timeZ
   const earlier = wanted - offsetAt(instant - 3_600_000);
   return earlier < instant && offsetAt(earlier) === wanted - earlier ? earlier : instant;
 }
+
+//----------------- OFFERED AGENT PROVIDER UTILITIES ------------
+/**
+ * Whether Studio offers this coding agent: only Claude Code and Codex. Cursor and OpenCode stay registered (their
+ * providers, stored sessions and tests remain, so old rows still parse and run), but they are no longer scanned,
+ * watched, launched or offered to a project.
+ *
+ * Used by the providers module's session synchronizer (full scan) and sessions watcher. The Studio project hub offers
+ * the same two agents, and the client keeps the same list as OFFERED_AGENT_PROVIDERS.
+ */
+export function isOfferedAgentProvider(provider: string): boolean {
+  return provider === 'claude' || provider === 'codex';
+}

@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 
 import { api } from '@/shared/api';
+import { OFFERED_AGENT_PROVIDERS } from '@/shared/constants';
 import type {
   LLMProvider,
   ProviderAuthStatus,
@@ -8,13 +9,14 @@ import type {
   ProviderAuthSubscriptionOverride,
 } from '@/shared/types';
 
-const CLI_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode'];
+// Only the offered agents are checked; Cursor and OpenCode are hidden, so their entries never load.
+const CLI_PROVIDERS: LLMProvider[] = [...OFFERED_AGENT_PROVIDERS];
 
 const createInitialProviderAuthStatusMap = (loading = true): ProviderAuthStatusMap => ({
   claude: { authenticated: false, email: null, method: null, error: null, loading },
-  cursor: { authenticated: false, email: null, method: null, error: null, loading },
+  cursor: { authenticated: false, email: null, method: null, error: null, loading: false },
   codex: { authenticated: false, email: null, method: null, error: null, loading },
-  opencode: { authenticated: false, email: null, method: null, error: null, loading },
+  opencode: { authenticated: false, email: null, method: null, error: null, loading: false },
 });
 
 type ProviderAuthStatusPayload = {

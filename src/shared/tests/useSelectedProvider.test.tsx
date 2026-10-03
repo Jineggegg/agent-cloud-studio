@@ -46,10 +46,10 @@ test('a switch made in this tab reaches the panel', () => {
   const { result } = renderHook(() => useSelectedProvider());
 
   act(() => {
-    writeSelectedProvider('cursor');
+    writeSelectedProvider('codex');
   });
 
-  assert.equal(result.current, 'cursor');
+  assert.equal(result.current, 'codex');
 });
 
 test('a switch made elsewhere reaches the panel', () => {
@@ -58,10 +58,22 @@ test('a switch made elsewhere reaches the panel', () => {
   const { result } = renderHook(() => useSelectedProvider());
 
   act(() => {
+    writeUserPreference('selectedProvider', 'codex');
+  });
+
+  assert.equal(result.current, 'codex');
+});
+
+test('a stored Cursor or OpenCode choice reads as Claude Code: both are hidden', () => {
+  writeUserPreference('selectedProvider', 'cursor');
+  const { result } = renderHook(() => useSelectedProvider());
+  assert.equal(result.current, 'claude');
+
+  act(() => {
     writeUserPreference('selectedProvider', 'opencode');
   });
 
-  assert.equal(result.current, 'opencode');
+  assert.equal(result.current, 'claude');
 });
 
 test('an unrelated preference change does not change the reported provider', () => {

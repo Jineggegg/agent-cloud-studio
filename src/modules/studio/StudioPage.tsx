@@ -61,8 +61,8 @@ function projectTabs(project: HubProject): Tab[] {
   if (project.modules.includes('snr-lab')) tabs.push({ id: 'snr-lab', label: 'K 线实验室' });
   if (project.modules.includes('trading212')) tabs.push({ id: 'trading212', label: '股票分析' });
   if (project.modules.includes('mail')) tabs.push({ id: 'mail', label: '邮箱' });
-  if (project.modules.includes('agents')) tabs.push({ id: 'ai', label: 'AI 助手' });
-  if (project.providers.includes('deepseek')) tabs.push({ id: 'chat', label: 'DeepSeek' });
+  // One AI 助手 tab for Claude Code, Codex and DeepSeek; the project's DeepSeek chat (`chat`) opens from inside it.
+  if (project.modules.includes('agents') || project.providers.includes('deepseek')) tabs.push({ id: 'ai', label: 'AI 助手' });
   if (project.modules.includes('automations')) tabs.push({ id: 'automations', label: '自动化' });
   tabs.push({ id: 'settings', label: '设置' });
   return tabs;
@@ -184,7 +184,9 @@ export function StudioPage() {
   const t212Ready = t212 === null ? null : t212.some(item => item.configured);
   const project = target?.kind === 'project' ? projects?.find(item => item.id === target.id) ?? null : null;
   const tabs = project ? projectTabs(project) : [];
-  const tab = tabs.find(item => item.id === searchParams.get('tab'))?.id ?? tabs[0]?.id;
+  // `chat` is AI 助手's own DeepSeek conversation view, used where the workbench cannot run (no local directory).
+  const tab = searchParams.get('tab') === 'chat' && project?.providers.includes('deepseek') ? 'chat'
+    : tabs.find(item => item.id === searchParams.get('tab'))?.id ?? tabs[0]?.id;
   const setTab = (id: string) => { setThreadOpen(false); setCompact(false); setSearchParams({ tab: id }, { replace: true, state: location.state }); };
   const chatContext = (target?.kind === 'app' && target.id === 'deepseek') || (Boolean(project) && tab === 'chat');
   // Settings: the page in the URL (?tab=<page>), and whether the list and the page sit side by side.
@@ -231,7 +233,10 @@ export function StudioPage() {
 
   const projectContent = () => {
     if (!project) return null;
-    if (tab === 'ai') return <StudioProjectAgents project={project} onOpenChat={() => setTab('chat')} />;
+    if (tab === 'ai') return <StudioProjectAgents project={project} onOpenChat={conversationId => {
+      setTab('chat');
+      if (conversationId) { void studio.select(conversationId); setThreadOpen(true); }
+    }} />;
     if (tab === 'snr-lab') return <StudioSnrPanel snr={studio.snr} remoteUrl={studio.status?.snrRemoteUrl ?? null} />;
     if (tab === 'trading212') return <StudioTrading212 />;
     if (tab === 'mail') return <StudioProjectMail project={project} />;
@@ -279,7 +284,7 @@ export function StudioPage() {
         </header>
 
         {tabs.length > 0 && <nav className="project-tabs" aria-label="项目功能">
-          {tabs.map(item => <button type="button" key={item.id} className="project-tab" aria-current={tab === item.id ? 'page' : undefined} onClick={() => setTab(item.id)}>{item.label}</button>)}
+          {tabs.map(item => <button type="button" key={item.id} className="project-tab" aria-current={tab === item.id || (tab === 'chat' && item.id === 'ai') ? 'page' : undefined} onClick={() => setTab(item.id)}>{item.label}</button>)}
         </nav>}
 
         {chatContext ? <StudioChatPane key={chatSpace} studio={studio} assistant={assistant} title={title}

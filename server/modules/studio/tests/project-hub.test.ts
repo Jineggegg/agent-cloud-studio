@@ -65,7 +65,7 @@ test('pending execution cannot be hidden by disabling modules, switching workspa
 test('any project, including SNR, can enable every model; invalid models, icons and paths are rejected', async () => {
   const f = fixture();
   try {
-    const snr = f.service.create(1, { ...input, name: 'SNR 3.0', workspacePath: '/projects/snr3-lab', providers: ['claude', 'codex', 'cursor', 'opencode', 'deepseek'] });
+    const snr = f.service.create(1, { ...input, name: 'SNR 3.0', workspacePath: '/projects/snr3-lab', providers: ['claude', 'codex', 'deepseek'] });
     assert.equal(snr.name, 'SNR 3.0');
     assert.throws(() => f.service.create(1, { ...input, workspacePath: 'relative' }), /绝对路径/);
     assert.throws(() => f.service.create(1, { ...input, providers: [] }), /至少/);
@@ -79,11 +79,29 @@ test('any project, including SNR, can enable every model; invalid models, icons 
     await assert.rejects(f.service.launch(1, project.id, 'codex'), /未启用/);
     await assert.rejects(f.service.launch(1, snr.id, 'deepseek'), /不在开发工具/);
     assert.equal((await f.service.launch(1, project.id, 'claude')).url, '/work/native-project?new=claude');
-    assert.equal((await f.service.launch(1, snr.id, 'cursor')).url, '/work/native-project?new=cursor');
+    // Without a provider the workbench starts the agent the device used last (新建会话 on the project page).
+    assert.equal((await f.service.launch(1, snr.id, '')).url, '/work/native-project');
+    await assert.rejects(f.service.launch(1, f.service.create(1, { ...input, modules: ['mail'], providers: [] }).id, ''), /未启用 AI 助手/);
     // Widgets open a new session in the workbench directory, outside any project.
     assert.equal((await f.service.launchWorkbench('codex')).url, '/work/native-project?new=codex');
     await assert.rejects(f.service.launchWorkbench('deepseek'), /不在开发工具/);
     assert.deepEqual(f.registered, ['/projects/new', '/projects/snr3-lab', '/home/me/studio-workbench']);
+  } finally { f.database.close(); }
+});
+
+test('Cursor and OpenCode are hidden: saved choices read as Claude Code and cannot be launched', async () => {
+  const f = fixture();
+  try {
+    const created = f.service.create(1, { ...input, providers: ['cursor', 'opencode', 'deepseek'] });
+    assert.deepEqual(created.providers, ['claude', 'deepseek']);
+    // A project saved before they were hidden is read back with Claude Code in their place.
+    f.database.prepare('UPDATE studio_projects SET config = ? WHERE id = ?')
+      .run(JSON.stringify({ ...input, providers: ['claude', 'cursor', 'opencode'] }), created.id);
+    assert.deepEqual(f.service.get(1, created.id).providers, ['claude']);
+    assert.deepEqual(f.service.update(1, created.id, { ...input, providers: ['codex', 'opencode'] }).providers, ['codex', 'claude']);
+    await assert.rejects(f.service.launch(1, created.id, 'cursor'), /不在开发工具/);
+    await assert.rejects(f.service.launch(1, created.id, 'opencode'), /不在开发工具/);
+    await assert.rejects(f.service.launchWorkbench('cursor'), /不在开发工具/);
   } finally { f.database.close(); }
 });
 

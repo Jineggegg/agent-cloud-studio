@@ -19,6 +19,7 @@ import type {
   Project,
   ProjectSession,
   WorkbenchChatChrome,
+  WorkbenchModelCatalogs,
   WorkbenchNewChatChoice,
   WorkbenchNewProvider,
   WorkbenchSessionItem,
@@ -35,6 +36,7 @@ import { WorkbenchRunIsland } from '@/modules/workbench/chat/WorkbenchRunIsland'
 import { WorkbenchTokenRing } from '@/modules/workbench/chat/WorkbenchTokenRing';
 import { WorkbenchTranscript } from '@/modules/workbench/chat/WorkbenchTranscript';
 import { modelShortLabel, permissionModeCopy, providerLabel } from '@/modules/workbench/chat/utils/workbenchChatCopy';
+import { menuProvidersFor, oneModelMenuSections } from '@/modules/workbench/chat/utils/workbenchModelMenu';
 import {
   PLAN_TOOL_NAMES,
   TODO_TOOL_NAMES,
@@ -72,8 +74,12 @@ type WorkbenchAgentChatProps = {
   // Provider a new chat sends under.
   draftProvider: LLMProvider;
   newSessionTrigger: number;
-  // Agents a new chat may switch to before its first send; null once the shell has a session open.
+  // Providers a new chat may switch to before its first send; null once the shell has a session open.
   providerChoices: WorkbenchNewChatChoice[] | null;
+  // The other providers' models for the one model menu.
+  catalogs: WorkbenchModelCatalogs;
+  // A DeepSeek model picked here; the column switches to DeepSeek with it.
+  onPickDeepSeekModel: (model: string) => void;
   onSelectProvider: (provider: WorkbenchNewProvider) => void;
   onSessionCreated: (item: WorkbenchSessionItem) => void;
   onOpenFile: (path: string) => void;
@@ -82,9 +88,9 @@ type WorkbenchAgentChatProps = {
 };
 
 /**
- * Used by WorkbenchChat for Claude Code, Codex, Cursor and OpenCode chats: the inherited chat engine
- * under a new presentation — header pill, run island, transcript with tool stacks, inline permission and question
- * sheets, and the composer dock.
+ * Used by WorkbenchChat for Claude Code and Codex chats: the inherited chat engine under a new presentation — header
+ * pill, run island, transcript with tool stacks, inline permission and question sheets, and the composer dock. Its
+ * one model menu also lists the other providers' models until the first send.
  */
 export function WorkbenchAgentChat({
   conversationKey,
@@ -93,6 +99,8 @@ export function WorkbenchAgentChat({
   draftProvider,
   newSessionTrigger,
   providerChoices: newChatProviderChoices,
+  catalogs,
+  onPickDeepSeekModel,
   onSelectProvider,
   onSessionCreated,
   onOpenFile,
@@ -153,6 +161,33 @@ export function WorkbenchAgentChat({
   const handleSelectEffort = useCallback((effort: string) => {
     engine.selectEffort(effort).catch(() => toast.error('没能切换思考强度，请再试一次'));
   }, [engine]);
+  // Another provider's model, picked before the first send: the chat becomes that provider's, with this model.
+  const handleSwitch = useCallback((target: WorkbenchNewProvider, model: string | null) => {
+    if (target === 'deepseek') {
+      if (model) onPickDeepSeekModel(model);
+    } else if (model) {
+      // No session yet: the pick only becomes that agent's model on this device, which the switch then shows.
+      void providerState.selectProviderModel(target, model, null);
+    }
+    onSelectProvider(target);
+  }, [onPickDeepSeekModel, onSelectProvider, providerState]);
+  const menuProvider = provider === 'codex' ? 'codex' : 'claude';
+  // The engine already holds both agents' catalogs (with the user's hidden models removed); DeepSeek's come from the column.
+  const agentCatalog = providerState.providerModelCatalog;
+  const menuCatalogs = {
+    ...catalogs,
+    claude: agentCatalog.claude?.OPTIONS ?? catalogs.claude,
+    codex: agentCatalog.codex?.OPTIONS ?? catalogs.codex,
+  };
+  const menuSections = oneModelMenuSections({
+    providers: menuProvidersFor({ choices: providerChoices, current: menuProvider, currentOptions: providerState.currentProviderModelOptions, catalogs: menuCatalogs }),
+    current: menuProvider,
+    currentModel: providerState.currentProviderModel,
+    locked: providerChoices === null,
+    onSelectModel: handleSelectModel,
+    onSwitch: handleSwitch,
+    emptyNote: '正在读取模型…',
+  });
 
   const permissionContextValue = useMemo(() => ({
     pendingPermissionRequests: pending,
@@ -174,6 +209,7 @@ export function WorkbenchAgentChat({
       <WorkbenchProviderMark provider={provider} size={60} />
       <h2 className="wbc-empty-title">{displayName}</h2>
       <p className="wbc-empty-sub">{providerLabel(provider)} · {modelName} · {modeCopy.label}</p>
+      {providerChoices && <p className="wbc-empty-note">发送第一条消息前，可以在模型菜单里换成 Claude、Codex 或 DeepSeek 的任一模型；开始后要换服务请新建会话。</p>}
       <ul className="wbc-empty-hints" aria-label="小提示">
         <li><Slash size={14} aria-hidden="true" /><span>输入 / 调用命令和技能</span></li>
         <li><AtSign size={14} aria-hidden="true" /><span>输入 @ 引用项目里的文件</span></li>
@@ -189,11 +225,7 @@ export function WorkbenchAgentChat({
           provider={provider}
           modelLabel={modelName}
           title={session?.title}
-          providerChoices={providerChoices}
-          onSelectProvider={onSelectProvider}
-          models={providerState.currentProviderModelOptions}
-          currentModel={providerState.currentProviderModel}
-          onSelectModel={handleSelectModel}
+          menuSections={menuSections}
           end={<WorkbenchTokenRing usage={sessionState.tokenBudget} onOpen={composer.showCostModal} />}
           chrome={chrome}
         />
@@ -314,7 +346,7 @@ export function WorkbenchAgentChat({
               onSelectPermissionMode={providerState.selectPermissionMode}
               model={providerState.currentProviderModel}
               modelOptions={providerState.currentProviderModelOptions}
-              onSelectModel={handleSelectModel}
+              modelSections={menuSections}
               effort={providerState.currentProviderEffort}
               effortOptions={providerState.currentProviderEffortOptions}
               onSelectEffort={handleSelectEffort}

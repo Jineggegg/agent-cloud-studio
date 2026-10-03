@@ -8,21 +8,22 @@ import {
   PencilLine,
   Shield,
   ShieldOff,
-  Slash,
   Sparkle,
   Trash2,
   X,
 } from 'lucide-react';
+import { toast } from 'sonner';
 
 import { DEFAULT_EFFORT_VALUE } from '@/shared/constants';
-import type { PermissionMode, ProviderModelOption } from '@/shared/types';
+import type { PermissionMode, ProviderModelOption, WorkbenchMenuSection } from '@/shared/types';
 import { resolveModelChoice } from '@/shared/utils';
 import type { useWorkbenchAgentEngine } from '@/modules/workbench/chat/hooks/useWorkbenchAgentEngine';
+import { useSpeechDictation } from '@/modules/workbench/chat/hooks/useSpeechDictation';
 import { WorkbenchEffortControl } from '@/modules/workbench/chat/WorkbenchEffortControl';
 import { WorkbenchMenu } from '@/modules/workbench/chat/WorkbenchMenu';
+import { WorkbenchMicButton } from '@/modules/workbench/chat/WorkbenchMicButton';
 import { WorkbenchSendButton } from '@/modules/workbench/chat/WorkbenchSendButton';
 import { modelShortLabel, permissionModeCopy, providerLabel } from '@/modules/workbench/chat/utils/workbenchChatCopy';
-import { modelMenuSections } from '@/modules/workbench/chat/utils/workbenchModelMenu';
 
 type ComposerState = ReturnType<typeof useWorkbenchAgentEngine>['composer'];
 
@@ -34,7 +35,8 @@ type WorkbenchComposerProps = {
   onSelectPermissionMode: (mode: PermissionMode) => void;
   model: string;
   modelOptions: ProviderModelOption[];
-  onSelectModel: (model: string) => void;
+  // The one model menu (oneModelMenuSections), shared with the header pill.
+  modelSections: WorkbenchMenuSection[];
   effort: string;
   effortOptions: NonNullable<ProviderModelOption['effort']>['values'];
   onSelectEffort: (effort: string) => void;
@@ -71,9 +73,9 @@ function AttachmentTile({ file, error, onRemove }: { file: File; error?: string;
 
 /**
  * Used by WorkbenchAgentChat as the input dock: an auto-growing field (Enter sends, Shift+Enter breaks the line),
- * image attachments by drop, paste or picker, slash commands and @ file mentions, the permission-mode and model
- * chips, the reasoning-effort control, and the spring send/stop disc. All behaviour comes from the inherited
- * composer hook.
+ * image attachments by drop, paste or picker, dictation where the browser has speech recognition, typed slash
+ * commands and @ file mentions, the permission-mode and model chips, the reasoning-effort control, and the spring
+ * send/stop disc. All sending behaviour comes from the inherited composer hook.
  */
 export function WorkbenchComposer({
   composer,
@@ -83,7 +85,7 @@ export function WorkbenchComposer({
   onSelectPermissionMode,
   model,
   modelOptions,
-  onSelectModel,
+  modelSections,
   effort,
   effortOptions,
   onSelectEffort,
@@ -93,6 +95,7 @@ export function WorkbenchComposer({
 }: WorkbenchComposerProps) {
   const {
     input,
+    setInput,
     textareaRef,
     attachedFiles,
     setAttachedFiles,
@@ -112,7 +115,6 @@ export function WorkbenchComposer({
     filteredCommands,
     selectedCommandIndex,
     handleCommandSelect,
-    handleToggleCommandMenu,
     resetCommandMenuState,
     showFileDropdown,
     filteredFiles,
@@ -142,6 +144,8 @@ export function WorkbenchComposer({
   const recommendedEffort = resolveModelChoice(modelOptions, model)?.option.effort?.default;
   // Whether the model menu is open; held here because the effort popover's model row opens it too.
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  // Dictation writes into the same draft the keyboard does.
+  const dictation = useSpeechDictation({ text: input, onText: setInput, onError: (message) => toast.error(message) });
 
   // Keep the highlighted slash command in view while arrowing through a long list.
   useEffect(() => {
@@ -285,16 +289,7 @@ export function WorkbenchComposer({
           <button type="button" className="wbc-tool-button" aria-label="添加图片或文件" title="添加图片或文件" onClick={openAttachmentPicker}>
             <ImagePlus size={18} strokeWidth={2} />
           </button>
-          <button
-            type="button"
-            className={`wbc-tool-button${showCommandMenu ? ' is-active' : ''}`}
-            aria-label="命令"
-            title="命令"
-            aria-expanded={showCommandMenu}
-            onClick={handleToggleCommandMenu}
-          >
-            <Slash size={17} strokeWidth={2.2} />
-          </button>
+          {dictation.supported && <WorkbenchMicButton listening={dictation.listening} onToggle={dictation.toggle} />}
           <WorkbenchMenu
             label={`权限：${modeCopy.label}`}
             triggerClassName={`wbc-chip is-mode-${permissionMode}`}
@@ -335,7 +330,8 @@ export function WorkbenchComposer({
                 <span>{modelName}</span>
               </>
             )}
-            sections={modelMenuSections(modelOptions, model, onSelectModel, '正在读取模型…')}
+            width={320}
+            sections={modelSections}
           />
           {effortLevels.length > 0 && (
             <WorkbenchEffortControl

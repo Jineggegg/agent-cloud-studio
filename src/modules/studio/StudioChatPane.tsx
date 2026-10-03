@@ -14,7 +14,10 @@ function formatDay(value: string) {
   return date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
 }
 
-/** Used by StudioPage for the DeepSeek app and every project's DeepSeek tab: conversation list plus thread. */
+/**
+ * Used by StudioPage for the DeepSeek app and, inside a project's AI 助手, for the project's DeepSeek conversations
+ * where the workbench cannot run them (no local directory): conversation list plus thread.
+ */
 export function StudioChatPane({ studio, assistant, tone, glyph, title, onOpenThread, onDelete }: {
   studio: ReturnType<typeof useStudio>; assistant: string; tone: string; glyph: StudioGlyph | 'sparkles'; title: string;
   onOpenThread: () => void; onDelete: (conversation: StudioConversation) => void;

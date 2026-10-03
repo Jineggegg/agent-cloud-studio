@@ -4,6 +4,7 @@ import { LazyMotion, MotionConfig } from 'motion/react';
 import type { WorkbenchChatChrome, WorkbenchChatProps, WorkbenchNewProvider, WorkbenchSessionItem } from '@/shared/types';
 import { WorkbenchAgentChat } from '@/modules/workbench/chat/WorkbenchAgentChat';
 import { WorkbenchDeepSeekChat } from '@/modules/workbench/chat/WorkbenchDeepSeekChat';
+import { useWorkbenchModelCatalogs } from '@/modules/workbench/chat/hooks/useWorkbenchModelCatalogs';
 import { newChatChoices, resolveNewChatProvider } from '@/modules/workbench/utils/workbenchRoutes';
 import '@/modules/workbench/chat/workbench-chat.css';
 
@@ -17,15 +18,16 @@ type WorkbenchChatColumnProps = WorkbenchChatProps & {
 };
 
 /**
- * Used by the workbench shell (WorkbenchShell) as its centre column: the conversation with Claude Code, Codex,
- * Cursor, OpenCode or DeepSeek. Before a new chat's first message the provider can still change; the first send
- * creates the session and reports it through `onSessionCreated`, after which the provider is fixed and only the
- * model can change. Its header is the workbench's title bar, carrying the shell's controls from `chrome`.
+ * Used by the workbench shell (WorkbenchShell) as its centre column: one conversation with Claude Code, Codex or
+ * DeepSeek. A new chat opens with the shell's preselection, and until its first message the one model menu (header
+ * pill and composer chip) lists every provider's models, so picking a Codex or DeepSeek model switches the chat to
+ * that provider in place. The first send creates the session and reports it through `onSessionCreated`; from then on
+ * the provider is fixed and only its own models remain (a different provider means a new session).
  */
 export function WorkbenchChat({ project, session, provider, hubProjectId, onSessionCreated, onOpenFile, chrome }: WorkbenchChatColumnProps) {
   // DeepSeek needs a hub project; the same rule as the shell's, so a preselection it cannot honour starts Claude Code.
   const startProvider = resolveNewChatProvider(provider, hubProjectId);
-  // Provider a new chat will start with; follows the shell's preselection and the header menu.
+  // Provider a new chat will start with; follows the shell's preselection and the model menu.
   const [draftProvider, setDraftProvider] = useState<WorkbenchNewProvider>(startProvider);
   // The shell's preselection last seen, so a change from the shell resets the draft (state adjusted during render).
   const [seenProvider, setSeenProvider] = useState<WorkbenchNewProvider>(startProvider);
@@ -38,6 +40,8 @@ export function WorkbenchChat({ project, session, provider, hubProjectId, onSess
   const [newSessionTrigger, setNewSessionTrigger] = useState(0);
   // Id of the session this column itself just created, so the shell routing to it is not mistaken for a switch.
   const [createdId, setCreatedId] = useState<string | null>(null);
+  // DeepSeek model a new DeepSeek chat sends with, chosen in the model menu (also from the agent view); null: the first.
+  const [deepseekModel, setDeepseekModel] = useState<string | null>(null);
 
   if (startProvider !== seenProvider) {
     setSeenProvider(startProvider);
@@ -66,17 +70,15 @@ export function WorkbenchChat({ project, session, provider, hubProjectId, onSess
     onProviderChange?.(next);
   }, [onProviderChange]);
 
-  // What the header offers a new chat: the shell's rule (DeepSeek only with a hub project), plus the agent this
-  // chat was started with or switched to, so a Cursor or OpenCode launch keeps its own row.
-  const providerChoices = useMemo(
-    () => (session ? null : newChatChoices(hubProjectId, [startProvider, draftProvider])),
-    [draftProvider, hubProjectId, session, startProvider],
-  );
+  // What the model menu offers a new chat: the shell's rule (DeepSeek only with a hub project); null for an open session.
+  const providerChoices = useMemo(() => (session ? null : newChatChoices(hubProjectId)), [hubProjectId, session]);
 
   const isDeepSeek = session ? session.kind === 'deepseek' : draftProvider === 'deepseek';
-  const agentProvider = session && session.kind === 'agent' && session.provider !== 'deepseek'
-    ? session.provider
+  const agentProvider = session && session.kind === 'agent'
+    ? (session.provider === 'codex' ? 'codex' : 'claude')
     : draftProvider === 'deepseek' ? 'claude' : draftProvider;
+  // The other providers' models, read only while a new chat can still switch to them.
+  const catalogs = useWorkbenchModelCatalogs({ agents: !session && isDeepSeek, deepseek: !session && !isDeepSeek && Boolean(hubProjectId) });
 
   return (
     <LazyMotion features={loadMotionFeatures} strict>
@@ -90,6 +92,9 @@ export function WorkbenchChat({ project, session, provider, hubProjectId, onSess
               title={session?.title ?? null}
               hubProjectId={hubProjectId}
               providerChoices={providerChoices}
+              catalogs={catalogs}
+              draftModel={deepseekModel}
+              onDraftModelChange={setDeepseekModel}
               onSelectProvider={selectProvider}
               onSessionCreated={handleSessionCreated}
               chrome={chrome}
@@ -103,6 +108,8 @@ export function WorkbenchChat({ project, session, provider, hubProjectId, onSess
               draftProvider={agentProvider}
               newSessionTrigger={newSessionTrigger}
               providerChoices={providerChoices}
+              catalogs={catalogs}
+              onPickDeepSeekModel={setDeepseekModel}
               onSelectProvider={selectProvider}
               onSessionCreated={handleSessionCreated}
               onOpenFile={onOpenFile}

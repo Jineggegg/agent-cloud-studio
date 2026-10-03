@@ -210,6 +210,17 @@ export const CODE_EDITOR_DEFAULTS = {
 
 // ---------------------------
 
+//----------------- OFFERED AGENT PROVIDERS ------------
+
+/**
+ * The coding agents Studio offers, in menu order: every provider list, picker, settings page and onboarding step
+ * reads this. Cursor and OpenCode stay in `LLMProvider` (and on the server) only so old records still parse; they
+ * are never shown, and a stored choice of either reads as Claude Code.
+ */
+export const OFFERED_AGENT_PROVIDERS: readonly LLMProvider[] = ['claude', 'codex'];
+
+// ---------------------------
+
 //----------------- PROVIDER TOOL SETTINGS STORAGE ------------
 
 /**

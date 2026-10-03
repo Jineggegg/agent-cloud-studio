@@ -25,6 +25,13 @@ const engine = vi.hoisted(() => ({
   recoveryRuns: [] as unknown[],
   prepareRecovery: (() => undefined) as (run: unknown) => void,
   cancelPreparedRecovery: (() => undefined) as () => void,
+  // Both agents' catalogs as the engine holds them, and the per-provider model pick a provider switch records.
+  catalog: {
+    claude: { DEFAULT: 'opus', OPTIONS: [{ value: 'opus', label: 'Opus' }, { value: 'sonnet', label: 'Sonnet' }] },
+    codex: { DEFAULT: 'gpt-5.5', OPTIONS: [{ value: 'gpt-5.5', label: 'GPT-5.5' }, { value: 'gpt-5.5-mini', label: 'GPT-5.5 mini' }] },
+  } as Record<string, unknown>,
+  selectProviderModel: (() => Promise.resolve()) as (...args: unknown[]) => Promise<unknown>,
+  setInput: (() => undefined) as (value: string) => void,
 }));
 
 vi.mock('@/modules/workbench/chat/hooks/useWorkbenchAgentEngine', () => ({
@@ -43,9 +50,9 @@ vi.mock('@/modules/workbench/chat/hooks/useWorkbenchAgentEngine', () => ({
         selectPermissionMode: noop,
         currentProviderEffort: engine.effort,
         currentProviderEffortOptions: engine.effortOptions,
-        providerModelCatalog: {},
+        providerModelCatalog: engine.catalog,
         providerModelActions: { create: noop, update: noop, remove: noop },
-        selectProviderModel: noop,
+        selectProviderModel: (...args: unknown[]) => engine.selectProviderModel(...args),
         supportsMessageEditing: false,
       },
       session: {
@@ -70,6 +77,7 @@ vi.mock('@/modules/workbench/chat/hooks/useWorkbenchAgentEngine', () => ({
       },
       composer: {
         input: '',
+        setInput: (value: string) => engine.setInput(value),
         textareaRef: createRef<HTMLTextAreaElement>(),
         attachedFiles: [],
         setAttachedFiles: noop,
@@ -147,6 +155,10 @@ function renderChat(props: Partial<WorkbenchChatProps> & { chrome?: WorkbenchCha
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
+  localStorage.clear();
+  engine.selectProviderModel = () => Promise.resolve();
+  engine.setInput = () => undefined;
   engine.effort = 'default';
   engine.effortOptions = [];
   engine.calls.length = 0;
@@ -158,25 +170,51 @@ afterEach(() => {
   engine.recoveryRuns = [];
 });
 
-describe('provider switching', () => {
-  test('a new chat can switch between Claude Code, Codex and DeepSeek before its first message', async () => {
-    vi.spyOn(api.studio, 'status').mockResolvedValue(json({ deepseek: { configured: true, models: ['deepseek-flash'], source: 'vault', baseUrl: '' } }));
+describe('one chat for every model', () => {
+  test('before the first message the model menu lists Claude, Codex and DeepSeek models, and a pick switches the chat', async () => {
+    const status = vi.spyOn(api.studio, 'status').mockResolvedValue(json({ deepseek: { configured: true, models: ['deepseek-flash', 'deepseek-v4-pro'], source: 'vault', baseUrl: '' } }));
+    const selectProviderModel = vi.fn(() => Promise.resolve());
+    engine.selectProviderModel = selectProviderModel;
+    // What a DeepSeek chat reads to offer the agents' models.
+    const models = vi.spyOn(api.providers, 'models').mockImplementation(async (provider: string) => json({
+      success: true, data: { models: provider === 'codex' ? engine.catalog.codex : engine.catalog.claude },
+    }));
     renderChat({ hubProjectId: 'hub1' });
+    // An agent chat takes both agents' models from its engine and asks the server for none.
+    expect(models).not.toHaveBeenCalled();
+    await waitFor(() => expect(status).toHaveBeenCalled());
 
-    fireEvent.click(screen.getByRole('button', { name: /Claude Code · Opus/ }));
-    const menu = screen.getByRole('menu');
-    for (const name of ['Claude Code', 'Codex', 'DeepSeek', 'Opus', 'Sonnet']) {
-      expect(within(menu).getByRole('menuitemradio', { name })).toBeTruthy();
-    }
-    fireEvent.click(within(menu).getByRole('menuitemradio', { name: 'Codex' }));
+    fireEvent.click(screen.getByRole('button', { name: '模型 Opus' }));
+    const menu = screen.getByRole('menu', { name: '模型 Opus' });
+    expect(within(within(menu).getByRole('group', { name: 'Claude Code' })).getAllByRole('menuitemradio').map((row) => row.textContent)).toEqual(['Opus', 'Sonnet']);
+    expect(within(within(menu).getByRole('group', { name: 'Codex' })).getAllByRole('menuitemradio').map((row) => row.textContent)).toEqual(['GPT-5.5', 'GPT-5.5 mini']);
+    const deepseek = within(menu).getByRole('group', { name: 'DeepSeek' });
+    expect(await within(deepseek).findByRole('menuitemradio', { name: 'deepseek-v4-pro' })).toBeTruthy();
+    // Every section carries the provider's official mark.
+    expect(menu.querySelectorAll('.wbc-menu-title svg[data-brand]')).toHaveLength(3);
+
+    // A Codex model: the same chat becomes a Codex chat with that model.
+    fireEvent.click(within(menu).getByRole('menuitemradio', { name: 'GPT-5.5 mini' }));
+    expect(selectProviderModel).toHaveBeenCalledWith('codex', 'gpt-5.5-mini', null);
     expect(engine.calls.at(-1)?.draftProvider).toBe('codex');
 
+    // A DeepSeek model: the chat turns into a DeepSeek chat with that model, still in the same column.
+    await waitFor(() => expect(screen.queryAllByRole('menu')).toHaveLength(0));
     fireEvent.click(screen.getByRole('button', { name: /Codex · Opus/ }));
-    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitemradio', { name: 'DeepSeek' }));
+    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitemradio', { name: 'deepseek-v4-pro' }));
     expect(await screen.findByPlaceholderText('给 DeepSeek 发消息')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '模型 deepseek-v4-pro' })).toBeTruthy();
+
+    // And back: DeepSeek's menu offers the agents' models (read from the server) until the first send.
+    await waitFor(() => expect(models).toHaveBeenCalledWith('codex'));
+    await waitFor(() => expect(screen.queryAllByRole('menu')).toHaveLength(0));
+    fireEvent.click(screen.getByRole('button', { name: '模型 deepseek-v4-pro' }));
+    fireEvent.click(await within(screen.getByRole('menu')).findByRole('menuitemradio', { name: 'Sonnet' }));
+    await waitFor(() => expect(engine.calls.at(-1)?.draftProvider).toBe('claude'));
+    expect(localStorage.getItem('claude-model')).toBe('sonnet');
   });
 
-  test('an open session keeps its provider; only the model can change', async () => {
+  test('an open session keeps its provider; only its own models remain, with the reason', async () => {
     const selectModel = vi.fn(() => Promise.resolve());
     engine.selectModel = selectModel;
     renderChat({ session: { id: 's1', kind: 'agent', provider: 'codex', title: '重构侧栏', updatedAt: null } });
@@ -185,8 +223,9 @@ describe('provider switching', () => {
     expect(screen.getByText('重构侧栏')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Codex · Opus/ }));
     const menu = screen.getByRole('menu');
-    expect(within(menu).queryByRole('menuitemradio', { name: 'DeepSeek' })).toBeNull();
-    expect(within(menu).getByText('对话开始后不能更换服务，可以新建一个对话。')).toBeTruthy();
+    expect(within(menu).queryByRole('group', { name: 'DeepSeek' })).toBeNull();
+    expect(within(menu).queryByRole('group', { name: 'Claude Code' })).toBeNull();
+    expect(within(menu).getByText(/对话开始后只能换同一服务的模型/)).toBeTruthy();
     fireEvent.click(within(menu).getByRole('menuitemradio', { name: 'Sonnet' }));
     await waitFor(() => expect(selectModel).toHaveBeenCalledWith('sonnet'));
   });
@@ -196,7 +235,8 @@ describe('provider switching', () => {
     engine.messages = [{ type: 'user', content: '你好', timestamp: '2026-10-02T08:00:00.000Z' } satisfies ChatMessage];
     renderChat();
     fireEvent.click(screen.getByRole('button', { name: /Claude Code · Opus/ }));
-    expect(within(screen.getByRole('menu')).queryByRole('menuitemradio', { name: 'Codex' })).toBeNull();
+    expect(within(screen.getByRole('menu')).queryByRole('group', { name: 'Codex' })).toBeNull();
+    expect(within(screen.getByRole('menu')).queryByRole('menuitemradio', { name: 'GPT-5.5' })).toBeNull();
   });
 
   test('the token ring reports how full the context is', () => {
@@ -301,7 +341,8 @@ describe('DeepSeek', () => {
     // The thinking line plays its exit before it leaves the DOM.
     await waitFor(() => expect(screen.queryByRole('status', { name: 'DeepSeek 正在思考' })).toBeNull());
     // Started: the provider is fixed and the model too.
-    expect(screen.queryByRole('button', { name: /切换服务或模型/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /切换模型/ })).toBeNull();
+    expect(screen.getByLabelText('模型 deepseek-flash（已固定）')).toBeTruthy();
   });
 
   test('without a key the column says where to add one', async () => {
@@ -323,13 +364,12 @@ describe('DeepSeek', () => {
 });
 
 describe('one rule with the shell', () => {
-  test('without a Studio project DeepSeek is listed but disabled, with the same reason as the new-session menu', () => {
+  test('without a Studio project DeepSeek is listed without models, with the same reason as the new-session menu', () => {
     renderChat({ hubProjectId: null });
     fireEvent.click(screen.getByRole('button', { name: /Claude Code · Opus/ }));
-    const deepseek = within(screen.getByRole('menu')).getByRole('menuitemradio', { name: /DeepSeek/ });
-    expect((deepseek as HTMLButtonElement).disabled).toBe(true);
+    const deepseek = within(screen.getByRole('menu')).getByRole('group', { name: 'DeepSeek' });
+    expect(within(deepseek).queryAllByRole('menuitemradio')).toHaveLength(0);
     expect(within(deepseek).getByText('需先在 Studio 中建立此项目')).toBeTruthy();
-    fireEvent.click(deepseek);
     expect(engine.calls.at(-1)?.draftProvider).toBe('claude');
     expect(screen.queryByPlaceholderText('给 DeepSeek 发消息')).toBeNull();
   });
@@ -340,14 +380,88 @@ describe('one rule with the shell', () => {
     expect(screen.getByRole('button', { name: /Claude Code · Opus/ })).toBeTruthy();
   });
 
-  test('a Cursor launch runs Cursor and keeps it among the choices', () => {
-    renderChat({ provider: 'cursor', hubProjectId: 'hub1' });
-    expect(engine.calls.at(-1)?.draftProvider).toBe('cursor');
-    fireEvent.click(screen.getByRole('button', { name: /Cursor · Opus/ }));
+  test('Cursor and OpenCode are never offered', () => {
+    renderChat({ hubProjectId: 'hub1' });
+    fireEvent.click(screen.getByRole('button', { name: /Claude Code · Opus/ }));
     const menu = screen.getByRole('menu');
-    expect(within(menu).getByRole('menuitemradio', { name: 'Cursor' }).getAttribute('aria-checked')).toBe('true');
-    fireEvent.click(within(menu).getByRole('menuitemradio', { name: 'Codex' }));
-    expect(engine.calls.at(-1)?.draftProvider).toBe('codex');
+    expect(within(menu).getAllByRole('group').map((group) => group.getAttribute('aria-label'))).toEqual(['Claude Code', 'Codex', 'DeepSeek']);
+    expect(within(menu).queryByText(/Cursor|OpenCode/)).toBeNull();
+  });
+});
+
+describe('the composer', () => {
+  test('has no slash-command button (typing / still works) and shows official marks', () => {
+    renderChat({ session: { id: 's1', kind: 'agent', provider: 'codex', title: 't', updatedAt: null } });
+    expect(screen.queryByRole('button', { name: '命令' })).toBeNull();
+    expect(screen.getByRole('button', { name: '添加图片或文件' })).toBeTruthy();
+    expect(screen.getByRole('banner').querySelector('svg[data-brand="openai"]')).toBeTruthy();
+  });
+
+  test('hides the microphone where the browser has no speech recognition', () => {
+    renderChat({ session: { id: 's1', kind: 'agent', provider: 'claude', title: 't', updatedAt: null } });
+    expect(screen.queryByRole('button', { name: '语音输入' })).toBeNull();
+  });
+
+  describe('with speech recognition', () => {
+    // A stand-in for Safari's webkitSpeechRecognition: it records how it was set up and lets the test speak.
+    class FakeRecognition {
+      static instances: FakeRecognition[] = [];
+      lang = '';
+      continuous = false;
+      interimResults = false;
+      onresult: ((event: { results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => void) | null = null;
+      onerror: ((event: { error: string }) => void) | null = null;
+      onend: (() => void) | null = null;
+      start = vi.fn();
+      stop = vi.fn(() => this.onend?.());
+      abort = vi.fn(() => this.onend?.());
+      constructor() { FakeRecognition.instances.push(this); }
+      speak(...phrases: [string, boolean][]) {
+        act(() => this.onresult?.({ results: phrases.map(([transcript, isFinal]) => ({ isFinal, 0: { transcript } })) }));
+      }
+    }
+    const scope = window as Window & { webkitSpeechRecognition?: unknown };
+
+    afterEach(() => {
+      delete scope.webkitSpeechRecognition;
+      FakeRecognition.instances = [];
+    });
+
+    test('dictates Chinese into the DeepSeek draft live and keeps listening until tapped again', async () => {
+      scope.webkitSpeechRecognition = FakeRecognition;
+      vi.spyOn(api.studio, 'status').mockResolvedValue(json({ deepseek: { configured: true, models: ['deepseek-flash'], source: 'vault', baseUrl: '' } }));
+      renderChat({ provider: 'deepseek', hubProjectId: 'hub1' });
+      const field = await screen.findByRole('textbox', { name: '消息' }) as HTMLTextAreaElement;
+      fireEvent.change(field, { target: { value: '请总结：' } });
+
+      fireEvent.click(screen.getByRole('button', { name: '语音输入' }));
+      const [first] = FakeRecognition.instances;
+      expect(first).toMatchObject({ lang: 'zh-CN', continuous: true, interimResults: true });
+      expect(first.start).toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: '停止语音输入' }).getAttribute('aria-pressed')).toBe('true');
+
+      first.speak(['今天', true], ['的进度', false]);
+      expect(field.value).toBe('请总结：今天的进度');
+      // Safari ends a recognition after a pause; dictation picks up again on its own.
+      act(() => first.onend?.());
+      expect(FakeRecognition.instances).toHaveLength(2);
+      FakeRecognition.instances[1].speak(['和风险', true]);
+      expect(field.value).toBe('请总结：今天的进度和风险');
+
+      fireEvent.click(screen.getByRole('button', { name: '停止语音输入' }));
+      expect(FakeRecognition.instances[1].stop).toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: '语音输入' }).getAttribute('aria-pressed')).toBe('false');
+    });
+
+    test('writes into the agent composer through its own draft', () => {
+      scope.webkitSpeechRecognition = FakeRecognition;
+      const setInput = vi.fn();
+      engine.setInput = setInput;
+      renderChat({ session: { id: 's1', kind: 'agent', provider: 'claude', title: 't', updatedAt: null } });
+      fireEvent.click(screen.getByRole('button', { name: '语音输入' }));
+      FakeRecognition.instances[0].speak(['修一下登录页', false]);
+      expect(setInput).toHaveBeenLastCalledWith('修一下登录页');
+    });
   });
 });
 
@@ -393,7 +507,7 @@ describe('the column header is the workbench title bar', () => {
     expect(within(header).getByText('新会话')).toBeTruthy();
     expect(within(header).getByText('超级教授')).toBeTruthy();
     fireEvent.click(within(header).getByRole('button', { name: /Claude Code · Opus/ }));
-    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitemradio', { name: 'Codex' }));
+    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitemradio', { name: 'GPT-5.5' }));
     expect(onProviderChange).toHaveBeenCalledWith('codex');
   });
 });

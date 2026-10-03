@@ -3,46 +3,45 @@ import type { StudioConversation, WorkbenchNewChatChoice, WorkbenchNewProvider, 
 
 // Routing, row mapping and new-chat rules shared by the workbench route, shell, history, chat column and redirects.
 
-// Every agent a workbench chat can start with; Cursor and OpenCode arrive from the Studio project app's cards.
-const NEW_PROVIDERS: readonly string[] = ['claude', 'codex', 'cursor', 'opencode', 'deepseek'];
-const AGENT_PROVIDERS: readonly string[] = ['claude', 'codex', 'cursor', 'opencode'];
-// Offered in every project's menus; Cursor and OpenCode join only where the project enables them (or already runs one).
-const MENU_PROVIDERS: readonly WorkbenchNewProvider[] = ['claude', 'codex', 'deepseek'];
-const OPTIONAL_PROVIDERS: readonly WorkbenchNewProvider[] = ['cursor', 'opencode'];
+// Every provider a workbench chat can run, in menu order. Cursor and OpenCode are hidden everywhere: a `?new=` or a
+// remembered choice naming one reads as unset (so Claude Code), and their sessions are left out of the history.
+const NEW_PROVIDERS: readonly WorkbenchNewProvider[] = ['claude', 'codex', 'deepseek'];
+const AGENT_PROVIDERS: readonly string[] = ['claude', 'codex'];
+const HIDDEN_AGENT_PROVIDERS: readonly string[] = ['cursor', 'opencode'];
 // Why DeepSeek is unavailable: it files its conversations in the Studio project's space.
 const DEEPSEEK_NEEDS_HUB = '需先在 Studio 中建立此项目';
 // Shown until an agent session has a name of its own (the first prompt usually becomes it).
 const UNTITLED_SESSION = '新会话';
 
-// Name, mineral tone and mark of each provider, matching the Studio project app's agent cards.
-const PROVIDER_META: Record<WorkbenchSessionItem['provider'], { name: string; tone: string; mark: string }> = {
-  claude: { name: 'Claude Code', tone: 'clay', mark: 'C' },
-  codex: { name: 'Codex', tone: 'graphite', mark: 'O' },
-  cursor: { name: 'Cursor', tone: 'slate', mark: 'Cu' },
-  opencode: { name: 'OpenCode', tone: 'stone', mark: 'Oc' },
-  // DeepSeek draws an icon instead of a letter (WorkbenchProviderMark).
-  deepseek: { name: 'DeepSeek', tone: 'slate', mark: '' },
+// Name, mineral tone and official mark (Studio brandIcons) of each provider, matching the Studio project app.
+const PROVIDER_META: Record<WorkbenchSessionItem['provider'], { name: string; tone: string; brand: 'claude' | 'openai' | 'deepseek' }> = {
+  claude: { name: 'Claude Code', tone: 'clay', brand: 'claude' },
+  codex: { name: 'Codex', tone: 'graphite', brand: 'openai' },
+  deepseek: { name: 'DeepSeek', tone: 'slate', brand: 'deepseek' },
 };
 
-/** Display name, icon tone and letter mark of a provider; an unknown id reads as Claude Code. */
+/** Display name, icon tone and official mark of a provider; an unknown id reads as Claude Code. */
 export function providerMeta(provider: string) {
   return PROVIDER_META[provider as WorkbenchSessionItem['provider']] ?? PROVIDER_META.claude;
 }
 
-/** Reads a `?new=` value; anything but Claude Code, Codex, Cursor, OpenCode or DeepSeek is ignored. */
+/** Reads a `?new=` value; anything but Claude Code, Codex or DeepSeek (a hidden Cursor or OpenCode too) is ignored. */
 export function parseNewProvider(value: string | null | undefined): WorkbenchNewProvider | null {
-  return value && NEW_PROVIDERS.includes(value) ? value as WorkbenchNewProvider : null;
+  return value && (NEW_PROVIDERS as readonly string[]).includes(value) ? value as WorkbenchNewProvider : null;
+}
+
+/** False for a Cursor or OpenCode session row: those agents are hidden, so their old sessions are not listed. */
+export function isListedAgentSession(row: { provider?: string }): boolean {
+  return !row.provider || !HIDDEN_AGENT_PROVIDERS.includes(row.provider);
 }
 
 /**
- * The agents a new chat in this project can start with, in menu order: Claude Code, Codex and DeepSeek, then Cursor
- * and OpenCode when `extra` names them (the hub project enables them, or the chat already runs one). DeepSeek is
- * listed but unavailable without a hub project. The sidebar's new-session menu and the chat header both use this,
- * so they never disagree.
+ * The providers a new chat in this project can start with, in menu order: Claude Code, Codex and DeepSeek. DeepSeek
+ * is listed but unavailable without a hub project. The sidebar's new-session menu and the chat's model menu both use
+ * this, so they never disagree.
  */
-export function newChatChoices(hubProjectId: string | null, extra: readonly string[] = []): WorkbenchNewChatChoice[] {
-  const providers = [...MENU_PROVIDERS, ...OPTIONAL_PROVIDERS.filter(provider => extra.includes(provider))];
-  return providers.map(provider => ({ provider, unavailableReason: provider === 'deepseek' && !hubProjectId ? DEEPSEEK_NEEDS_HUB : null }));
+export function newChatChoices(hubProjectId: string | null): WorkbenchNewChatChoice[] {
+  return NEW_PROVIDERS.map(provider => ({ provider, unavailableReason: provider === 'deepseek' && !hubProjectId ? DEEPSEEK_NEEDS_HUB : null }));
 }
 
 /** The agent a new chat really starts with: DeepSeek needs a hub project, so without one it falls back to Claude Code. */

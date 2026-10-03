@@ -97,7 +97,8 @@ export function useWorkbenchAgentEngine({
     onSessionCreated({
       id: sessionId,
       kind: 'agent',
-      provider: context.provider,
+      // The workbench only starts Claude Code or Codex chats (Cursor and OpenCode are hidden).
+      provider: context.provider === 'codex' ? 'codex' : 'claude',
       title: context.summary?.trim() || '新对话',
       updatedAt: new Date().toISOString(),
       running: true,

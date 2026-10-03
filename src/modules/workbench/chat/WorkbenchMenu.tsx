@@ -126,7 +126,7 @@ export function WorkbenchMenu({
       <WorkbenchFloatingPanel layout={layout} panelRef={menuRef} id={menuId} role="menu" label={label} className="wbc-menu" onKeyDown={onMenuKeyDown}>
         {visibleSections.map((section) => (
           <div className="wbc-menu-section" role="group" aria-label={section.title} key={section.key}>
-            {section.title && <div className="wbc-menu-title">{section.title}</div>}
+            {section.title && <div className={`wbc-menu-title${section.icon ? ' has-icon' : ''}`}>{section.icon}{section.title}</div>}
             {section.items.map((item) => {
               const rowId = `${menuId}-${section.key}-${item.key}`;
               const isToggle = item.kind === 'toggle';

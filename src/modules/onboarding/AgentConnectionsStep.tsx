@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 
+import { OFFERED_AGENT_PROVIDERS } from '@/shared/constants';
 import type { LLMProvider, ProviderAuthStatusMap } from '@/shared/types';
 import AgentConnectionCard from '@/modules/onboarding/AgentConnectionCard';
 
@@ -55,7 +56,7 @@ export default function AgentConnectionsStep({
       </div>
 
       <div className="-mr-1 max-h-[38vh] space-y-2 overflow-y-auto pr-1">
-        {providerCards.map((providerCard) => (
+        {providerCards.filter((providerCard) => OFFERED_AGENT_PROVIDERS.includes(providerCard.provider)).map((providerCard) => (
           <AgentConnectionCard
             key={providerCard.provider}
             provider={providerCard.provider}

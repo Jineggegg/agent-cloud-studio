@@ -1,3 +1,4 @@
+import { OFFERED_AGENT_PROVIDERS } from '@/shared/constants';
 import type { LLMProvider, ProviderModelsDefinition } from '@/shared/types';
 import { readUserPreference, writeUserPreference } from '@/shared/userSettings';
 import { resolveModelChoice } from '@/shared/utils';
@@ -10,7 +11,8 @@ import { resolveModelChoice } from '@/shared/utils';
 export type ProviderModelPreferences = { model?: string; effort?: string; hidden?: string[] };
 export type ModelDefaults = Partial<Record<LLMProvider, ProviderModelPreferences>>;
 
-export const MODEL_PROVIDERS: LLMProvider[] = ['claude', 'codex', 'cursor', 'opencode'];
+// The agents whose model choices Studio settings lists: the offered ones only (Cursor and OpenCode are hidden).
+export const MODEL_PROVIDERS: LLMProvider[] = [...OFFERED_AGENT_PROVIDERS];
 
 const isText = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 200;
 
@@ -52,6 +54,15 @@ export function applyModelDefaults(provider: LLMProvider) {
     if (choice?.model) localStorage.setItem(`${provider}-model`, choice.model);
     if (choice?.model || choice?.effort) localStorage.setItem(`${provider}-effort`, choice?.effort ?? 'default');
   } catch { /* Storage blocked: the composer keeps its own choice. */ }
+}
+
+/**
+ * Makes `model` the model this device's chat composer next starts `provider` with, as picking it in the composer
+ * would. Used by the workbench chat when a DeepSeek chat switches to Claude Code or Codex through the model menu,
+ * before that agent's composer exists to record the pick itself.
+ */
+export function writeDeviceModelChoice(provider: LLMProvider, model: string) {
+  try { localStorage.setItem(`${provider}-model`, model); } catch { /* Storage blocked: the composer keeps its own choice. */ }
 }
 
 /**

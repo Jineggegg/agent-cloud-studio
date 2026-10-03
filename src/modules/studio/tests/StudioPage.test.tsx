@@ -26,9 +26,12 @@ vi.mock('@/shared/api', async (original) => ({
       conversation: vi.fn(),
       closeSnr: () => json({}),
       projects: { list: () => json(PROJECTS), sessions: () => json([]) },
+      workbench: { hubLinks: () => json([{ hubId: 'prof', projectId: 'native-prof' }]) },
       trading212: { status: () => json([{ env: 'live', configured: false, source: null }]) },
       quota: () => json([{ provider: 'claude', available: true, windows: [{ id: 'five_hour', label: '5 小时', usedPercent: 42, windowMinutes: 300, resetsAt: new Date(Date.now() + 7200000).toISOString() }], balances: [], source: 'statusline', observedAt: new Date().toISOString(), stale: false }]),
     },
+    projectSessions: () => json({ sessions: [{ id: 's1', provider: 'claude', summary: '修复登录', lastActivity: new Date().toISOString() }] }),
+    runningSessions: () => json({ success: true, data: { sessions: [] } }),
   },
 }));
 
@@ -47,7 +50,7 @@ function renderStudio(path = '/') {
   </Routes></MemoryRouter>);
 }
 
-test('projects appear as home tiles and open into their own app with project-scoped DeepSeek history', async () => {
+test('projects appear as home tiles and open on one AI 助手 page holding agent sessions and project-scoped DeepSeek history', async () => {
   renderStudio();
   const apps = await screen.findByRole('navigation', { name: '应用' });
   expect(await within(apps).findByRole('button', { name: 'SNR 3.0，在线' })).toBeTruthy();
@@ -55,12 +58,15 @@ test('projects appear as home tiles and open into their own app with project-sco
   fireEvent.click(within(apps).getByRole('button', { name: '超级教授' }));
   const professor = await screen.findByRole('region', { name: '超级教授' });
   const tabs = within(professor).getByRole('navigation', { name: '项目功能' });
-  expect(within(tabs).getAllByRole('button').map(button => button.textContent)).toEqual(['AI 助手', 'DeepSeek', '设置']);
+  // DeepSeek is no separate tab: its conversations sit in AI 助手 with the Claude and Codex sessions.
+  expect(within(tabs).getAllByRole('button').map(button => button.textContent)).toEqual(['AI 助手', '设置']);
 
-  fireEvent.click(within(tabs).getByRole('button', { name: 'DeepSeek' }));
   await waitFor(() => expect(conversations).toHaveBeenCalledWith('project:prof'));
   expect(await within(professor).findByText('课程大纲')).toBeTruthy();
+  expect(await within(professor).findByText('修复登录')).toBeTruthy();
   expect(within(professor).queryByText('通用问题')).toBeNull();
+  expect(within(professor).getByRole('link', { name: '打开网站：网站' }).getAttribute('href')).toBe('https://example.test/');
+  expect(within(professor).getByRole('button', { name: /新建会话/ })).toBeTruthy();
 
   fireEvent.click(within(professor).getByRole('button', { name: '返回主屏幕' }));
   await waitFor(() => expect(screen.queryByRole('region', { name: '超级教授' })).toBeNull());

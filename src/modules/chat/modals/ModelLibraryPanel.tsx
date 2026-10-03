@@ -19,11 +19,10 @@ import type {
   ProviderModelsDefinition,
 } from '@/shared/types';
 
+// The offered agents only (OFFERED_AGENT_PROVIDERS): Cursor and OpenCode are hidden everywhere.
 const PROVIDERS: Array<{ id: LLMProvider; label: string }> = [
   { id: 'claude', label: 'Claude' },
   { id: 'codex', label: 'Codex' },
-  { id: 'cursor', label: 'Cursor' },
-  { id: 'opencode', label: 'OpenCode' },
 ];
 
 type ModelLibraryPanelProps = {

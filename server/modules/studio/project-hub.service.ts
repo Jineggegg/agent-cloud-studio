@@ -36,7 +36,9 @@ type Dependencies = {
 };
 
 const MODULES = ['agents', 'mail', 'automations', 'snr-lab', 'trading212'];
-const AGENTS: StudioAgentProvider[] = ['claude', 'codex', 'cursor', 'opencode'];
+// Cursor and OpenCode are hidden: a project saved with either now runs Claude Code instead (offeredProviders).
+const AGENTS: StudioAgentProvider[] = ['claude', 'codex'];
+const HIDDEN_AGENTS: string[] = ['cursor', 'opencode'];
 const PROVIDERS = [...AGENTS, 'deepseek'];
 const TONES = ['sage', 'clay', 'slate', 'graphite', 'sand', 'stone', 'moss', 'rose'];
 const GLYPHS = ['activity', 'graduation', 'candles', 'mail', 'folder', 'terminal', 'sparkles', 'book', 'chart', 'globe'];
@@ -53,6 +55,12 @@ const MODULE_NAMES: Record<StudioProjectModule, string> = {
 const DEFAULT_AUTOMATION: StudioProjectAutomationDefaults = { notify: true, mailAccountId: '', morningTime: '08:00' };
 const CLOCK_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 const MAIL_ACCOUNT_ID = /^[A-Za-z0-9-]{1,100}$/;
+
+// A project's providers with a hidden agent (Cursor, OpenCode) replaced by Claude Code, without duplicates.
+function offeredProviders(providers: StudioProjectInput['providers']): StudioProjectInput['providers'] {
+  const mapped = providers.map(provider => HIDDEN_AGENTS.includes(provider) ? 'claude' : provider);
+  return [...new Set(mapped)];
+}
 
 function fail(message: string, statusCode = 400): never {
   throw new AppError(message, { statusCode, code: 'PROJECT_HUB_ERROR' });
@@ -134,7 +142,10 @@ export function createProjectHubService(deps: Dependencies) {
       product = inferProduct(stored);
       db.prepare('UPDATE studio_projects SET config = ? WHERE id = ?').run(JSON.stringify({ ...JSON.parse(row.config), product }), id);
     }
-    return { ...stored, automation: { ...DEFAULT_AUTOMATION, ...stored.automation }, product, id, updatedAt: row.updated_at };
+    return {
+      ...stored, providers: offeredProviders(stored.providers ?? []),
+      automation: { ...DEFAULT_AUTOMATION, ...stored.automation }, product, id, updatedAt: row.updated_at,
+    };
   }
   const remoteHosts = () => deps.remoteHosts?.() ?? [];
   // `product` is fixed when a project is created; `automation` keeps the stored values when an older client omits it.
@@ -191,11 +202,13 @@ export function createProjectHubService(deps: Dependencies) {
     },
     get: owned,
     // A new project is the product its modules make it (an ordinary project unless it enables an integration).
-    create(userId: number, input: StudioProjectInput) {
+    create(userId: number, submitted: StudioProjectInput) {
+      const input = { ...submitted, providers: offeredProviders(submitted.providers) };
       validate(input, remoteHosts());
       return save(userId, randomUUID(), input, inferProduct(input));
     },
-    update(userId: number, id: string, input: StudioProjectInput) {
+    update(userId: number, id: string, submitted: StudioProjectInput) {
+      const input = { ...submitted, providers: offeredProviders(submitted.providers) };
       const previous = owned(userId, id);
       validate(input, remoteHosts());
       const executionChanged = previous.workspacePath !== input.workspacePath.trim() ||
@@ -218,15 +231,18 @@ export function createProjectHubService(deps: Dependencies) {
       deps.forget?.(userId, id);
       return { deleted: true };
     },
+    // Without a provider the workbench opens a new chat with the agent this device used last; the chat's model menu
+    // can still switch between Claude Code, Codex and DeepSeek before the first message.
     async launch(userId: number, id: string, provider: string) {
       const project = owned(userId, id);
       if (project.remoteHost) fail('这个项目运行在远程主机上，请使用远程会话');
-      if (!AGENTS.includes(provider as StudioAgentProvider)) fail('该模型不在开发工具中运行');
-      if (!project.modules.includes('agents') || !project.providers.includes(provider as StudioAgentProvider)) fail('该项目未启用此助手');
+      if (provider && !AGENTS.includes(provider as StudioAgentProvider)) fail('该模型不在开发工具中运行');
+      if (provider && (!project.modules.includes('agents') || !project.providers.includes(provider as StudioAgentProvider))) fail('该项目未启用此助手');
+      if (!provider && !project.modules.includes('agents') && !project.providers.includes('deepseek')) fail('该项目未启用 AI 助手');
       if (!project.workspacePath) fail('请先在设置中填写项目工作目录');
       const workspace = await deps.resolveWorkspace(project.workspacePath);
-      // The workbench opens a new chat in the project with this agent preselected.
-      return { url: `/work/${encodeURIComponent(workspace.projectId)}?new=${encodeURIComponent(provider)}` };
+      const base = `/work/${encodeURIComponent(workspace.projectId)}`;
+      return { url: provider ? `${base}?new=${encodeURIComponent(provider)}` : base };
     },
     // A new agent session outside any project: the Claude and Codex widgets open the scratch directory in the
     // workbench, with the same /work URL shape as launch so the browser never goes through the legacy redirect.
