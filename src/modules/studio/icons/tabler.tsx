@@ -36,6 +36,8 @@ const TABLER_PATHS = {
   'arrow-down-right': ['M7 7l10 10', 'M17 8l0 9l-9 0'],
   'arrow-up': ['M12 5l0 14', 'M18 11l-6 -6', 'M6 11l6 -6'],
   'arrow-up-right': ['M17 7l-10 10', 'M8 7l9 0l0 9'],
+  'bell': ['M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6', 'M9 17v1a3 3 0 0 0 6 0v-1'],
+  'bell-off': ['M9.346 5.353c.21 -.129 .428 -.246 .654 -.353a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3m-1 3h-13a4 4 0 0 0 2 -3v-3a6.996 6.996 0 0 1 1.273 -3.707', 'M9 17v1a3 3 0 0 0 6 0v-1', 'M3 3l18 18'],
   'book': ['M3 19a9 9 0 0 1 9 0a9 9 0 0 1 9 0', 'M3 6a9 9 0 0 1 9 0a9 9 0 0 1 9 0', 'M3 6l0 13', 'M12 6l0 13', 'M21 6l0 13'],
   'calendar-time': ['M11.795 21h-6.795a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v4', 'M14 18a4 4 0 1 0 8 0a4 4 0 1 0 -8 0', 'M15 3v4', 'M7 3v4', 'M3 11h16', 'M18 16.496v1.504l1 1'],
   'chart-candle': ['M4 7a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v3a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1l0 -3', 'M6 4l0 2', 'M6 11l0 9', 'M10 15a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v3a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1l0 -3', 'M12 4l0 10', 'M12 19l0 1', 'M16 6a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1l0 -4', 'M18 4l0 1', 'M18 11l0 9'],
@@ -81,6 +83,7 @@ const TABLER_PATHS = {
   'network': ['M6 9a6 6 0 1 0 12 0a6 6 0 0 0 -12 0', 'M12 3c1.333 .333 2 2.333 2 6s-.667 5.667 -2 6', 'M12 3c-1.333 .333 -2 2.333 -2 6s.667 5.667 2 6', 'M6 9h12', 'M3 20h7', 'M14 20h7', 'M10 20a2 2 0 1 0 4 0a2 2 0 0 0 -4 0', 'M12 15v3'],
   'pencil': ['M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4', 'M13.5 6.5l4 4'],
   'pin': ['M15 4.5l-4 4l-4 1.5l-1.5 1.5l7 7l1.5 -1.5l1.5 -4l4 -4', 'M9 15l-4.5 4.5', 'M14.5 4l5.5 5.5'],
+  'player-play': ['M7 4v16l13 -8l-13 -8'],
   'plug': ['M9.785 6l8.215 8.215l-2.054 2.054a5.81 5.81 0 1 1 -8.215 -8.215l2.054 -2.054', 'M4 20l3.5 -3.5', 'M15 4l-3.5 3.5', 'M20 9l-3.5 3.5'],
   'plus': ['M12 5l0 14', 'M5 12l14 0'],
   'refresh': ['M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4', 'M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4'],
@@ -130,6 +133,8 @@ export const IconAlertTriangle = (props: TablerIconProps) => <TablerIcon {...pro
 export const IconArrowDownRight = (props: TablerIconProps) => <TablerIcon {...props} name="arrow-down-right" />;
 export const IconArrowUp = (props: TablerIconProps) => <TablerIcon {...props} name="arrow-up" />;
 export const IconArrowUpRight = (props: TablerIconProps) => <TablerIcon {...props} name="arrow-up-right" />;
+export const IconBell = (props: TablerIconProps) => <TablerIcon {...props} name="bell" />;
+export const IconBellOff = (props: TablerIconProps) => <TablerIcon {...props} name="bell-off" />;
 export const IconBook = (props: TablerIconProps) => <TablerIcon {...props} name="book" />;
 export const IconCalendarTime = (props: TablerIconProps) => <TablerIcon {...props} name="calendar-time" />;
 export const IconChartCandle = (props: TablerIconProps) => <TablerIcon {...props} name="chart-candle" />;
@@ -175,6 +180,7 @@ export const IconMoon = (props: TablerIconProps) => <TablerIcon {...props} name=
 export const IconNetwork = (props: TablerIconProps) => <TablerIcon {...props} name="network" />;
 export const IconPencil = (props: TablerIconProps) => <TablerIcon {...props} name="pencil" />;
 export const IconPin = (props: TablerIconProps) => <TablerIcon {...props} name="pin" />;
+export const IconPlayerPlay = (props: TablerIconProps) => <TablerIcon {...props} name="player-play" />;
 export const IconPlug = (props: TablerIconProps) => <TablerIcon {...props} name="plug" />;
 export const IconPlus = (props: TablerIconProps) => <TablerIcon {...props} name="plus" />;
 export const IconRefresh = (props: TablerIconProps) => <TablerIcon {...props} name="refresh" />;

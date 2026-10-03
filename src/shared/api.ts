@@ -6,7 +6,7 @@ import {
 import { IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
 import type {
-  HubAgentProvider, HubProjectInput, HubTaskInput, StudioChatSpace, StudioGitHubMergeInput, StudioIngressId, T212CapsInput, T212Env, T212TradingMode,
+  HubAgentProvider, HubAutomationInput, HubProjectInput, HubTaskInput, StudioChatSpace, StudioGitHubMergeInput, StudioIngressId, T212CapsInput, T212Env, T212TradingMode,
 } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
@@ -190,6 +190,19 @@ export const api = {
       connectMail: (id: string) => post(`/api/studio/projects/${encodeURIComponent(id)}/mail/connect`),
       mailMessages: (id: string, q: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/mail/messages${query({ q })}`),
       mailMessage: (id: string, messageId: string) => get(`/api/studio/projects/${encodeURIComponent(id)}/mail/messages/${encodeURIComponent(messageId)}`),
+    },
+    // A project's automations (planned from plain words, then created, switched, run or deleted) and the owner's
+    // Web Push status and test notification.
+    automations: {
+      push: () => get('/api/studio/automations/push'),
+      testPush: () => post('/api/studio/automations/push/test'),
+      list: (projectId: string) => get(`/api/studio/automations/projects/${encodeURIComponent(projectId)}`),
+      plan: (projectId: string, text: string, timeZone: string) => post(`/api/studio/automations/projects/${encodeURIComponent(projectId)}/plan`, { text, timeZone }),
+      create: (projectId: string, input: HubAutomationInput) => post(`/api/studio/automations/projects/${encodeURIComponent(projectId)}`, input),
+      update: (id: string, input: HubAutomationInput) => put(`/api/studio/automations/${encodeURIComponent(id)}`, input),
+      setEnabled: (id: string, enabled: boolean) => patch(`/api/studio/automations/${encodeURIComponent(id)}`, { enabled }),
+      remove: (id: string) => del(`/api/studio/automations/${encodeURIComponent(id)}`),
+      run: (id: string) => post(`/api/studio/automations/${encodeURIComponent(id)}/run`),
     },
     quota: () => get('/api/studio/quota'),
     remote: {

@@ -2025,9 +2025,18 @@ export type HubProjectInput = {
   // Configured SSH host name when agents run remotely (e.g. AJ); empty runs them on this machine.
   remoteHost: string;
   remoteDir: string;
+  // Notification and automation defaults from the 设置 tab; omitted, the server keeps what it has.
+  automation?: HubAutomationDefaults;
 };
-/** Project identity and editable configuration displayed by Studio. */
-export type HubProject = HubProjectInput & { id: string; updatedAt: string };
+/**
+ * Which product a project is: a built-in product (SNR, 超级教授, Trading 212, 邮件) or an ordinary project. The server
+ * decides it; the 设置 tab shows only the options that belong to it.
+ */
+export type HubProduct = 'snr' | 'professor' | 'trading212' | 'mail' | 'custom';
+/** A project's automation defaults: push on/off, the mailbox mail automations use, and what “早上” means ("HH:MM"). */
+export type HubAutomationDefaults = { notify: boolean; mailAccountId: string; morningTime: string };
+/** Project identity and editable configuration displayed by Studio; `product` and `automation` come from the server. */
+export type HubProject = HubProjectInput & { id: string; updatedAt: string; product?: HubProduct };
 /** Saved automation instructions; saving alone never activates a task. */
 export type HubTaskInput = { title: string; prompt: string; provider: HubAgentProvider };
 /** An automation draft returned by the server, not a running job. */
@@ -2038,6 +2047,30 @@ export type HubSession = { id: string; title: string; provider: HubAgentProvider
 export type HubMailStatus = { configured: boolean; connected: boolean; email: string | null; access: 'readonly' };
 /** Read-only Gmail search result. Full text is fetched only when opened. */
 export type HubMailMessage = { id: string; subject: string; from: string; date: string; snippet: string };
+/** How often a scheduled automation runs (`once` switches itself off; `hourly` uses only the minute of `time`). */
+export type HubAutomationRepeat = 'once' | 'hourly' | 'daily' | 'weekdays' | 'weekly';
+/** When an automation runs: a schedule in the owner's time zone, or the project's AI build failing. */
+export type HubAutomationTrigger =
+  | { kind: 'schedule'; repeat: HubAutomationRepeat; time: string; weekday: number | null; date: string | null; timeZone: string }
+  | { kind: 'event'; event: 'build-failed' };
+/** When a mail digest pushes: only important mail, any new mail, or a summary every run. */
+export type HubAutomationNotifyWhen = 'important' | 'new' | 'always';
+/** What an automation does, always inside Studio: a read-only digest of one mailbox, or a push to the owner. */
+export type HubAutomationAction =
+  | { kind: 'mail-digest'; accountId: string; query: string; notifyWhen: HubAutomationNotifyWhen; useAi: boolean }
+  | { kind: 'notify'; message: string };
+/** An automation as the 自动化 tab creates or edits it; `prompt` keeps the owner's original words. */
+export type HubAutomationInput = { title: string; prompt: string; trigger: HubAutomationTrigger; action: HubAutomationAction };
+/** The latest run of an automation, with a plain-text outcome for the owner. */
+export type HubAutomationRun = { at: string; status: 'notified' | 'quiet' | 'skipped' | 'error'; summary: string };
+/** A stored automation; `nextRunAt` is null for build-failed triggers and while switched off. */
+export type HubAutomation = HubAutomationInput & {
+  id: string; projectId: string; enabled: boolean; nextRunAt: string | null; lastRun: HubAutomationRun | null; createdAt: string; updatedAt: string;
+};
+/** The owner's words turned into an automation to review; `needs` lists what still has to be chosen. */
+export type HubAutomationPlan = { draft: HubAutomationInput; needs: 'mail-account'[]; source: 'rules' | 'deepseek'; notes: string[] };
+/** Whether Web Push is on for the owner and how many browsers are subscribed (from the server). */
+export type StudioPushStatus = { enabled: boolean; devices: number };
 /** Trading 212 account environment; live and demo use separate keys. */
 export type T212Env = 'live' | 'demo';
 /** Whether the server found a key file for an environment; never contains the key. */
