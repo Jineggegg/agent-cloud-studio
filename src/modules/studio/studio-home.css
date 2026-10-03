@@ -46,18 +46,12 @@
 .home-page-control button[aria-current="true"] i { background: color-mix(in srgb, var(--ios-label) 82%, transparent); }
 
 /* ---------- Toolbar ---------- */
-/* The settings gear: a size smaller than the toolbar's other buttons, at its far end. */
-.home-actions .glass-icon.home-gear { min-width: 38px; width: 38px; height: 38px; border-radius: 19px; }
-@media (max-width: 699px) {
-  .home-actions .glass-icon.home-gear { min-width: 34px; width: 34px; height: 34px; border-radius: 17px; }
-}
 /* Narrow phones: the date and five buttons share one line. */
 @media (max-width: 420px) {
   .home-top { gap: 10px; }
   .home-top .home-date h1 { font-size: 30px; }
   .home-top .home-actions { gap: 4px; }
   .home-top .home-actions .glass-icon { min-width: 38px; height: 38px; border-radius: 19px; }
-  .home-top .home-actions .glass-icon.home-gear { min-width: 32px; width: 32px; height: 32px; border-radius: 16px; }
 }
 
 /* Sortable items: no text selection, callout or link preview during the long press; taps stay instant. */
@@ -116,8 +110,10 @@
 .home-tile-slot.is-lifted :is(.home-label, .home-status) { opacity: 0; }
 .is-lifted .home-remove, .is-lifted .widget-resize { opacity: 0; scale: .6; transition: opacity var(--dur-fast) ease, scale var(--dur-fast) ease; }
 .home-remove, .widget-resize { transition: opacity var(--dur-fast) ease, scale var(--dur-base) var(--ease-spring); }
-/* Leaving edit mode: the badges shrink away (out of reach) while the jiggle eases to rest (settleJiggle). */
-.home-screen.edit-leaving :is(.home-remove, .home-resume) {
+/* Leaving edit mode: the badges and the widgets' resize corners shrink away (out of reach) while the jiggle eases
+   to rest (settleJiggle). They come in with the same pop (studio-pop in studio.css) when edit mode starts. */
+.home-screen.edit-leaving :is(.home-remove, .home-resume),
+.widget-grid.edit-leaving :is(.widget-remove, .widget-resize) {
   pointer-events: none; animation: home-control-out var(--motion-dur-out) var(--motion-ease) forwards;
 }
 @keyframes home-control-out { to { opacity: 0; scale: .4; } }

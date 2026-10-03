@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence, m } from 'motion/react';
 
 import {
   IconAlertTriangle, IconArrowUp, IconExternalLink, IconRotateClockwise, IconSparkles, IconX,
 } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
-import type { HubProject, StudioAppStatus, StudioBuild, StudioTileProgress } from '@/shared/types';
+import type { HubProject, StudioAppStatus, StudioBuild, StudioReturnState, StudioTileProgress } from '@/shared/types';
 import { StudioBuildProgress } from '@/modules/studio/StudioBuildProgress';
 import { StudioProjectRecentSessions } from '@/modules/studio/StudioProjectAgents';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
@@ -88,6 +88,9 @@ export function StudioAppHome({ project, build, progress, workbenchUrl, onChange
   onShowSessions: () => void;
 }) {
   const navigate = useNavigate();
+  const location = useLocation();
+  // 查看开发过程 opens the build's session in the workbench, whose back control then returns to this 主页.
+  const openWorkbench = (url: string) => navigate(url, { state: { studioReturn: { path: `${location.pathname}${location.search}`, title: project.name } } satisfies StudioReturnState });
   const sideBySide = useSideBySide();
   const [view, setView] = useState<AppView>({ status: null, loading: true, error: '' });
   // Bumped to reload the iframe (a restart on a new commit, or 重新载入).
@@ -141,7 +144,7 @@ export function StudioAppHome({ project, build, progress, workbenchUrl, onChange
         <StudioTileIcon tone={project.tone} glyph={project.glyph} size={34}>{progress && <StudioBuildProgress progress={progress} />}</StudioTileIcon>
         <strong>{build?.state === 'queued' ? '排队等待开发' : 'AI 正在开发'}</strong>
         <span>{build?.currentTask ?? (build?.total ? `${build.completed} / ${build.total} 步` : '正在规划步骤')}</span>
-        {workbenchUrl && <button type="button" className="ios-button tinted" onClick={() => navigate(workbenchUrl)}>查看开发过程</button>}
+        {workbenchUrl && <button type="button" className="ios-button tinted" onClick={() => openWorkbench(workbenchUrl)}>查看开发过程</button>}
       </m.div>;
     }
     if (view.error) {
@@ -197,7 +200,7 @@ export function StudioAppHome({ project, build, progress, workbenchUrl, onChange
           initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={STAGE_FADE}>
           <StudioSpinner size={14} /><span>AI 正在修改{build?.currentTask ? `：${build.currentTask}` : ''}</span>
           {build?.total ? <small>{build.completed} / {build.total}</small> : null}
-          {workbenchUrl && <button type="button" className="app-banner-link" onClick={() => navigate(workbenchUrl)}>查看</button>}
+          {workbenchUrl && <button type="button" className="app-banner-link" onClick={() => openWorkbench(workbenchUrl)}>查看</button>}
         </m.div>}
       </AnimatePresence>
       <AnimatePresence mode="wait" initial={false}>{stage()}</AnimatePresence>

@@ -1,10 +1,11 @@
 import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 
 import { IconChevronRight, IconExternalLink, IconPlus, IconRefresh, IconServer, IconTerminal2, IconWorld } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import type {
-  HubProject, StudioBrand, StudioConversation, StudioProjectLink, StudioRemoteHost, StudioRemoteLaunch, StudioRemoteStatus, WorkbenchHubLink,
+  HubProject, StudioBrand, StudioConversation, StudioProjectLink, StudioRemoteHost, StudioRemoteLaunch, StudioRemoteStatus, StudioReturnState,
+  WorkbenchHubLink,
 } from '@/shared/types';
 import { StudioBrandMark } from '@/modules/studio/brandIcons';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
@@ -168,6 +169,9 @@ function RemoteAgents({ project }: { project: HubProject }) {
 // (the workbench, or the project's DeepSeek chat without a local directory) and a row renderer that opens each one.
 function useProjectSessions(project: HubProject, onOpenChat: (conversationId?: string) => void) {
   const navigate = useNavigate();
+  const location = useLocation();
+  // The workbench's back control returns to this view of the app (not the home screen).
+  const returnState: StudioReturnState = { studioReturn: { path: `${location.pathname}${location.search}`, title: project.name } };
   const local = Boolean(project.workspacePath) && !project.remoteHost;
   const deepseek = project.providers.includes('deepseek');
   const agents = local && project.modules.includes('agents');
@@ -229,11 +233,11 @@ function useProjectSessions(project: HubProject, onOpenChat: (conversationId?: s
 
   // Registers the directory as a workbench project when needed (POST launch) and opens `suffix` inside it.
   const openInWorkbench = async (suffix = '') => {
-    if (workbenchProjectId) { navigate(`/work/${encodeURIComponent(workbenchProjectId)}${suffix}`); return; }
+    if (workbenchProjectId) { navigate(`/work/${encodeURIComponent(workbenchProjectId)}${suffix}`, { state: returnState }); return; }
     setOpening(true); setError('');
     try {
       const { url } = await readApiJson<{ url: string }>(await api.studio.projects.launch(project.id));
-      navigate(`${url}${suffix}`);
+      navigate(`${url}${suffix}`, { state: returnState });
     } catch (reason) { setError(reason instanceof Error ? reason.message : '工作台打开失败'); }
     finally { setOpening(false); }
   };
@@ -259,7 +263,7 @@ function useProjectSessions(project: HubProject, onOpenChat: (conversationId?: s
       <IconChevronRight size={18} className="chevron" aria-hidden="true" />
     </>;
     const href = local ? hrefOf(item) : null;
-    if (href) return <Link className="ios-row" key={`${item.kind}:${item.id}`} to={href}>{body}</Link>;
+    if (href) return <Link className="ios-row" key={`${item.kind}:${item.id}`} to={href} state={returnState}>{body}</Link>;
     return <button type="button" className="ios-row" key={`${item.kind}:${item.id}`} disabled={opening}
       onClick={() => { if (!local) onOpenChat(item.id); else void openInWorkbench(`/${item.kind === 'deepseek' ? 'd' : 's'}/${encodeURIComponent(item.id)}`); }}>{body}</button>;
   };
@@ -331,7 +335,7 @@ function ProjectSessions({ project, onOpenChat }: { project: HubProject; onOpenC
 
 /**
  * Used by StudioAppHome's AI sidebar (an AI-built app's 主页): 新建会话 and the project's few newest sessions, running
- * ones first, each opening in the workbench; 全部 (`onShowAll`) goes to the AI 工坊 tab with the whole history.
+ * ones first, each opening in the workbench; 全部 (`onShowAll`) goes to the AI 助手 tab with the whole history.
  */
 export function StudioProjectRecentSessions({ project, onOpenChat, onShowAll, limit = 3 }: {
   project: HubProject; onOpenChat: (conversationId?: string) => void; onShowAll: () => void; limit?: number;
@@ -357,7 +361,7 @@ export function StudioProjectRecentSessions({ project, onOpenChat, onShowAll, li
 }
 
 /**
- * Used by StudioPage's project app as the AI 助手 tab (AI 工坊 in an AI-built app, which opens on its 主页 instead),
+ * Used by StudioPage's project app as the AI 助手 tab (an AI-built app opens on its 主页 instead),
  * the page a project opens on: the product's website (打开网站),
  * 新建会话 (one chat for Claude Code, Codex and DeepSeek), the running and earlier sessions of the project with
  * their official marks, a small 终端 button, and for a remote project the agents of its host. `onOpenChat` opens the

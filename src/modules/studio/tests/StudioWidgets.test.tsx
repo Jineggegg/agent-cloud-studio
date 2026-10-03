@@ -282,6 +282,39 @@ test('edit mode removes widgets, and the layout is remembered', () => {
   expect(savedOrder()).toEqual(['w-a', 'w-c']);
 });
 
+test('leaving edit mode, the remove badges and resize corners play out (out of reach) before they unmount', async () => {
+  const props = { snr: SNR, onEnterEdit: vi.fn(), onOpen, galleryOpen: false, onGalleryClose: vi.fn() };
+  const { rerender } = render(<StudioWidgets editing {...props} />);
+  const grid = screen.getByRole('region', { name: '小组件' });
+  expect(screen.getAllByRole('button', { name: '移除 SNR 实验室' })).toHaveLength(3);
+  expect(grid.classList.contains('edit-leaving')).toBe(false);
+
+  // The home screen ends edit mode and holds `leavingEdit` for STUDIO_MOTION_OUT_MS.
+  rerender(<StudioWidgets editing={false} leavingEdit {...props} />);
+  expect(grid.classList.contains('edit-leaving')).toBe(true);
+  const controls = Array.from(grid.querySelectorAll('.widget-edit'));
+  expect(controls).toHaveLength(3);
+  expect(grid.querySelectorAll('.widget-remove')).toHaveLength(3);
+  expect(grid.querySelectorAll('.widget-resize')).toHaveLength(3);
+  expect(controls.every(group => group.hasAttribute('inert') && group.getAttribute('aria-hidden') === 'true')).toBe(true);
+  expect(screen.queryByRole('button', { name: '移除 SNR 实验室' })).toBeNull();
+  expect(screen.queryByRole('slider')).toBeNull();
+  // Taps open apps again at once.
+  expect(screen.getAllByRole('button', { name: '打开 SNR 实验室' })).toHaveLength(3);
+  fireEvent.click(grid.querySelectorAll<HTMLElement>('.widget-remove')[0]);
+  expect(savedOrder()).toEqual(['w-a', 'w-b', 'w-c']);
+
+  rerender(<StudioWidgets editing={false} {...props} />);
+  expect(grid.querySelector('.widget-edit')).toBeNull();
+  expect(grid.classList.contains('edit-leaving')).toBe(false);
+
+  // The same shrink and fade over the shared out duration as the icons' badges, and the same pop coming in.
+  const [studio, home] = [await readStylesheet('studio.css'), await readStylesheet('studio-home.css')];
+  expect(home).toMatch(/\.widget-grid\.edit-leaving :is\(\.widget-remove, \.widget-resize\) \{\s*pointer-events: none; animation: home-control-out var\(--motion-dur-out\)/);
+  expect(studio).toMatch(/\.widget-resize \{[^}]*animation: studio-pop var\(--dur-base\) var\(--ease-spring\)/);
+  expect(studio).toMatch(/\.home-remove \{[^}]*animation: studio-pop var\(--dur-base\) var\(--ease-spring\)/);
+});
+
 test('a tap on a widget opens its app with the card as the zoom origin; edit mode has no open button', () => {
   renderWidgets(false);
   const first = card('w-a');

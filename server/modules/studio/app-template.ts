@@ -8,7 +8,7 @@ export const STUDIO_APP_GUIDE_FILE = 'STUDIO_DESIGN.md';
  */
 export const STUDIO_APP_GUIDE = `# Studio 应用模板
 
-这个项目是 Agent Cloud Studio 里的一个应用。主人在 iPad 上点开图标，Studio 会在「主页」里直接运行它；顶部导航栏（产品名、主页 / AI 工坊 / 设置）和右侧的 AI 侧栏由 Studio 提供，应用只负责自己的界面。除非需求里明确要求别的风格或动画，所有设计都按下面的约定来做。
+这个项目是 Agent Cloud Studio 里的一个应用。主人在 iPad 上点开图标，Studio 会在「主页」里直接运行它；顶部导航栏（产品名、主页 / AI 助手 / 设置）和右侧的 AI 侧栏由 Studio 提供，应用只负责自己的界面。除非需求里明确要求别的风格或动画，所有设计都按下面的约定来做。
 
 ## 运行约定（必须遵守，否则在 Studio 里打不开）
 

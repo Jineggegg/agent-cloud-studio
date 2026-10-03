@@ -356,6 +356,8 @@ function nameOf(type: WidgetType) {
 // Edit controls sit inside the sortable widget; pressing them must not start a drag of the widget.
 const stopDragStart = { onPointerDown: (event: SyntheticEvent) => event.stopPropagation(), onTouchStart: (event: SyntheticEvent) => event.stopPropagation() };
 const preventContextMenu = (event: MouseEvent) => event.preventDefault();
+// Controls on their way out after edit mode ends: shown shrinking away, but out of reach of taps, focus and readers.
+const LEAVING_EDIT_INERT = { inert: '', 'aria-hidden': true } as Record<string, string | boolean>;
 
 // Grid cells a widget covers. iPadOS has no tall narrow widget, so two rows is always the large size.
 const sizeForSpan = (columns: number, rows: number): WidgetSize => rows > 1 ? 'large' : columns > 1 ? 'medium' : 'small';
@@ -434,10 +436,12 @@ function WidgetResizeHandle({ name, size, onResize }: { name: string; size: Widg
  */
 const SortableWidget = forwardRef<HTMLDivElement, {
   widget: WidgetConfig; name: string; editing: boolean; children: ReactNode;
+  // Edit mode has just ended: the remove badge and resize corner play out (studio-home.css) before they unmount.
+  leavingEdit: boolean;
   onRemove: () => void; onResize: (size: WidgetSize) => void;
   // Opens the widget's app; the card's rectangle is where the app zooms out of.
   onOpen: (card: DOMRect) => void;
-}>(function SortableWidget({ widget, name, editing, children, onRemove, onResize, onOpen }, ref) {
+}>(function SortableWidget({ widget, name, editing, leavingEdit, children, onRemove, onResize, onOpen }, ref) {
   const { attributes, isDragging, itemAttributes, listeners, setActivatorNodeRef, setNodeRef, style } = useHomeSortableItem(widget.id);
   const setCardRef = useCallback((node: HTMLElement | null) => { setNodeRef(node); setActivatorNodeRef(node); }, [setNodeRef, setActivatorNodeRef]);
   // Focusable and described as sortable only in edit mode, where the keyboard can move it.
@@ -451,8 +455,8 @@ const SortableWidget = forwardRef<HTMLDivElement, {
       {!editing && <button type="button" className="widget-open" aria-label={`打开 ${name}`}
         onClick={event => onOpen((event.currentTarget.parentElement ?? event.currentTarget).getBoundingClientRect())} />}
       {children}
-      {editing && <div className="widget-edit" role="group" aria-label={`调整 ${name}`} {...stopDragStart}>
-        <button type="button" className="home-remove widget-remove" aria-label={`移除 ${name}`} onClick={onRemove}><IconMinus size={14} strokeWidth={3} aria-hidden="true" /></button>
+      {(editing || leavingEdit) && <div className="widget-edit" role="group" aria-label={`调整 ${name}`} {...stopDragStart} {...(editing ? {} : LEAVING_EDIT_INERT)}>
+        <button type="button" className="home-remove widget-remove" aria-label={`移除 ${name}`} onClick={editing ? onRemove : undefined}><IconMinus size={14} strokeWidth={3} aria-hidden="true" /></button>
         <WidgetResizeHandle name={name} size={widget.size} onResize={onResize} />
       </div>}
     </article>
@@ -485,8 +489,10 @@ function WidgetDragOverlay({ widgets, cardRef, renderBody, container }: {
  * reflows live, so what you see while dragging is where the widget lands, or move with the keyboard) and resize
  * between small, medium and large by dragging their corner.
  */
-export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, onOpen, galleryOpen, onGalleryClose, overlayContainer = null, onDragActiveChange }: {
+export function StudioWidgets({ editing, leavingEdit = false, snr, paused = false, onEnterEdit, onOpen, galleryOpen, onGalleryClose, overlayContainer = null, onDragActiveChange }: {
   editing: boolean; snr: StudioSnr | null; paused?: boolean;
+  // Edit mode winding down (StudioHomeScreen): the edit controls shrink away with the icons' badges, then unmount.
+  leavingEdit?: boolean;
   // Called when a widget is tapped outside edit mode, with the card's rectangle for the zoom.
   onOpen: (type: WidgetType, card: DOMRect) => void;
   // Called when a long press lifts a widget outside edit mode.
@@ -591,11 +597,11 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, onOpe
 
   if (!widgets.length) return gallery || null;
   return <DndContext {...dndProps}>
-    <section ref={containerRef} className={`widget-grid ${editing ? 'editing' : ''}`} aria-label="小组件">
+    <section ref={containerRef} className={`widget-grid ${editing ? 'editing' : ''} ${leavingEdit && !editing ? 'edit-leaving' : ''}`} aria-label="小组件">
       <SortableContext {...sortableProps}>
         {/* popLayout takes a removed widget out of the flow at once, so its neighbours can glide into the gap. */}
         <AnimatePresence initial={false} mode="popLayout">
-          {widgets.map(widget => <SortableWidget key={widget.id} widget={widget} name={nameOf(widget.type)} editing={editing}
+          {widgets.map(widget => <SortableWidget key={widget.id} widget={widget} name={nameOf(widget.type)} editing={editing} leavingEdit={leavingEdit}
             onRemove={() => remove(widget.id)} onResize={size => resize(widget.id, size)} onOpen={card => onOpen(widget.type, card)}>
             {renderBody(widget, false)}
           </SortableWidget>)}

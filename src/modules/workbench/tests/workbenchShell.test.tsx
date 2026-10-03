@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { LazyMotion, domMax } from 'motion/react';
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation, useNavigationType } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest';
 
 // Type-only, so it is erased before vi.mock's hoisted factory runs.
@@ -523,6 +523,57 @@ test('the chat header is the only title bar: it carries the shell controls, and 
   expect(await screen.findByRole('heading', { name: '这个会话已不存在' })).toBeTruthy();
   expect(document.querySelector('.wb-bar')).not.toBeNull();
   expect(screen.getAllByRole('button', { name: '终端' })).toHaveLength(1);
+});
+
+test('opened from inside a Studio app, the sidebar back returns to that app; the grid button still goes home', async () => {
+  const appPath = '/projects/professor?tab=ai';
+  const fromApp = { studioReturn: { path: appPath, title: '超级教授' } };
+  function HowArrived() {
+    return <output data-testid="arrived">{useNavigationType()}</output>;
+  }
+  const renderFromApp = (entry: { pathname: string; search?: string }) => render(<LazyMotion features={domMax} strict>
+    <MemoryRouter initialEntries={['/', appPath, { ...entry, state: fromApp }]} initialIndex={2}>
+      <Routes>
+        {['/work/:projectId', '/work/:projectId/s/:sessionId'].map(route => <Route key={route} path={route} element={<WorkbenchShell />} />)}
+        <Route path="/projects/:id" element={<div>studio app</div>} />
+        <Route path="/" element={<div>studio home</div>} />
+      </Routes>
+      <Location /><HowArrived />
+    </MemoryRouter></LazyMotion>);
+
+  // 新建会话: the new chat becomes a session (a replace that keeps the note), and back steps back to the app.
+  renderFromApp({ pathname: '/work/p1', search: '?new=codex' });
+  await waitFor(() => expect(chatState()).toBe('p1|new|codex|professor'));
+  fireEvent.click(screen.getByRole('button', { name: 'create session' }));
+  await waitFor(() => expect(location()).toBe('/work/p1/s/created-1'));
+  fireEvent.click(screen.getByRole('button', { name: '返回 超级教授' }));
+  await waitFor(() => expect(location()).toBe(appPath));
+  expect(screen.getByTestId('arrived').textContent).toBe('POP');
+  cleanup();
+
+  // After moving to another session here, back still returns to the app (opening it again).
+  renderFromApp({ pathname: '/work/p1/s/s2' });
+  await waitFor(() => expect(chatState()).toContain('agent:s2'));
+  fireEvent.click(screen.getByRole('link', { name: /修复登录/ }));
+  await waitFor(() => expect(chatState()).toContain('agent:s1'));
+  fireEvent.click(screen.getByRole('button', { name: '返回 超级教授' }));
+  await waitFor(() => expect(location()).toBe(appPath));
+  expect(screen.getByTestId('arrived').textContent).toBe('PUSH');
+  cleanup();
+
+  // The separate grid button (sidebar hidden) goes straight home.
+  renderFromApp({ pathname: '/work/p1/s/s1' });
+  await waitFor(() => expect(chatState()).toContain('agent:s1'));
+  fireEvent.keyDown(window, { key: '\\', ctrlKey: true });
+  fireEvent.click(await within(screen.getByTestId('chat-header')).findByRole('button', { name: '返回 Studio 主屏幕' }));
+  await waitFor(() => expect(location()).toBe('/'));
+});
+
+test('opened from the home screen, the sidebar back goes home', async () => {
+  renderShell('/work/p1/s/s1');
+  await waitFor(() => expect(chatState()).toContain('agent:s1'));
+  fireEvent.click(screen.getByRole('button', { name: '返回 Studio 主屏幕' }));
+  await waitFor(() => expect(location()).toBe('/'));
 });
 
 test('Cursor and OpenCode are hidden: their links open the default agent and the menu never offers them', async () => {

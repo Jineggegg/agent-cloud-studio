@@ -15,7 +15,7 @@ import { useFileOpenResolver } from '@/shared/hooks/useFileOpenResolver';
 import { useVisualViewportKeyboardOffset } from '@/shared/hooks/useVisualViewportKeyboardOffset';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
 import type {
-  DirectoryRevealRequest, FileOpenHandler, Project, WorkbenchChatChrome, WorkbenchInspectorTab, WorkbenchNewProvider, WorkbenchProjectEntry,
+  DirectoryRevealRequest, FileOpenHandler, Project, StudioReturnState, WorkbenchChatChrome, WorkbenchInspectorTab, WorkbenchNewProvider, WorkbenchProjectEntry,
   WorkbenchSessionItem,
 } from '@/shared/types';
 import { getPageTitle } from '@/shared/utils';
@@ -80,6 +80,14 @@ export function WorkbenchShell() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const routerLocation = useLocation();
+  // Replace navigations keep the entry's history state: what lies behind the entry has not changed, so a note that
+  // the Studio app it was opened from is the entry behind (StudioReturnState) stays true.
+  const entryState = useRef<unknown>(routerLocation.state);
+  useEffect(() => { entryState.current = routerLocation.state; }, [routerLocation.state]);
+  const replaceRoute = useCallback((to: string) => navigate(to, { replace: true, state: entryState.current }), [navigate]);
+  // The Studio app this visit was opened from (its sessions, 新建会话 or 主页), kept while the owner moves between
+  // sessions here: the sidebar's back returns to it rather than to the home screen. Null when opened otherwise.
+  const [studioReturn] = useState(() => (routerLocation.state as StudioReturnState | null)?.studioReturn ?? null);
   const viewport = useWorkbenchViewport();
   const {
     entries, error: projectsError, refresh: refreshProjects, archive: archiveProjectById, restore: restoreProjectById, remove: removeProjectById,
@@ -152,17 +160,17 @@ export function WorkbenchShell() {
       ? fetchAgentSession(targetId).then(resolved => {
         if (!resolved) return null;
         if (resolved.projectId && resolved.projectId !== project.projectId) {
-          navigate(workbenchPath(resolved.projectId, resolved.item), { replace: true });
+          replaceRoute(workbenchPath(resolved.projectId, resolved.item));
           return 'moved' as const;
         }
-        if (resolved.item.id !== targetId) navigate(workbenchPath(project.projectId, resolved.item), { replace: true });
+        if (resolved.item.id !== targetId) replaceRoute(workbenchPath(project.projectId, resolved.item));
         return resolved.item;
       })
       : fetchDeepSeekConversation(targetId);
     // A session that lives in another project is not "missing" here: the route moves and that project resolves it.
     void lookup.then(item => { if (alive && item !== 'moved') setFetched({ key: fetchKey, item }); });
     return () => { alive = false; };
-  }, [targetKind, targetId, fetchKey, isListed, historyLoaded, project, fetched?.key, navigate]);
+  }, [targetKind, targetId, fetchKey, isListed, historyLoaded, project, fetched?.key, replaceRoute]);
 
   const resolved: WorkbenchSessionItem | 'loading' | 'missing' | null = !target ? null
     : listed ?? (fetched?.key === fetchKey ? fetched.item ?? 'missing' : 'loading');
@@ -227,19 +235,19 @@ export function WorkbenchShell() {
   const rememberProvider = useCallback((provider: WorkbenchNewProvider) => {
     setLastProvider(provider);
     writeStored(LAST_PROVIDER_KEY, provider);
-    if (project) navigate(workbenchPath(project.projectId, null, provider), { replace: true });
-  }, [project, navigate]);
+    if (project) replaceRoute(workbenchPath(project.projectId, null, provider));
+  }, [project, replaceRoute]);
 
   // The chat keeps its identity (and stays mounted) as its URL moves to the new session.
   const onSessionCreated = useCallback((item: WorkbenchSessionItem) => {
     if (!project) return;
     upsert(item);
     setAdopted({ id: item.id, key: chatIdentity });
-    navigate(workbenchPath(project.projectId, item), { replace: true });
-  }, [project, upsert, navigate, chatIdentity]);
+    replaceRoute(workbenchPath(project.projectId, item));
+  }, [project, upsert, replaceRoute, chatIdentity]);
 
   const leaveIfOpen = (item: WorkbenchSessionItem) => {
-    if (project && session?.id === item.id && session.kind === item.kind) navigate(workbenchPath(project.projectId), { replace: true });
+    if (project && session?.id === item.id && session.kind === item.kind) replaceRoute(workbenchPath(project.projectId));
   };
   const renameSession = async (item: WorkbenchSessionItem, title: string) => {
     try { await rename(item, title); return true; } catch (failure) { toast.error(failure instanceof Error ? failure.message : '重命名失败'); return false; }
@@ -267,7 +275,7 @@ export function WorkbenchShell() {
     const others = entries?.filter(other => other.project.projectId !== entry.project.projectId) ?? [];
     const next = others.find(other => other.hub) ?? others[0];
     setQuery('');
-    navigate(next ? workbenchPath(next.project.projectId) : '/work', { replace: true });
+    replaceRoute(next ? workbenchPath(next.project.projectId) : '/work');
   };
   const archiveProject = async (entry: WorkbenchProjectEntry) => {
     const archivedId = entry.project.projectId;
@@ -325,7 +333,7 @@ export function WorkbenchShell() {
     const remembered = readStored(LAST_PROJECT_KEY);
     const destination = entries.find(entry => entry.project.projectId === remembered)
       ?? entries.find(entry => entry.hub) ?? entries[0];
-    return <Navigate to={workbenchPath(destination.project.projectId, null, newProvider)} replace />;
+    return <Navigate to={workbenchPath(destination.project.projectId, null, newProvider)} replace state={routerLocation.state} />;
   }
 
   const sidebar = <WorkbenchSidebar
@@ -342,7 +350,13 @@ export function WorkbenchShell() {
     onArchiveProject={entry => void archiveProject(entry)}
     onDeleteProject={setPendingProjectDelete}
     onNewChat={startNewChat}
-    onHome={() => navigate('/')}
+    backTitle={studioReturn?.title ?? null}
+    onBack={() => {
+      if (!studioReturn) navigate('/');
+      // Still on the entry opened from the app (or one that replaced it): the app is right behind, so step back.
+      else if ((routerLocation.state as StudioReturnState | null)?.studioReturn) navigate(-1);
+      else navigate(studioReturn.path);
+    }}
     onHide={() => { if (sidebarDocked) setSidebarCollapsed(true); else setSheetOpen(false); }}
     onOpenSettings={openSettings}
   />;
@@ -414,7 +428,7 @@ export function WorkbenchShell() {
         <h2>找不到这个项目</h2>
         <p>{projectsError || '它可能已被归档或删除。可以从左上角切换到其他项目。'}</p>
         <div className="wb-stage-actions">
-          <button type="button" className="ios-button tinted" onClick={() => navigate('/work', { replace: true })}>打开最近的项目</button>
+          <button type="button" className="ios-button tinted" onClick={() => replaceRoute('/work')}>打开最近的项目</button>
         </div>
       </div>;
     }
