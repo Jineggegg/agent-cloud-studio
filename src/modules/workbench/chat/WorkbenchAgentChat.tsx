@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { AnimatePresence, m } from 'motion/react';
 import { ArrowDown, AtSign, ImagePlus, Slash } from 'lucide-react';
@@ -28,6 +28,7 @@ import type {
   WorkbenchSessionItem,
   WorkbenchTodoItem,
 } from '@/shared/types';
+import { useDockScrollPin } from '@/modules/workbench/chat/hooks/useDockScrollPin';
 import { useWorkbenchAgentEngine } from '@/modules/workbench/chat/hooks/useWorkbenchAgentEngine';
 import { WorkbenchChatHeader } from '@/modules/workbench/chat/WorkbenchChatHeader';
 import { WorkbenchComposer } from '@/modules/workbench/chat/WorkbenchComposer';
@@ -35,7 +36,7 @@ import { WorkbenchPermissionSheet } from '@/modules/workbench/chat/WorkbenchPerm
 import { WorkbenchPlanCard } from '@/modules/workbench/chat/WorkbenchPlanCard';
 import { WorkbenchProviderMark } from '@/modules/workbench/WorkbenchProviderMark';
 import { WorkbenchQuestionSheet } from '@/modules/workbench/chat/WorkbenchQuestionSheet';
-import { WorkbenchRunIsland } from '@/modules/workbench/chat/WorkbenchRunIsland';
+import { WorkbenchRunStatus } from '@/modules/workbench/chat/WorkbenchRunStatus';
 import { WorkbenchTokenRing } from '@/modules/workbench/chat/WorkbenchTokenRing';
 import { WorkbenchTranscript } from '@/modules/workbench/chat/WorkbenchTranscript';
 import { modelShortLabel, permissionModeCopy, providerLabel } from '@/modules/workbench/chat/utils/workbenchChatCopy';
@@ -49,7 +50,7 @@ import {
   readToolInput,
 } from '@/modules/workbench/chat/utils/workbenchToolSummary';
 
-/** What the run is blocked on, worded for the run island: `等你允许运行 npm test`. */
+/** What the run is blocked on, worded for the run status row: `等你允许运行 npm test`. */
 function describeWaiting(request: PendingPermissionRequest): string {
   const call = describeToolCall(request.toolName, request.input);
   if (call.kind === 'other') return `等你允许使用 ${call.verb}`;
@@ -138,7 +139,7 @@ type WorkbenchAgentChatProps = {
 
 /**
  * Used by WorkbenchChat for Claude Code and Codex chats: the inherited chat engine under a new presentation — header
- * pill, run island, transcript with tool stacks, inline permission and question sheets, and the composer dock. Its
+ * pill, transcript with tool stacks, and the dock: run status row, inline permission and question sheets, composer. Its
  * one model menu also lists the other providers' models until the first send.
  */
 export function WorkbenchAgentChat({
@@ -208,9 +209,12 @@ export function WorkbenchAgentChat({
       : planRequest ? '等你批准计划' : null;
   const activity = waitingFor ?? describeCurrentActivity(messages) ?? sessionState.sessionActivity?.statusText ?? '正在思考';
   const lastMessage = messages[messages.length - 1];
-  // The dots stand for the model composing; a running tool row already shows its own spinner.
+  // The run status row's glyph: the typing dots while the model composes, the spinner while a tool runs, a hand
+  // while a sheet waits on the owner.
   const toolInFlight = Boolean(lastMessage?.isToolUse && !lastMessage.toolResult && lastMessage.toolStatus !== 'completed');
-  const showTyping = isProcessing && pending.length === 0 && !lastMessage?.isStreaming && !toolInFlight;
+  const runPhase = waitingFor !== null ? 'waiting' : toolInFlight ? 'working' : 'composing';
+  const dockRef = useRef<HTMLDivElement>(null);
+  useDockScrollPin({ dockRef, scrollRef: sessionState.scrollContainerRef, pinned: !sessionState.isUserScrolledUp });
   const conversationTurns = useMemo(() => suggestionTurns(messages), [messages]);
   // The faint next message in the empty composer, asked for once the run has finished and nothing waits on the owner.
   const nextPrompt = useSuggestedPrompt({
@@ -307,16 +311,6 @@ export function WorkbenchAgentChat({
           chrome={chrome}
         />
 
-        <WorkbenchRunIsland
-          active={isProcessing}
-          activity={activity}
-          waiting={waitingFor !== null}
-          startedAt={sessionState.sessionActivity?.startedAt ?? null}
-          todos={todos}
-          canStop={sessionState.canAbortSession}
-          onStop={composer.handleAbortSession}
-        />
-
         <MarkdownWorkspaceContext.Provider value={markdownWorkspaceValue}>
           <TranscriptSessionContext.Provider value={transcriptSessionValue}>
             {/* In-chat file links (Markdown) call the palette ops the shell registers, which keep the line number and
@@ -331,7 +325,6 @@ export function WorkbenchAgentChat({
               onScrollIntent={sessionState.handleScroll}
               isLoading={sessionState.isLoadingSessionMessages}
               runActive={isProcessing}
-              showTyping={showTyping}
               hiddenCount={Math.max(0, messages.length - sessionState.visibleMessages.length)}
               onShowEarlier={sessionState.loadEarlierMessages}
               hasMoreHistory={sessionState.hasMoreMessages && !sessionState.allMessagesLoaded}
@@ -348,7 +341,7 @@ export function WorkbenchAgentChat({
           </TranscriptSessionContext.Provider>
         </MarkdownWorkspaceContext.Provider>
 
-        <div className="wbc-dock">
+        <div className="wbc-dock" ref={dockRef}>
           <AnimatePresence>
             {sessionState.isUserScrolledUp && messages.length > 0 && (
               <m.button
@@ -366,6 +359,17 @@ export function WorkbenchAgentChat({
               </m.button>
             )}
           </AnimatePresence>
+
+          {/* The transcript's last line, right above the composer (or the sheet standing in for it). */}
+          <WorkbenchRunStatus
+            active={isProcessing}
+            activity={activity}
+            phase={runPhase}
+            startedAt={sessionState.sessionActivity?.startedAt ?? null}
+            todos={todos}
+            canStop={sessionState.canAbortSession}
+            onStop={composer.handleAbortSession}
+          />
 
           {/* One sheet at a time: the answered one sinks away before the next rises. */}
           <AnimatePresence mode="wait">

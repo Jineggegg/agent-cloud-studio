@@ -1,6 +1,6 @@
 import { memo, useMemo, useState } from 'react';
 import type { ReactNode, RefObject } from 'react';
-import { AnimatePresence, m } from 'motion/react';
+import { m } from 'motion/react';
 import { History } from 'lucide-react';
 
 import { LazyMessageRow, useLazyRowObserver } from '@/modules/chat';
@@ -100,7 +100,6 @@ type WorkbenchTranscriptProps = {
   onScrollIntent: () => void;
   isLoading: boolean;
   runActive: boolean;
-  showTyping: boolean;
   // Loaded rows outside the render window, revealed by 显示更早的.
   hiddenCount: number;
   onShowEarlier: () => void;
@@ -133,7 +132,6 @@ export const WorkbenchTranscript = memo(function WorkbenchTranscript({
   onScrollIntent,
   isLoading,
   runActive,
-  showTyping,
   hiddenCount,
   onShowEarlier,
   hasMoreHistory,
@@ -232,28 +230,10 @@ export const WorkbenchTranscript = memo(function WorkbenchTranscript({
                   onDecision={onDecision}
                   onEditMessage={onEditMessage}
                 />
-
               </m.div>
             </LazyMessageRow>
           );
         })}
-
-        <AnimatePresence>
-          {showTyping && (
-            <m.div
-              key="typing"
-              className="wbc-typing"
-              role="status"
-              aria-label="正在回复"
-              initial={{ opacity: 0, y: 8, scale: 0.92 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.14 } }}
-              transition={ENTER_SPRING}
-            >
-              <span /><span /><span />
-            </m.div>
-          )}
-        </AnimatePresence>
       </div>
     </div>
   );

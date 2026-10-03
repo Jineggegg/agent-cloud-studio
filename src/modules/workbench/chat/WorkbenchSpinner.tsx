@@ -1,5 +1,5 @@
 /**
- * Used across the workbench chat column (tool rows, run island, typing line, loading states) as the iOS activity
+ * Used across the workbench chat column (tool rows, run status row, loading states) as the iOS activity
  * indicator: eight fading spokes that step around. Same drawing as Studio's spinner, so the two read as one product.
  */
 export function WorkbenchSpinner({ size = 16, label }: { size?: number; label?: string }) {

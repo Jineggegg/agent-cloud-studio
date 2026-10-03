@@ -41,6 +41,14 @@ const engine = vi.hoisted(() => ({
   } as Record<string, unknown>,
   selectProviderModel: (() => Promise.resolve()) as (...args: unknown[]) => Promise<unknown>,
   setInput: (() => undefined) as (value: string) => void,
+  // A run in flight: whether one is going, whether it can be stopped, when it started, and the stop action.
+  processing: false,
+  canAbort: false,
+  sessionActivity: null as { startedAt: number; statusText?: string } | null,
+  abort: (() => undefined) as () => void,
+  // The context budget the header's token ring reads.
+  tokenBudget: { used: 50_000, total: 200_000 } as Record<string, unknown> | null,
+  showCostModal: (() => undefined) as () => void,
 }));
 
 vi.mock('@/modules/workbench/chat/hooks/useWorkbenchAgentEngine', () => ({
@@ -67,10 +75,10 @@ vi.mock('@/modules/workbench/chat/hooks/useWorkbenchAgentEngine', () => ({
       session: {
         chatMessages: engine.messages,
         visibleMessages: engine.messages,
-        isProcessing: false,
-        canAbortSession: false,
-        sessionActivity: null,
-        tokenBudget: { used: 50_000, total: 200_000 },
+        isProcessing: engine.processing,
+        canAbortSession: engine.canAbort,
+        sessionActivity: engine.sessionActivity,
+        tokenBudget: engine.tokenBudget,
         scrollContainerRef: createRef<HTMLDivElement>(),
         handleScroll: noop,
         isLoadingSessionMessages: false,
@@ -119,9 +127,9 @@ vi.mock('@/modules/workbench/chat/hooks/useWorkbenchAgentEngine', () => ({
         cancelEditMessage: noop,
         handlePermissionDecision: (...decision: unknown[]) => engine.decide(...decision),
         handleGrantToolPermission: () => ({ success: true }),
-        handleAbortSession: noop,
+        handleAbortSession: () => engine.abort(),
         beginEditMessage: noop,
-        showCostModal: noop,
+        showCostModal: () => engine.showCostModal(),
         commandModalPayload: null,
         closeCommandModal: noop,
         delivery: engine.delivery,
@@ -179,6 +187,12 @@ afterEach(() => {
   engine.delivery = null;
   engine.preparedRecovery = null;
   engine.recoveryRuns = [];
+  engine.processing = false;
+  engine.canAbort = false;
+  engine.sessionActivity = null;
+  engine.abort = () => undefined;
+  engine.tokenBudget = { used: 50_000, total: 200_000 };
+  engine.showCostModal = () => undefined;
 });
 
 describe('one chat for every model', () => {
@@ -262,6 +276,89 @@ describe('one chat for every model', () => {
   test('the token ring reports how full the context is', () => {
     renderChat({ session: { id: 's1', kind: 'agent', provider: 'claude', title: 't', updatedAt: null } });
     expect(screen.getByRole('button', { name: '上下文已用 25%（50K / 200K）' })).toBeTruthy();
+  });
+});
+
+describe('the run status row', () => {
+  const SESSION = { id: 's1', kind: 'agent', provider: 'claude', title: 't', updatedAt: null } as const;
+  const TODOS = [
+    { content: '读代码', activeForm: '正在读代码', status: 'completed' },
+    { content: '改样式', activeForm: '正在改样式', status: 'completed' },
+    { content: '跑测试', activeForm: '正在跑测试', status: 'in_progress' },
+    { content: '提交', activeForm: '正在提交', status: 'pending' },
+  ];
+
+  test('sits in the dock right above the composer with state, progress, time and stop; nothing floats at the top', () => {
+    const abort = vi.fn();
+    engine.abort = abort;
+    engine.processing = true;
+    engine.canAbort = true;
+    engine.sessionActivity = { startedAt: Date.now() - 101_000 };
+    engine.messages = [
+      { type: 'user', content: '修一下样式', timestamp: '2026-10-02T08:00:00.000Z' },
+      { type: 'assistant', content: '', isToolUse: true, toolName: 'TodoWrite', toolId: 't1', toolInput: { todos: TODOS }, toolResult: { content: 'ok' }, timestamp: '2026-10-02T08:00:01.000Z' },
+    ] as ChatMessage[];
+    const { container } = renderChat({ session: SESSION });
+
+    const row = screen.getByRole('group', { name: '本轮运行状态' });
+    // Inside the dock, before the composer; not in the header or over the transcript.
+    const dock = container.querySelector('.wbc-dock');
+    expect(dock?.contains(row)).toBe(true);
+    expect(container.querySelector('.wbc-header')?.contains(row)).toBe(false);
+    expect(container.querySelector('.wbc-scroll')?.contains(row)).toBe(false);
+    const composer = screen.getByRole('textbox', { name: '消息' });
+    expect(row.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelector('.wbc-island')).toBeNull();
+
+    // The model composing: 正在思考 with the typing dots as its glyph, and no separate dots in the transcript.
+    expect(within(row).getByText('正在思考')).toBeTruthy();
+    expect(row.querySelector('.wbc-run-dots')).toBeTruthy();
+    expect(container.querySelector('.wbc-typing')).toBeNull();
+    expect(within(row).getByText('2/4')).toBeTruthy();
+    expect(within(row).getByText('1 分 41 秒')).toBeTruthy();
+
+    // The step count unfolds the checklist.
+    const toggle = within(row).getByRole('button', { name: /步骤 2\/4，展开步骤/ });
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(within(row).getByRole('list', { name: '任务清单' })).toBeTruthy();
+    expect(within(row).getByText('正在跑测试')).toBeTruthy();
+
+    fireEvent.click(within(row).getByRole('button', { name: '停止这一轮' }));
+    expect(abort).toHaveBeenCalledTimes(1);
+  });
+
+  test('names the running tool, and says when the run waits on the owner', () => {
+    engine.processing = true;
+    engine.messages = [
+      { type: 'user', content: '跑一下测试', timestamp: '2026-10-02T08:00:00.000Z' },
+      { type: 'assistant', content: '', isToolUse: true, toolName: 'Bash', toolId: 'b1', toolInput: { command: 'npm test' }, toolResult: null, timestamp: '2026-10-02T08:00:01.000Z' },
+    ] as ChatMessage[];
+    const { unmount } = renderChat({ session: SESSION });
+    const row = screen.getByRole('group', { name: '本轮运行状态' });
+    expect(within(row).getByText('正在运行 npm test')).toBeTruthy();
+    expect(row.className).toContain('is-working');
+    expect(row.querySelector('.wbc-run-dots')).toBeNull();
+    // Without a way to stop there is no stop button.
+    expect(within(row).queryByRole('button', { name: '停止这一轮' })).toBeNull();
+    unmount();
+
+    engine.pending = [{ requestId: 'r1', toolName: 'Bash', input: { command: 'npm test' } } satisfies PendingPermissionRequest];
+    renderChat({ session: SESSION });
+    const waiting = screen.getByRole('group', { name: '本轮运行状态' });
+    expect(within(waiting).getByText('等你允许运行 npm test')).toBeTruthy();
+    expect(waiting.className).toContain('is-waiting');
+  });
+
+  test('says the run finished once it ends', () => {
+    engine.processing = true;
+    const { rerender } = renderChat({ session: SESSION });
+    expect(screen.getByRole('group', { name: '本轮运行状态' })).toBeTruthy();
+    engine.processing = false;
+    rerender(
+      <WorkbenchChat project={project} session={SESSION} provider="claude" hubProjectId={null} onSessionCreated={vi.fn()} onOpenFile={vi.fn()} />,
+    );
+    expect(within(screen.getByRole('group', { name: '本轮运行状态' })).getByText('本轮完成')).toBeTruthy();
   });
 });
 

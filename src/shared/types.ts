@@ -2413,7 +2413,7 @@ export type WorkbenchPermissionDecision = (
   requestIds: string | string[],
   decision: { allow?: boolean; message?: string; rememberEntry?: string | null; updatedInput?: unknown },
 ) => void;
-/** One step of an agent's running checklist (Claude TodoWrite, Codex update_plan) as the workbench chat's run island and tool cards draw it. */
+/** One step of an agent's running checklist (Claude TodoWrite, Codex update_plan) as the workbench chat's run status row and tool cards draw it. */
 export type WorkbenchTodoItem = { content: string; activeForm?: string; status: 'pending' | 'in_progress' | 'completed' };
 /**
  * A tool call reduced to the workbench chat's compact card: `kind` picks the icon, `verb` and `target` are the
