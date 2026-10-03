@@ -301,31 +301,44 @@
 .tone-ghost { --tone-a: transparent; --tone-b: transparent; color: var(--ios-label-2); box-shadow: none; border: 1.5px dashed color-mix(in srgb, var(--ios-label-2) 50%, transparent); }
 .tone-ghost::before, .tone-ghost::after { display: none; }
 
-/* Home-screen icons (and the App library's) are cards: translucent over the wallpaper, a hairline edge, corners of
-   14 px on a 96 px card (scaled with the icon size), and the glyph or official mark in one colour at 80 % ink. The
-   tones stay for the apps' own surfaces; on the home screen everything is monochrome. */
+/* Home-screen icons (and the App library's) are the widgets' clear glass: the same frosted gradient, top-left sheen,
+   bright rim and deep soft shadow, with corners in the widgets' proportion (26 px on a 92 px icon). The app's tone
+   shows only in the glyph or official mark and in a faint wash in the lower-right corner. */
 .home-tile .home-icon, .library-sheet .ios-row > .home-icon {
-  border-radius: max(7px, calc(var(--icon) * 14 / 96));
-  color: var(--ios-label); background: var(--home-card); border: 1px solid var(--home-card-edge); box-shadow: none;
-  transition: transform .3s ease-in-out, background-color .3s ease-in-out, box-shadow .3s ease-in-out;
+  --icon-glyph: color-mix(in srgb, var(--tone-b) 88%, var(--ios-label));
+  --icon-wash: 20%;
+  --icon-glass-shadow: inset 0 1px 0 var(--home-glass-rim), inset 0 -1px 1px rgba(255, 255, 255, .08), var(--home-glass-shadow);
+  border-radius: max(8px, calc(var(--icon) * .28));
+  color: var(--icon-glyph);
+  background:
+    radial-gradient(120% 70% at 12% -12%, var(--home-glass-sheen), transparent 62%),
+    radial-gradient(110% 80% at 80% 115%, color-mix(in srgb, var(--tone-a) var(--icon-wash), transparent), transparent 70%),
+    var(--home-glass);
+  border: 1px solid var(--home-glass-edge); box-shadow: var(--icon-glass-shadow);
+  transition: transform .3s ease-in-out, box-shadow .3s ease-in-out;
 }
-.home-tile .home-icon { -webkit-backdrop-filter: blur(24px) saturate(160%); backdrop-filter: blur(24px) saturate(160%); }
+.dark :is(.home-tile .home-icon, .library-sheet .ios-row > .home-icon) { --icon-glyph: color-mix(in srgb, var(--tone-a) 72%, #fff); --icon-wash: 26%; }
+/* Graphite's light tone is near the dark glass itself, so its glyph is lifted further. */
+.dark :is(.home-tile .home-icon, .library-sheet .ios-row > .home-icon).tone-graphite { --icon-glyph: color-mix(in srgb, var(--tone-a) 40%, #fff); }
+.home-tile .home-icon { -webkit-backdrop-filter: blur(30px) saturate(185%); backdrop-filter: blur(30px) saturate(185%); }
 :is(.home-tile .home-icon, .library-sheet .ios-row > .home-icon)::before,
 :is(.home-tile .home-icon, .library-sheet .ios-row > .home-icon)::after { display: none; }
 :is(.home-tile .home-icon, .library-sheet .ios-row > .home-icon) > svg:first-child {
-  filter: none; opacity: .8; transition: transform .3s ease-in-out, opacity .3s ease-in-out;
+  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, .35)); opacity: .92; transition: transform .3s ease-in-out, opacity .3s ease-in-out;
 }
+.dark :is(.home-tile .home-icon, .library-sheet .ios-row > .home-icon) > svg:first-child { filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .4)); }
 .home-tile .home-icon.tone-ghost {
   background: rgba(255, 255, 255, .08); color: var(--ios-label-2); -webkit-backdrop-filter: none; backdrop-filter: none;
-  border: 1.5px dashed color-mix(in srgb, var(--ios-label-2) 55%, transparent);
+  border: 1.5px dashed color-mix(in srgb, var(--ios-label-2) 55%, transparent); box-shadow: none;
 }
+.home-tile .home-icon.tone-ghost > svg:first-child { filter: none; }
 
-/* Hover or press: the card rises 4 px on a soft shadow and the glyph grows a little. */
-.home-tile:not(.add):active .home-icon { transform: translateY(-4px); background: var(--home-card-hover); box-shadow: var(--home-card-lift); }
+/* Hover or press: the glass rises 4 px, its shadow deepens a little and the glyph grows. */
+.home-tile:not(.add):active .home-icon { transform: translateY(-4px); box-shadow: var(--icon-glass-shadow), var(--home-card-lift); }
 .home-tile:not(.add):active .home-icon > svg:first-child { transform: scale(1.1); opacity: 1; }
 @media (hover: hover) {
-  .home-tile:hover .home-icon { transform: translateY(-4px); box-shadow: var(--home-card-lift); }
-  .home-tile:not(.add):hover .home-icon { background: var(--home-card-hover); }
+  .home-tile:hover .home-icon { transform: translateY(-4px); box-shadow: var(--icon-glass-shadow), var(--home-card-lift); }
+  .home-tile.add:hover .home-icon { box-shadow: var(--home-card-lift); }
   .home-tile:hover .home-icon > svg:first-child { transform: scale(1.1); opacity: 1; }
 }
 
