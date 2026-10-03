@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, UIEvent } from 'react';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AnimatePresence, LazyMotion, MotionConfig, m } from 'motion/react';
@@ -24,6 +24,7 @@ import { StudioLinksSheet } from '@/modules/studio/StudioLinksSheet';
 import { SETTINGS_PAGES, readSettingsPage, useSettingsSplit } from '@/modules/studio/settingsPages';
 import type { SettingsPageId } from '@/modules/studio/settingsPages';
 import type { WidgetType } from '@/modules/studio/StudioWidgets';
+import { takeHarnessLaunch } from '@/modules/studio/utils/harnessLaunch';
 import '@/modules/studio/studio.css';
 
 // Sub-apps stay out of the home screen's first load (and are warmed once it is idle); same props as the originals.
@@ -41,6 +42,7 @@ const StudioAppHome = lazyStudioPanel(() => import('@/modules/studio/StudioAppHo
 const StudioAppRunSettings = lazyStudioPanel(() => import('@/modules/studio/StudioAppHome').then(module => module.StudioAppRunSettings), 'list');
 // ── v6 track: github — lazy panel (kept apart from the other tracks' insertions) ──
 const StudioGitHub = lazyStudioPanel(() => import('@/modules/studio/StudioGitHub').then(module => module.StudioGitHub), 'list');
+const StudioHarness = lazyStudioPanel(() => import('@/modules/studio/StudioHarness').then(module => module.StudioHarness), 'list');
 
 // Layout/drag features load after first paint; plain animations work immediately.
 const loadMotionFeatures = () => import('@/modules/studio/motionFeatures').then(module => module.default);
@@ -48,7 +50,7 @@ const loadMotionFeatures = () => import('@/modules/studio/motionFeatures').then(
 const SPRING = { type: 'spring', stiffness: 158, damping: 25 } as const;
 // Scrolling past the large title collapses it into the glass navigation bar.
 const LARGE_TITLE_COLLAPSE_AT = 28;
-const SYSTEM_TITLES = { deepseek: 'DeepSeek', connections: '设置', github: 'GitHub', memory: '记忆' } as const;
+const SYSTEM_TITLES = { harness: 'Harness', deepseek: 'DeepSeek', connections: '设置', github: 'GitHub', memory: '记忆' } as const;
 const isSystemApp = (value: string | undefined): value is keyof typeof SYSTEM_TITLES => Boolean(value && value in SYSTEM_TITLES);
 // Studio's settings app, also opened by the home screen's gear (zooming out of the button).
 const SETTINGS_TILE: StudioHomeTile = { id: 'connections', name: '设置', tone: 'stone', glyph: 'settings' };
@@ -128,6 +130,16 @@ export function StudioPage() {
     setT212(await api.studio.trading212.status().then(readApiJson<T212Status[]>).catch(() => []));
   }, []);
   useEffect(() => { void loadProjects(); void loadT212(); }, [loadProjects, loadT212]);
+  // Opening Studio lands in Harness (once per launch, unless this device turned it off in Settings → 主屏幕); the
+  // home screen stays one tap away. Decided on the first render so later visits to `/` are left alone.
+  const [launchIntoHarness] = useState(() => location.pathname === '/' && takeHarnessLaunch());
+  // navigate changes with every location, so without this the effect would send each later return to `/` back.
+  const launchRedirected = useRef(false);
+  useEffect(() => {
+    if (!launchIntoHarness || launchRedirected.current) return;
+    launchRedirected.current = true;
+    navigate('/apps/harness', { replace: true });
+  }, [launchIntoHarness, navigate]);
 
   useEffect(() => {
     if (!transition) return;
@@ -154,19 +166,20 @@ export function StudioPage() {
     setTransition(prefersReducedMotion() ? null : 'opening');
     navigate(tile.id.startsWith('project:') ? `/projects/${encodeURIComponent(tile.id.slice(8))}` : `/apps/${tile.id}`, { state: { fromHome: true } });
   };
-  // A widget opens the app it summarises. Claude and Codex start a new session in the workbench directory with the
-  // model and effort chosen in settings; the others open their app from the card's centre, like an icon.
+  // A new Claude Code or Codex session in the workbench directory, with the model and effort chosen in settings.
+  const startWorkbench = async (provider: 'claude' | 'codex') => {
+    try {
+      const { url } = await api.studio.projects.launchWorkbench(provider).then(readApiJson<{ url: string }>);
+      applyModelDefaults(provider);
+      writeSelectedProvider(provider);
+      navigate(url);
+    } catch (failure) { toast.error(failure instanceof Error ? failure.message : '无法打开工作台'); }
+  };
+  // A widget opens the app it summarises. Claude and Codex start a new workbench session (startWorkbench); the others
+  // open their app from the card's centre, like an icon.
   const openWidget = async (type: WidgetType, card: DOMRect) => {
     if (transition) return;
-    if (type === 'claude' || type === 'codex') {
-      try {
-        const { url } = await api.studio.projects.launchWorkbench(type).then(readApiJson<{ url: string }>);
-        applyModelDefaults(type);
-        writeSelectedProvider(type);
-        navigate(url);
-      } catch (failure) { toast.error(failure instanceof Error ? failure.message : '无法打开工作台'); }
-      return;
-    }
+    if (type === 'claude' || type === 'codex') { await startWorkbench(type); return; }
     if (type === 'deepseek') { openTile({ id: 'deepseek', name: 'DeepSeek', tone: 'slate', glyph: 'sparkles' }, card); return; }
     // The GitHub widget opens the PR inbox system app, from the card like its home tile.
     if (type === 'github') { openTile({ id: 'github', name: 'GitHub', tone: 'graphite', glyph: 'pull-request' }, card); return; }
@@ -256,6 +269,8 @@ export function StudioPage() {
       // An AI build in progress dims the icon under a ring and links it to the live workbench session.
       ...builds.tileFor(item.id),
     })),
+    // Claude Code and Codex as one harness, and what both are doing on the computer; wears Studio's own spark.
+    { id: 'harness', name: 'Harness', tone: 'ink', glyph: 'sparkles' },
     // ── v6 track: github — home tile below this line ──
     { id: 'github', name: 'GitHub', tone: 'graphite', glyph: 'pull-request' },
     // ── v6 track: memory — home tile below this line ──
@@ -351,6 +366,7 @@ export function StudioPage() {
               {target.kind === 'app' && target.id === 'github' && <StudioGitHub refreshing={refreshing} />}
               {/* ── v6 track: memory — app content below this line ── */}
               {target.kind === 'app' && target.id === 'memory' && <StudioMemory refreshing={refreshing} />}
+              {target.kind === 'app' && target.id === 'harness' && <StudioHarness refreshing={refreshing} onStart={startWorkbench} />}
               {/* While the project list loads, the activity indicator stands in. */}
               {target.kind === 'project' && !project && (projects === null
                 ? <StudioPanelPending />

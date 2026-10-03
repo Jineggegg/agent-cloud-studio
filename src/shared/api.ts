@@ -338,6 +338,10 @@ export const api = {
       status: (projectId: string) => get(`/api/studio/apps/${encodeURIComponent(projectId)}`),
       stop: (projectId: string) => post(`/api/studio/apps/${encodeURIComponent(projectId)}/stop`),
     },
+    // The Harness app: Claude Code and Codex sessions on this computer (WSL and Windows), polled while it is open.
+    harness: {
+      tasks: (signal?: AbortSignal) => get('/api/studio/harness/tasks', { signal, cache: 'no-store' }),
+    },
     // ── v6 track: memory — endpoints below this line ──
     // The shared basic-memory server (Claude Code, Codex, DeepSeek) through Studio's MCP client; ids are permalinks.
     memory: {

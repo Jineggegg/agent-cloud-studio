@@ -59,6 +59,8 @@ import { createStudioRuntimeRouter } from './runtime.routes.js';
 import { createAutomationsService } from './automations/automations.service.js';
 import { createAutomationsRouter } from './automations/automations.routes.js';
 import { createAutomationDeepseekAdapter } from './automations/automation-deepseek.adapter.js';
+import { createHarnessService } from './harness.service.js';
+import { createHarnessRouter } from './harness.routes.js';
 
 const linkChecker = createLinkChecker();
 
@@ -390,6 +392,25 @@ export function createStudioModule() {
     }));
   }
   routes.use('/memory', createMemoryRouter(memory));
+  // ── harness: the Claude Code and Codex sessions running on this computer ──
+  // Read from the agents' own files on both sides of WSL (the Windows home is the one the memory checks found), so
+  // sessions started in a terminal or the desktop apps show up too. A WSL session Studio has indexed opens in the
+  // workbench; the sessions Studio's own chat runs drive are marked as Studio's.
+  const harness = createHarnessService({
+    homes: [{ machine: 'wsl', home: os.homedir() }, ...(memoryWindowsHome ? [{ machine: 'windows' as const, home: memoryWindowsHome }] : [])],
+    linuxHome: os.homedir(),
+    async studioRuns() {
+      const runs = (await sessionsService.listRunningSessions()).filter(run => !run.background && !run.statusText);
+      return new Set(runs.map(run => sessionsDb.getSessionById(run.sessionId)?.provider_session_id || run.sessionId));
+    },
+    href(providerSessionId) {
+      const session = sessionsDb.getSessionByProviderSessionId(providerSessionId);
+      const project = session?.project_path ? projectsDb.getProjectPath(session.project_path) : null;
+      if (!session || session.isArchived || !project || project.isArchived) return null;
+      return `/work/${encodeURIComponent(project.project_id)}/s/${encodeURIComponent(session.session_id)}`;
+    },
+  });
+  routes.use('/harness', createHarnessRouter(harness));
   return {
     routes,
     snrRoutes: createSnrGatewayRouter(gateway),

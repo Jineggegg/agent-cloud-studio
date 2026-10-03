@@ -2,16 +2,20 @@ import { useState } from 'react';
 
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { clearHomeNames, useHomeLayout, useHomeNames } from '@/modules/studio/utils/homeLayout';
+import { readHarnessOnLaunch, writeHarnessOnLaunch } from '@/modules/studio/utils/harnessLaunch';
 
 /**
- * Used by Settings → 主屏幕: the home screen's look (names, icon size), how many apps are hidden and in folders, and
- * the two resets — typed names (synced across devices) and this device's arrangement (order, folders, hidden apps).
+ * Used by Settings → 主屏幕: the home screen's look (names, icon size), whether Studio opens in Harness, how many
+ * apps are hidden and in folders, and the two resets — typed names (synced across devices) and this device's
+ * arrangement (order, folders, hidden apps).
  */
 export function StudioSettingsHome() {
   const [layout, updateLayout] = useHomeLayout();
   const names = useHomeNames();
   // Each reset waits for a confirmation in the alert.
   const [confirm, setConfirm] = useState<'names' | 'layout' | null>(null);
+  // Whether opening Studio on this device lands in Harness; mirrors localStorage so the switch moves at once.
+  const [harnessOnLaunch, setHarnessOnLaunch] = useState(readHarnessOnLaunch);
   const renamed = Object.keys(names).length;
   const foldered = layout.folders.reduce((count, folder) => count + folder.items.length, 0);
   return <>
@@ -25,6 +29,11 @@ export function StudioSettingsHome() {
         <label className="ios-row no-icon switch-row">
           <span className="ios-row-body"><strong>大图标</strong><small>每页放的图标更少</small></span>
           <input type="checkbox" role="switch" className="ios-switch" aria-label="大图标" checked={layout.large} onChange={event => updateLayout({ large: event.target.checked })} />
+        </label>
+        <label className="ios-row no-icon switch-row">
+          <span className="ios-row-body"><strong>打开时进入 Harness</strong><small>打开 Studio 先看 Claude Code 和 Codex 在电脑上跑的任务</small></span>
+          <input type="checkbox" role="switch" className="ios-switch" aria-label="打开时进入 Harness" checked={harnessOnLaunch}
+            onChange={event => { setHarnessOnLaunch(event.target.checked); writeHarnessOnLaunch(event.target.checked); }} />
         </label>
       </div>
     </section>

@@ -45,6 +45,8 @@ const { StudioBuildComposer } = await import('@/modules/studio/StudioBuildCompos
 
 beforeEach(() => {
   localStorage.clear();
+  // These start on the home screen, not in Harness where Studio opens by default.
+  localStorage.setItem('studio-harness-on-launch', 'off');
   mocks.projects = [];
   mocks.builds.list.mockImplementation(() => json([]));
   mocks.builds.environment.mockImplementation(() => json({ mode: 'sandbox', missing: [], available: true }));

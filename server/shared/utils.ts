@@ -2044,3 +2044,40 @@ export function zonedTimeToInstant(parts: Omit<ZonedDateParts, 'weekday'>, timeZ
 export function isOfferedAgentProvider(provider: string): boolean {
   return provider === 'claude' || provider === 'codex';
 }
+
+// ---------------------------
+//----------------- PROCESS LIVENESS UTILITIES ------------
+/**
+ * Whether `pid` on this machine is still the process an agent's session registry recorded.
+ *
+ * Used by the providers module's Claude CLI liveness service and the Studio Harness service, which both read Claude
+ * Code's `~/.claude/sessions/<pid>.json` files. A registry file outlives a crash, so its mere presence proves nothing.
+ * The signal-0 probe answers "does this pid exist" (EPERM means it exists but is owned by someone else, which still
+ * counts), and on Linux the recorded `procStart` is compared against the kernel's start time for that pid so a reused
+ * pid cannot be mistaken for the original process. Only meaningful for pids of this machine's own process table: a
+ * Windows pid read from WSL names an unrelated process (or none).
+ */
+export async function isRecordedProcessAlive(pid: number, procStart: unknown): Promise<boolean> {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'EPERM') {
+      return false;
+    }
+  }
+
+  if (process.platform !== 'linux' || typeof procStart !== 'string' || !procStart) {
+    return true;
+  }
+
+  try {
+    const procStat = await readFile(`/proc/${pid}/stat`, 'utf8');
+    // The comm field is parenthesised and may itself contain spaces, so the fields are counted from the last ')'.
+    // starttime is the 22nd field overall, i.e. the 20th of what follows the comm field.
+    const fields = procStat.slice(procStat.lastIndexOf(')') + 2).split(' ');
+    return fields[19] === procStart;
+  } catch {
+    // No procfs entry means the process is gone between the two checks.
+    return false;
+  }
+}

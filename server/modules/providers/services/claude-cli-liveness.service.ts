@@ -2,6 +2,8 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { isRecordedProcessAlive } from '@/shared/utils.js';
+
 /**
  * One Claude CLI process that is currently producing a response.
  *
@@ -27,41 +29,6 @@ const registryDirectory = () => path.join(os.homedir(), '.claude', 'sessions');
  * unbounded filesystem work. Real installations hold a handful of entries.
  */
 const MAX_REGISTRY_FILES = 256;
-
-/**
- * Whether `pid` is still the process the registry recorded.
- *
- * A registry file outlives a crash, so its mere presence proves nothing. The
- * signal-0 probe answers "does this pid exist" (EPERM means it exists but is
- * owned by someone else, which still counts), and on Linux the recorded
- * `procStart` is compared against the kernel's start-time for that pid so a
- * reused pid cannot be mistaken for the original process.
- */
-async function isRecordedProcessAlive(pid: number, procStart: unknown): Promise<boolean> {
-  try {
-    process.kill(pid, 0);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code !== 'EPERM') {
-      return false;
-    }
-  }
-
-  if (process.platform !== 'linux' || typeof procStart !== 'string' || !procStart) {
-    return true;
-  }
-
-  try {
-    const stat = await fsp.readFile(`/proc/${pid}/stat`, 'utf8');
-    // The comm field is parenthesised and may itself contain spaces, so the
-    // fields are counted from the last ')'. starttime is the 22nd field
-    // overall, i.e. the 20th of what follows the comm field.
-    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-    return fields[19] === procStart;
-  } catch {
-    // No procfs entry means the process is gone between the two checks.
-    return false;
-  }
-}
 
 /** Reads one registry file, returning null for anything that is not a live busy session. */
 async function readLiveBusySession(filePath: string): Promise<LiveClaudeCliSession | null> {
