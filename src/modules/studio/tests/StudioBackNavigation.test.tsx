@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate, useNavigationType } from 'react-router-dom';
-import type { InitialEntry } from 'react-router-dom';
+import type { ComponentProps } from 'react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import type * as ApiModule from '@/shared/api';
@@ -47,6 +47,9 @@ vi.mock('@/shared/api', async (original) => ({
 if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
 
 const { StudioPage } = await import('@/modules/studio/StudioPage');
+
+// A history entry the router starts with: a path, or a location with its state.
+type InitialEntry = NonNullable<ComponentProps<typeof MemoryRouter>['initialEntries']>[number];
 
 beforeEach(() => {
   // A wide screen: the AI sidebar sits beside the app on its 主页.
