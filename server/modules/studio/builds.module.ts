@@ -56,7 +56,11 @@ function readGitIdentity(): { name: string; email: string } | null {
  */
 export function createStudioBuildsRoutes(
   hub: ReturnType<typeof createProjectHubService>,
-  options: { deepseekKey?: (userId: number) => string | null } = {},
+  options: {
+    deepseekKey?: (userId: number) => string | null;
+    // Told when a build fails (studio.module runs the project's “构建失败时” automations).
+    onBuildFailed?: (failure: { userId: number; projectId: string; error: string }) => void;
+  } = {},
 ) {
   const home = os.homedir();
   const root = process.env.STUDIO_BUILDS_ROOT?.trim() || path.join(home, 'projects');
@@ -92,6 +96,7 @@ export function createStudioBuildsRoutes(
     createSession: (workspacePath, title) => sessionsService.createAppSession('claude', workspacePath, title),
     runner,
     maxParallel: Number(process.env.STUDIO_BUILDS_MAX_PARALLEL ?? 2),
+    onFailed: options.onBuildFailed,
   });
   const fromHome = path.relative(home, path.resolve(root));
   if (fromHome === '..' || fromHome.startsWith(`..${path.sep}`) || path.isAbsolute(fromHome)) {

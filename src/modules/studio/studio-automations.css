@@ -1,0 +1,77 @@
+/* ---------- Project 自动化 tab: notification check, plain-words box, review form, list ---------- */
+.automation-tab { padding-bottom: 24px; }
+
+/* Notification check: a calm card, green when automations can reach this device, warm when they cannot. */
+.push-banner {
+  display: flex; align-items: center; gap: 12px; margin-top: 8px; padding: 12px 14px; border-radius: 16px;
+  background: var(--ios-surface); animation: studio-rise var(--dur-base) var(--ease-out) backwards;
+}
+.push-banner > svg { flex-shrink: 0; }
+.push-banner.is-on > svg { color: var(--ios-green); }
+.push-banner.is-off { align-items: flex-start; background: color-mix(in srgb, var(--ios-orange) 10%, var(--ios-surface)); }
+.push-banner.is-off > svg { margin-top: 2px; color: var(--ios-orange); }
+.push-banner-body { flex: 1; min-width: 0; }
+.push-banner-body strong { display: block; font-size: 15px; font-weight: 600; }
+.push-banner-body small { display: block; margin-top: 2px; font-size: 13px; line-height: 1.5; color: var(--ios-label-2); }
+.push-banner-body .push-banner-error { color: var(--ios-red); }
+.push-banner .ios-button { flex-shrink: 0; min-height: 36px; padding: 6px 14px; font-size: 14px; }
+
+/* The plain-words box. */
+.automation-composer { margin-top: 26px; }
+.automation-prompt {
+  display: block; width: 100%; min-height: 96px; padding: 14px 16px; border: 0; outline: none; resize: vertical;
+  background: transparent; color: var(--ios-label); caret-color: var(--ios-tint); font-size: 17px; line-height: 1.5;
+}
+.automation-prompt::placeholder { color: var(--ios-label-3); }
+.ios-list:has(> .automation-prompt:focus-visible) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ios-tint) 45%, transparent); }
+.automation-examples { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.automation-example {
+  max-width: 100%; min-height: 32px; padding: 6px 12px; border-radius: 999px; background: var(--ios-fill);
+  color: var(--ios-label-2); font-size: 13px; text-align: left; overflow-wrap: anywhere;
+}
+.automation-example:not(:disabled):active { background: var(--ios-fill-pressed); }
+.automation-composer-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
+
+/* Review / edit form. */
+.automation-form { margin-top: 18px; padding: 16px; border-radius: var(--radius-card); background: var(--ios-surface-2); animation: studio-rise var(--dur-base) var(--ease-out) backwards; }
+.automation-form fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.automation-form-head h3 { font-size: 17px; font-weight: 600; }
+.automation-form-head p { margin-top: 4px; font-size: 13px; line-height: 1.5; color: var(--ios-label-2); overflow-wrap: anywhere; }
+.automation-form .ios-list { margin-top: 10px; }
+.automation-form-label { margin: 18px 16px 0; font-size: 13px; font-weight: 600; color: var(--ios-label-2); }
+.automation-form-key { flex-shrink: 0; width: 76px; font-size: 17px; }
+.automation-form-static { font-size: 17px; color: var(--ios-label); }
+.automation-repeat { flex-wrap: wrap; }
+.automation-repeat .segmented { flex-wrap: wrap; }
+.automation-notes { margin: 10px 16px 0; padding-left: 18px; list-style: disc; font-size: 13px; line-height: 1.6; color: var(--ios-orange); }
+
+/* The list. */
+.automation-list { display: grid; gap: 1px; overflow: hidden; border-radius: var(--radius-card); background: var(--ios-separator); }
+.automation-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px 12px 12px 16px; background: var(--ios-surface); }
+.automation-row.is-off .automation-body, .automation-row.is-off .automation-icon { opacity: .55; }
+.automation-icon { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; margin-top: 2px; border-radius: 9px; background: var(--ios-tint-soft); color: var(--ios-tint); }
+.automation-body { flex: 1; min-width: 0; }
+.automation-body strong { display: block; font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+.automation-body small { display: block; margin-top: 3px; font-size: 13px; line-height: 1.45; color: var(--ios-label-2); overflow-wrap: anywhere; }
+.automation-times { font-variant-numeric: tabular-nums; }
+.automation-last { margin-top: 6px; padding: 8px 10px; border-radius: 10px; background: var(--ios-fill); font-size: 13px; line-height: 1.5; color: var(--ios-label); overflow-wrap: anywhere; }
+.automation-last.is-error { background: var(--ios-red-soft); color: var(--ios-red); }
+.automation-last.is-notified { background: var(--ios-green-soft); }
+.automation-controls { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
+.automation-actions { display: flex; }
+.automation-actions .icon-button { width: 40px; height: 40px; }
+
+/* The 设置 tab: a product's link to where its other settings live. */
+.product-settings-link { margin-top: 12px; }
+
+/* Older agent instruction drafts, folded away. */
+.automation-advanced { margin-top: 28px; }
+.automation-advanced > summary { min-height: 44px; padding: 10px 4px; font-size: 15px; font-weight: 600; color: var(--ios-tint); cursor: pointer; }
+
+@media (max-width: 560px) {
+  .automation-row { flex-wrap: wrap; }
+  .automation-controls { flex-direction: row; align-items: center; width: 100%; justify-content: space-between; padding-left: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .push-banner, .automation-form { animation: none; }
+}

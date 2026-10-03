@@ -16,7 +16,7 @@ import TasksSettingsTab from '@/modules/settings/tabs/tasks-settings/TasksSettin
 import { PluginSettingsTab } from '@/modules/plugins';
 import AboutTab from '@/modules/settings/tabs/AboutTab';
 import { useSettingsController } from '@/modules/settings/hooks/useSettingsController';
-import { useWebPush } from '@/modules/settings/hooks/useWebPush';
+import { useWebPush } from '@/shared/hooks/useWebPush';
 import type { AgentSettingsProject } from '@/shared/types';
 
 type SettingsProps = {

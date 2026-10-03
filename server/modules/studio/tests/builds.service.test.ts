@@ -315,3 +315,22 @@ test('deleting the project takes its build off the list', async () => {
     assert.equal(f.service.get(1, build.id).state, 'done');
   } finally { f.cleanup(); }
 });
+
+test('a failed build is reported once to the failure listener; a build the owner stopped is not', async () => {
+  const f = fixture({ maxParallel: 1 });
+  const failures: { userId: number; projectId: string; error: string }[] = [];
+  const service = createStudioBuildsService({ ...f.deps, onFailed: failure => { failures.push(failure); } });
+  try {
+    const failing = await service.create(1, input('Failing'));
+    const stopped = await service.create(1, input('Stopped'));
+    f.fake.starts[0].resolve({ started: true, success: false, error: 'Claude AI usage limit reached' });
+    await flush();
+    assert.deepEqual(failures, [{ userId: 1, projectId: failing.project.id, error: 'Claude AI usage limit reached' }]);
+    // Asking again (the registry no longer knows the run) does not report it a second time.
+    service.get(1, failing.build.id);
+    await service.cancel(1, stopped.build.id);
+    f.fake.starts[1].resolve({ started: true, success: false, error: '开发已停止' });
+    await flush();
+    assert.equal(failures.length, 1);
+  } finally { f.cleanup(); }
+});

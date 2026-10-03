@@ -321,6 +321,42 @@ test('the eye on the Trading 212 widget hides every amount, is remembered on thi
   expect(await screen.findByRole('button', { name: '显示金额' })).toBeTruthy();
 });
 
+test('with amounts hidden the Trading 212 widget still shows today’s change as a coloured, signed percentage with an arrow', async () => {
+  const overview = (amount: number, percent: number) => ({
+    env: 'live', currency: 'GBP', totalValue: 10071.22, fetchedAt: '2026-10-02T10:00:00Z',
+    cash: { available: 5789, reserved: 0, inPies: 0 }, investments: { value: 3483, cost: 3400, unrealized: 39, realized: 0 },
+    changes: { today: { amount, percent, since: '2026-10-02T00:00:00Z', flowAdjusted: false }, yesterday: null },
+    recordedSince: null, positions: [],
+  });
+  localStorage.setItem(STORAGE_KEY, JSON.stringify([{ id: 'w-t', type: 'trading212', size: 'medium' }]));
+  localStorage.setItem('studio-widgets-hide-amounts', '1');
+  mocks.trading212.status.mockImplementation(async () => Response.json([{ env: 'live', configured: true, source: 'file' }]));
+  mocks.trading212.history.mockImplementation(async () => Response.json([]));
+
+  mocks.trading212.overview.mockImplementation(async () => Response.json(overview(12.5, 1.24)));
+  renderWidgets(false);
+  await screen.findByRole('button', { name: '显示金额' });
+  let today = card('w-t').querySelector('.widget-today') as HTMLElement;
+  expect(today.className).toContain('gain');
+  expect(today.querySelector('[data-icon="arrow-up-right"]')).toBeTruthy();
+  expect(today.textContent).toBe('盈利+1.24% 今日');
+  // Only the percentage: no amount, total, cash or change in money anywhere on the card.
+  expect(card('w-t').textContent).not.toMatch(/12\.50|10,071|5,789|3,483/);
+  cleanup();
+
+  mocks.trading212.overview.mockImplementation(async () => Response.json(overview(-30.1, -0.3)));
+  renderWidgets(false);
+  await screen.findByRole('button', { name: '显示金额' });
+  today = card('w-t').querySelector('.widget-today') as HTMLElement;
+  expect(today.className).toContain('loss');
+  expect(today.querySelector('[data-icon="arrow-down-right"]')).toBeTruthy();
+  expect(today.textContent).toBe('亏损−0.30% 今日');
+  expect(card('w-t').textContent).not.toMatch(/30\.10/);
+  // Showing the amounts again keeps the same red, signed line with the money added.
+  fireEvent.click(screen.getByRole('button', { name: '显示金额' }));
+  expect((card('w-t').querySelector('.widget-today') as HTMLElement).textContent).toBe('亏损−30.10（0.30%）今日');
+});
+
 // ── Quota widgets: 剩余 / 已用 and the items chosen in Settings (studio-quota-display-v1) ──
 
 const QUOTA_PREFERENCES_KEY = 'studio-quota-display-v1';

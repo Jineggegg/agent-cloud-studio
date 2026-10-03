@@ -5,6 +5,7 @@ import { mkdir } from 'node:fs/promises';
 
 import { maskClientAddress, readRequestClient, verifyStepUpPassword } from '@/modules/auth/index.js';
 import { getConnection, getDatabasePath, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
+import { getStudioPushStatus, sendStudioPushNotification } from '@/modules/notifications/index.js';
 import { createProject } from '@/modules/projects/index.js';
 import { readCodexAccountRateLimits } from '@/modules/providers/index.js';
 import { scheduledMessagesService } from '@/modules/scheduled-messages/index.js';
@@ -42,6 +43,9 @@ import { createMemoryChatBridge } from './memory/memory-chat.service.js';
 import { createMemoryRouter } from './memory/memory.routes.js';
 import { createStudioRuntimeService } from './runtime.service.js';
 import { createStudioRuntimeRouter } from './runtime.routes.js';
+import { createAutomationsService } from './automations/automations.service.js';
+import { createAutomationsRouter } from './automations/automations.routes.js';
+import { createAutomationDeepseekAdapter } from './automations/automation-deepseek.adapter.js';
 
 const linkChecker = createLinkChecker();
 
@@ -122,6 +126,7 @@ export function createStudioModule() {
     forget(userId, projectId) {
       service.removeSpace(userId, `project:${projectId}`);
       mail.forget(projectId);
+      automations.forgetProject(userId, projectId);
     },
   });
   const service = createStudioService({
@@ -205,6 +210,25 @@ export function createStudioModule() {
     },
   });
   routes.use('/mail', createMailRouter(mailAccounts));
+  // ── automations: per-project automations described in plain words ──
+  // Schedules (in the owner's time zone) or a failed AI build, plus an action that stays inside Studio: a read-only
+  // digest of one connected mailbox (judged and summarised by DeepSeek when the owner has a key) or a Web Push to
+  // the owner. A 30-second poll runs due schedules; nothing here sends mail or acts outside Studio.
+  const automations = createAutomationsService({
+    database: getConnection(),
+    project: hub.get,
+    mail: {
+      accounts: userId => mailAccounts.accounts(userId),
+      messages: (userId, input) => mailAccounts.messages(userId, input),
+    },
+    push: {
+      status: userId => getStudioPushStatus(userId),
+      send: (userId, message) => sendStudioPushNotification(userId, message),
+    },
+    ai: createAutomationDeepseekAdapter({ apiKey: userId => service.deepseekApiKey(userId) }),
+  });
+  automations.start();
+  routes.use('/automations', createAutomationsRouter(automations));
   // ── v6 track: shell — create its service and mount its router below this line ──
   // The workbench (/work) asks which IDE project each local hub project lives in; looking it up never registers one.
   const workbench = createWorkbenchService({
@@ -229,7 +253,13 @@ export function createStudioModule() {
   // App Store-style AI builds: a new ~/projects folder, a hub project (the icon) and an unattended Claude Code
   // session per build (STUDIO_BUILDS_ROOT, STUDIO_BUILDS_MAX_PARALLEL, STUDIO_BUILD_MODEL; see builds.module.ts).
   // Name suggestions use the same DeepSeek key as the Studio chat.
-  routes.use('/builds', createStudioBuildsRoutes(hub, { deepseekKey: userId => service.deepseekApiKey(userId) }));
+  routes.use('/builds', createStudioBuildsRoutes(hub, {
+    deepseekKey: userId => service.deepseekApiKey(userId),
+    onBuildFailed: ({ userId, projectId, error }) => {
+      void automations.handleEvent(userId, projectId, 'build-failed', error)
+        .catch((failure: unknown) => console.error('[studio-automations] build-failed event failed', failure instanceof Error ? failure.message : failure));
+    },
+  }));
   // ── v6 track: memory — create its service and mount its router below this line ──
   // One MCP session with the shared basic-memory server (scripts/wsl/install-memory.sh, docs/memory.md) serves the
   // 记忆 app and the DeepSeek bridge. STUDIO_MEMORY_URL overrides the endpoint; STUDIO_MEMORY_DEEPSEEK=0 keeps

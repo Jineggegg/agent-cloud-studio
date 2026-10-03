@@ -11,6 +11,10 @@ export {
   notifyRunStopped,
   // Used by provider runtimes to report background work that finished after its turn ended.
   notifyBackgroundWorkCompleted,
+  // Used by Studio automations: whether Web Push is on and how many browsers are subscribed.
+  getStudioPushStatus,
+  // Used by Studio automations to push their notifications (and the test notification) to the owner.
+  sendStudioPushNotification,
 } from '@/modules/notifications/services/notification-orchestrator.service.js';
 export {
   registerDesktopNotificationClient,

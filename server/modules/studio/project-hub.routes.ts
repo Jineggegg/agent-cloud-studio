@@ -1,7 +1,7 @@
 import express from 'express';
 
 import { AppError, asyncHandler } from '@/shared/utils.js';
-import type { StudioProjectInput, StudioTaskInput } from '@/shared/types.js';
+import type { StudioProjectAutomationDefaults, StudioProjectInput, StudioTaskInput } from '@/shared/types.js';
 
 import type { createProjectHubService } from './project-hub.service.js';
 import type { createProjectMailService } from './project-mail.service.js';
@@ -24,14 +24,28 @@ function projectInput(body: Record<string, unknown>): StudioProjectInput {
   if (!Array.isArray(links) || !links.every(link => link && typeof link === 'object' && typeof link.label === 'string' && typeof link.url === 'string')) {
     throw new AppError('网站链接格式无效', { statusCode: 400 });
   }
+  const defaults = automationDefaults(body.automation);
   return {
     name: text(body.name), description: text(body.description), workspacePath: text(body.workspacePath),
     modules: body.modules as StudioProjectInput['modules'], providers: body.providers as StudioProjectInput['providers'],
-    // Older clients omit icon, links and remote fields; the service validates every value.
+    // Older clients omit icon, links, remote fields and automation defaults; the service validates every value.
     tone: body.tone === undefined ? 'stone' : text(body.tone), glyph: body.glyph === undefined ? 'folder' : text(body.glyph),
     links: links.map(link => ({ label: link.label as string, url: link.url as string })),
     remoteHost: body.remoteHost === undefined ? '' : text(body.remoteHost),
     remoteDir: body.remoteDir === undefined ? '' : text(body.remoteDir),
+    ...(defaults ? { automation: defaults } : {}),
+  };
+}
+// The 设置 tab's notification and automation defaults; absent for older clients (the service keeps the stored ones).
+function automationDefaults(value: unknown): StudioProjectAutomationDefaults | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new AppError('通知与自动化设置格式无效', { statusCode: 400 });
+  const fields = value as Record<string, unknown>;
+  if (typeof fields.notify !== 'boolean') throw new AppError('通知开关格式无效', { statusCode: 400 });
+  return {
+    notify: fields.notify,
+    mailAccountId: fields.mailAccountId === undefined ? '' : text(fields.mailAccountId),
+    morningTime: fields.morningTime === undefined ? '08:00' : text(fields.morningTime),
   };
 }
 function taskInput(body: Record<string, unknown>): StudioTaskInput {

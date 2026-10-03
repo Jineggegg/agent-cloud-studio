@@ -61,6 +61,8 @@ type Dependencies = {
   maxParallel?: number;
   // Delay before builds that were still queued at a restart start, so the provider runtimes are up first.
   resumeDelayMs?: number;
+  // Told once each time a build ends in failure (not when the owner stops it), e.g. to run the project's automations.
+  onFailed?: (failure: { userId: number; projectId: string; error: string }) => void;
 };
 
 // Limits of a build's name and description; the name suggester (build-name.service) keeps to the same ones.
@@ -184,7 +186,14 @@ export function createStudioBuildsService(deps: Dependencies) {
   function patch(id: string, fields: Partial<Omit<BuildRow, 'id' | 'user_id'>>) {
     const columns = Object.keys(fields);
     if (!columns.length) return;
+    const before = fields.state === 'failed' && deps.onFailed ? read(id) : undefined;
     db.prepare(`UPDATE studio_builds SET ${columns.map(column => `${column} = @${column}`).join(', ')} WHERE id = @id`).run({ ...fields, id });
+    // A build that has just failed (not one the owner stopped) is reported once; a listener's error never breaks a build.
+    if (before && before.state !== 'failed' && fields.error !== CANCELLED) {
+      try {
+        deps.onFailed?.({ userId: before.user_id, projectId: before.hub_project_id, error: fields.error ?? 'AI 没能完成开发' });
+      } catch { /* reported by the listener itself */ }
+    }
   }
   const current = (id: string) => toRecord(read(id) as BuildRow);
   function projectExists(userId: number, id: string) {

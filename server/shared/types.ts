@@ -1623,7 +1623,25 @@ export type StudioProjectInput = {
   remoteHost: string;
   // Working directory on the remote host, e.g. ~/projects/super-professor.
   remoteDir: string;
+  // Notification and automation defaults; omitted by older clients, which keeps the stored (or default) values.
+  automation?: StudioProjectAutomationDefaults;
 };
+
+/**
+ * Which product a project is: one of the built-in products seeded for every user, or an ordinary user project
+ * (`custom`). Decided by the project hub (stored with the project; inferred once for projects saved before it
+ * existed) and never changed by the browser. The settings tab and the hub's module validation use it so that
+ * product-specific options (K 线实验室, 股票分析, 邮箱) only appear in, and can only be enabled on, their product.
+ */
+export type StudioProductKind = 'snr' | 'professor' | 'trading212' | 'mail' | 'custom';
+
+/**
+ * Per-project defaults for Studio automations, edited in the project's 设置 tab and read by the automations
+ * service and its natural-language planner. `notify` false keeps the project's automations running but stops their
+ * pushes; `mailAccountId` is the Studio mail account a mail automation uses when the request names none ('' = ask);
+ * `morningTime` ("HH:MM", 24-hour) is what “早上” means when the request gives no time.
+ */
+export type StudioProjectAutomationDefaults = { notify: boolean; mailAccountId: string; morningTime: string };
 
 /** An SSH host Studio may open agent sessions on; configured by the server owner, never by the browser. */
 export type StudioRemoteHost = { name: string; label: string; target: string };
@@ -1686,11 +1704,77 @@ export type StudioQuotaSnapshot = {
   note?: string;
 };
 
-/** Persisted, user-owned project returned to the Studio UI, with no credentials or provider tokens. */
-export type StudioProjectRecord = StudioProjectInput & { id: string; updatedAt: string };
+/**
+ * Persisted, user-owned project returned to the Studio UI, with no credentials or provider tokens. `product` and
+ * `automation` are always filled in on records (defaults for projects saved before they existed).
+ */
+export type StudioProjectRecord = StudioProjectInput & {
+  id: string; updatedAt: string; product: StudioProductKind; automation: StudioProjectAutomationDefaults;
+};
 
 /** An automation draft passed from the Studio router to its service. Saving does not execute or schedule a task. */
 export type StudioTaskInput = { title: string; prompt: string; provider: StudioAgentProvider };
+
+// ---------------------------
+//----------------- STUDIO AUTOMATION CONTRACTS ------------
+/**
+ * How often a scheduled automation runs. `once` runs at `date` + `time` and then switches itself off; `hourly` uses
+ * only the minute of `time`; `weekly` runs on `weekday`. Used by the automations service, its routes and planner.
+ */
+export type StudioAutomationRepeat = 'once' | 'hourly' | 'daily' | 'weekdays' | 'weekly';
+
+/**
+ * When an automation runs: on a schedule in the owner's IANA time zone (`time` is "HH:MM"; `weekday` 0–6 with 0 =
+ * Sunday, only for weekly; `date` "YYYY-MM-DD", only for once), or when a Studio event happens in the project
+ * (`build-failed`: the project's AI build ended in failure, not when the owner stopped it). Validated by the
+ * automations service; produced by its planner and by the route parser.
+ */
+export type StudioAutomationTrigger =
+  | { kind: 'schedule'; repeat: StudioAutomationRepeat; time: string; weekday: number | null; date: string | null; timeZone: string }
+  | { kind: 'event'; event: 'build-failed' };
+
+/**
+ * What a mail digest pushes: `important` only when the run finds mail that matters (DeepSeek's judgement, or any
+ * new matching mail without DeepSeek), `new` whenever new matching mail arrived, `always` a summary every run.
+ */
+export type StudioAutomationNotifyWhen = 'important' | 'new' | 'always';
+
+/**
+ * What an automation does; deliberately only things that stay inside Studio. `mail-digest` reads one connected
+ * Studio mail account read-only (newest matches of `query`), summarises the new ones for the owner (with DeepSeek
+ * when `useAi` and a key is configured) and may push the summary; `notify` sends the owner a Web Push notification.
+ * Nothing here sends mail or acts outside Studio. Used by the automations service, routes and planner.
+ */
+export type StudioAutomationAction =
+  | { kind: 'mail-digest'; accountId: string; query: string; notifyWhen: StudioAutomationNotifyWhen; useAi: boolean }
+  | { kind: 'notify'; message: string };
+
+/** A complete automation as the routes pass it to the automations service (create and edit). */
+export type StudioAutomationInput = { title: string; prompt: string; trigger: StudioAutomationTrigger; action: StudioAutomationAction };
+
+/**
+ * The outcome of an automation's latest run: `notified` (a push went out), `quiet` (nothing worth a push),
+ * `skipped` (not run or not pushed, with the reason in `summary`) or `error`. `summary` is plain text for the owner.
+ */
+export type StudioAutomationRun = { at: string; status: 'notified' | 'quiet' | 'skipped' | 'error'; summary: string };
+
+/** A stored automation returned by the automations service; `nextRunAt` is null for event triggers and when off. */
+export type StudioAutomationRecord = StudioAutomationInput & {
+  id: string; projectId: string; enabled: boolean; nextRunAt: string | null; lastRun: StudioAutomationRun | null;
+  createdAt: string; updatedAt: string;
+};
+
+/**
+ * A natural-language request turned into an automation the owner reviews before creating it. `needs` lists what
+ * the owner still has to choose (a mailbox); `source` says whether Studio's rules or DeepSeek understood it.
+ */
+export type StudioAutomationPlan = { draft: StudioAutomationInput; needs: 'mail-account'[]; source: 'rules' | 'deepseek'; notes: string[] };
+
+/** One Studio push notification an automation sends; `url` is the same-origin page a tap opens. */
+export type StudioPushMessage = { title: string; body: string; tag: string; url: string };
+
+/** Whether Web Push is switched on for the owner and how many devices are subscribed; `delivered` after a send. */
+export type StudioPushStatus = { enabled: boolean; devices: number };
 
 // ── v4 track: network — server types below this line ──
 //----------------- STUDIO INGRESS TYPES ------------

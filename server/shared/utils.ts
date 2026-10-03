@@ -1893,3 +1893,77 @@ export function toIsoDateOrEmpty(value: Date | string | null | undefined): strin
   const date = value instanceof Date ? value : new Date(value);
   return Number.isNaN(date.getTime()) ? '' : date.toISOString();
 }
+
+// ---------------------------
+//----------------- STUDIO AUTOMATION TIME ZONE UTILITIES ------------
+/**
+ * A wall-clock moment in one IANA time zone: calendar date, time to the minute and weekday (0 = Sunday).
+ *
+ * Produced by zonedDateParts and accepted (without the weekday) by zonedTimeToInstant.
+ */
+export type ZonedDateParts = { year: number; month: number; day: number; hour: number; minute: number; weekday: number };
+
+const zonedFormatters = new Map<string, Intl.DateTimeFormat>();
+const WEEKDAY_INDEX: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
+function zonedFormatter(timeZone: string) {
+  let formatter = zonedFormatters.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', weekday: 'short',
+    });
+    zonedFormatters.set(timeZone, formatter);
+  }
+  return formatter;
+}
+
+/**
+ * Whether `timeZone` is an IANA time zone this runtime knows (e.g. "Asia/Shanghai", "Europe/London", "UTC").
+ *
+ * Used by the Studio automations service and routes to validate the zone a schedule is kept in. Rejects empty and
+ * over-long values before asking Intl, so arbitrary input never reaches the formatter cache.
+ */
+export function isValidTimeZone(timeZone: string): boolean {
+  if (!timeZone || timeZone.length > 64 || !/^[A-Za-z0-9_+\-/]+$/.test(timeZone)) return false;
+  try {
+    zonedFormatter(timeZone);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The wall-clock date, time and weekday of `instant` (epoch ms) in `timeZone`.
+ *
+ * Used by the Studio automations planner (what “明天” is for the owner) and service (next run times). The zone must
+ * be valid (see isValidTimeZone); seconds are dropped.
+ */
+export function zonedDateParts(instant: number, timeZone: string): ZonedDateParts {
+  const parts: Record<string, string> = {};
+  for (const part of zonedFormatter(timeZone).formatToParts(new Date(instant))) parts[part.type] = part.value;
+  return {
+    year: Number(parts.year), month: Number(parts.month), day: Number(parts.day),
+    hour: Number(parts.hour) % 24, minute: Number(parts.minute), weekday: WEEKDAY_INDEX[parts.weekday] ?? 0,
+  };
+}
+
+/**
+ * The instant (epoch ms) at which the wall clock in `timeZone` shows the given date and time. Out-of-range days
+ * roll over (day 32 is the 1st of the next month). A time skipped by a daylight-saving jump moves forward by the
+ * jump (01:30 on a 01:00→02:00 night is 02:30); a time that happens twice resolves to its first occurrence.
+ *
+ * Used by the Studio automations planner and service to turn the owner's "every day at 08:00" into instants.
+ */
+export function zonedTimeToInstant(parts: Omit<ZonedDateParts, 'weekday'>, timeZone: string): number {
+  const wanted = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute);
+  const offsetAt = (instant: number) => {
+    const local = zonedDateParts(instant, timeZone);
+    return Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute) - Math.floor(instant / 60_000) * 60_000;
+  };
+  // Two rounds settle every zone: the second corrects for an offset change between the guess and the answer.
+  let instant = wanted - offsetAt(wanted);
+  instant = wanted - offsetAt(instant);
+  const earlier = wanted - offsetAt(instant - 3_600_000);
+  return earlier < instant && offsetAt(earlier) === wanted - earlier ? earlier : instant;
+}
