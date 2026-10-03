@@ -2418,6 +2418,21 @@ export type WorkbenchToolSummary = {
   filePath?: string;
   status: 'running' | 'done' | 'error' | 'denied' | 'idle';
 };
+/**
+ * One row of the workbench chat's transcript, folded from the session's messages: the owner's turn, the label that
+ * opens an agent turn, prose, a stack of consecutive tool calls (with the reasoning between them), a plan, an
+ * answered question, a subagent or workflow panel, or a quiet notice. Built by buildWorkbenchTranscriptRows and drawn by
+ * WorkbenchTranscriptItem, for the open session and the earlier stretches of a handed-over conversation alike.
+ */
+export type WorkbenchTranscriptRow =
+  | { kind: 'user'; key: string; message: ChatMessage }
+  | { kind: 'turn'; key: string; model: string | null }
+  | { kind: 'assistant'; key: string; message: ChatMessage }
+  | { kind: 'tools'; key: string; messages: ChatMessage[] }
+  | { kind: 'plan'; key: string; message: ChatMessage }
+  | { kind: 'question'; key: string; message: ChatMessage }
+  | { kind: 'agent'; key: string; message: ChatMessage }
+  | { kind: 'notice'; key: string; message: ChatMessage };
 // ── v6 track: github — types below this line ──
 /** How a pull request is merged: squashed into one commit, with a merge commit, or as rebased commits. */
 export type StudioGitHubMergeMethod = 'squash' | 'merge' | 'rebase';

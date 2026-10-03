@@ -4,7 +4,10 @@ import { AnimatePresence, m } from 'motion/react';
 import { History } from 'lucide-react';
 
 import { LazyMessageRow, useLazyRowObserver } from '@/modules/chat';
-import type { ChatMessage, DiffCalculator, PendingPermissionRequest, Project, WorkbenchPermissionDecision } from '@/shared/types';
+import type {
+  ChatMessage, DiffCalculator, PendingPermissionRequest, Project, WorkbenchPermissionDecision, WorkbenchTranscriptRow,
+} from '@/shared/types';
+import { WorkbenchSessionHistoryContext } from '@/modules/workbench/context/WorkbenchSessionHistoryContext';
 import { WorkbenchSpinner } from '@/modules/workbench/chat/WorkbenchSpinner';
 import { WorkbenchToolStack } from '@/modules/workbench/chat/WorkbenchToolStack';
 import { WorkbenchPlanCard } from '@/modules/workbench/chat/WorkbenchPlanCard';
@@ -16,7 +19,8 @@ import {
   WorkbenchTurnLabel,
   WorkbenchUserMessage,
 } from '@/modules/workbench/chat/WorkbenchMessageRow';
-import { PLAN_TOOL_NAMES, readToolInput } from '@/modules/workbench/chat/utils/workbenchToolSummary';
+import { buildWorkbenchTranscriptRows } from '@/modules/workbench/chat/utils/workbenchTranscriptRows';
+import { readToolInput } from '@/modules/workbench/chat/utils/workbenchToolSummary';
 
 // Rows nearest the end mount with real content on first paint so the opening scroll measures real heights.
 const INITIAL_MOUNTED_TAIL_ROWS = 30;
@@ -27,105 +31,59 @@ const ENTER = { opacity: 0, y: 14 };
 const SETTLED = { opacity: 1, y: 0 };
 const ENTER_SPRING = { type: 'spring', stiffness: 260, damping: 30, mass: 0.9 } as const;
 
-type TranscriptItem =
-  | { kind: 'user'; key: string; message: ChatMessage }
-  | { kind: 'turn'; key: string; model: string | null }
-  | { kind: 'assistant'; key: string; message: ChatMessage }
-  | { kind: 'tools'; key: string; messages: ChatMessage[] }
-  | { kind: 'plan'; key: string; message: ChatMessage }
-  | { kind: 'question'; key: string; message: ChatMessage }
-  | { kind: 'agent'; key: string; message: ChatMessage }
-  | { kind: 'notice'; key: string; message: ChatMessage };
-
-/** Stable identity of a row across refreshes: provider ids first, then time, tool and a content prefix. */
-function intrinsicKey(message: ChatMessage): string {
-  for (const candidate of [message.id, message.messageId, message.toolId, message.toolCallId]) {
-    if ((typeof candidate === 'string' || typeof candidate === 'number') && String(candidate).trim()) {
-      return `${message.type}-${String(candidate)}`;
-    }
-  }
-  const time = new Date(message.timestamp).getTime();
-  return `${message.type}-${Number.isFinite(time) ? time : 'x'}-${String(message.toolName ?? '')}-${String(message.content ?? '').slice(0, 32)}`;
-}
-
-/** Tool calls that render as a row inside a stack; agents, workflows, plans and questions own whole cards. */
-function isStackedTool(message: ChatMessage): boolean {
-  if (!message.isToolUse) return false;
-  const name = String(message.toolName ?? '');
-  return !message.isSubagentContainer && name !== 'Workflow' && name !== 'AskUserQuestion' && !PLAN_TOOL_NAMES.has(name);
-}
-
-/**
- * Folds the flat message list into what the column draws: a label at each agent turn, prose, and runs of tool
- * calls (with the reasoning between them) as one stack. Pure, so it is memoised on the message array.
- */
-function buildTranscriptItems(messages: ChatMessage[]): TranscriptItem[] {
-  const items: TranscriptItem[] = [];
-  const occurrences = new Map<string, number>();
-  const keyOf = (message: ChatMessage) => {
-    const base = intrinsicKey(message);
-    const seen = occurrences.get(base) ?? 0;
-    occurrences.set(base, seen + 1);
-    return seen ? `${base}__${seen}` : base;
-  };
-  let stack: ChatMessage[] = [];
-  let stackKey = '';
-  let openTurn: Extract<TranscriptItem, { kind: 'turn' }> | null = null;
-  let turnPending = true;
-
-  const flushStack = () => {
-    if (stack.length) items.push({ kind: 'tools', key: `tools-${stackKey}`, messages: stack });
-    stack = [];
-  };
-  const startTurnIfNeeded = (key: string) => {
-    if (!turnPending) return;
-    openTurn = { kind: 'turn', key: `turn-${key}`, model: null };
-    items.push(openTurn);
-    turnPending = false;
-  };
-
-  for (const message of messages) {
-    const key = keyOf(message);
-    if (message.type === 'user') {
-      flushStack();
-      items.push({ kind: 'user', key, message });
-      turnPending = true;
-      openTurn = null;
-      continue;
-    }
-    if (message.isThinking || isStackedTool(message)) {
-      startTurnIfNeeded(key);
-      if (!stack.length) stackKey = key;
-      stack.push(message);
-      continue;
-    }
-    flushStack();
-    if (message.type === 'error' || message.isTaskNotification || message.compact) {
-      items.push({ kind: 'notice', key, message });
-      continue;
-    }
-    startTurnIfNeeded(key);
-    if (message.isToolUse) {
-      const name = String(message.toolName ?? '');
-      items.push({
-        kind: PLAN_TOOL_NAMES.has(name) ? 'plan' : name === 'AskUserQuestion' ? 'question' : 'agent',
-        key,
-        message,
-      });
-      continue;
-    }
-    const turn = openTurn as Extract<TranscriptItem, { kind: 'turn' }> | null;
-    if (turn && !turn.model && typeof message.model === 'string') turn.model = message.model;
-    items.push({ kind: 'assistant', key, message });
-  }
-  flushStack();
-  return items;
-}
-
 /** The plan text of an ExitPlanMode call, with literal `\n` sequences some transcripts carry turned into newlines. */
 function readPlan(message: ChatMessage): string {
   const plan = readToolInput(message.toolInput).plan;
   return typeof plan === 'string' ? plan.replace(/\\n/g, '\n') : '';
+}
+
+type WorkbenchTranscriptItemProps = {
+  item: WorkbenchTranscriptRow;
+  provider: string;
+  project: Project;
+  // A tool call without a result is still running only while a run is active; otherwise it shows as unfinished.
+  runActive: boolean;
+  createDiff: DiffCalculator;
+  onOpenFile: (path: string) => void;
+  // The ExitPlanMode prompt awaiting an answer when this item is the plan it belongs to; null otherwise.
+  pendingPlanRequest: PendingPermissionRequest | null;
+  onDecision: WorkbenchPermissionDecision;
+  // Present when the provider can re-run from the owner's turn and the session is idle.
+  onEditMessage?: (message: ChatMessage) => void;
+};
+
+/**
+ * Used by WorkbenchTranscript for each row of the open session, and by WorkbenchHandoffPrelude for the rows of an
+ * earlier stretch (read-only: never running, no pending plan, no edit), so both draw a turn the same way.
+ */
+export function WorkbenchTranscriptItem({
+  item, provider, project, runActive, createDiff, onOpenFile, pendingPlanRequest, onDecision, onEditMessage,
+}: WorkbenchTranscriptItemProps): ReactNode {
+  switch (item.kind) {
+    case 'user':
+      return <WorkbenchUserMessage message={item.message} projectId={project.projectId} onEdit={onEditMessage} />;
+    case 'turn':
+      return <WorkbenchTurnLabel provider={provider} model={item.model} />;
+    case 'assistant':
+      return <WorkbenchAssistantMessage message={item.message} provider={provider} turnStart={false} />;
+    case 'tools':
+      return <WorkbenchToolStack messages={item.messages} runActive={runActive} createDiff={createDiff} onOpenFile={onOpenFile} />;
+    case 'plan':
+      return (
+        <WorkbenchPlanCard
+          plan={readPlan(item.message)}
+          pendingRequest={pendingPlanRequest}
+          onDecision={onDecision}
+          isWriting={runActive && !item.message.toolResult && !pendingPlanRequest}
+        />
+      );
+    case 'question':
+      return <WorkbenchAnsweredQuestion message={item.message} />;
+    case 'agent':
+      return <WorkbenchAgentPanel message={item.message} createDiff={createDiff} onOpenFile={onOpenFile} project={project} />;
+    default:
+      return <WorkbenchNoticeRow message={item.message} />;
+  }
 }
 
 type WorkbenchTranscriptProps = {
@@ -155,7 +113,8 @@ type WorkbenchTranscriptProps = {
   onDecision: WorkbenchPermissionDecision;
   onEditMessage?: (message: ChatMessage) => void;
   emptyState: ReactNode;
-  // Earlier stretches of a conversation handed between providers, drawn above this session's own rows.
+  // Earlier stretches of a conversation handed between providers, drawn above this session's own rows once those
+  // are shown from the first (WorkbenchSessionHistoryContext tells the prelude when).
   prelude?: ReactNode;
 };
 
@@ -189,7 +148,7 @@ export const WorkbenchTranscript = memo(function WorkbenchTranscript({
   prelude,
 }: WorkbenchTranscriptProps) {
   const lazyRows = useLazyRowObserver(scrollRef);
-  const items = useMemo(() => buildTranscriptItems(messages), [messages]);
+  const items = useMemo(() => buildWorkbenchTranscriptRows(messages), [messages]);
   const lastPlanKey = useMemo(() => [...items].reverse().find((item) => item.kind === 'plan')?.key ?? null, [items]);
 
   // Rows that were already there once this conversation's history arrived: they never animate in, every row after
@@ -205,37 +164,10 @@ export const WorkbenchTranscript = memo(function WorkbenchTranscript({
   }
   const seenKeys = baseline.session === sessionKey ? baseline.keys : null;
 
-  const renderItem = (item: TranscriptItem): ReactNode => {
-    switch (item.kind) {
-      case 'user':
-        return <WorkbenchUserMessage message={item.message} projectId={project.projectId} onEdit={onEditMessage} />;
-      case 'turn':
-        return <WorkbenchTurnLabel provider={provider} model={item.model} />;
-      case 'assistant':
-        return <WorkbenchAssistantMessage message={item.message} provider={provider} turnStart={false} />;
-      case 'tools':
-        return <WorkbenchToolStack messages={item.messages} runActive={runActive} createDiff={createDiff} onOpenFile={onOpenFile} />;
-      case 'plan': {
-        const pending = item.key === lastPlanKey ? pendingPlanRequest : null;
-        return (
-          <WorkbenchPlanCard
-            plan={readPlan(item.message)}
-            pendingRequest={pending}
-            onDecision={onDecision}
-            isWriting={runActive && !item.message.toolResult && !pending}
-          />
-        );
-      }
-      case 'question':
-        return <WorkbenchAnsweredQuestion message={item.message} />;
-      case 'agent':
-        return <WorkbenchAgentPanel message={item.message} createDiff={createDiff} onOpenFile={onOpenFile} project={project} />;
-      default:
-        return <WorkbenchNoticeRow message={item.message} />;
-    }
-  };
-
   const showEmpty = !isLoading && messages.length === 0;
+  // Earlier stretches belong above this session's first row: until that row is on screen they wait.
+  const olderRowsPending = (isLoading && messages.length === 0) || hasMoreHistory || hiddenCount > 0;
+  const sessionHistory = useMemo(() => ({ olderRowsPending }), [olderRowsPending]);
 
   return (
     <div
@@ -246,7 +178,7 @@ export const WorkbenchTranscript = memo(function WorkbenchTranscript({
       aria-busy={isLoading || runActive}
     >
       <div className="wbc-thread" role="log" aria-live="polite" aria-relevant="additions">
-        {prelude}
+        {prelude && <WorkbenchSessionHistoryContext.Provider value={sessionHistory}>{prelude}</WorkbenchSessionHistoryContext.Provider>}
         {isLoading && messages.length === 0 && (
           <div className="wbc-skeleton" role="status" aria-label="正在载入对话">
             <span className="wbc-skel is-bubble" />
@@ -289,7 +221,18 @@ export const WorkbenchTranscript = memo(function WorkbenchTranscript({
                 animate={SETTLED}
                 transition={ENTER_SPRING}
               >
-                {renderItem(item)}
+                <WorkbenchTranscriptItem
+                  item={item}
+                  provider={provider}
+                  project={project}
+                  runActive={runActive}
+                  createDiff={createDiff}
+                  onOpenFile={onOpenFile}
+                  pendingPlanRequest={item.key === lastPlanKey ? pendingPlanRequest : null}
+                  onDecision={onDecision}
+                  onEditMessage={onEditMessage}
+                />
+
               </m.div>
             </LazyMessageRow>
           );

@@ -934,7 +934,7 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
 /* The earlier stretches sit above the open chat, quieter than it; the divider marks where the next provider took over. */
 .wbc-handoff-prelude { display: flex; flex-direction: column; gap: 20px; }
 .wbc-handoff-stretch { display: flex; flex-direction: column; gap: 20px; }
-.wbc-handoff-stretch > .wbc-item { opacity: .78; }
+.wbc-handoff-stretch .wbc-item { opacity: .78; }
 .wbc-handoff-loading, .wbc-handoff-missing {
   display: inline-flex; align-items: center; gap: 8px; align-self: center; margin: 0;
   font-size: 13px; color: var(--wbc-label-3);

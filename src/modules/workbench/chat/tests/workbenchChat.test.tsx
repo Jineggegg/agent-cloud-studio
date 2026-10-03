@@ -640,7 +640,7 @@ describe('handing a conversation to another provider', () => {
     expect(engine.calls.at(-1)).toMatchObject({ draftProvider: 'codex', session: null });
     expect(handoff).toHaveBeenCalledWith({ projectId: 'p1', from: { kind: 'agent', id: 's1', modelLabel: 'Opus' }, toProvider: 'codex' });
     // The conversation so far stays on screen above the handoff divider, with the summary to look at and a way back.
-    expect(history).toHaveBeenCalledWith('s1', { limit: 120, offset: 0 });
+    expect(history).toHaveBeenCalledWith('s1', { limit: 40, offset: 0 });
     expect(await screen.findByText('好的，侧栏已经可以折叠。')).toBeTruthy();
     expect(screen.getByText('把侧栏改成可折叠')).toBeTruthy();
     expect(screen.getByText('将交给 Codex · GPT-5.5 继续')).toBeTruthy();
