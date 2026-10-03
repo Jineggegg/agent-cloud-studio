@@ -320,3 +320,13 @@ test('Face ID budgets and audit rows follow the request’s session and masked c
     assert.deepEqual(config.stepUpRequests, []);
   });
 });
+
+test('a first preview pins the trading mode with the requesting session and masked client', async () => {
+  await withApp(async (call) => {
+    // No settings read before: the order path is the first to read the mode.
+    const preview = await call('/trading212/orders/preview', { method: 'POST', body: { env: 'demo', ticker: 'AAPL_US_EQ', side: 'sell', type: 'market', quantity: 1 }, session: 'ipad-session' });
+    assert.equal(preview.status, 200);
+    const [pin] = (await call('/trading212/trading', { session: 'ipad-session' })).body.modeChanges;
+    assert.deepEqual([pin.direction, pin.to, pin.session, pin.currentSession, pin.client], ['pin', 'demo', 'ipad-ses', true, '直连 127.*.*']);
+  });
+});

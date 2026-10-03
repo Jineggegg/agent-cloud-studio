@@ -29,7 +29,7 @@ type ModeRow = { mode: string; updated_at: string };
 type ChangeRow = {
   row_id: number; old_mode: string | null; new_mode: string | null; direction: Direction; method: Method;
   status: AuditStatus; reason: string | null; origin: string | null; created_at: string;
-  session_id: string | null; client: string | null; code: string | null; outcome: string | null;
+  session_id: string | null; client: string | null; client_key: string | null; code: string | null; outcome: string | null;
 };
 type AuditEntry = {
   from: StudioT212TradingMode | null; to: StudioT212TradingMode | null; direction: Direction; method: Method;
@@ -62,7 +62,7 @@ const BENIGN_CODES = ['T212_MODE_CHALLENGE_EXPIRED', 'T212_MODE_STALE'];
 const FAILURE_CODES = ['T212_MODE_PASSKEY_FAILED', 'T212_MODE_TAMPERED'];
 const AUTO_PIN_REASON = '首次读取时固定为服务器当时允许的账户；以后服务器放宽也不会自动开启';
 // For callers without a request (tests, automatic pins outside a request): one anonymous session.
-const NO_REQUESTER: StudioT212Requester = { sessionId: '', client: 'unknown' };
+const NO_REQUESTER: StudioT212Requester = { sessionId: '', clientKey: 'unknown', client: 'unknown' };
 
 function fail(message: string, statusCode: number, code: string): never {
   throw new AppError(message, { statusCode, code });
@@ -164,23 +164,29 @@ export function createTrading212ModeService(deps: Dependencies) {
     return `${rpId} 还没有启用面容 ID / 触控 ID，启用面容 ID 后才能开启：请先为这个网址启用，或到 ${domains.join('、')} 操作`;
   }
   function assertUnderLimit(userId: number, requester: StudioT212Requester, budget: 'issued' | 'refused' | 'failed', max: number, message: string) {
-    stepUp.assertUnderLimit(userId, requester, budget, max, 'T212_MODE_RATE_LIMITED', minutes => `${message}，请约 ${minutes} 分钟后再试；关闭或减少账户不受影响`);
+    stepUp.assertUnderLimit(userId, requester, budget, max, 'T212_MODE_RATE_LIMITED', minutes => `${message}，请约 ${minutes} 分钟后再试；关闭或减少账户不受影响。这个额度属于当前登录会话：在「设置 → 安全」退出所有设备或重新登录会重新开始`);
   }
   // Inserts one audit row (with who asked) and returns its id.
   function audit(userId: number, requester: StudioT212Requester, entry: AuditEntry) {
     const rowId = Number(db.prepare(`INSERT INTO studio_t212_mode_changes (user_id, old_mode, new_mode, direction, method, status, reason,
-      origin, passkey_id, created_at, session_id, client, code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      origin, passkey_id, created_at, session_id, client, client_key, code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       userId, entry.from, entry.to, entry.direction, entry.method, entry.status, entry.reason?.slice(0, 300) ?? null,
-      entry.origin, entry.passkeyId ?? null, isoNow(), requester.sessionId, requester.client, entry.code ?? null,
+      entry.origin, entry.passkeyId ?? null, isoNow(), requester.sessionId, requester.client, stepUp.clientHash(requester), entry.code ?? null,
     ).lastInsertRowid);
     if (entry.status !== 'applied') stepUp.trimAudit(userId, requester, entry.status);
     return rowId;
   }
-  // Saves the choice and its audit row together, or neither.
-  const saveAudited = db.transaction((userId: number, requester: StudioT212Requester, mode: StudioT212TradingMode, entry: AuditEntry) => {
+  // Saves the choice and its audit row together, or neither. A widening passes the mode its Face ID approved as in
+  // force (`expectedFrom`): it is re-read here, after the awaited verification, and anything else in force (a kill
+  // switch pressed meanwhile) wins: nothing is saved and the result is 'stale'.
+  const saveAudited = db.transaction((
+    userId: number, requester: StudioT212Requester, mode: StudioT212TradingMode, entry: AuditEntry, expectedFrom?: StudioT212TradingMode,
+  ): 'saved' | 'stale' => {
+    if (expectedFrom !== undefined && modeOf(read(userId).allowed) !== expectedFrom) return 'stale';
     db.prepare(`INSERT INTO studio_t212_trading_modes (user_id, mode, updated_at) VALUES (?, ?, ?)
       ON CONFLICT (user_id) DO UPDATE SET mode = excluded.mode, updated_at = excluded.updated_at`).run(userId, mode, isoNow());
     audit(userId, requester, entry);
+    return 'saved';
   });
   // Who asked, as Settings shows it: a short session fragment (and whether it is the viewer's own) and the masked client.
   function who(row: ChangeRow, viewer: StudioT212Requester | undefined) {
@@ -305,11 +311,12 @@ export function createTrading212ModeService(deps: Dependencies) {
         const [reason, statusCode, code] = WIDEN_PROBLEMS[verdict.problem];
         refuseWidening(reason, statusCode, code);
       }
-      // The verification awaited, so the audit records the mode as it was at the moment of saving.
-      saveAudited(userId, requester, mode, {
-        from: modeOf(read(userId).allowed), to: mode, direction: 'widen', method: 'passkey', status: 'applied',
+      // The verification awaited: the mode is re-read inside the save, and a narrowing pressed meanwhile wins.
+      const saved = saveAudited(userId, requester, mode, {
+        from: inForce, to: mode, direction: 'widen', method: 'passkey', status: 'applied',
         origin: verdict.origin.origin, passkeyId: verdict.passkeyId,
-      });
+      }, inForce);
+      if (saved === 'stale') refuseWidening(...WIDEN_PROBLEMS.stale);
       return { mode, direction: change, method: 'passkey' as const };
     },
   };

@@ -439,6 +439,8 @@ test('requests refused by a lock never count towards the daily cap; the cap says
     assert.equal((await refusal(service.verifyStepUpPassword(stolen, 'guess', publicClient(attempt)))).statusCode, 429);
   }
   assert.equal(store.stepUpFailures.countSince(OWNER.username, 0).count, 5);
+  // The session's own lock says how to get out of it at once.
+  assert.match((await refusal(service.verifyStepUpPassword(stolen, 'guess', publicClient(0)))).message, /退出所有设备后重新登录/);
   // The owner's own session still gets through.
   const owners = Object.defineProperty({ ...OWNER }, 'sessionId', { value: 'owner-session' });
   await service.verifyStepUpPassword(owners, PASSWORD, OWNER_DEVICE);
@@ -450,5 +452,5 @@ test('requests refused by a lock never count towards the daily cap; the cap says
   }
   const capped = await refusal(service.verifyStepUpPassword(owners, PASSWORD, OWNER_DEVICE));
   assert.equal(capped.statusCode, 429);
-  assert.match(capped.message, /退出所有设备/);
+  assert.match(capped.message, /退出所有设备会立即清除这个限制/);
 });

@@ -236,9 +236,10 @@ export function createTrading212OrdersService(deps: Dependencies) {
     }
   }
   // Why this user may not trade on this account now, or null: the server ceiling first, then their own trading mode.
-  function tradingRefusal(userId: number, env: StudioT212Environment) {
+  // `requester` (the session and client asking) is recorded if this read pins a user's trading mode for the first time.
+  function tradingRefusal(userId: number, env: StudioT212Environment, requester?: StudioT212Requester) {
     if (!serverEnvs.includes(env)) return `${ENV_LABEL[env]}下单未开启：在服务器 .env 设置 STUDIO_T212_TRADING=${env}（或 both）后重启 Studio`;
-    if (!tradingMode.allowed(userId).includes(env)) return `${ENV_LABEL[env]}下单已在「设置 → 交易安全」关闭：重新开启需要面容 ID / 触控 ID`;
+    if (!tradingMode.allowed(userId, requester).includes(env)) return `${ENV_LABEL[env]}下单已在「设置 → 交易安全」关闭：重新开启需要面容 ID / 触控 ID`;
     return null;
   }
   // The double confirmation is only a fallback for users without any passkey: once Face ID is enabled anywhere, a
@@ -391,8 +392,11 @@ export function createTrading212OrdersService(deps: Dependencies) {
       };
     },
 
-    async preview(userId: number, origin: StudioT212TrustedOrigin, input: StudioT212OrderInput, options: { acknowledgeUnknown?: boolean } = {}) {
-      const disabled = tradingRefusal(userId, input.env);
+    async preview(
+      userId: number, origin: StudioT212TrustedOrigin, input: StudioT212OrderInput,
+      options: { acknowledgeUnknown?: boolean; requester?: StudioT212Requester } = {},
+    ) {
+      const disabled = tradingRefusal(userId, input.env, options.requester);
       if (disabled) fail(disabled, 403, 'T212_TRADING_DISABLED');
       prune();
       const keys = passkeys(userId, origin.rpId);
@@ -467,7 +471,7 @@ export function createTrading212OrdersService(deps: Dependencies) {
       };
     },
 
-    async confirm(userId: number, origin: StudioT212TrustedOrigin, id: string, proof: Proof) {
+    async confirm(userId: number, origin: StudioT212TrustedOrigin, id: string, proof: Proof, requester?: StudioT212Requester) {
       const found = previews.get(id);
       if (!found || found.userId !== userId) fail('这笔订单预览不存在、已使用或已过期，请重新预览', 404, 'T212_PREVIEW_GONE');
       const preview: Preview = found;
@@ -481,7 +485,7 @@ export function createTrading212OrdersService(deps: Dependencies) {
       if (now() >= preview.expiresAt) refuse('订单预览已超过 60 秒，请重新预览', 410, 'T212_PREVIEW_EXPIRED');
       if (origin.origin !== preview.origin) refuse('请在发起预览的同一个网址确认订单', 403);
       // The account may have been taken out of the trading mode since the preview (checked again before reserving).
-      const disabledEarly = tradingRefusal(userId, preview.env);
+      const disabledEarly = tradingRefusal(userId, preview.env, requester);
       if (disabledEarly) refuse(`${disabledEarly}。订单没有提交`, 403, 'T212_TRADING_DISABLED');
       // A parallel preview of the same order must not slip through after the first one ended unknown.
       const unresolved = preview.acknowledgedUnknown ? null : unresolvedOrder(userId, preview);
@@ -504,7 +508,7 @@ export function createTrading212OrdersService(deps: Dependencies) {
       // have used the daily allowance meanwhile. From these checks to the pending row nothing awaits, so a narrowing or
       // a parallel confirmation cannot slip in between; the row is in the database, so the allowance stays spent even
       // if the process dies mid-call.
-      const disabled = tradingRefusal(userId, preview.env);
+      const disabled = tradingRefusal(userId, preview.env, requester);
       if (disabled) refuse(`${disabled}。订单没有提交`, 403, 'T212_TRADING_DISABLED');
       const limits = caps.limits(userId, preview.env);
       if (preview.estimatedValue > limits.maxOrderValue) {

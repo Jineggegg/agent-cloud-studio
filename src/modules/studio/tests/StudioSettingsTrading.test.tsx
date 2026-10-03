@@ -579,11 +579,15 @@ test('Face ID requests and every audit entry show which session and client cause
     stepUpRequests: [
       { id: 'mode-7', kind: 'mode', to: 'live', outcome: 'replaced', origin: 'https://studio.ajarche.com', createdAt: '2026-10-02T09:30:00Z', ...thief },
       { id: 'caps-4', kind: 'caps', env: 'live', to: { maxOrderValue: 900, dailyLimit: 2000 }, outcome: 'used', origin: null, createdAt: '2026-10-02T09:00:00Z', ...mine },
+      // Recorded before sessions and outcomes were.
+      { id: 'caps-1', kind: 'caps', env: 'live', to: { maxOrderValue: 800, dailyLimit: 2000 }, outcome: 'unknown', origin: null, createdAt: '2026-10-01T09:00:00Z', session: null, currentSession: false, client: null },
     ],
   }));
   render(<StudioSettingsTrading />);
   const requests = await screen.findByRole('list', { name: '面容 ID 验证请求' });
-  const [theirs, ours] = within(requests).getAllByRole('listitem');
+  const [theirs, ours, legacy] = within(requests).getAllByRole('listitem');
+  expect(within(legacy).getByText(/升级前的记录，结果未知/)).toBeTruthy();
+  expect(within(legacy).queryByText('其他会话')).toBeNull();
   expect(within(theirs).getByText('开启下单 · 改为「实盘」')).toBeTruthy();
   expect(within(theirs).getByText(/被同一会话的新请求替换/)).toBeTruthy();
   expect(within(theirs).getByText('其他会话 thief-se · 公网 203.0.*.*')).toBeTruthy();

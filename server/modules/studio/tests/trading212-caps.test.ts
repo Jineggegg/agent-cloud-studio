@@ -18,8 +18,8 @@ type Origin = { origin: string; rpId: string };
 const STUDIO = { origin: 'https://studio.ajarche.com', rpId: 'studio.ajarche.com' };
 const TAILNET = { origin: 'https://desktop.tail1234.ts.net', rpId: 'desktop.tail1234.ts.net' };
 // Two sessions of the same user: the owner's iPad and a stolen token used from elsewhere.
-const OWNER = { sessionId: 'owner-session-1', client: 'Tailscale 100.64.*.*' };
-const THIEF = { sessionId: 'thief-session-2', client: '公网 203.0.*.*' };
+const OWNER = { sessionId: 'owner-session-1', clientKey: 'tailnet 100.64.1.2', client: 'Tailscale 100.64.*.*' };
+const THIEF = { sessionId: 'thief-session-2', clientKey: 'cloudflare 203.0.113.9', client: '公网 203.0.*.*' };
 const PASSWORD = 'correct horse battery staple';
 const SUMMARY = {
   id: 1, currency: 'GBP', totalValue: 1620,
@@ -103,7 +103,7 @@ function fixture(options: { maxOrderValue?: string; maxDailyValue?: string; capC
   });
   const orders = start();
   return {
-    orders, database, calls, brokerPosts, restart: start,
+    orders, database, webauthn, calls, brokerPosts, restart: start,
     advance: (ms: number) => { clock += ms; },
     onOrder: (respond: () => Promise<Response>) => { respondToOrder = respond; },
     caps: (env: 'live' | 'demo' = 'live') => orders.config(1).caps.envs[env],
@@ -525,19 +525,25 @@ test('a raise whose caps changed after the review is refused as stale, without c
   } finally { f.close(); }
 });
 
-test('refused rows are pruned to a bounded number per session and never hide applied changes', async () => {
+test('refused rows are pruned per session and client, rows from before sessions too, and never hide applied changes', async () => {
   const f = fixture();
   try {
     await update(f, STUDIO, live(400, 2000));
-    const insert = f.database.prepare(`INSERT INTO studio_t212_cap_changes (user_id, env, direction, method, status, reason, created_at, session_id, client)
-      VALUES (?, 'live', 'raise', 'session', 'refused', 'old junk', '2026-09-01T00:00:00Z', ?, ?)`);
-    for (let index = 0; index < 150; index += 1) insert.run(1, '', 'unknown');
-    for (let index = 0; index < 3; index += 1) insert.run(1, OWNER.sessionId, OWNER.client);
-    insert.run(2, '', 'unknown');
     await assert.rejects(update(f, STUDIO, live(900, 2000)), coded('T212_CAPS_PASSKEY_REQUIRED'));
-    const count = (userId: number, status: string, sessionId = '') => (f.database.prepare('SELECT COUNT(*) AS count FROM studio_t212_cap_changes WHERE user_id = ? AND status = ? AND session_id = ?')
+    // The stored client key is a hash of the unmasked client, never the address itself.
+    const { client_key: key } = f.database.prepare("SELECT client_key FROM studio_t212_cap_changes WHERE status = 'refused'").get() as { client_key: string };
+    assert.ok(key && !key.includes('unknown'));
+    const insert = f.database.prepare(`INSERT INTO studio_t212_cap_changes (user_id, env, direction, method, status, reason, created_at, session_id, client_key)
+      VALUES (?, 'live', 'raise', 'session', 'refused', 'old junk', '2026-09-01T00:00:00Z', ?, ?)`);
+    for (let index = 0; index < 150; index += 1) insert.run(1, '', key);
+    for (let index = 0; index < 120; index += 1) insert.run(1, null, null);
+    for (let index = 0; index < 3; index += 1) insert.run(1, OWNER.sessionId, 'another-device');
+    insert.run(2, '', key);
+    await assert.rejects(update(f, STUDIO, live(900, 2000)), coded('T212_CAPS_PASSKEY_REQUIRED'));
+    const count = (userId: number, status: string, sessionId: string | null = '') => (f.database.prepare('SELECT COUNT(*) AS count FROM studio_t212_cap_changes WHERE user_id = ? AND status = ? AND session_id IS ?')
       .get(userId, status, sessionId) as { count: number }).count;
     assert.equal(count(1, 'refused'), 100);
+    assert.equal(count(1, 'refused', null), 100, 'rows from before sessions were recorded are bounded too');
     assert.equal(count(1, 'refused', OWNER.sessionId), 3, 'another session’s rows are never flushed');
     assert.equal(count(1, 'applied'), 1);
     assert.equal(count(2, 'refused'), 1, 'other users are untouched');
@@ -561,9 +567,13 @@ test('audit tables written before sessions were recorded gain the new columns', 
     const trading212 = { overview: async () => { throw new Error('unused'); }, placeOrder: async () => ({}), lastCurrency: () => 'GBP', instrumentCurrency: async () => null };
     const orders = createTrading212OrdersService({ database, trading212: trading212 as any, trading: 'both', origins: [STUDIO.origin], verifyStepUp: async () => {} });
     const columns = (database.prepare('PRAGMA table_info(studio_t212_cap_changes)').all() as { name: string }[]).map(column => column.name);
-    assert.ok(['session_id', 'client', 'code', 'outcome'].every(name => columns.includes(name)));
+    assert.ok(['session_id', 'client', 'client_key', 'code', 'outcome'].every(name => columns.includes(name)));
     const [old] = orders.config(1, OWNER).capChanges;
     assert.deepEqual([old.session, old.client, old.currentSession], [null, null, false]);
+    // A challenge issued before outcomes were recorded is unknown, not "expired", even while recent.
+    database.prepare(`INSERT INTO studio_t212_cap_changes (user_id, env, direction, method, status, created_at, new_max_order_value, new_daily_limit)
+      VALUES (1, 'live', 'raise', 'passkey', 'issued', ?, 900, 2000)`).run(new Date().toISOString());
+    assert.deepEqual(orders.config(1, OWNER).stepUpRequests.map(item => [item.outcome, item.session]), [['unknown', null]]);
   } finally { database.close(); }
 });
 
@@ -727,5 +737,49 @@ test('caps lowered between preview and confirmation stop the order', async () =>
     await update(f, STUDIO, live(50, 60));
     await assert.rejects(f.orders.confirm(1, STUDIO, next.id, { confirmed: true }), coded('T212_ORDER_CAP'));
     assert.equal(f.brokerPosts.length, 0);
+  } finally { f.close(); }
+});
+
+test('a lowering pressed while Face ID approves a raise wins: the raise is refused as stale', async () => {
+  const f = fixture();
+  try {
+    await enablePasskey(f);
+    const challenge = await f.orders.capsChallenge(1, STUDIO, live(800, 3000));
+    // Hold the signature check, lower the caps meanwhile (the kill switch), then let the check pass.
+    const verifyAuthentication = f.webauthn.verifyAuthenticationResponse;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.webauthn.verifyAuthenticationResponse = (async (options: any) => { await gate; return verifyAuthentication(options); }) as typeof verifyAuthentication;
+    const raising = update(f, STUDIO, live(800, 3000), { challengeId: challenge.challengeId, assertion: signed(challenge.authentication) });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    await update(f, STUDIO, live(100, 200));
+    release();
+    await assert.rejects(raising, coded('T212_CAPS_STALE'));
+    assert.deepEqual([f.caps().maxOrderValue, f.caps().dailyLimit], [100, 200]);
+    assert.deepEqual(f.history().map(item => item.direction), ['lower']);
+  } finally { f.close(); }
+});
+
+test('session-only lowerings by one session and client in a row share one audit row for ten minutes', async () => {
+  const f = fixture();
+  try {
+    await f.orders.updateCaps(1, STUDIO, { input: live(400, 2000) }, OWNER);
+    f.advance(60_000);
+    await f.orders.updateCaps(1, STUDIO, { input: live(300, 1500) }, OWNER);
+    f.advance(9 * 60_000);
+    await f.orders.updateCaps(1, STUDIO, { input: live(200, 1500) }, OWNER);
+    let changes = f.history();
+    assert.equal(changes.length, 1);
+    assert.deepEqual([changes[0].from, changes[0].to], [{ maxOrderValue: 500, dailyLimit: 2000 }, { maxOrderValue: 200, dailyLimit: 1500 }]);
+    assert.equal(changes[0].createdAt, '2026-10-02T10:10:00.000Z');
+    // Another account, another session or client, a gap of more than ten minutes: separate rows.
+    await f.orders.updateCaps(1, STUDIO, { input: { env: 'demo', maxOrderValue: 400, dailyLimit: 2000 } }, OWNER);
+    await f.orders.updateCaps(1, STUDIO, { input: live(190, 1500) }, THIEF);
+    await f.orders.updateCaps(1, STUDIO, { input: live(180, 1500) }, { ...OWNER, clientKey: 'tailnet 100.64.7.7' });
+    f.advance(11 * 60_000);
+    await f.orders.updateCaps(1, STUDIO, { input: live(170, 1500) }, { ...OWNER, clientKey: 'tailnet 100.64.7.7' });
+    changes = f.history();
+    assert.deepEqual(changes.map(item => [item.env, item.to?.maxOrderValue]), [['live', 170], ['live', 180], ['live', 190], ['demo', 400], ['live', 200]]);
+    assert.equal(f.caps().maxOrderValue, 170);
   } finally { f.close(); }
 });

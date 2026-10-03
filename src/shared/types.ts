@@ -2117,10 +2117,11 @@ export type T212StepUpWho = { session: string | null; currentSession: boolean; c
 /**
  * A Face ID / Touch ID challenge handed out for raising caps or adding accounts to the trading mode, newest first in
  * Settings, so the owner can see which session is asking: open, used, left to expire, or replaced by a newer one of
- * the same session. `to` is the requested caps or mode (null for an unreadable row).
+ * the same session, or unknown for a challenge recorded before outcomes were. `to` is the requested caps or mode
+ * (null for an unreadable row).
  */
 export type T212StepUpRequest = T212StepUpWho & {
-  id: string; outcome: 'pending' | 'used' | 'expired' | 'replaced'; origin: string | null; createdAt: string;
+  id: string; outcome: 'pending' | 'used' | 'expired' | 'replaced' | 'unknown'; origin: string | null; createdAt: string;
 } & ({ kind: 'caps'; env: T212Env | null; to: T212CapLimits | null } | { kind: 'mode'; to: T212TradingMode | null });
 /**
  * Which Trading 212 accounts may place orders: none, demo only, live only, or both. STUDIO_T212_TRADING on the server

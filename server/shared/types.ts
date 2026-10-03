@@ -1871,14 +1871,16 @@ export type StudioT212StepUpProblem = 'untrusted-origin' | 'expired' | 'wrong-or
 
 /**
  * Who asked for a Trading 212 Face ID / Touch ID step-up: the auth session of the signed-in request (`sessionId`,
- * the token's sid; '' when none) and where it came from (`client`: the door and a masked address such as
- * "Tailscale 100.64.*.*", never a full address). Step-up budgets, the eviction of unanswered challenges and which
- * session may redeem a challenge are keyed by it, so another session (a stolen one included) can neither use up,
- * evict nor burn the owner's; audit rows record it so Settings can show who asked.
+ * the token's sid; '' when none), the unmasked client key the auth throttles use (`clientKey`: door plus the full
+ * IPv4 address or IPv6 /64, e.g. "tailnet 100.64.1.2"), and a masked `client` for display only ("Tailscale
+ * 100.64.*.*"). Step-up budgets, the eviction of unanswered challenges and retention are keyed by the session and
+ * clientKey, so another session or device (a copied token on the same carrier included) can neither use up nor
+ * evict the owner's; only the session may redeem its challenge. Audit rows store the masked client and a hash of
+ * the key, never the full address.
  * Used by trading212-orders.routes (builds it), trading212-orders.service, trading212-step-up.service,
  * trading212-caps.service and trading212-mode.service.
  */
-export type StudioT212Requester = { sessionId: string; client: string };
+export type StudioT212Requester = { sessionId: string; clientKey: string; client: string };
 // ── v4 track: mail — server types below this line ──
 //----------------- STUDIO MAIL CONTRACTS ------------
 /**

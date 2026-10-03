@@ -10,6 +10,7 @@ import '@/modules/studio/studio-orders.css';
 const HISTORY_PREVIEW = 4;
 const OUTCOME_LABEL: Record<T212StepUpRequest['outcome'], string> = {
   pending: '等待验证', used: '已提交验证', expired: '已过期，没有使用', replaced: '被同一会话的新请求替换',
+  unknown: '升级前的记录，结果未知',
 };
 
 function when(iso: string) {

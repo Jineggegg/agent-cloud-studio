@@ -18,8 +18,8 @@ type Origin = { origin: string; rpId: string };
 const STUDIO = { origin: 'https://studio.ajarche.com', rpId: 'studio.ajarche.com' };
 const TAILNET = { origin: 'https://desktop.tail1234.ts.net', rpId: 'desktop.tail1234.ts.net' };
 // Two sessions of the same user: the owner's iPad and a stolen token used from elsewhere.
-const OWNER = { sessionId: 'owner-session-1', client: 'Tailscale 100.64.*.*' };
-const THIEF = { sessionId: 'thief-session-2', client: '公网 203.0.*.*' };
+const OWNER = { sessionId: 'owner-session-1', clientKey: 'tailnet 100.64.1.2', client: 'Tailscale 100.64.*.*' };
+const THIEF = { sessionId: 'thief-session-2', clientKey: 'cloudflare 203.0.113.9', client: '公网 203.0.*.*' };
 const PASSWORD = 'correct horse battery staple';
 const SUMMARY = {
   id: 1, currency: 'GBP', totalValue: 1620,
@@ -561,7 +561,7 @@ test('a stolen session cannot lock the owner out of re-enabling trading, evict o
     await assert.rejects(f.orders.modeChallenge(1, STUDIO, 'live', THIEF), coded('T212_MODE_RATE_LIMITED'));
     // Another session's challenge id is neither redeemed nor spent, even with a 'valid' assertion (here from a fresh
     // client of the thief's session, whose budget is not used up yet).
-    await assert.rejects(f.orders.updateMode(1, STUDIO, { challengeId: owner.challengeId, mode: 'both', assertion: signed(owner.authentication) }, { ...THIEF, client: 'Tailscale 100.64.*.*' }),
+    await assert.rejects(f.orders.updateMode(1, STUDIO, { challengeId: owner.challengeId, mode: 'both', assertion: signed(owner.authentication) }, { ...THIEF, clientKey: 'tailnet 100.64.9.9', client: 'Tailscale 100.64.*.*' }),
       coded('T212_MODE_CHALLENGE_GONE'));
     assert.equal(f.calls.verifyAuthentication.length, 0);
 
@@ -604,5 +604,47 @@ test('the challenge reply carries the server state, and a widening whose mode ch
     assert.deepEqual([fresh.from, fresh.adds], ['off', ['live', 'demo']]);
     await update(f, STUDIO, 'both', { challengeId: fresh.challengeId, assertion: signed(fresh.authentication) });
     assert.deepEqual(f.config().allowedEnvs, ['live', 'demo']);
+  } finally { f.close(); }
+});
+
+test('a copied token on the same carrier cannot use up the owner’s budget: budgets follow the full client, not the masked one', async () => {
+  const f = fixture('both');
+  try {
+    await enablePasskey(f);
+    // Same session id (a copy of the owner's token), same masked client ('公网 2a01:4c8:*'), another /64.
+    const owner = { sessionId: 'owner-session-1', clientKey: 'cloudflare 2a01:4c8:1:2::/64', client: '公网 2a01:4c8:*' };
+    const copy = { ...owner, clientKey: 'cloudflare 2a01:4c8:9:9::/64' };
+    await f.orders.updateMode(1, STUDIO, { mode: 'off' }, copy);
+    for (let index = 0; index < 10; index += 1) await assert.rejects(f.orders.updateMode(1, STUDIO, { mode: 'live' }, copy), coded('T212_MODE_PASSKEY_REQUIRED'));
+    await assert.rejects(f.orders.updateMode(1, STUDIO, { mode: 'live' }, copy), coded('T212_MODE_RATE_LIMITED', /退出所有设备或重新登录会重新开始/));
+    for (let index = 0; index < 10; index += 1) await f.orders.modeChallenge(1, STUDIO, 'live', copy);
+    await assert.rejects(f.orders.modeChallenge(1, STUDIO, 'live', copy), coded('T212_MODE_RATE_LIMITED'));
+    // The owner's own device still gets a challenge and re-enables trading.
+    const challenge = await f.orders.modeChallenge(1, STUDIO, 'both', owner);
+    const saved = await f.orders.updateMode(1, STUDIO, { challengeId: challenge.challengeId, mode: 'both', assertion: signed(challenge.authentication) }, owner);
+    assert.equal(saved.method, 'passkey');
+    // Both show up under the same masked client; the address itself is never stored.
+    const stored = f.database.prepare('SELECT DISTINCT client, client_key FROM studio_t212_mode_changes WHERE client IS NOT NULL').all() as { client: string; client_key: string }[];
+    assert.ok(stored.every(row => row.client === owner.client && !row.client_key.includes('2a01')));
+  } finally { f.close(); }
+});
+
+test('a kill switch pressed while Face ID approves a widening wins: the widening is refused as stale', async () => {
+  const f = fixture('both');
+  try {
+    await enablePasskey(f);
+    await update(f, STUDIO, 'demo');
+    const challenge = await f.orders.modeChallenge(1, STUDIO, 'both');
+    const verifyAuthentication = f.webauthn.verifyAuthenticationResponse;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.webauthn.verifyAuthenticationResponse = (async (options: any) => { await gate; return verifyAuthentication(options); }) as typeof verifyAuthentication;
+    const widening = update(f, STUDIO, 'both', { challengeId: challenge.challengeId, assertion: signed(challenge.authentication) });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    await update(f, null, 'off');
+    release();
+    await assert.rejects(widening, coded('T212_MODE_STALE'));
+    assert.deepEqual(f.config().allowedEnvs, []);
+    assert.deepEqual(f.changes().map(item => [item.direction, item.to]), [['narrow', 'off'], ['narrow', 'demo']]);
   } finally { f.close(); }
 });

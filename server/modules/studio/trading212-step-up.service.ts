@@ -8,18 +8,19 @@ import type { StudioT212PasskeyGate, StudioT212Requester, StudioT212StepUpProble
 
 // A change waiting for its Face ID / Touch ID assertion: the exact values, who asked, where, and the bound challenge.
 type Pending<Binding> = {
-  binding: Binding; userId: number; sessionId: string; client: string; origin: string; rpId: string; nonce: string;
+  binding: Binding; userId: number; sessionId: string; clientHash: string; origin: string; rpId: string; nonce: string;
   challenge: string; issuedAt: number; expiresAt: number; auditRowId: number;
 };
-// What the hourly budgets count, always for one session and client:
+// What the hourly budgets count, always for one session and unmasked client:
 // issued: challenges handed out that were used, replaced by the session's own newer ones, or are still open (expired
 // ones never count, so a review left to time out costs nothing);
 // refused: refused attempts, except benign ones (an expired or stale review);
 // failed: refused attempts that were real challenge failures (bad signature, tampered values), which alone gate
 // issuance, so a refusal of any other kind can never stop the owner from asking for Face ID.
 type Budget = 'issued' | 'refused' | 'failed';
-// What became of an issued challenge: still open, redeemed, left to expire, or replaced by newer ones of the session.
-type IssuedOutcome = 'pending' | 'used' | 'expired' | 'replaced';
+// What became of an issued challenge: still open, redeemed, left to expire, replaced by newer ones of the session, or
+// unknown for a row written before outcomes were recorded.
+type IssuedOutcome = 'pending' | 'used' | 'expired' | 'replaced' | 'unknown';
 
 // The assertion must arrive within a minute of the challenge.
 const CHALLENGE_TTL_MS = 60_000;
@@ -27,12 +28,14 @@ const CHALLENGE_TTL_MS = 60_000;
 const MAX_PENDING_PER_REQUESTER = 5;
 // Rate limits count audit rows of one rolling hour.
 const RATE_WINDOW_MS = 60 * 60_000;
-// Refused and issued audit rows kept per session and client (each kind); applied changes are never pruned.
+// Refused and issued audit rows kept per session and client (each kind), and of rows from before sessions were
+// recorded; applied changes are never pruned.
 const AUDIT_RETENTION = 100;
 // Audit tables are fixed identifiers of this module, never request input; checked anyway because they are interpolated.
 const AUDIT_TABLE = /^studio_t212_[a-z_]+$/;
-// Who asked and what became of it; added to audit tables created before they existed.
-const AUDIT_COLUMNS = ['session_id', 'client', 'code', 'outcome'];
+// Who asked (session, masked client for display, hashed unmasked client for budgets) and what became of it; added
+// to audit tables created before they existed.
+const AUDIT_COLUMNS = ['session_id', 'client', 'client_key', 'code', 'outcome'];
 
 /**
  * Used by the Trading 212 caps service (raising caps) and trading-mode service (adding accounts that may trade),
@@ -46,10 +49,11 @@ const AUDIT_COLUMNS = ['session_id', 'client', 'code', 'outcome'];
  * `verify` checks the origin, expiry, staleness and binding before the signature, which the passkey gate verifies
  * against the stored credential with user verification required and a counter advance.
  *
- * Budgets, eviction and retention are per session and client (StudioT212Requester), so a stolen session cannot
- * lock the owner out: its refusals never gate issuance, its challenges never evict the owner's, and revoking it
- * ends its share. The caller's audit table (user_id, status, created_at, session_id, client, code, outcome) is the
- * counter, so limits survive a restart; the caller words every refusal for its own setting.
+ * Budgets, eviction and retention are per session and unmasked client (StudioT212Requester.clientKey, stored only as
+ * a hash), so a stolen session cannot lock the owner out, not even from the same carrier or network: its refusals
+ * never gate issuance, its challenges never evict the owner's, and revoking it ends its share. The caller's audit
+ * table (user_id, status, created_at, session_id, client, client_key, code, outcome) is the counter, so limits
+ * survive a restart; the caller words every refusal for its own setting.
  */
 export function createTrading212StepUp<Binding>(deps: {
   database: Database.Database;
@@ -75,9 +79,13 @@ export function createTrading212StepUp<Binding>(deps: {
   const pending = new Map<string, Pending<Binding>>();
   const existing = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(column => column.name));
   for (const column of AUDIT_COLUMNS) if (!existing.has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
-  db.exec(`CREATE INDEX IF NOT EXISTS ${table}_requester ON ${table} (user_id, session_id, client, status, created_at)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS ${table}_requester_key ON ${table} (user_id, session_id, client_key, status, created_at)`);
 
   const isoNow = () => new Date(now()).toISOString();
+  // The unmasked client key as stored: a hash, so audit rows never hold a full address.
+  function clientHash(requester: StudioT212Requester) {
+    return createHash('sha256').update(`studio-t212-client:${requester.clientKey}`).digest('base64url').slice(0, 22);
+  }
   function digest(binding: Binding, userId: number, sessionId: string, origin: StudioT212TrustedOrigin, nonce: string) {
     const canonical = JSON.stringify([deps.tag, userId, sessionId, origin.origin, origin.rpId, ...deps.encode(binding), nonce]);
     return createHash('sha256').update(canonical).digest();
@@ -114,29 +122,39 @@ export function createTrading212StepUp<Binding>(deps: {
       return { domains, here: domains.includes(rpId) };
     },
 
+    // The stored form of the requester's unmasked client: the caller writes it into client_key on every audit row.
+    clientHash,
+
     // Refuses with a 429 (and its wait in details.retryAfterSeconds, sent as Retry-After) once this session and
     // client have `max` rows of `budget` in the last hour; the wait is until the oldest of them leaves the window.
     assertUnderLimit(userId: number, requester: StudioT212Requester, budget: Budget, max: number, code: string, message: (minutes: number) => string) {
       const filter = budgetFilter(budget);
       const recent = db.prepare(`SELECT COUNT(*) AS count, MIN(created_at) AS oldest FROM ${table}
-        WHERE user_id = ? AND session_id = ? AND client = ? AND created_at > ? AND ${filter.sql}`)
-        .get(userId, requester.sessionId, requester.client, new Date(now() - RATE_WINDOW_MS).toISOString(), ...filter.params) as
+        WHERE user_id = ? AND session_id = ? AND client_key = ? AND created_at > ? AND ${filter.sql}`)
+        .get(userId, requester.sessionId, clientHash(requester), new Date(now() - RATE_WINDOW_MS).toISOString(), ...filter.params) as
         { count: number; oldest: string | null };
       if (recent.count < max) return;
       const retryAfterSeconds = Math.max(1, Math.ceil((Date.parse(recent.oldest ?? isoNow()) + RATE_WINDOW_MS - now()) / 1000));
       throw new AppError(message(Math.ceil(retryAfterSeconds / 60)), { statusCode: 429, code, details: { retryAfterSeconds } });
     },
 
-    // Keeps the newest refused or issued rows of this session and client, so no other session can flush them.
+    // Keeps the newest refused or issued rows of this session and client, so no other session can flush them, and
+    // bounds the rows written before sessions were recorded the same way.
     trimAudit(userId: number, requester: StudioT212Requester, status: 'refused' | 'issued') {
-      db.prepare(`DELETE FROM ${table} WHERE user_id = ? AND session_id = ? AND client = ? AND status = ? AND row_id NOT IN
-        (SELECT row_id FROM ${table} WHERE user_id = ? AND session_id = ? AND client = ? AND status = ? ORDER BY row_id DESC LIMIT ?)`)
-        .run(userId, requester.sessionId, requester.client, status, userId, requester.sessionId, requester.client, status, AUDIT_RETENTION);
+      const key = clientHash(requester);
+      db.prepare(`DELETE FROM ${table} WHERE user_id = ? AND session_id = ? AND client_key = ? AND status = ? AND row_id NOT IN
+        (SELECT row_id FROM ${table} WHERE user_id = ? AND session_id = ? AND client_key = ? AND status = ? ORDER BY row_id DESC LIMIT ?)`)
+        .run(userId, requester.sessionId, key, status, userId, requester.sessionId, key, status, AUDIT_RETENTION);
+      db.prepare(`DELETE FROM ${table} WHERE user_id = ? AND session_id IS NULL AND status = ? AND row_id NOT IN
+        (SELECT row_id FROM ${table} WHERE user_id = ? AND session_id IS NULL AND status = ? ORDER BY row_id DESC LIMIT ?)`)
+        .run(userId, status, userId, status, AUDIT_RETENTION);
     },
 
-    // What became of an issued challenge, from its audit row: a row left open past the 60 seconds has expired.
-    outcome(row: { outcome: string | null; created_at: string }): IssuedOutcome {
+    // What became of an issued challenge, from its audit row: a row left open past the 60 seconds has expired; a row
+    // from before sessions and outcomes were recorded is unknown.
+    outcome(row: { outcome: string | null; created_at: string; session_id: string | null }): IssuedOutcome {
       if (row.outcome === 'used' || row.outcome === 'expired' || row.outcome === 'replaced') return row.outcome;
+      if (row.session_id === null) return 'unknown';
       return Date.parse(row.created_at) + CHALLENGE_TTL_MS > now() ? 'pending' : 'expired';
     },
 
@@ -146,7 +164,7 @@ export function createTrading212StepUp<Binding>(deps: {
     async issue(userId: number, requester: StudioT212Requester, origin: StudioT212TrustedOrigin, binding: Binding, auditRowId: number) {
       prune();
       const mine = [...pending]
-        .filter(([, item]) => item.userId === userId && item.sessionId === requester.sessionId && item.client === requester.client)
+        .filter(([, item]) => item.userId === userId && item.sessionId === requester.sessionId && item.clientHash === clientHash(requester))
         .sort((a, b) => a[1].issuedAt - b[1].issuedAt);
       for (const [id, item] of mine.slice(0, Math.max(0, mine.length - MAX_PENDING_PER_REQUESTER + 1))) {
         pending.delete(id);
@@ -159,7 +177,7 @@ export function createTrading212StepUp<Binding>(deps: {
       const authentication = await deps.passkeys.options(userId, origin.rpId, new Uint8Array(bytes), CHALLENGE_TTL_MS);
       const id = randomUUID();
       pending.set(id, {
-        binding, userId, sessionId: requester.sessionId, client: requester.client, origin: origin.origin, rpId: origin.rpId,
+        binding, userId, sessionId: requester.sessionId, clientHash: clientHash(requester), origin: origin.origin, rpId: origin.rpId,
         nonce, challenge: bytes.toString('base64url'), issuedAt, expiresAt: issuedAt + CHALLENGE_TTL_MS, auditRowId,
       });
       return { challengeId: id, expiresAt: new Date(issuedAt + CHALLENGE_TTL_MS).toISOString(), authentication };

@@ -180,7 +180,12 @@ export function createTrading212OrdersRouter(
   const requester = (req: express.Request): StudioT212Requester => {
     const sessionId = (req as AuthenticatedRequest).user?.sessionId;
     const client = readClient(req);
-    return { sessionId: typeof sessionId === 'string' ? sessionId.slice(0, 64) : '', client: `${DOOR_LABEL[client.door]} ${maskAddress(client.address)}` };
+    return {
+      sessionId: typeof sessionId === 'string' ? sessionId.slice(0, 64) : '',
+      // Budgets use the full key the auth throttles use (door + IPv4 or IPv6 /64); the masked form is only for display.
+      clientKey: `${client.door} ${client.address}`,
+      client: `${DOOR_LABEL[client.door]} ${maskAddress(client.address)}`,
+    };
   };
   const router = express.Router();
   router.use((_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
@@ -190,12 +195,12 @@ export function createTrading212OrdersRouter(
     const origin = service.trustedOrigin(req.get('origin'));
     // Only a literal true acknowledges that an identical order with an unknown outcome did not go through.
     const acknowledgeUnknown = record(req.body).acknowledgeUnknown === true;
-    res.json(await service.preview(userId, origin, orderInput(req.body), { acknowledgeUnknown }));
+    res.json(await service.preview(userId, origin, orderInput(req.body), { acknowledgeUnknown, requester: requester(req) }));
   }));
   router.post('/orders/:id/confirm', asyncHandler(async (req, res) => {
     const userId = user(req);
     const origin = service.trustedOrigin(req.get('origin'));
-    res.json(await service.confirm(userId, origin, previewId(req.params.id), proof(req.body)));
+    res.json(await service.confirm(userId, origin, previewId(req.params.id), proof(req.body), requester(req)));
   }));
   router.post('/passkey/options', asyncHandler(async (req, res) => {
     const userId = user(req);

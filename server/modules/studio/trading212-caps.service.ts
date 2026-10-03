@@ -34,7 +34,7 @@ type ChangeRow = {
   row_id: number; env: StudioT212Environment | null; old_max_order_value: number | null; old_daily_limit: number | null;
   new_max_order_value: number | null; new_daily_limit: number | null; direction: Direction; method: Method;
   status: AuditStatus; reason: string | null; origin: string | null; created_at: string;
-  session_id: string | null; client: string | null; code: string | null; outcome: string | null;
+  session_id: string | null; client: string | null; client_key: string | null; code: string | null; outcome: string | null;
 };
 type AuditEntry = {
   env: StudioT212Environment | null; from: Limits | null; to: Limits | null; direction: Direction; method: Method;
@@ -47,6 +47,8 @@ const MAX_CHALLENGES_PER_WINDOW = 10;
 const MAX_FAILURES_PER_WINDOW = 10;
 const MAX_REFUSALS_PER_WINDOW = 10;
 const HISTORY_LIMIT = 20;
+// Session-only lowerings of one account by one session and client this close together share one audit row.
+const LOWERING_MERGE_MS = 10 * 60_000;
 const DEFAULT_MAX_ORDER_VALUE = 500;
 const DAILY_DEFAULT_MULTIPLIER = 4;
 const DEFAULT_CEILING = 10_000;
@@ -64,7 +66,7 @@ const RAISE_PROBLEMS: Record<StudioT212StepUpProblem, [string, number, string]> 
 const BENIGN_CODES = ['T212_CAPS_CHALLENGE_EXPIRED', 'T212_CAPS_STALE'];
 const FAILURE_CODES = ['T212_CAPS_PASSKEY_FAILED', 'T212_CAPS_TAMPERED'];
 // For callers without a request (tests): one anonymous session.
-const NO_REQUESTER: StudioT212Requester = { sessionId: '', client: 'unknown' };
+const NO_REQUESTER: StudioT212Requester = { sessionId: '', clientKey: 'unknown', client: 'unknown' };
 
 function fail(message: string, statusCode: number, code: string): never {
   throw new AppError(message, { statusCode, code });
@@ -171,27 +173,46 @@ export function createTrading212CapsService(deps: Dependencies) {
   }
   // Refuses with 429 once this session and client used up a budget in the last hour (see trading212-step-up).
   function assertUnderLimit(userId: number, requester: StudioT212Requester, budget: 'issued' | 'refused' | 'failed', max: number, message: string) {
-    stepUp.assertUnderLimit(userId, requester, budget, max, 'T212_CAPS_RATE_LIMITED', minutes => `${message}，请约 ${minutes} 分钟后再试；降低上限不受影响`);
+    stepUp.assertUnderLimit(userId, requester, budget, max, 'T212_CAPS_RATE_LIMITED', minutes => `${message}，请约 ${minutes} 分钟后再试；降低上限不受影响。这个额度属于当前登录会话：在「设置 → 安全」退出所有设备或重新登录会重新开始`);
   }
   // Inserts one audit row (with who asked) and returns its id.
   function audit(userId: number, requester: StudioT212Requester, entry: AuditEntry) {
     const rowId = Number(db.prepare(`INSERT INTO studio_t212_cap_changes (user_id, env, old_max_order_value, old_daily_limit,
-      new_max_order_value, new_daily_limit, direction, method, status, reason, origin, passkey_id, created_at, session_id, client, code)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      new_max_order_value, new_daily_limit, direction, method, status, reason, origin, passkey_id, created_at, session_id, client,
+      client_key, code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       userId, entry.env, entry.from?.maxOrderValue ?? null, entry.from?.dailyLimit ?? null, entry.to?.maxOrderValue ?? null,
       entry.to?.dailyLimit ?? null, entry.direction, entry.method, entry.status, entry.reason?.slice(0, 300) ?? null,
-      entry.origin, entry.passkeyId ?? null, isoNow(), requester.sessionId, requester.client, entry.code ?? null,
+      entry.origin, entry.passkeyId ?? null, isoNow(), requester.sessionId, requester.client, stepUp.clientHash(requester),
+      entry.code ?? null,
     ).lastInsertRowid);
     // Refused and issued rows are bounded per session and client.
     if (entry.status !== 'applied') stepUp.trimAudit(userId, requester, entry.status);
     return rowId;
   }
-  // Saves the caps and their audit row together, or neither.
-  const saveAudited = db.transaction((userId: number, requester: StudioT212Requester, input: StudioT212CapsInput, entry: AuditEntry) => {
+  // A lowering right after another session-only lowering of the same account by the same session and client (within
+  // LOWERING_MERGE_MS, nothing else applied in between) extends that row instead of adding one; true when it did.
+  function mergeLowering(userId: number, requester: StudioT212Requester, input: StudioT212CapsInput, entry: AuditEntry) {
+    const last = db.prepare(`SELECT * FROM studio_t212_cap_changes WHERE user_id = ? AND env = ? AND status = 'applied'
+      ORDER BY row_id DESC LIMIT 1`).get(userId, input.env) as ChangeRow | undefined;
+    if (!last || last.direction !== 'lower' || last.method !== 'session' || last.session_id !== requester.sessionId
+      || last.client_key !== stepUp.clientHash(requester) || now() - Date.parse(last.created_at) > LOWERING_MERGE_MS) return false;
+    db.prepare(`UPDATE studio_t212_cap_changes SET new_max_order_value = ?, new_daily_limit = ?, origin = ?, client = ?, created_at = ?
+      WHERE row_id = ?`).run(input.maxOrderValue, input.dailyLimit, entry.origin, requester.client, isoNow(), last.row_id);
+    return true;
+  }
+  // Saves the caps and their audit row together, or neither. A raise passes the caps its Face ID approved
+  // (`expectedFrom`): they are re-read here, after the awaited verification, and anything else in force (a lowering
+  // pressed meanwhile) wins: nothing is saved and the result is 'stale'. Lowerings by one session are merged.
+  const saveAudited = db.transaction((
+    userId: number, requester: StudioT212Requester, input: StudioT212CapsInput, entry: AuditEntry, expectedFrom?: Limits,
+  ): 'saved' | 'stale' => {
+    if (expectedFrom && !sameLimits(pair(limits(userId, input.env)), expectedFrom)) return 'stale';
     db.prepare(`INSERT INTO studio_t212_caps (user_id, env, max_order_value, daily_limit, updated_at) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT (user_id, env) DO UPDATE SET max_order_value = excluded.max_order_value, daily_limit = excluded.daily_limit,
       updated_at = excluded.updated_at`).run(userId, input.env, input.maxOrderValue, input.dailyLimit, isoNow());
+    if (entry.direction === 'lower' && mergeLowering(userId, requester, input, entry)) return 'saved';
     audit(userId, requester, entry);
+    return 'saved';
   });
   // Who asked, as Settings shows it: a short session fragment (and whether it is the viewer's own) and the masked client.
   function who(row: ChangeRow, viewer: StudioT212Requester | undefined) {
@@ -303,11 +324,12 @@ export function createTrading212CapsService(deps: Dependencies) {
         const [reason, statusCode, code] = RAISE_PROBLEMS[verdict.problem];
         refuseRaise(reason, statusCode, code);
       }
-      // The verification awaited, so the audit records the caps as they were at the moment of saving.
-      saveAudited(userId, requester, input, {
-        env: input.env, from: pair(limits(userId, input.env)), to: pair(input), direction: 'raise', method: 'passkey',
+      // The verification awaited: the caps are re-read inside the save, and a lowering pressed meanwhile wins.
+      const saved = saveAudited(userId, requester, input, {
+        env: input.env, from: before, to: pair(input), direction: 'raise', method: 'passkey',
         status: 'applied', origin: verdict.origin.origin, passkeyId: verdict.passkeyId,
-      });
+      }, before);
+      if (saved === 'stale') refuseRaise(...RAISE_PROBLEMS.stale);
       return { env: input.env, direction: change, method: 'passkey' as const };
     },
   };
