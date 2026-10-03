@@ -1,7 +1,9 @@
 import type { PermissionMode, ProviderModelOption } from '@/shared/types';
+import { formatModelIdLabel, resolveModelChoice } from '@/shared/utils';
 
 /*
- * The workbench chat column's Chinese wording for providers, permission modes, reasoning effort and model names.
+ * The workbench chat column's Chinese wording for providers, permission modes and model names (reasoning effort
+ * levels share Studio's words: `reasoningEffortLabel` in shared/utils).
  * One place, because the header pill, the composer chips, the empty state and the permission sheet all name the
  * same things and must use the same words.
  */
@@ -28,41 +30,24 @@ export function permissionModeCopy(mode: PermissionMode | string): { label: stri
   }
 }
 
-/** Reasoning effort in plain words; unknown values pass through. */
-export function effortLabel(value: string): string {
-  switch (value) {
-    case 'default': return '默认';
-    case 'none': return '不思考';
-    case 'minimal': return '极少';
-    case 'low': return '低';
-    case 'medium': return '中';
-    case 'high': return '高';
-    case 'xhigh': return '很高';
-    case 'max': return '最高';
-    case 'ultra': return 'Ultra';
-    case 'ultracode': return 'Ultracode';
-    default: return value;
-  }
-}
-
 /**
- * A model id as a provider reports it on a reply, in plain words: `claude-opus-5-5` → `Opus 5.5`,
- * `claude-sonnet-4-20250514` → `Sonnet 4`. Ids of other shapes (Codex, DeepSeek) pass through unchanged.
+ * A model id as a provider reports it on a reply, in the model menus' names: `claude-opus-5-5` → `Opus 5.5`,
+ * `claude-sonnet-4-20250514` → `Sonnet 4`, `gpt-6-sol` → `GPT-6 Sol`. Other ids (DeepSeek) pass through unchanged.
  */
 export function modelDisplayName(model: string): string {
-  const match = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(?:\[[^\]]*\])?$/i.exec(model.trim());
-  if (!match) return model;
-  const family = match[1].charAt(0).toUpperCase() + match[1].slice(1).toLowerCase();
-  return `${family} ${match[2]}${match[3] ? `.${match[3]}` : ''}`;
+  return formatModelIdLabel(model);
 }
 
 /**
- * Short model name for pills: the catalogue label without its parenthetical (`Opus (1M context)` → `Opus 1M`),
- * `默认` for the provider default, or the raw id when the catalogue has not loaded.
+ * Short model name for pills and chips: the catalogue row's name (legacy values such as `opus[1m]` included) plus
+ * ` 1M` when the 1M context window is on, any parenthetical dropped (`Opus (1M context)` → `Opus 1M`), `默认` for a
+ * bare provider default, or the id in plain words while the catalogue has not loaded.
  */
 export function modelShortLabel(model: string, options: ProviderModelOption[]): string {
-  const option = options.find((candidate) => candidate.value === model);
-  const label = option?.label ?? model;
-  if (/^default\b/i.test(label) || model === 'default') return '默认';
-  return label.replace(/\s*\((\d+[KM])\s*context\)/i, ' $1').replace(/\s*\(.*\)\s*$/, '').trim() || model;
+  const choice = resolveModelChoice(options, model);
+  if (!choice) return model === 'default' ? '默认' : formatModelIdLabel(model);
+  const label = choice.option.label;
+  if (/^default\b/i.test(label)) return '默认';
+  const name = label.replace(/\s*\((\d+[KM])\s*context\)/i, ' $1').replace(/\s*\(.*\)\s*$/, '').trim() || choice.value;
+  return choice.longContext ? `${name} 1M` : name;
 }

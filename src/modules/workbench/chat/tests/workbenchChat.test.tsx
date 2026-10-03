@@ -14,6 +14,10 @@ const engine = vi.hoisted(() => ({
   sessionId: null as string | null,
   pending: [] as unknown[],
   selectModel: (() => Promise.resolve()) as (model: string) => Promise<void>,
+  // The reasoning effort the composer shows and the levels the selected model accepts (none: no effort control).
+  effort: 'default',
+  effortOptions: [] as { value: string }[],
+  selectEffort: (() => Promise.resolve()) as (effort: string) => Promise<void>,
   decide: (() => undefined) as (...args: unknown[]) => void,
   // Durable delivery and task recovery, as the inherited composer and useTaskRecovery report them.
   delivery: null as { requestId: string; state: 'sending' | 'unknown' | 'failed' } | null,
@@ -37,8 +41,8 @@ vi.mock('@/modules/workbench/chat/hooks/useWorkbenchAgentEngine', () => ({
         permissionMode: 'default',
         availablePermissionModes: ['default', 'acceptEdits', 'plan'],
         selectPermissionMode: noop,
-        currentProviderEffort: 'default',
-        currentProviderEffortOptions: [],
+        currentProviderEffort: engine.effort,
+        currentProviderEffortOptions: engine.effortOptions,
         providerModelCatalog: {},
         providerModelActions: { create: noop, update: noop, remove: noop },
         selectProviderModel: noop,
@@ -116,7 +120,7 @@ vi.mock('@/modules/workbench/chat/hooks/useWorkbenchAgentEngine', () => ({
       sessionId: engine.sessionId,
       sendMessage: noop,
       selectModel: (model: string) => engine.selectModel(model),
-      selectEffort: () => Promise.resolve(),
+      selectEffort: (effort: string) => engine.selectEffort(effort),
     };
   },
 }));
@@ -143,6 +147,8 @@ function renderChat(props: Partial<WorkbenchChatProps> & { chrome?: WorkbenchCha
 }
 
 afterEach(() => {
+  engine.effort = 'default';
+  engine.effortOptions = [];
   engine.calls.length = 0;
   engine.messages = [];
   engine.sessionId = null;
@@ -342,6 +348,30 @@ describe('one rule with the shell', () => {
     expect(within(menu).getByRole('menuitemradio', { name: 'Cursor' }).getAttribute('aria-checked')).toBe('true');
     fireEvent.click(within(menu).getByRole('menuitemradio', { name: 'Codex' }));
     expect(engine.calls.at(-1)?.draftProvider).toBe('codex');
+  });
+});
+
+describe('reasoning effort is its own control beside the model chip', () => {
+  test('the model menu lists models only, and the effort popover sets the level and opens the model menu', async () => {
+    const selectEffort = vi.fn(() => Promise.resolve());
+    engine.selectEffort = selectEffort;
+    engine.effort = 'high';
+    engine.effortOptions = [{ value: 'low' }, { value: 'high' }, { value: 'max' }];
+    renderChat({ session: { id: 's1', kind: 'agent', provider: 'claude', title: 't', updatedAt: null } });
+
+    fireEvent.click(screen.getByRole('button', { name: '模型 Opus' }));
+    const modelMenu = screen.getByRole('menu', { name: '模型 Opus' });
+    expect(within(modelMenu).queryByText('思考强度')).toBeNull();
+    expect(within(modelMenu).getAllByRole('menuitemradio').map((row) => row.textContent)).toEqual(['Opus', 'Sonnet']);
+    fireEvent.keyDown(modelMenu, { key: 'Escape' });
+
+    fireEvent.click(screen.getByRole('button', { name: '思考强度：高' }));
+    const popover = screen.getByRole('dialog', { name: '思考强度' });
+    fireEvent.keyDown(within(popover).getByRole('slider'), { key: 'ArrowRight' });
+    await waitFor(() => expect(selectEffort).toHaveBeenCalledWith('max'));
+
+    fireEvent.click(within(popover).getByRole('button', { name: /^Opus/ }));
+    expect(screen.getByRole('menu', { name: '模型 Opus' })).toBeTruthy();
   });
 });
 

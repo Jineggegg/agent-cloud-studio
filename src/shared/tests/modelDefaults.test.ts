@@ -37,3 +37,17 @@ test('choices merge per provider, clear with undefined, drop malformed values an
   applyModelDefaults('cursor');
   expect(localStorage.getItem('cursor-model')).toBeNull();
 });
+
+test('a default saved under an old catalog value resolves to the row that replaced it, 1M included', () => {
+  const simplified = {
+    DEFAULT: 'claude-opus-5-5',
+    OPTIONS: [
+      { value: 'claude-fable-5-1', label: 'Fable 5.1', aliases: ['fable', 'best'], longContextValue: 'claude-fable-5-1[1m]' },
+      { value: 'claude-opus-5-5', label: 'Opus 5.5', aliases: ['opus', 'default'], longContextValue: 'claude-opus-5-5[1m]' },
+    ],
+  };
+  expect(visibleModelCatalog(simplified, { model: 'opus[1m]' }).DEFAULT).toBe('claude-opus-5-5[1m]');
+  expect(visibleModelCatalog(simplified, { model: 'best' }).DEFAULT).toBe('claude-fable-5-1');
+  // Hiding the row hides its legacy names too.
+  expect(visibleModelCatalog(simplified, { model: 'fable', hidden: ['claude-fable-5-1'] }).DEFAULT).toBe('claude-opus-5-5');
+});

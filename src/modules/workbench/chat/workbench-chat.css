@@ -5,9 +5,10 @@
  * (header, run island, menus, sheets). Theme follows the app's `html.dark` class.
  *
  * Everything is scoped to `.wbc`; the app-wide Tailwind HSL variables are re-pointed inside it so the inherited
- * renderers this column wraps (subagent and workflow panels, code blocks) pick up the same palette.
+ * renderers this column wraps (subagent and workflow panels, code blocks) pick up the same palette. `.wbc-layer` is
+ * the column's menus portalled to <body> (out of the column's overflow and containment); it carries the same tokens.
  */
-.wbc {
+.wbc, .wbc-layer {
   --wbc-bg: #f4f2ed;
   --wbc-surface: #fbfaf8;
   --wbc-surface-2: #f1efea;
@@ -63,6 +64,15 @@
   --input: 40 10% 86%;
   --ring: 210 35% 36%;
 
+  color: var(--wbc-label);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+}
+.wbc {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -73,15 +83,11 @@
   /* Layout answers to the column's own width: on an iPad the shell's side panels can make it phone-narrow. */
   container: wbc / inline-size;
   background: var(--wbc-surface);
-  color: var(--wbc-label);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", "Segoe UI", sans-serif;
-  font-size: 16px;
-  line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
 }
-.dark .wbc {
+/* Over everything, like the Studio's other layers, but only the panel (and a sheet's scrim) takes touches. */
+.wbc-layer { position: fixed; inset: 0; z-index: 1000; pointer-events: none; }
+.wbc-layer > * { pointer-events: auto; }
+.dark .wbc, .dark .wbc-layer {
   --wbc-bg: #111214;
   --wbc-surface: #17181b;
   --wbc-surface-2: #202125;
@@ -130,28 +136,28 @@
   --ring: 211 33% 71%;
 }
 @media (prefers-contrast: more) {
-  .wbc { --wbc-separator: rgba(60, 55, 45, .4); --wbc-label-2: #3d3b37; --wbc-label-3: #5f5c56; }
-  .dark .wbc { --wbc-separator: rgba(230, 225, 215, .4); --wbc-label-2: #d6d2ca; --wbc-label-3: #b5b1a9; }
+  .wbc, .wbc-layer { --wbc-separator: rgba(60, 55, 45, .4); --wbc-label-2: #3d3b37; --wbc-label-3: #5f5c56; }
+  .dark .wbc, .dark .wbc-layer { --wbc-separator: rgba(230, 225, 215, .4); --wbc-label-2: #d6d2ca; --wbc-label-3: #b5b1a9; }
 }
 
 /* ---------- Resets inside the column ----------
  * Zero specificity, so any class wins: the column's own components, and the Tailwind utilities of the renderers it
  * wraps (markdown lists keep their markers, legacy panel buttons keep their padding and fills). */
-.wbc *, .wbc *::before, .wbc *::after { box-sizing: border-box; }
-:where(.wbc) :where(h2, h3, p, ol, ul) { margin: 0; }
+.wbc *, .wbc *::before, .wbc *::after, .wbc-layer *, .wbc-layer *::before, .wbc-layer *::after { box-sizing: border-box; }
+:where(.wbc, .wbc-layer) :where(h2, h3, p, ol, ul) { margin: 0; }
 :where(.wbc) :where(ol, ul) { padding: 0; list-style: none; }
-:where(.wbc) :where(button) {
+:where(.wbc, .wbc-layer) :where(button) {
   font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer;
   -webkit-tap-highlight-color: transparent; touch-action: manipulation;
 }
 /* One class strong on purpose: the app-wide `button { transition: all }` would animate layout. */
-.wbc :where(button) {
+.wbc :where(button), .wbc-layer :where(button) {
   transition: background-color 180ms ease, color 180ms ease, opacity 180ms ease, transform 420ms var(--wbc-ease-spring);
 }
-:where(.wbc) :where(button:disabled) { cursor: default; opacity: .4; }
-.wbc :focus-visible { outline: 3px solid color-mix(in srgb, var(--wbc-tint) 55%, transparent); outline-offset: 2px; border-radius: 10px; }
+:where(.wbc, .wbc-layer) :where(button:disabled) { cursor: default; opacity: .4; }
+.wbc :focus-visible, .wbc-layer :focus-visible { outline: 3px solid color-mix(in srgb, var(--wbc-tint) 55%, transparent); outline-offset: 2px; border-radius: 10px; }
 .wbc ::selection { background: color-mix(in srgb, var(--wbc-tint) 26%, transparent); }
-.wbc svg { flex-shrink: 0; }
+.wbc svg, .wbc-layer svg { flex-shrink: 0; }
 .wbc-visually-hidden { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .wbc-body { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
@@ -209,21 +215,26 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
 .wbc-ring.is-critical .wbc-ring-fill { stroke: var(--wbc-red); }
 .wbc-ring.is-critical .wbc-ring-value { color: var(--wbc-red); }
 
-/* ---------- Menus (header pill, composer chips) ---------- */
+/* ---------- Menus (header pill, composer chips) ----------
+ * Portalled into a .wbc-layer and placed by WorkbenchMenu against the trigger (top/bottom, left, width, max-height
+ * and a transform-origin at the trigger arrive inline), so a menu grows out of its button like an iPadOS pull-down. */
 .wbc-menu-anchor { position: relative; display: inline-flex; min-width: 0; }
 .wbc-menu {
-  position: absolute; z-index: 40; min-width: 248px; max-width: min(340px, calc(100vw - 32px));
-  max-height: min(60vh, 460px); overflow-y: auto; overscroll-behavior: contain;
+  position: fixed; overflow-y: auto; overscroll-behavior: contain;
   padding: 6px; border-radius: 18px;
   background: var(--wbc-glass-strong);
   -webkit-backdrop-filter: saturate(180%) blur(28px); backdrop-filter: saturate(180%) blur(28px);
   border: .5px solid var(--wbc-glass-edge);
   box-shadow: var(--wbc-shadow-float);
 }
-.wbc-menu.is-down { top: calc(100% + 6px); transform-origin: top left; }
-.wbc-menu.is-up { bottom: calc(100% + 8px); transform-origin: bottom left; }
-.wbc-menu.align-start { left: 0; }
-.wbc-menu.align-end { right: 0; transform-origin: top right; }
+/* A phone: the menu becomes a sheet on the bottom edge, over a light scrim that closes it. */
+.wbc-menu.is-sheet {
+  left: 0; right: 0; bottom: 0; max-height: min(78vh, 640px);
+  padding: 10px 10px calc(10px + env(safe-area-inset-bottom, 0px)); border-radius: 22px 22px 0 0;
+  border-width: .5px 0 0;
+}
+.wbc-menu-scrim { position: fixed; inset: 0; background: rgba(20, 18, 14, .18); }
+.dark .wbc-menu-scrim { background: rgba(0, 0, 0, .4); }
 .wbc-menu-section + .wbc-menu-section { margin-top: 6px; padding-top: 6px; border-top: .5px solid var(--wbc-separator); }
 .wbc-menu-title { padding: 6px 12px 4px; font-size: 12px; font-weight: 600; color: var(--wbc-label-3); letter-spacing: .02em; }
 .wbc-menu-item {
@@ -236,7 +247,81 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
 .wbc-menu-check { width: 18px; height: 22px; display: grid; place-items: center; color: var(--wbc-tint); }
 .wbc-menu-icon { display: grid; place-items: center; flex-shrink: 0; height: 22px; }
 .wbc-menu-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.wbc-menu-label { font-weight: 500; line-height: 22px; }
+.wbc-menu-label { display: flex; align-items: center; gap: 6px; font-weight: 500; line-height: 22px; }
+.wbc-menu-badge {
+  flex-shrink: 0; padding: 0 6px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 17px;
+  background: var(--wbc-tint-soft); color: var(--wbc-tint);
+}
+/* A switch row (the 1M context window): its label lines up with the checked rows' labels, the switch sits right. */
+.wbc-menu-item.is-toggle { align-items: center; padding-left: 34px; }
+.wbc-menu-item.is-toggle .wbc-menu-text { flex: 1; }
+.wbc-menu-switch {
+  position: relative; flex-shrink: 0; width: 36px; height: 22px; border-radius: 999px;
+  background: var(--wbc-fill-pressed); transition: background-color 200ms ease;
+}
+.wbc-menu-switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .25); transition: transform 260ms var(--wbc-ease-spring);
+}
+.wbc-menu-switch.is-on { background: var(--wbc-green); }
+.wbc-menu-switch.is-on::after { transform: translateX(14px); }
+
+/* ---------- Reasoning effort popover (composer chip) ----------
+ * The level as the title, the model under it (opens the model menu), reset and help top-right, then a discrete
+ * slider: 更快 … 更聪明, one dot per level, a filled track up to a white round thumb that springs onto a stop. */
+.wbc-menu.wbc-effort { padding: 14px 16px 12px; }
+.wbc-menu.wbc-effort.is-sheet { padding: 16px 20px calc(16px + env(safe-area-inset-bottom, 0px)); }
+.wbc-effort-head { display: flex; align-items: flex-start; gap: 2px; }
+.wbc-effort-heading { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.wbc-effort-title { font-size: 24px; font-weight: 650; letter-spacing: -.02em; line-height: 30px; color: var(--wbc-label); }
+.wbc-effort-model {
+  display: inline-flex; align-items: center; gap: 2px; max-width: 100%; min-height: 28px; margin-left: -6px; padding: 0 6px;
+  border-radius: 8px; font-size: 14px; font-weight: 500; color: var(--wbc-label-2);
+}
+.wbc-effort-model span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wbc-effort-model:hover, .wbc-effort-model:focus-visible { background: var(--wbc-fill); color: var(--wbc-label); }
+.wbc-effort-icon {
+  display: grid; place-items: center; flex-shrink: 0; width: 36px; height: 36px; border-radius: 50%; color: var(--wbc-label-2);
+}
+.wbc-effort-icon:hover:not(:disabled), .wbc-effort-icon[aria-expanded="true"] { background: var(--wbc-fill); color: var(--wbc-label); }
+.wbc-effort-help { margin: 8px 0 0; font-size: 13px; line-height: 1.45; color: var(--wbc-label-2); }
+.wbc-effort-scale {
+  display: flex; justify-content: space-between; margin-top: 14px; font-size: 12.5px; font-weight: 500; color: var(--wbc-label-3);
+}
+
+.wbc-slider {
+  --wbc-thumb: 26px;
+  position: relative; padding: 0 calc(var(--wbc-thumb) / 2); margin-top: 4px; border-radius: 999px;
+  touch-action: none; cursor: pointer; -webkit-user-select: none; user-select: none;
+}
+.wbc-slider:focus-visible { outline: 3px solid color-mix(in srgb, var(--wbc-tint) 45%, transparent); outline-offset: 2px; }
+.wbc-slider-rail { position: relative; height: 34px; }
+.wbc-slider-track, .wbc-slider-fill {
+  position: absolute; top: 50%; height: 6px; margin-top: -3px; border-radius: 999px;
+}
+.wbc-slider-track { left: calc(var(--wbc-thumb) / -2); right: calc(var(--wbc-thumb) / -2); background: var(--wbc-fill-pressed); }
+.wbc-slider-fill {
+  left: calc(var(--wbc-thumb) / -2); padding-left: calc(var(--wbc-thumb) / 2); box-sizing: content-box;
+  background: var(--wbc-tint); transition: width 420ms var(--wbc-ease-spring);
+}
+.wbc-slider-stop {
+  position: absolute; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%;
+  background: var(--wbc-label-3); opacity: .55; transition: background-color 200ms ease, opacity 200ms ease;
+}
+.wbc-slider-stop.is-filled { background: var(--wbc-on-tint); opacity: .85; }
+.wbc-slider-thumb {
+  position: absolute; top: 50%; width: var(--wbc-thumb); height: var(--wbc-thumb);
+  margin: calc(var(--wbc-thumb) / -2) 0 0 calc(var(--wbc-thumb) / -2); border-radius: 50%;
+  background: #fff; box-shadow: 0 0 0 .5px rgba(0, 0, 0, .06), 0 2px 8px rgba(0, 0, 0, .2);
+  transition: left 420ms var(--wbc-ease-spring), transform 160ms ease;
+}
+/* The thumb follows the finger while dragging, and springs onto a stop when let go. */
+.wbc-slider.is-dragging .wbc-slider-thumb, .wbc-slider.is-dragging .wbc-slider-fill { transition: none; }
+.wbc-slider.is-dragging .wbc-slider-thumb { transform: scale(1.08); }
+.wbc-slider-marks { position: relative; height: 18px; margin: 0 13px; }
+.wbc-slider-recommended {
+  position: absolute; top: 0; transform: translateX(-50%); font-size: 11.5px; font-weight: 600; color: var(--wbc-tint); white-space: nowrap;
+}
 .wbc-menu-hint { font-size: 12.5px; line-height: 1.35; color: var(--wbc-label-2); }
 .wbc-menu-note { padding: 4px 12px 8px 34px; font-size: 12.5px; line-height: 1.4; color: var(--wbc-label-3); }
 
@@ -798,7 +883,7 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
 }
 /* ---------- Reduced motion: keep state changes, drop travel ---------- */
 @media (prefers-reduced-motion: reduce) {
-  .wbc *, .wbc *::before, .wbc *::after {
+  .wbc *, .wbc *::before, .wbc *::after, .wbc-layer *, .wbc-layer *::before, .wbc-layer *::after {
     animation-duration: 1ms !important; animation-iteration-count: 1 !important; animation-delay: 0ms !important;
     transition-duration: 1ms !important;
   }

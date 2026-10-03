@@ -5,6 +5,7 @@ import type { ProviderModelOption, WorkbenchChatChrome, WorkbenchNewChatChoice, 
 import { WorkbenchMenu } from '@/modules/workbench/chat/WorkbenchMenu';
 import { WorkbenchProviderMark } from '@/modules/workbench/WorkbenchProviderMark';
 import { providerLabel } from '@/modules/workbench/chat/utils/workbenchChatCopy';
+import { modelMenuSections } from '@/modules/workbench/chat/utils/workbenchModelMenu';
 
 type WorkbenchChatHeaderProps = {
   provider: string;
@@ -78,20 +79,9 @@ export function WorkbenchChatHeader({
                 onSelect: () => onSelectProvider(choice.provider),
               })),
             },
-            {
-              key: 'model',
-              title: '模型',
-              note: onSelectModel ? undefined : '这个对话的模型已固定。',
-              items: onSelectModel
-                ? models.map((option) => ({
-                  key: option.value,
-                  label: option.label,
-                  hint: option.description,
-                  checked: option.value === currentModel,
-                  onSelect: () => onSelectModel(option.value),
-                }))
-                : [],
-            },
+            ...(onSelectModel
+              ? modelMenuSections(models, currentModel, onSelectModel)
+              : [{ key: 'model', title: '模型', note: '这个对话的模型已固定。', items: [] }]),
           ]}
         />
       ) : (

@@ -1,27 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
-import { AnimatePresence, m } from 'motion/react';
 import { Check } from 'lucide-react';
 
-type WorkbenchMenuItem = {
-  key: string;
-  label: string;
-  hint?: string;
-  // Drawn between the check and the label, e.g. a provider's mark.
-  icon?: ReactNode;
-  checked?: boolean;
-  disabled?: boolean;
-  tone?: 'danger';
-  onSelect: () => void;
-};
-
-type WorkbenchMenuSection = {
-  key: string;
-  title?: string;
-  // Shown under the section, e.g. why its items are locked.
-  note?: string;
-  items: WorkbenchMenuItem[];
-};
+import type { WorkbenchMenuItem, WorkbenchMenuSection } from '@/shared/types';
+import { useAnchoredPopover } from '@/modules/workbench/chat/hooks/useAnchoredPopover';
+import { WorkbenchFloatingPanel } from '@/modules/workbench/chat/WorkbenchFloatingPanel';
 
 type WorkbenchMenuProps = {
   // Accessible name of the trigger button.
@@ -29,17 +12,24 @@ type WorkbenchMenuProps = {
   triggerClassName: string;
   trigger: ReactNode;
   sections: WorkbenchMenuSection[];
-  // Opens above the trigger (composer) or below it (header).
+  // Which side of the trigger the panel prefers: above a composer chip, below the header pill. It flips when the
+  // preferred side has no room for it.
   placement?: 'up' | 'down';
   align?: 'start' | 'end';
   disabled?: boolean;
+  // Panel width on a tablet or desktop; a phone gets a full-width sheet instead.
+  width?: number;
+  // Controlled open state, for a menu another control opens (the effort popover's model row opens the model menu).
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 };
 
-const MENU_SPRING = { type: 'spring', stiffness: 520, damping: 34, mass: 0.7 } as const;
-
 /**
- * Used by the workbench chat column's header pill and composer chips: a glass popover menu of radio items in
- * sections. Closes on selection, outside press and Escape; arrow keys move between items.
+ * Used by the workbench chat column's header pill and composer chips: a glass pull-down menu of radio rows (and
+ * switch rows) in sections. It opens anchored to its trigger like an iPadOS menu, growing from the button and
+ * flipping above or below to stay on screen, and as a bottom sheet on a phone (useAnchoredPopover,
+ * WorkbenchFloatingPanel). Closes on selection (switches stay open), outside press and Escape; arrow keys move
+ * between rows.
  */
 export function WorkbenchMenu({
   label,
@@ -49,35 +39,46 @@ export function WorkbenchMenu({
   placement = 'down',
   align = 'start',
   disabled,
+  width = 300,
+  open: controlledOpen,
+  onOpenChange,
 }: WorkbenchMenuProps) {
-  // Whether the popover is showing; owned here because nothing outside needs to open it.
-  const [open, setOpen] = useState(false);
-  const anchorRef = useRef<HTMLDivElement>(null);
+  // Whether the menu is showing when no parent controls it.
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = controlledOpen ?? ownOpen;
+  const setOpen = (next: boolean) => {
+    if (controlledOpen === undefined) setOwnOpen(next);
+    onOpenChange?.(next);
+  };
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
+  const layout = useAnchoredPopover({
+    open,
+    triggerRef,
+    panelRef: menuRef,
+    preferredSide: placement === 'up' ? 'above' : 'below',
+    align,
+    width,
+    onDismiss: () => setOpen(false),
+  });
 
+  const panelShown = layout !== null;
   useEffect(() => {
-    if (!open) return undefined;
-    const onPointerDown = (event: PointerEvent) => {
-      if (!anchorRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener('pointerdown', onPointerDown, true);
-    // Focus the checked item (or the first) once the panel exists, so keyboard users land inside it.
+    if (!panelShown) return undefined;
+    // Focus the checked row (or the first) once the panel exists, so keyboard users land inside it. Without scrolling:
+    // iOS would otherwise pan the page to the focused row while the menu is still growing in.
     const frame = requestAnimationFrame(() => {
       const items = menuRef.current?.querySelectorAll<HTMLButtonElement>('[role^="menuitem"]:not(:disabled)');
-      const checked = menuRef.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]:not(:disabled)');
-      (checked ?? items?.[0])?.focus();
+      const checked = menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitemradio"][aria-checked="true"]:not(:disabled)');
+      (checked ?? items?.[0])?.focus({ preventScroll: true });
     });
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown, true);
-      cancelAnimationFrame(frame);
-    };
-  }, [open]);
+    return () => cancelAnimationFrame(frame);
+  }, [panelShown]);
 
   const close = (restoreFocus: boolean) => {
     setOpen(false);
-    if (restoreFocus) triggerRef.current?.focus();
+    if (restoreFocus) triggerRef.current?.focus({ preventScroll: true });
   };
 
   const onMenuKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -99,10 +100,16 @@ export function WorkbenchMenu({
     items[next]?.focus();
   };
 
+  const selectItem = (item: WorkbenchMenuItem) => {
+    item.onSelect();
+    // A switch is a setting inside the menu, not a choice that ends it.
+    if (item.kind !== 'toggle') close(true);
+  };
+
   const visibleSections = sections.filter((section) => section.items.length > 0 || section.note);
 
   return (
-    <div className="wbc-menu-anchor" ref={anchorRef}>
+    <div className="wbc-menu-anchor">
       <button
         ref={triggerRef}
         type="button"
@@ -110,56 +117,50 @@ export function WorkbenchMenu({
         aria-label={label}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-controls={open ? menuId : undefined}
+        aria-controls={panelShown ? menuId : undefined}
         disabled={disabled}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setOpen(!open)}
       >
         {trigger}
       </button>
-      <AnimatePresence>
-        {open && (
-          <m.div
-            ref={menuRef}
-            id={menuId}
-            role="menu"
-            aria-label={label}
-            className={`wbc-menu is-${placement} align-${align}`}
-            initial={{ opacity: 0, scale: 0.94, y: placement === 'up' ? 8 : -8 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.97, transition: { duration: 0.12 } }}
-            transition={MENU_SPRING}
-            onKeyDown={onMenuKeyDown}
-          >
-            {visibleSections.map((section) => (
-              <div className="wbc-menu-section" role="group" aria-label={section.title} key={section.key}>
-                {section.title && <div className="wbc-menu-title">{section.title}</div>}
-                {section.items.map((item) => (
-                  <button
-                    key={item.key}
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={Boolean(item.checked)}
-                    disabled={item.disabled}
-                    className={`wbc-menu-item${item.tone === 'danger' ? ' is-danger' : ''}`}
-                    onClick={() => {
-                      item.onSelect();
-                      close(true);
-                    }}
-                  >
+      <WorkbenchFloatingPanel layout={layout} panelRef={menuRef} id={menuId} role="menu" label={label} className="wbc-menu" onKeyDown={onMenuKeyDown}>
+        {visibleSections.map((section) => (
+          <div className="wbc-menu-section" role="group" aria-label={section.title} key={section.key}>
+            {section.title && <div className="wbc-menu-title">{section.title}</div>}
+            {section.items.map((item) => {
+              const rowId = `${menuId}-${section.key}-${item.key}`;
+              const isToggle = item.kind === 'toggle';
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  role={isToggle ? 'menuitemcheckbox' : 'menuitemradio'}
+                  aria-checked={Boolean(item.checked)}
+                  aria-labelledby={`${rowId}-label`}
+                  aria-describedby={item.hint ? `${rowId}-hint` : undefined}
+                  disabled={item.disabled}
+                  className={`wbc-menu-item${item.tone === 'danger' ? ' is-danger' : ''}${isToggle ? ' is-toggle' : ''}`}
+                  onClick={() => selectItem(item)}
+                >
+                  {!isToggle && (
                     <span className="wbc-menu-check" aria-hidden="true">{item.checked && <Check size={15} strokeWidth={2.6} />}</span>
-                    {item.icon && <span className="wbc-menu-icon" aria-hidden="true">{item.icon}</span>}
-                    <span className="wbc-menu-text">
-                      <span className="wbc-menu-label">{item.label}</span>
-                      {item.hint && <span className="wbc-menu-hint">{item.hint}</span>}
+                  )}
+                  {item.icon && <span className="wbc-menu-icon" aria-hidden="true">{item.icon}</span>}
+                  <span className="wbc-menu-text">
+                    <span className="wbc-menu-label">
+                      <span id={`${rowId}-label`}>{item.label}</span>
+                      {item.badge && <span className="wbc-menu-badge">{item.badge}</span>}
                     </span>
-                  </button>
-                ))}
-                {section.note && <p className="wbc-menu-note">{section.note}</p>}
-              </div>
-            ))}
-          </m.div>
-        )}
-      </AnimatePresence>
+                    {item.hint && <span className="wbc-menu-hint" id={`${rowId}-hint`}>{item.hint}</span>}
+                  </span>
+                  {isToggle && <span className={`wbc-menu-switch${item.checked ? ' is-on' : ''}`} aria-hidden="true" />}
+                </button>
+              );
+            })}
+            {section.note && <p className="wbc-menu-note">{section.note}</p>}
+          </div>
+        ))}
+      </WorkbenchFloatingPanel>
     </div>
   );
 }

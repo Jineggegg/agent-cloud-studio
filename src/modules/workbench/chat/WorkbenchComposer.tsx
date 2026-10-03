@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, m } from 'motion/react';
 import {
   FileText,
@@ -16,10 +16,13 @@ import {
 
 import { DEFAULT_EFFORT_VALUE } from '@/shared/constants';
 import type { PermissionMode, ProviderModelOption } from '@/shared/types';
+import { resolveModelChoice } from '@/shared/utils';
 import type { useWorkbenchAgentEngine } from '@/modules/workbench/chat/hooks/useWorkbenchAgentEngine';
+import { WorkbenchEffortControl } from '@/modules/workbench/chat/WorkbenchEffortControl';
 import { WorkbenchMenu } from '@/modules/workbench/chat/WorkbenchMenu';
 import { WorkbenchSendButton } from '@/modules/workbench/chat/WorkbenchSendButton';
-import { effortLabel, modelShortLabel, permissionModeCopy, providerLabel } from '@/modules/workbench/chat/utils/workbenchChatCopy';
+import { modelShortLabel, permissionModeCopy, providerLabel } from '@/modules/workbench/chat/utils/workbenchChatCopy';
+import { modelMenuSections } from '@/modules/workbench/chat/utils/workbenchModelMenu';
 
 type ComposerState = ReturnType<typeof useWorkbenchAgentEngine>['composer'];
 
@@ -68,8 +71,9 @@ function AttachmentTile({ file, error, onRemove }: { file: File; error?: string;
 
 /**
  * Used by WorkbenchAgentChat as the input dock: an auto-growing field (Enter sends, Shift+Enter breaks the line),
- * image attachments by drop, paste or picker, slash commands and @ file mentions, the permission-mode and
- * model/effort chips, and the spring send/stop disc. All behaviour comes from the inherited composer hook.
+ * image attachments by drop, paste or picker, slash commands and @ file mentions, the permission-mode and model
+ * chips, the reasoning-effort control, and the spring send/stop disc. All behaviour comes from the inherited
+ * composer hook.
  */
 export function WorkbenchComposer({
   composer,
@@ -130,7 +134,14 @@ export function WorkbenchComposer({
   const sendBlocked = delivery?.state === 'sending' || delivery?.state === 'unknown' || (Boolean(preparedRecovery) && isProcessing);
   const modeCopy = permissionModeCopy(permissionMode);
   const modelName = modelShortLabel(model, modelOptions);
-  const showEffort = effortOptions.length > 0;
+  // The effort control's stops: the levels this model accepts (the `default` sentinel is not a stop).
+  const effortLevels = useMemo(
+    () => effortOptions.map((option) => option.value).filter((value) => value !== DEFAULT_EFFORT_VALUE),
+    [effortOptions],
+  );
+  const recommendedEffort = resolveModelChoice(modelOptions, model)?.option.effort?.default;
+  // Whether the model menu is open; held here because the effort popover's model row opens it too.
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
 
   // Keep the highlighted slash command in view while arrowing through a long list.
   useEffect(() => {
@@ -313,43 +324,29 @@ export function WorkbenchComposer({
             }]}
           />
           <WorkbenchMenu
-            label={`模型 ${modelName}${showEffort ? `，思考 ${effortLabel(effort)}` : ''}`}
+            label={`模型 ${modelName}`}
             triggerClassName="wbc-chip"
             placement="up"
+            open={modelMenuOpen}
+            onOpenChange={setModelMenuOpen}
             trigger={(
               <>
                 <Sparkle size={13} strokeWidth={2.2} aria-hidden="true" />
-                <span>{modelName}{showEffort && effort !== DEFAULT_EFFORT_VALUE ? ` · ${effortLabel(effort)}` : ''}</span>
+                <span>{modelName}</span>
               </>
             )}
-            sections={[
-              {
-                key: 'model',
-                title: '模型',
-                items: modelOptions.map((option) => ({
-                  key: option.value,
-                  label: option.label,
-                  hint: option.description,
-                  checked: option.value === model,
-                  onSelect: () => onSelectModel(option.value),
-                })),
-                note: modelOptions.length ? undefined : '正在读取模型…',
-              },
-              {
-                key: 'effort',
-                title: '思考强度',
-                items: showEffort
-                  ? [{ value: DEFAULT_EFFORT_VALUE, description: '由模型决定' }, ...effortOptions.filter((option) => option.value !== DEFAULT_EFFORT_VALUE)].map((option) => ({
-                    key: option.value,
-                    label: effortLabel(option.value),
-                    hint: option.description,
-                    checked: option.value === effort,
-                    onSelect: () => onSelectEffort(option.value),
-                  }))
-                  : [],
-              },
-            ]}
+            sections={modelMenuSections(modelOptions, model, onSelectModel, '正在读取模型…')}
           />
+          {effortLevels.length > 0 && (
+            <WorkbenchEffortControl
+              effort={effort}
+              levels={effortLevels}
+              recommended={recommendedEffort}
+              modelLabel={modelName}
+              onSelectEffort={onSelectEffort}
+              onOpenModels={() => setModelMenuOpen(true)}
+            />
+          )}
           <span className="wbc-composer-spacer" />
           <WorkbenchSendButton
             mode={sendMode}

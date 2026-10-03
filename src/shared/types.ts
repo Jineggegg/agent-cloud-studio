@@ -14,6 +14,12 @@ export type ProviderModelOption = {
   description?: string;
   recordId?: number;
   isCustom?: boolean;
+  /** Earlier catalog values (`opus`, `default`, ...) that now mean this option; saved choices resolve through them. */
+  aliases?: string[];
+  /** Model id that runs this option with the 1M-token context window, offered as a toggle; absent when unsupported. */
+  longContextValue?: string;
+  /** The provider's recommended pick, labelled 推荐 in the model menus. */
+  recommended?: boolean;
   effort?: {
     default?: string;
     values: {
@@ -27,6 +33,18 @@ export type ProviderModelOption = {
 export type ProviderModelsDefinition = {
   OPTIONS: ProviderModelOption[];
   DEFAULT: string;
+};
+
+/**
+ * A stored or requested model value matched by `resolveModelChoice` (shared/utils) to the catalog row it selects:
+ * the row, the concrete id to run (`value`), and whether that id is the row's 1M-context variant. Lets legacy
+ * values such as `opus[1m]` or `default` show and run as today's rows. Used by the chat provider state, the
+ * model defaults, Studio's model settings and the chat and workbench model menus.
+ */
+export type ResolvedModelChoice = {
+  option: ProviderModelOption;
+  value: string;
+  longContext: boolean;
 };
 
 /** User-supplied fields for creating or editing a custom provider model entry. */
@@ -793,12 +811,20 @@ export type QueuedDraft = {
   options?: QueuedSendOptions;
 };
 
-/** Viewport-relative placement box (right/bottom offsets plus max height and width) computed for a composer popover so the model and permission menus stay inside the window. */
-export type ComposerMenuAnchor = {
-  right: number;
-  bottom: number;
+/**
+ * Where a popover menu sits, computed from its trigger by `placeAnchoredMenu` (shared/utils) for a
+ * `position: fixed` panel: below the trigger (`top`) or above it (`bottom`), whichever side has room, clamped
+ * inside the visible viewport. `transformOrigin` points at the trigger so a grow-in animation starts from it.
+ * Used by the chat composer's popovers and the workbench chat menus.
+ */
+export type AnchoredMenuPlacement = {
+  side: 'above' | 'below';
+  top?: number;
+  bottom?: number;
+  left: number;
+  width: number;
   maxHeight: number;
-  maxWidth: number;
+  transformOrigin: string;
 };
 
 /** One selectable slash command — built-in, user-defined or skill-backed — as listed in the chat composer's command menu and executed when the user picks it. */
@@ -2202,6 +2228,31 @@ export type WorkbenchChatChrome = {
   onProviderChange?: (provider: WorkbenchNewProvider) => void;
 };
 // ── v6 track: chat — types below this line ──
+/**
+ * One row of a workbench chat menu (WorkbenchMenu). `kind: 'toggle'` draws a switch instead of a check, is announced
+ * as a checkbox, and keeps the menu open when tapped, like the 1M-context switch under the model list. `badge` is a
+ * short tag after the label, e.g. 推荐. Built by the header pill, the composer chips and the model-menu helper.
+ */
+export type WorkbenchMenuItem = {
+  key: string;
+  label: string;
+  hint?: string;
+  // Drawn between the check and the label, e.g. a provider's mark.
+  icon?: ReactNode;
+  badge?: string;
+  checked?: boolean;
+  disabled?: boolean;
+  tone?: 'danger';
+  kind?: 'radio' | 'toggle';
+  onSelect: () => void;
+};
+/** A titled group of WorkbenchMenu rows; `note` is shown under it, e.g. why its rows are locked. */
+export type WorkbenchMenuSection = {
+  key: string;
+  title?: string;
+  note?: string;
+  items: WorkbenchMenuItem[];
+};
 /**
  * Answers one or more pending tool-permission prompts of the workbench chat: allow or deny, optionally
  * remembering an allow rule for the run or replacing the tool input (AskUserQuestion answers). Called by its

@@ -1,9 +1,11 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
+import { DEFAULT_EFFORT_VALUE, REASONING_EFFORT_LABELS } from '@/shared/constants';
 import type {
-  Project, ProjectSession, QuickSettingsTab, QuotaDisplayItem, QuotaDisplayMode, QuotaPreferences, SlashCommand, StudioIngressId,
-  StudioQuotaCredit, StudioQuotaSnapshot, StudioQuotaWindow,
+  AnchoredMenuPlacement, Project, ProjectSession, ProviderModelOption, QuickSettingsTab, QuotaDisplayItem, QuotaDisplayMode,
+  QuotaPreferences, ResolvedModelChoice, SlashCommand, StudioIngressId, StudioQuotaCredit, StudioQuotaSnapshot,
+  StudioQuotaWindow,
 } from '@/shared/types';
 
 //----------------- DEPLOYMENT MODE ------------
@@ -520,4 +522,184 @@ export function quotaAmountText(item: QuotaDisplayItem, mode: QuotaDisplayMode):
   }
   if (amount.used !== null && (mode === 'used' || remaining === null)) return `已用 ${money(amount.used)}`;
   return remaining === null ? null : `剩余 ${money(remaining)}`;
+}
+
+// ---------------------------
+
+//----------------- MODEL CATALOG ------------
+
+// The suffix Claude Code accepts on an alias or model id to run it with the 1M-token context window.
+const LONG_CONTEXT_SUFFIX = /\[1m\]$/i;
+
+/**
+ * Matches a stored or requested model value to the catalog row it selects, mirroring the server's
+ * `resolveProviderModelSelection`: an exact row value first, then a row's `longContextValue`, then its legacy
+ * `aliases`, where a `[1m]` suffix selects the row's 1M variant when it has one. Returns null for a value the
+ * catalog does not know (callers show and send it unchanged). Used by the chat provider state, the model defaults,
+ * Studio's model settings and the chat and workbench model menus, so `opus[1m]` or `default` saved before the
+ * catalog was simplified still lands on the right row.
+ */
+export function resolveModelChoice(options: ProviderModelOption[], value: string | null | undefined): ResolvedModelChoice | null {
+  const requested = typeof value === 'string' ? value.trim() : '';
+  if (!requested) return null;
+  const exact = options.find(option => option.value === requested);
+  if (exact) return { option: exact, value: exact.value, longContext: false };
+  const longContextRow = options.find(option => option.longContextValue === requested);
+  if (longContextRow?.longContextValue) return { option: longContextRow, value: longContextRow.longContextValue, longContext: true };
+  const base = requested.replace(LONG_CONTEXT_SUFFIX, '').trim().toLowerCase();
+  const option = options.find(candidate => candidate.value.toLowerCase() === base
+    || (candidate.aliases ?? []).some(alias => alias.toLowerCase() === base));
+  if (!option) return null;
+  return LONG_CONTEXT_SUFFIX.test(requested) && option.longContextValue
+    ? { option, value: option.longContextValue, longContext: true }
+    : { option, value: option.value, longContext: false };
+}
+
+/**
+ * A model id as a provider reports it, in the names the model menus use: `claude-opus-5-5` → `Opus 5.5`,
+ * `claude-haiku-4-5-20251001` → `Haiku 4.5`, `claude-opus-5[1m]` → `Opus 5 1M`, `opus` → `Opus`,
+ * `gpt-6-sol` → `GPT-6 Sol`. Other ids pass through unchanged. Used by the chat transcript's reply label and the
+ * workbench chat's reply rows and model chips.
+ */
+export function formatModelIdLabel(model: string): string {
+  const trimmed = model.trim();
+  const longContext = LONG_CONTEXT_SUFFIX.test(trimmed) ? ' 1M' : '';
+  const id = trimmed.replace(LONG_CONTEXT_SUFFIX, '');
+  const capitalize = (word: string) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+  const claude = /^(?:claude-)?(opus|sonnet|haiku|fable|mythos)(?:-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?)?$/i.exec(id);
+  if (claude) {
+    const version = claude[2] ? ` ${claude[2]}${claude[3] ? `.${claude[3]}` : ''}` : '';
+    return `${capitalize(claude[1])}${version}${longContext}`;
+  }
+  const gpt = /^gpt-(\d+(?:\.\d+)*)(?:-([a-z0-9-]+))?$/i.exec(id);
+  if (gpt) {
+    const variant = (gpt[2] ?? '').split('-').filter(Boolean).map(capitalize).join(' ');
+    return `GPT-${gpt[1]}${variant ? ` ${variant}` : ''}${longContext}`;
+  }
+  return trimmed;
+}
+
+// ---------------------------
+
+//----------------- REASONING EFFORT ------------
+
+// Effort levels from least to most thinking across providers; `ultra` (Codex) and `ultracode` (Claude) are the tops.
+const REASONING_EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode'];
+
+/**
+ * The level a model supports that is closest to `effort`, by the cross-provider order low < medium < high < xhigh <
+ * max < ultra; a tie goes to the lower (faster, cheaper) level. A supported level, and `default` (the model decides),
+ * come back unchanged; a level outside that order which the model does not support, or a model with no levels,
+ * gives `default`. Used by the chat provider state when the model changes (so `max` on a model that tops out at
+ * `xhigh` becomes `xhigh`, not the default) and by the workbench effort control to place its thumb.
+ */
+export function clampEffortLevel(effort: string, supported: readonly string[]): string {
+  if (supported.length === 0) return DEFAULT_EFFORT_VALUE;
+  if (!effort || effort === DEFAULT_EFFORT_VALUE || supported.includes(effort)) return effort || DEFAULT_EFFORT_VALUE;
+  const rank = REASONING_EFFORT_ORDER.indexOf(effort);
+  if (rank < 0) return DEFAULT_EFFORT_VALUE;
+  let nearest: string | null = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of supported) {
+    const candidateRank = REASONING_EFFORT_ORDER.indexOf(candidate);
+    if (candidateRank < 0) continue;
+    const distance = Math.abs(candidateRank - rank);
+    if (distance < nearestDistance || (distance === nearestDistance && candidateRank < rank)) {
+      nearest = candidate;
+      nearestDistance = distance;
+    }
+  }
+  return nearest ?? DEFAULT_EFFORT_VALUE;
+}
+
+/**
+ * A reasoning effort level in plain Chinese (`xhigh` → 极高); unknown levels pass through. Used by the workbench
+ * chat's effort control and Studio's model settings, so both use the same words.
+ */
+export function reasoningEffortLabel(effort: string): string {
+  return REASONING_EFFORT_LABELS[effort] ?? effort;
+}
+
+// ---------------------------
+
+//----------------- ANCHORED MENUS ------------
+
+// Keeps a popover off the viewport edges and off its trigger.
+const MENU_EDGE = 8;
+const MENU_GAP = 6;
+// While the panel's own height is unknown, a side with this much room counts as fitting it.
+const MENU_ASSUMED_HEIGHT = 280;
+// A panel is never squeezed below this; it scrolls instead.
+const MENU_MIN_HEIGHT = 96;
+
+/**
+ * Places a `position: fixed` popover against its trigger the way an iPadOS pull-down menu opens: on the preferred
+ * side (above a composer chip, below a title-bar pill) when the panel fits there, else on the side with more room;
+ * aligned to the trigger's start or end edge but clamped inside `bounds`; height capped by the room on its side; and
+ * a transform-origin at the trigger's centre so the grow-in animation starts from the button. `bounds` is the
+ * visible area (the visual viewport on iOS, which shrinks under the soft keyboard) in the trigger's coordinates;
+ * `viewportHeight` is the layout viewport that a fixed `bottom` is measured from. Pass the panel's natural height as
+ * `contentHeight` once it has rendered (0 or undefined: not known yet). Used by the chat composer's popover hook and
+ * the workbench chat's useAnchoredPopover (its model menus and effort popover).
+ */
+export function placeAnchoredMenu(
+  trigger: { top: number; bottom: number; left: number; right: number },
+  options: {
+    bounds: { top: number; bottom: number; left: number; right: number };
+    viewportHeight: number;
+    width: number;
+    preferredSide: 'above' | 'below';
+    align: 'start' | 'end';
+    contentHeight?: number;
+    maxHeight?: number;
+  },
+): AnchoredMenuPlacement {
+  const { bounds } = options;
+  const cap = options.maxHeight ?? Number.POSITIVE_INFINITY;
+  const width = Math.max(0, Math.min(options.width, bounds.right - bounds.left - MENU_EDGE * 2));
+  const preferredLeft = options.align === 'end' ? trigger.right - width : trigger.left;
+  const left = Math.min(Math.max(preferredLeft, bounds.left + MENU_EDGE), bounds.right - MENU_EDGE - width);
+
+  const room = {
+    above: trigger.top - MENU_GAP - MENU_EDGE - bounds.top,
+    below: bounds.bottom - trigger.bottom - MENU_GAP - MENU_EDGE,
+  };
+  const needed = Math.min(options.contentHeight || MENU_ASSUMED_HEIGHT, cap);
+  const preferred = options.preferredSide;
+  const other = preferred === 'above' ? 'below' : 'above';
+  // Flip only when the panel does not fit where it was asked to open and the other side is roomier.
+  const side = room[preferred] >= needed || room[preferred] >= room[other] ? preferred : other;
+  const maxHeight = Math.round(Math.max(MENU_MIN_HEIGHT, Math.min(cap, room[side])));
+
+  const triggerCentre = (trigger.left + trigger.right) / 2;
+  const originX = Math.round(Math.min(Math.max(triggerCentre - left, 0), width));
+  const transformOrigin = `${originX}px ${side === 'below' ? 'top' : 'bottom'}`;
+  const box = { left: Math.round(left), width: Math.round(width), maxHeight, transformOrigin };
+  return side === 'below'
+    ? { side, top: Math.round(trigger.bottom + MENU_GAP), ...box }
+    : { side, bottom: Math.round(options.viewportHeight - trigger.top + MENU_GAP), ...box };
+}
+
+/**
+ * True when two placements put a popover in the same spot, so a re-measure that changes nothing skips the state
+ * update (and the re-render that would measure again). Used with `placeAnchoredMenu` by the chat composer's popover
+ * hook and the workbench chat's useAnchoredPopover.
+ */
+export function sameMenuPlacement(current: AnchoredMenuPlacement | null, next: AnchoredMenuPlacement): boolean {
+  if (!current) return false;
+  const keys = new Set([...Object.keys(current), ...Object.keys(next)]) as Set<keyof AnchoredMenuPlacement>;
+  return [...keys].every(key => current[key] === next[key]);
+}
+
+/**
+ * The area a popover may use: the visual viewport where the browser has one (iOS shrinks it under the soft keyboard
+ * and pans it), else the window. Used with `placeAnchoredMenu` by the chat composer's popover hook and the workbench
+ * chat's useAnchoredPopover.
+ */
+export function readMenuBounds(): { top: number; bottom: number; left: number; right: number } {
+  const visual = typeof window !== 'undefined' ? window.visualViewport : null;
+  if (visual && visual.width > 0 && visual.height > 0) {
+    return { top: visual.offsetTop, bottom: visual.offsetTop + visual.height, left: visual.offsetLeft, right: visual.offsetLeft + visual.width };
+  }
+  return { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
 }

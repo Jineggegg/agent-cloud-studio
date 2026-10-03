@@ -5,12 +5,15 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 
 import type { ProviderModelOption } from '@/shared/types';
 import { DEFAULT_EFFORT_VALUE } from '@/shared/constants';
+import { resolveModelChoice } from '@/shared/utils';
 import { useComposerMenuAnchor } from '@/modules/chat/hooks/useComposerMenuAnchor';
 import {
+  ComposerMenuBadge,
   ComposerMenuHeading,
   ComposerMenuItem,
   ComposerMenuSeparator,
   ComposerMenuSurface,
+  ComposerMenuSwitch,
 } from '@/modules/chat/composer/ComposerMenuPrimitives';
 
 type EffortOption = NonNullable<ProviderModelOption['effort']>['values'][number];
@@ -61,11 +64,12 @@ function ComposerModelMenu({
   );
   const effortLabel = effort === DEFAULT_EFFORT_VALUE ? defaultEffortLabel : effort;
 
-  const selectedModelOption = useMemo(
-    () => modelOptions.find((option) => option.value === model) ?? null,
-    [model, modelOptions],
-  );
-  const modelLabel = selectedModelOption?.label || model;
+  // Through aliases and 1M variants, so a value saved as `opus[1m]` shows as Opus with the 1M switch on.
+  const selectedModel = useMemo(() => resolveModelChoice(modelOptions, model), [model, modelOptions]);
+  const longContextValue = selectedModel?.option.longContextValue;
+  const modelLabel = selectedModel
+    ? `${selectedModel.option.label}${selectedModel.longContext ? ' 1M' : ''}`
+    : model;
 
   const hasEffortSection = resolvedEffortOptions.length > 0;
   const hasModelSection = modelOptions.length > 0 || modelsLoading;
@@ -151,14 +155,36 @@ function ComposerModelMenu({
                   {modelOptions.map((option) => (
                     <ComposerMenuItem
                       key={option.value}
-                      label={option.label || option.value}
-                      isSelected={option.value === model}
+                      label={(
+                        <>
+                          {option.label || option.value}
+                          {option.recommended && (
+                            <ComposerMenuBadge>{t('composer.recommended', { defaultValue: 'Recommended' })}</ComposerMenuBadge>
+                          )}
+                        </>
+                      )}
+                      description={option.description}
+                      isSelected={option.value === selectedModel?.option.value}
                       onSelect={() => {
-                        onSelectModel(option.value);
+                        // The 1M switch is a setting: switching family keeps it where the new model has a 1M window.
+                        onSelectModel(selectedModel?.longContext && option.longContextValue ? option.longContextValue : option.value);
                         setIsOpen(false);
                       }}
                     />
                   ))}
+                  {selectedModel && longContextValue && (
+                    <ComposerMenuItem
+                      role="menuitemcheckbox"
+                      label={t('composer.longContext', { defaultValue: '1M context' })}
+                      description={t('composer.longContextHint', {
+                        defaultValue: 'For very long sessions and large repos; uses more quota',
+                      })}
+                      isSelected={selectedModel.longContext}
+                      trailing={<ComposerMenuSwitch checked={selectedModel.longContext} />}
+                      // Stays open, like a switch in an iOS menu, so the change is visible.
+                      onSelect={() => onSelectModel(selectedModel.longContext ? selectedModel.option.value : longContextValue)}
+                    />
+                  )}
                 </>
               )}
             </>

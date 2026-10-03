@@ -12,6 +12,7 @@ import type { PendingPermissionRequest, PermissionMode,
 import { DEFAULT_EFFORT_VALUE } from '@/shared/constants';
 import { readSelectedProvider, writeSelectedProvider } from '@/shared/selectedProvider';
 import { readModelDefaults, visibleModelCatalog } from '@/shared/modelDefaults';
+import { clampEffortLevel, resolveModelChoice } from '@/shared/utils';
 import { subscribeToUserPreferences } from '@/shared/userSettings';
 
 const FALLBACK_PROVIDER_EFFORT_VALUES: Partial<Record<LLMProvider, readonly string[]>> = {
@@ -31,7 +32,7 @@ const toProviderEffortOptions = (
 ): NonNullable<ProviderModelOption['effort']>['values'] => values.map((value) => ({ value }));
 
 const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
-  claude: 'default',
+  claude: 'claude-opus-5-5',
   cursor: 'gpt-5.3-codex',
   codex: 'gpt-5.4',
   opencode: 'anthropic/claude-sonnet-4-5',
@@ -308,14 +309,11 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     current: string,
     def: ProviderModelsDefinition,
   ): string => {
-    const stored = localStorage.getItem(storageKey);
-    if (stored && def.OPTIONS.some((o) => o.value === stored)) {
-      return stored;
-    }
-    if (current && def.OPTIONS.some((o) => o.value === current)) {
-      return current;
-    }
-    return def.DEFAULT;
+    // Resolved through aliases and 1M variants: a value saved before the catalog was simplified
+    // (`opus[1m]`, `default`) is kept as the row that replaced it instead of falling back to the default.
+    return resolveModelChoice(def.OPTIONS, localStorage.getItem(storageKey))?.value
+      ?? resolveModelChoice(def.OPTIONS, current)?.value
+      ?? def.DEFAULT;
   };
 
   const getModelOption = useCallback((
@@ -327,7 +325,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       return null;
     }
 
-    return definition.OPTIONS.find((option) => option.value === model) ?? null;
+    // A 1M variant or legacy alias belongs to its row, whose effort levels apply to it.
+    return resolveModelChoice(definition.OPTIONS, model)?.option ?? null;
   }, [providerModelCatalog]);
 
   const getEffortOptionsForModel = useCallback((
@@ -358,20 +357,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     model: string,
     currentEffort: string,
   ): string => {
-    const allowedValues = getAllowedEffortValues(targetProvider, model);
-    if (allowedValues.length === 0) {
-      return DEFAULT_EFFORT_VALUE;
-    }
-
-    if (currentEffort === DEFAULT_EFFORT_VALUE || !currentEffort) {
-      return DEFAULT_EFFORT_VALUE;
-    }
-
-    if (allowedValues.includes(currentEffort)) {
-      return currentEffort;
-    }
-
-    return DEFAULT_EFFORT_VALUE;
+    // A level the new model lacks becomes its nearest supported level (`max` → `xhigh`), not the default.
+    return clampEffortLevel(currentEffort || DEFAULT_EFFORT_VALUE, getAllowedEffortValues(targetProvider, model));
   }, [getAllowedEffortValues]);
 
   // One reconciliation pass over every provider, mirroring the effort effect
@@ -706,7 +693,11 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   // The open session's model wins over the per-provider default, so switching
   // sessions shows (and sends) what each session actually runs with.
-  const currentProviderModel = sessionModel ?? providerModels[provider];
+  // A session recorded under a legacy value (`opus`, `sonnet[1m]`) shows, and next sends, the row that replaced it.
+  const selectedProviderModel = sessionModel ?? providerModels[provider];
+  const currentProviderModel = useMemo(() => (
+    resolveModelChoice(providerModelCatalog[provider]?.OPTIONS ?? [], selectedProviderModel)?.value ?? selectedProviderModel
+  ), [provider, providerModelCatalog, selectedProviderModel]);
   const currentProviderEffortOptions = useMemo(() => {
     return getEffortOptionsForModel(provider, currentProviderModel);
   }, [currentProviderModel, getEffortOptionsForModel, provider]);

@@ -18,6 +18,9 @@ const okJson = (data: unknown) => Promise.resolve({
   json: async () => data,
 });
 
+// Catalogs the mocked models endpoint serves per provider; none unless a test sets one.
+const served = vi.hoisted(() => ({ catalogs: {} as Record<string, unknown> }));
+
 vi.mock('@/shared/api', () => ({
   api: {
     // The preference store PATCHes through api.user; it is stubbed rather than
@@ -27,7 +30,10 @@ vi.mock('@/shared/api', () => ({
       savePreferences: () => okJson({ success: true, preferences: {} }),
     },
     providers: {
-      models: () => okJson({ success: true, data: null }),
+      models: (provider: string) => okJson({
+        success: true,
+        data: served.catalogs[provider] ? { models: served.catalogs[provider] } : null,
+      }),
       capabilities: () => okJson({ success: true, data: null }),
       sessionActiveModel: () => okJson({ success: true, data: null }),
       setSessionActiveModel: () => okJson({ success: true, data: null }),
@@ -49,6 +55,7 @@ const renderProviderState = async () => {
 };
 
 beforeEach(() => {
+  served.catalogs = {};
   localStorage.clear();
   // The preference store is a module-level singleton, so its in-memory copy
   // outlives localStorage.clear() and would leak one test's writes into the next.
@@ -145,4 +152,88 @@ test('the active provider’s model is what currentProviderModel reports', async
     assert.equal(result.current.provider, 'cursor');
   });
   assert.equal(result.current.currentProviderModel, 'cursor-active');
+});
+
+const EFFORT = { default: 'high', values: [{ value: 'low' }, { value: 'high' }, { value: 'max' }] };
+// The simplified Claude catalog: one row per family, the old aliases kept on the rows that replaced them.
+const CLAUDE_CATALOG = {
+  DEFAULT: 'claude-opus-5-5',
+  OPTIONS: [
+    { value: 'claude-fable-5-1', label: 'Fable 5.1', aliases: ['fable', 'best'], longContextValue: 'claude-fable-5-1[1m]', effort: EFFORT },
+    { value: 'claude-opus-5-5', label: 'Opus 5.5', recommended: true, aliases: ['opus', 'default', 'opusplan'], longContextValue: 'claude-opus-5-5[1m]', effort: EFFORT },
+    { value: 'claude-sonnet-5-5', label: 'Sonnet 5.5', aliases: ['sonnet'], longContextValue: 'claude-sonnet-5-5[1m]', effort: EFFORT },
+    { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', aliases: ['haiku'] },
+  ],
+};
+
+test('a model saved under an old catalog value is kept as the row that replaced it', async () => {
+  served.catalogs.claude = CLAUDE_CATALOG;
+  writeUserPreference('selectedProvider', 'claude');
+  localStorage.setItem('claude-model', 'opus[1m]');
+  localStorage.setItem('claude-effort', 'max');
+
+  const { result } = await renderProviderState();
+
+  await waitFor(() => {
+    assert.equal(result.current.providerModels.claude, 'claude-opus-5-5[1m]');
+  });
+  assert.equal(localStorage.getItem('claude-model'), 'claude-opus-5-5[1m]');
+  assert.equal(result.current.currentProviderModel, 'claude-opus-5-5[1m]');
+  // The 1M variant keeps its row's effort levels, so the saved effort survives.
+  assert.deepEqual(result.current.currentProviderEffortOptions.map((option) => option.value), ['low', 'high', 'max']);
+  assert.equal(result.current.currentProviderEffort, 'max');
+});
+
+test('the old Default and Best rows become the recommended model and Fable', async () => {
+  served.catalogs.claude = CLAUDE_CATALOG;
+  localStorage.setItem('claude-model', 'default');
+  const first = await renderProviderState();
+  await waitFor(() => {
+    assert.equal(first.result.current.providerModels.claude, 'claude-opus-5-5');
+  });
+  first.unmount();
+  vi.resetModules();
+
+  localStorage.setItem('claude-model', 'best');
+  const second = await renderProviderState();
+  await waitFor(() => {
+    assert.equal(second.result.current.providerModels.claude, 'claude-fable-5-1');
+  });
+});
+
+test('switching to a model without the chosen effort clamps it to the nearest level that model has', async () => {
+  const levels = (values: string[]) => ({ default: 'medium', values: values.map((value) => ({ value })) });
+  served.catalogs.codex = {
+    DEFAULT: 'gpt-6-sol',
+    OPTIONS: [
+      { value: 'gpt-6-sol', label: 'GPT-6 Sol', effort: levels(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']) },
+      { value: 'gpt-6-luna', label: 'GPT-6 Luna', effort: levels(['low', 'medium', 'high', 'xhigh', 'max']) },
+      { value: 'gpt-5.5', label: 'GPT-5.5', effort: levels(['low', 'medium', 'high', 'xhigh']) },
+    ],
+  };
+  writeUserPreference('selectedProvider', 'codex');
+  localStorage.setItem('codex-model', 'gpt-6-sol');
+  localStorage.setItem('codex-effort', 'ultra');
+
+  const { result } = await renderProviderState();
+  await waitFor(() => {
+    assert.deepEqual(result.current.currentProviderEffortOptions.map((option) => option.value).at(-1), 'ultra');
+  });
+  assert.equal(result.current.currentProviderEffort, 'ultra');
+
+  act(() => {
+    result.current.setStoredProviderModel('codex', 'gpt-6-luna');
+  });
+  await waitFor(() => {
+    assert.equal(result.current.currentProviderEffort, 'max');
+  });
+  assert.equal(localStorage.getItem('codex-effort'), 'max');
+
+  act(() => {
+    result.current.setStoredProviderModel('codex', 'gpt-5.5');
+  });
+  await waitFor(() => {
+    assert.equal(result.current.currentProviderEffort, 'xhigh');
+  });
+  assert.equal(localStorage.getItem('codex-effort'), 'xhigh');
 });
