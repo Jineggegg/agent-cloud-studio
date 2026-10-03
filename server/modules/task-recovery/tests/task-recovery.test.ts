@@ -247,7 +247,35 @@ test('durable task receipts and authenticated recovery', async (t) => {
         assert.deepEqual(await (await fetch(`${origin}/requests/filter-three`, { headers })).json(), { run: null });
         assert.equal((await fetch(`${origin}/${ownReceipt.run.runId}/resolve`, { method: 'POST', headers: { 'x-test-user': '2' } })).status, 404);
         assert.deepEqual(await (await fetch(`${origin}/${ownReceipt.run.runId}/resolve`, { method: 'POST', headers })).json(), { resolved: true });
-        assert.equal((await fetch(`${origin}/${ownReceipt.run.runId}/resolve`, { method: 'POST', headers })).status, 404);
+        // A second acknowledgement (another device, or a stale card) succeeds without changing anything.
+        const repeated = await fetch(`${origin}/${ownReceipt.run.runId}/resolve`, { method: 'POST', headers });
+        assert.equal(repeated.status, 200);
+        assert.deepEqual(await repeated.json(), { resolved: true, alreadyHandled: true });
+        assert.equal((await fetch(`${origin}/${ownReceipt.run.runId}/resolve`, { method: 'POST', headers: { 'x-test-user': '2' } })).status, 404);
+        assert.equal((await fetch(`${origin}/no-such-run/resolve`, { method: 'POST', headers })).status, 404);
+
+        // A run claimed by a running continuation is already handled for its owner and hidden from the list.
+        const claimScope = { sessionId: 'rest-claimed' };
+        const claimed = accepted('rest-claimed-original', claimScope);
+        taskRunsDb.interrupt(claimed.runId);
+        const continuation = accepted('rest-claimed-continuation', { ...claimScope, recoveryOfRunId: claimed.runId });
+        assert.equal(taskRunsDb.markRunning(continuation.runId), true);
+        assert.equal(taskRunsDb.getByRunId(claimed.runId)?.claimedByRunId, continuation.runId);
+        const claimedResolve = await fetch(`${origin}/${claimed.runId}/resolve`, { method: 'POST', headers });
+        assert.equal(claimedResolve.status, 200);
+        assert.deepEqual(await claimedResolve.json(), { resolved: true, alreadyHandled: true });
+        assert.equal((await fetch(`${origin}/${claimed.runId}/resolve`, { method: 'POST', headers: { 'x-test-user': '2' } })).status, 404);
+        assert.equal(taskRunsDb.getByRunId(claimed.runId)?.state, 'interrupted');
+        assert.equal(taskRunsDb.getByRunId(claimed.runId)?.claimedByRunId, continuation.runId);
+        assert.deepEqual(await (await fetch(`${origin}?sessionId=rest-claimed`, { headers })).json(), { runs: [] });
+
+        // Resolved and claimed records never return to the list, while an open one still does.
+        const open = accepted('rest-open', { sessionId: 'rest-mixed' });
+        const resolved = accepted('rest-resolved', { sessionId: 'rest-mixed' });
+        for (const run of [open, resolved]) taskRunsDb.interrupt(run.runId);
+        assert.deepEqual(await (await fetch(`${origin}/${resolved.runId}/resolve`, { method: 'POST', headers })).json(), { resolved: true });
+        const mixed = await (await fetch(`${origin}?sessionId=rest-mixed`, { headers })).json() as { runs: Array<{ runId: string }> };
+        assert.deepEqual(mixed.runs.map((run) => run.runId), [open.runId]);
       } finally {
         server.closeAllConnections();
         await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
