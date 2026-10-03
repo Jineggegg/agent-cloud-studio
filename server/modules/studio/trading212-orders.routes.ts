@@ -2,7 +2,9 @@ import express from 'express';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 import { AppError, asyncHandler } from '@/shared/utils.js';
-import type { StudioRequestClient, StudioT212CapsInput, StudioT212CapsRequest, StudioT212OrderInput } from '@/shared/types.js';
+import type {
+  StudioRequestClient, StudioT212CapsInput, StudioT212CapsRequest, StudioT212ModeRequest, StudioT212OrderInput, StudioT212TradingMode,
+} from '@/shared/types.js';
 
 import type { createTrading212OrdersService } from './trading212-orders.service.js';
 
@@ -110,7 +112,29 @@ function capsRequest(body: unknown): StudioT212CapsRequest {
     throw error;
   }
 }
-// A 429 from the caps service carries its wait, which also goes out as Retry-After.
+function tradingMode(value: unknown): StudioT212TradingMode {
+  if (value !== 'off' && value !== 'demo' && value !== 'live' && value !== 'both') invalid('交易模式必须为 off、demo、live 或 both');
+  return value;
+}
+// PUT /mode, read like PUT /caps: the challenge id first and verbatim, so the service can spend it (and audit the
+// attempt) even when the rest of the body is malformed. A widening carries the challenge id and its assertion; a
+// narrowing carries neither.
+function modeRequest(body: unknown): StudioT212ModeRequest {
+  const input = record(body);
+  const named = input.challengeId !== undefined || input.assertion !== undefined;
+  const challengeId = typeof input.challengeId === 'string' ? input.challengeId.slice(0, 64) : named ? '' : undefined;
+  const spend = challengeId === undefined ? {} : { challengeId };
+  try {
+    const mode = tradingMode(input.mode);
+    if (challengeId === undefined) return { mode };
+    if (!ID.test(challengeId)) invalid('面容 ID 验证编号无效，请重新选择');
+    return { ...spend, mode, assertion: credentialJson(input.assertion) as unknown as AuthenticationResponseJSON };
+  } catch (error) {
+    if (error instanceof AppError) return { ...spend, invalid: error.message };
+    throw error;
+  }
+}
+// A 429 from the caps or trading-mode service carries its wait, which also goes out as Retry-After.
 async function withRetryAfter<T>(res: express.Response, work: () => Promise<T>) {
   try {
     return await work();
@@ -135,7 +159,9 @@ function previewId(value: unknown) {
  * Used by studio.module, mounted at /api/studio/trading212 behind authentication next to the read-only
  * router, for passkey-gated order placement and passkey management. Read paths stay on the read-only router.
  * Every passkey change needs a step-up (the Studio password, or that passkey for its own removal). Order caps are
- * lowered with the session alone; raising them needs a Face ID / Touch ID challenge for the exact new values.
+ * lowered with the session alone; raising them needs a Face ID / Touch ID challenge for the exact new values. The
+ * trading mode (which accounts may place orders, within STUDIO_T212_TRADING) works the same way: narrowing with the
+ * session, adding an account with a challenge for the exact new mode.
  */
 export function createTrading212OrdersRouter(
   service: ReturnType<typeof createTrading212OrdersService>,
@@ -192,6 +218,19 @@ export function createTrading212OrdersRouter(
     const origin = service.optionalTrustedOrigin(req.get('origin'));
     const request = capsRequest(req.body);
     res.json(await withRetryAfter(res, () => service.updateCaps(userId, origin, request)));
+  }));
+  router.post('/mode/challenge', asyncHandler(async (req, res) => {
+    const userId = user(req);
+    const origin = service.trustedOrigin(req.get('origin'));
+    const mode = tradingMode(record(req.body).mode);
+    res.json(await withRetryAfter(res, () => service.modeChallenge(userId, origin, mode)));
+  }));
+  router.put('/mode', asyncHandler(async (req, res) => {
+    const userId = user(req);
+    // Narrowing (including off) works from any signed-in page; widening is refused unless the origin is trusted.
+    const origin = service.optionalTrustedOrigin(req.get('origin'));
+    const request = modeRequest(req.body);
+    res.json(await withRetryAfter(res, () => service.updateMode(userId, origin, request)));
   }));
   return router;
 }

@@ -237,3 +237,58 @@ test('an identical order after an unknown outcome needs acknowledgeUnknown to be
     assert.equal(posts().length, 1);
   });
 });
+
+test('the trading mode is validated in the route; narrowing works from any page, widening needs a trusted origin and a passkey', async () => {
+  await withApp(async (call, posts) => {
+    const config = await call('/trading212/trading');
+    assert.deepEqual(config.body.allowedEnvs, ['demo']);
+    assert.deepEqual(config.body.tradingMode, { mode: 'demo', ceiling: 'demo', custom: false, updatedAt: null });
+    assert.deepEqual(config.body.modeChanges, []);
+
+    const id = '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f';
+    const invalid = [
+      {}, { mode: 'paper' }, { mode: 1 }, { mode: 'DEMO' },
+      { mode: 'demo', challengeId: 'not-an-id', assertion: { id: 'x', rawId: 'x', response: { a: 1 } } },
+      { mode: 'demo', challengeId: id },
+    ];
+    for (const body of invalid) assert.equal((await call('/trading212/mode', { method: 'PUT', body })).status, 400, JSON.stringify(body));
+    assert.equal((await call('/trading212/mode/challenge', { method: 'POST', body: { mode: 'paper' } })).status, 400);
+    assert.equal((await call('/trading212/mode', { method: 'PUT', body: { mode: 'off' }, user: null })).status, 401);
+    assert.equal((await call('/trading212/mode/challenge', { method: 'POST', body: { mode: 'demo' }, user: null })).status, 401);
+
+    // Narrowing (here: off) needs neither a passkey nor an allowlisted page, and previews stop at once.
+    const off = await call('/trading212/mode', { method: 'PUT', body: { mode: 'off' }, origin: null });
+    assert.equal(off.status, 200);
+    assert.equal(off.body.method, 'session');
+    assert.deepEqual(off.body.allowedEnvs, []);
+    assert.equal(off.body.tradingMode.mode, 'off');
+    const preview = await call('/trading212/orders/preview', { method: 'POST', body: { env: 'demo', ticker: 'AAPL_US_EQ', side: 'sell', type: 'market', quantity: 1 } });
+    assert.equal(preview.status, 403);
+    assert.match(preview.body.error, /模拟盘下单已在「设置 → 交易安全」关闭/);
+
+    // Outside STUDIO_T212_TRADING=demo, from an untrusted page, or without a passkey, nothing is widened.
+    const live = await call('/trading212/mode', { method: 'PUT', body: { mode: 'live' } });
+    assert.equal(live.status, 403);
+    assert.match(live.body.error, /服务器未开启实盘下单/);
+    assert.equal((await call('/trading212/mode/challenge', { method: 'POST', body: { mode: 'demo' }, origin: 'https://evil.example' })).status, 403);
+    const challenge = await call('/trading212/mode/challenge', { method: 'POST', body: { mode: 'demo' } });
+    assert.equal(challenge.status, 403);
+    assert.match(challenge.body.error, /启用面容 ID 后才能开启/);
+    assert.equal((await call('/trading212/mode', { method: 'PUT', body: { mode: 'demo' } })).status, 403);
+
+    const after = (await call('/trading212/trading')).body;
+    assert.deepEqual(after.allowedEnvs, []);
+    assert.deepEqual(after.modeChanges.map((item: { from: string; to: string }) => [item.from, item.to]), [['demo', 'off']]);
+    // Two malformed attempts that named a challenge, the ceiling and the passkey-less widening.
+    assert.equal(after.modeRefusals.length, 4);
+
+    // Repeated refusals get a 429 with Retry-After; narrowing is never limited.
+    for (let index = 0; index < 6; index += 1) assert.equal((await call('/trading212/mode', { method: 'PUT', body: { mode: 'demo' } })).status, 403);
+    const limited = await call('/trading212/mode', { method: 'PUT', body: { mode: 'demo' } });
+    assert.equal(limited.status, 429);
+    assert.match(limited.body.error, /次数过多/);
+    const wait = Number(limited.headers.get('retry-after'));
+    assert.ok(wait > 3500 && wait <= 3600, String(wait));
+    assert.equal(posts().length, 0);
+  });
+});

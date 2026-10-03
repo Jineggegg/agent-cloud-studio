@@ -1,7 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { Readable } from 'node:stream';
 
-import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
+import type { AuthenticationResponseJSON, PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/server';
 
 //----------------- HTTP RESPONSE SHAPES ------------
 /**
@@ -1821,6 +1821,52 @@ export type StudioT212CapsRequest = { challengeId?: string } & (
   | { input: StudioT212CapsInput; assertion?: AuthenticationResponseJSON }
   | { invalid: string }
 );
+
+/**
+ * Which Trading 212 accounts may place orders: none, demo only, live only, or both. STUDIO_T212_TRADING sets the
+ * server's ceiling; each user's own choice (Settings → 交易安全) is stored per user and can only narrow it, so the
+ * accounts that may trade are the ceiling ∩ the choice (the ceiling until the user chooses). Narrowing needs only
+ * the session; adding an account needs Face ID / Touch ID, like raising a cap.
+ * Used by trading212-orders.routes, trading212-orders.service and trading212-mode.service.
+ */
+export type StudioT212TradingMode = 'off' | 'demo' | 'live' | 'both';
+
+/**
+ * A PUT /mode request as the Studio router read it, shaped like StudioT212CapsRequest: `challengeId` is read first
+ * (cut to 64 characters; '' when it was not a string or an assertion came without one) so the trading-mode service
+ * can spend that challenge and audit the attempt even when the rest of the body is malformed, which then arrives
+ * as `invalid` (why). A widening carries the browser's WebAuthn assertion, verified against the stored passkey.
+ * Used by trading212-orders.routes, trading212-orders.service and trading212-mode.service.
+ */
+export type StudioT212ModeRequest = { challengeId?: string } & (
+  | { mode: StudioT212TradingMode; assertion?: AuthenticationResponseJSON }
+  | { invalid: string }
+);
+
+/**
+ * Passkey access the Trading 212 orders service (which owns the stored credentials and their counters) lends to
+ * the Face ID / Touch ID step-up behind raising caps and widening the trading mode. `rpIds` lists the domains where
+ * the user has a passkey; `options` builds WebAuthn request options for the user's passkeys on one RP ID that sign
+ * exactly `challenge` with user verification required; `verify` checks an assertion against the user's stored
+ * credential on `rpId` (user verification required, expected challenge and origin), advances its counter and
+ * returns the passkey id, or null when it does not verify.
+ * Used by trading212-orders.service (provides it), trading212-step-up.service, trading212-caps.service and
+ * trading212-mode.service.
+ */
+export type StudioT212PasskeyGate = {
+  rpIds: (userId: number) => string[];
+  options: (userId: number, rpId: string, challenge: Uint8Array<ArrayBuffer>, timeoutMs: number) => Promise<PublicKeyCredentialRequestOptionsJSON>;
+  verify: (userId: number, rpId: string, assertion: AuthenticationResponseJSON, challenge: string, origin: string) => Promise<string | null>;
+};
+
+/**
+ * Why a spent Face ID / Touch ID step-up challenge does not authorise the change it names, in the order they are
+ * checked: the page is not on the trading allowlist, the 60 seconds passed, the request comes from another origin
+ * than the challenge was issued to, the values (or the missing assertion) differ from what was approved, or the
+ * assertion does not verify against the stored passkey. Each gated setting words these for itself.
+ * Used by trading212-step-up.service (returns it), trading212-caps.service and trading212-mode.service.
+ */
+export type StudioT212StepUpProblem = 'untrusted-origin' | 'expired' | 'wrong-origin' | 'tampered' | 'passkey-failed';
 // ── v4 track: mail — server types below this line ──
 //----------------- STUDIO MAIL CONTRACTS ------------
 /**
