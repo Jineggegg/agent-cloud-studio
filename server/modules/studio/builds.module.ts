@@ -113,5 +113,6 @@ export function createStudioBuildsRoutes(
     deepseekKey: options.deepseekKey ?? (() => null),
     model: process.env.STUDIO_BUILD_NAME_MODEL?.trim() || undefined,
   });
-  return createStudioBuildsRouter(builds, names);
+  // The service too: the apps routes run only projects that an AI build made.
+  return { router: createStudioBuildsRouter(builds, names), builds };
 }

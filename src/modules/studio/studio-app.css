@@ -1,0 +1,116 @@
+/*
+ * An AI-built app's 主页 (StudioAppHome): the app on a card that fills the page under the glass chrome, the AI
+ * sidebar beside it on wide screens (a sheet behind a floating button otherwise). Built from the Studio tokens in
+ * studio.css, so light and dark follow them; motion is the same fade-and-rise as the rest of Studio.
+ */
+.app-home {
+  position: absolute; inset: 0; display: flex; gap: 16px;
+  padding: calc(var(--chrome-top) + 12px) max(16px, env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  animation: studio-rise var(--dur-slow) var(--ease-out) backwards;
+}
+
+/* ---------- The app ---------- */
+.app-stage {
+  position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden;
+  border-radius: var(--radius-card, 22px); background: var(--ios-surface); box-shadow: var(--ios-shadow);
+  border: .5px solid var(--ios-separator);
+}
+.app-frame-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
+.app-frame {
+  flex: 1; width: 100%; height: 100%; border: 0; background: var(--ios-surface);
+  opacity: 0; transition: opacity var(--dur-base) var(--ease-out);
+}
+.app-frame[data-ready] { opacity: 1; }
+.app-frame-pending {
+  position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; color: var(--ios-label-2);
+}
+.app-frame-pending.is-overlay { background: color-mix(in srgb, var(--ios-surface) 70%, transparent); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+
+.app-state {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  padding: 32px 24px; text-align: center; color: var(--ios-label-2);
+}
+.app-state .home-icon { --icon: 84px; margin-bottom: 8px; }
+.app-state > strong { font-size: 20px; font-weight: 600; color: var(--ios-label); letter-spacing: -.01em; }
+.app-state > span { max-width: 460px; font-size: 15px; line-height: 1.45; }
+.app-state > .ios-button, .app-state-actions { margin-top: 8px; }
+.app-state-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.app-log {
+  max-width: min(560px, 100%); max-height: 180px; overflow: auto; margin: 4px 0 0; padding: 10px 12px; border-radius: 12px;
+  font-size: 12px; line-height: 1.45; text-align: left; white-space: pre-wrap; word-break: break-word;
+  color: var(--ios-label-2); background: var(--ios-fill);
+}
+
+/* While the AI changes a running app: a slim glass bar over the app's top edge. */
+.app-banner {
+  position: absolute; z-index: 2; top: 10px; left: 50%; translate: -50% 0; max-width: calc(100% - 24px);
+  display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 8px 0 14px; border-radius: 18px;
+  font-size: 14px; color: var(--ios-label); background: var(--ios-glass-strong);
+  -webkit-backdrop-filter: saturate(160%) blur(20px); backdrop-filter: saturate(160%) blur(20px);
+  border: .5px solid var(--ios-glass-edge); box-shadow: var(--ios-shadow-float);
+}
+.app-banner span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-banner small { flex-shrink: 0; font-size: 12px; color: var(--ios-label-2); font-variant-numeric: tabular-nums; }
+.app-banner-link { flex-shrink: 0; min-height: 28px; padding: 0 10px; border-radius: 14px; font-size: 13px; font-weight: 600; color: var(--ios-tint); background: var(--ios-tint-soft); }
+
+/* ---------- The AI sidebar ---------- */
+.app-side { flex: 0 0 300px; min-width: 0; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; overscroll-behavior: contain; padding-bottom: 4px; }
+.app-side > * { animation: studio-rise var(--dur-slow) var(--ease-out) backwards; }
+.app-side > :nth-child(2) { animation-delay: 50ms; }
+.app-side > :nth-child(3) { animation-delay: 100ms; }
+.app-side > :nth-child(4) { animation-delay: 150ms; }
+.studio .app-side-new { flex: 0 0 auto; min-height: 60px; }
+.app-side-section { display: flex; flex-direction: column; gap: 8px; }
+.app-side-section .ios-list { margin: 0; }
+.app-side-section .ios-row { min-height: 50px; }
+.app-side-section .project-session-time { display: none; }
+.app-side-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 4px; }
+.app-side-header h2 { font-size: 13px; font-weight: 600; color: var(--ios-label-2); letter-spacing: .02em; }
+.app-side-note { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ios-label-2); }
+.app-side-link {
+  display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 0 8px; border-radius: 10px;
+  font-size: 14px; font-weight: 500; color: var(--ios-tint); text-decoration: none;
+}
+@media (hover: hover) { .app-side-link:hover { background: var(--ios-tint-soft); } }
+.app-side-tools { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 0 0 0; }
+
+.app-quick-field {
+  position: relative; display: flex; align-items: flex-end; gap: 8px; padding: 10px 10px 10px 14px;
+  border-radius: 18px; background: var(--ios-surface); box-shadow: var(--ios-shadow); border: .5px solid var(--ios-separator);
+  transition: box-shadow var(--dur-fast) ease, border-color var(--dur-fast) ease;
+}
+.app-quick-field:focus-within { border-color: color-mix(in srgb, var(--ios-tint) 45%, transparent); box-shadow: 0 0 0 3px var(--ios-tint-soft), var(--ios-shadow); }
+.app-quick-field textarea {
+  flex: 1; min-width: 0; min-height: 66px; max-height: 180px; resize: none; border: 0; outline: none; padding: 2px 0;
+  font-size: 16px; line-height: 1.4; background: transparent;
+}
+.studio .app-quick-field textarea { color: var(--ios-label) !important; -webkit-text-fill-color: var(--ios-label) !important; caret-color: var(--ios-tint) !important; background: transparent !important; }
+.studio .app-quick-field textarea::placeholder { color: var(--ios-label-3) !important; -webkit-text-fill-color: var(--ios-label-3) !important; }
+.app-quick-send {
+  flex-shrink: 0; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 17px;
+  color: var(--ios-on-tint); background: var(--ios-tint); transition: opacity var(--dur-fast) ease, transform var(--dur-press) ease;
+}
+.app-quick-send:disabled { opacity: .3; }
+
+/* ---------- Narrow screens: the sidebar in a sheet ---------- */
+.app-side-fab { position: absolute; z-index: 3; right: max(28px, calc(env(safe-area-inset-right) + 12px)); bottom: calc(28px + env(safe-area-inset-bottom)); width: 52px; height: 52px; border-radius: 26px; box-shadow: var(--ios-shadow-float); color: var(--ios-tint); }
+.app-side-fab-dot { position: absolute; top: 9px; right: 9px; width: 9px; height: 9px; border-radius: 50%; background: var(--ios-green); box-shadow: 0 0 0 2px var(--ios-glass-strong); animation: project-breathe 2.4s ease-in-out infinite; }
+.app-sheet-scrim { position: fixed; inset: 0; z-index: 20; background: var(--ios-scrim); }
+.app-sheet {
+  position: fixed; z-index: 21; left: 0; right: 0; bottom: 0; max-height: 82vh; flex: none;
+  padding: 6px max(16px, env(safe-area-inset-right)) calc(20px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  border-radius: 24px 24px 0 0; background: var(--ios-bg); box-shadow: var(--ios-shadow-float);
+}
+.app-sheet > * { animation: none; }
+.app-sheet-head { position: relative; display: flex; justify-content: flex-end; min-height: 36px; }
+.app-sheet-grabber { position: absolute; top: 4px; left: 50%; translate: -50% 0; width: 38px; height: 5px; border-radius: 3px; background: var(--ios-separator); }
+
+@media (max-width: 699px) {
+  .app-home { padding-left: 10px; padding-right: 10px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+  .app-stage { border-radius: 18px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-home, .app-side > * { animation: none; }
+  .app-frame { transition: none; }
+  .app-side-fab-dot { animation: none; }
+}

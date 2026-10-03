@@ -61,12 +61,15 @@ export function useStudioBuilds(projects: HubProject[] | null) {
     setBuilds(previous => [...(previous ?? []).filter(item => item.id !== build.id), build]);
   }, []);
 
-  const resume = useCallback(async (build: StudioBuild) => {
+  // `message` is what the owner asked for (an app's 快速让 AI 改); without one the agent finishes the open steps.
+  const resume = useCallback(async (build: StudioBuild, message = '') => {
     try {
-      track(await api.studio.builds.resume(build.id).then(readApiJson<StudioBuild>));
-      toast(`继续开发「${nameOf(build)}」`);
+      track(await (message ? api.studio.builds.resume(build.id, message) : api.studio.builds.resume(build.id)).then(readApiJson<StudioBuild>));
+      toast(message ? `已交给 AI：${message.length > 24 ? `${message.slice(0, 24)}…` : message}` : `继续开发「${nameOf(build)}」`);
+      return true;
     } catch (failure) {
       toast.error(failure instanceof Error ? failure.message : '无法继续开发');
+      return false;
     }
   }, [nameOf, track]);
 
@@ -160,8 +163,16 @@ export function useStudioBuilds(projects: HubProject[] | null) {
   }, [nameOf, pendingStop, track]);
   const cancelStop = useCallback(() => setPendingStop(null), []);
 
+  // The build that made a project (an AI-built app), or null for an ordinary project or before the first poll.
+  const buildFor = useCallback((hubProjectId: string) => byProject.get(hubProjectId) ?? null, [byProject]);
+  // Hands an app's change request to its build session (快速让 AI 改); resolves whether the AI took it.
+  const change = useCallback(async (hubProjectId: string, message: string) => {
+    const build = byProject.get(hubProjectId);
+    return build ? resume(build, message) : false;
+  }, [byProject, resume]);
+
   return {
-    tileFor, track, act, confirmStop, cancelStop,
+    tileFor, track, act, confirmStop, cancelStop, buildFor, change,
     // The build awaiting a stop confirmation and its project name, for the alert.
     pendingStop: pendingStop ? { build: pendingStop, name: projects?.find(item => item.id === pendingStop.hubProjectId)?.name ?? '项目' } : null,
   };

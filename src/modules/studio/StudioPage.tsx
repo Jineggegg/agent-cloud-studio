@@ -14,6 +14,7 @@ import { applyModelDefaults } from '@/shared/modelDefaults';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
 import { useStudio } from '@/modules/studio/hooks/useStudio';
 import { useStudioBuilds } from '@/modules/studio/hooks/useStudioBuilds';
+import { useRefreshSpin } from '@/modules/studio/hooks/useRefreshSpin';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { StudioCreateSheet } from '@/modules/studio/StudioCreateSheet';
 import { StudioHomeScreen } from '@/modules/studio/StudioHomeScreen';
@@ -36,6 +37,8 @@ const StudioProjectMail = lazyStudioPanel(() => import('@/modules/studio/StudioP
 const StudioProjectTasks = lazyStudioPanel(() => import('@/modules/studio/StudioProjectTasks').then(module => module.StudioProjectTasks), 'list');
 const StudioSnrPanel = lazyStudioPanel(() => import('@/modules/studio/StudioSnrPanel').then(module => module.StudioSnrPanel), 'list');
 const StudioTrading212 = lazyStudioPanel(() => import('@/modules/studio/StudioTrading212').then(module => module.StudioTrading212), 'dashboard');
+const StudioAppHome = lazyStudioPanel(() => import('@/modules/studio/StudioAppHome').then(module => module.StudioAppHome), 'dashboard');
+const StudioAppRunSettings = lazyStudioPanel(() => import('@/modules/studio/StudioAppHome').then(module => module.StudioAppRunSettings), 'list');
 // ── v6 track: github — lazy panel (kept apart from the other tracks' insertions) ──
 const StudioGitHub = lazyStudioPanel(() => import('@/modules/studio/StudioGitHub').then(module => module.StudioGitHub), 'list');
 
@@ -54,14 +57,16 @@ const prefersReducedMotion = () => Boolean(window.matchMedia?.('(prefers-reduced
 type Target = { kind: 'project'; id: string } | { kind: 'app'; id: keyof typeof SYSTEM_TITLES } | null;
 type Tab = { id: string; label: string };
 
-// Integrations lead (SNR opens on its K-line lab), then AI, then housekeeping.
-function projectTabs(project: HubProject): Tab[] {
+// Integrations lead (SNR opens on its K-line lab), then AI, then housekeeping. An app Studio's AI built opens on
+// 主页 (the app itself) and calls its AI tab AI 工坊: the workshop where the owner and the AI keep improving it.
+function projectTabs(project: HubProject, isApp: boolean): Tab[] {
   const tabs: Tab[] = [];
+  if (isApp) tabs.push({ id: 'app', label: '主页' });
   if (project.modules.includes('snr-lab')) tabs.push({ id: 'snr-lab', label: 'K 线实验室' });
   if (project.modules.includes('trading212')) tabs.push({ id: 'trading212', label: '股票分析' });
   if (project.modules.includes('mail')) tabs.push({ id: 'mail', label: '邮箱' });
   // One AI 助手 tab for Claude Code, Codex and DeepSeek; the project's DeepSeek chat (`chat`) opens from inside it.
-  if (project.modules.includes('agents') || project.providers.includes('deepseek')) tabs.push({ id: 'ai', label: 'AI 助手' });
+  if (project.modules.includes('agents') || project.providers.includes('deepseek')) tabs.push({ id: 'ai', label: isApp ? 'AI 工坊' : 'AI 助手' });
   if (project.modules.includes('automations')) tabs.push({ id: 'automations', label: '自动化' });
   tabs.push({ id: 'settings', label: '设置' });
   return tabs;
@@ -95,8 +100,9 @@ export function StudioPage() {
   const [threadOpen, setThreadOpen] = useState(false);
   // The navigation bar turns into translucent glass once the large title scrolls away.
   const [compact, setCompact] = useState(false);
-  // Manual refreshes show the progress line until every status request settles.
-  const [refreshing, setRefreshing] = useState(false);
+  // Manual refreshes spin the refresh icon (whole turns) and show the progress line until every status request settles.
+  const refreshSpin = useRefreshSpin();
+  const refreshing = refreshSpin.spinning;
   // Deleting a conversation waits for an explicit confirmation in the alert.
   const [pendingDelete, setPendingDelete] = useState<StudioConversation | null>(null);
   // The new-project sheet opened from the home screen's + tile.
@@ -173,12 +179,11 @@ export function StudioPage() {
     toast(`「${created.name}」开始开发`, { description: '完成后图标会亮起；随时点开图标就能看它在做什么。' });
   };
   const refresh = async () => {
-    setRefreshing(true);
-    try {
+    await refreshSpin.run(async () => {
       // A newer deploy is loaded right away (the page reloads), so the button also updates the app itself.
       if (await reloadIfNewBuild()) return;
       await Promise.all([studio.refresh(), loadProjects(), loadT212()]);
-    } finally { setRefreshing(false); }
+    });
   };
   const onScroll = (event: UIEvent<HTMLDivElement>) => setCompact(event.currentTarget.scrollTop > LARGE_TITLE_COLLAPSE_AT);
 
@@ -186,12 +191,16 @@ export function StudioPage() {
   const snrOnline = Boolean(studio.snr?.connected);
   const t212Ready = t212 === null ? null : t212.some(item => item.configured);
   const project = target?.kind === 'project' ? projects?.find(item => item.id === target.id) ?? null : null;
-  const tabs = project ? projectTabs(project) : [];
+  // The build that made this project, when Studio's AI made it: the project is then an app with a 主页.
+  const appBuild = project ? builds.buildFor(project.id) : null;
+  const tabs = project ? projectTabs(project, Boolean(appBuild)) : [];
   // `chat` is AI 助手's own DeepSeek conversation view, used where the workbench cannot run (no local directory).
   const tab = searchParams.get('tab') === 'chat' && project?.providers.includes('deepseek') ? 'chat'
     : tabs.find(item => item.id === searchParams.get('tab'))?.id ?? tabs[0]?.id;
   const setTab = (id: string) => { setThreadOpen(false); setCompact(false); setSearchParams({ tab: id }, { replace: true, state: location.state }); };
   const chatContext = (target?.kind === 'app' && target.id === 'deepseek') || (Boolean(project) && tab === 'chat');
+  // An app's 主页 fills the page under the chrome with the app and its AI sidebar, scrolling inside the app.
+  const appHome = Boolean(project && appBuild) && tab === 'app';
   // Settings: the page in the URL (?tab=<page>), and whether the list and the page sit side by side.
   const settingsOpen = target?.kind === 'app' && target.id === 'connections';
   const settingsPage = settingsOpen ? readSettingsPage(searchParams.get('tab'), location.hash) : null;
@@ -233,17 +242,21 @@ export function StudioPage() {
 
   const projectContent = () => {
     if (!project) return null;
-    if (tab === 'ai') return <StudioProjectAgents project={project} onOpenChat={conversationId => {
-      setTab('chat');
-      if (conversationId) { void studio.select(conversationId); setThreadOpen(true); }
-    }} />;
+    if (tab === 'ai') return <StudioProjectAgents project={project} onOpenChat={conversationId => openProjectChat(conversationId)} />;
     if (tab === 'snr-lab') return <StudioSnrPanel snr={studio.snr} remoteUrl={studio.status?.snrRemoteUrl ?? null} />;
     if (tab === 'trading212') return <StudioTrading212 />;
     if (tab === 'mail') return <StudioProjectMail project={project} />;
     if (tab === 'automations') return <StudioProjectTasks project={project} />;
-    return <StudioProjectEditor key={project.updatedAt} project={project}
+    const editor = <StudioProjectEditor key={project.updatedAt} project={project}
       onSaved={saved => { setProjects(previous => previous?.map(item => item.id === saved.id ? saved : item) ?? [saved]); toast.success('已保存项目设置'); }}
       onDelete={() => setConfirmProjectDelete(true)} />;
+    // An app's settings lead with whether it is running.
+    return appBuild ? <><StudioAppRunSettings project={project} />{editor}</> : editor;
+  };
+  // Opens the project's DeepSeek chat (a new conversation, or `conversationId`) from AI 助手 / AI 工坊 or the 主页.
+  const openProjectChat = (conversationId?: string) => {
+    setTab('chat');
+    if (conversationId) { void studio.select(conversationId); setThreadOpen(true); }
   };
 
   return <LazyMotion features={loadMotionFeatures} strict><MotionConfig reducedMotion="user" transition={SPRING}>
@@ -293,6 +306,10 @@ export function StudioPage() {
           // Settings lay out their own list and pages, each with its own scrolling.
           : settingsOpen ? <StudioConnections status={studio.status} onChange={studio.refresh} page={settingsPage} split={settingsSplit}
             onNavigate={openSettingsPage} onScroll={onScroll} onSignOut={signOut} />
+          : appHome && project && appBuild ? <StudioAppHome key={project.id} project={project} build={appBuild}
+            progress={builds.tileFor(project.id).progress} workbenchUrl={builds.tileFor(project.id).href ?? null}
+            onChange={message => builds.change(project.id, message)} onContinue={() => builds.act(project.id, 'resume')}
+            onOpenChat={openProjectChat} onShowSessions={() => setTab('ai')} />
           : <div className="studio-scroll" onScroll={onScroll}>
             <AnimatePresence mode="wait" initial={false}>
             <m.div className="studio-content" key={`${target.kind}:${target.id}:${tab ?? ''}`}

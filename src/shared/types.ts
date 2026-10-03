@@ -2544,6 +2544,17 @@ export type StudioBuild = {
 };
 /** What starting an AI build returns: the build and the hub project that became its icon (added to the home screen at once). */
 export type StudioBuildCreated = { build: StudioBuild; project: HubProject };
+/** Whether an AI-built app runs in Studio: starting, running, failed to start, or stopped (idle or by the owner). */
+export type StudioAppRunState = 'starting' | 'running' | 'failed' | 'stopped';
+/**
+ * An AI-built app's run status (`/api/studio/apps/:projectId`). `log` is the app's last output, only when it failed;
+ * `url` (from open) is the sandboxed gateway address StudioAppHome loads while the app runs. Shown by the app's 主页
+ * and its 设置 tab.
+ */
+export type StudioAppStatus = {
+  state: StudioAppRunState; error: string | null; log: string[]; startedAt: string | null;
+  kind: 'npm' | 'node' | 'static' | null; url?: string | null;
+};
 /**
  * How the server runs AI builds right now (GET /api/studio/builds/environment): `sandbox` lets the agent install, run
  * and test inside Claude Code's OS sandbox (opt-in with STUDIO_BUILD_SANDBOX=on); `restricted`, the default, only

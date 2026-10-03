@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -18,6 +18,8 @@ import type {
   StudioProjectRecord,
 } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
+
+import { STUDIO_APP_GUIDE, STUDIO_APP_GUIDE_FILE } from './app-template.js';
 
 type BuildRow = {
   id: string;
@@ -110,10 +112,11 @@ function initialPrompt(name: string, request: string, directory: string) {
     '1. 先用 TodoWrite 列出 3 到 8 个具体步骤的计划；每完成一步立刻更新，同一时间只有一步是 in_progress。主屏幕上的进度环按这个清单计算。',
     `2. 只在当前目录（${directory}）里工作：不读取、不修改这个目录之外的文件，不用 sudo，不全局安装，不 git push，不发布任何东西。操作被拒绝说明越界了，换一种在目录内完成的做法。`,
     '3. 选择简单、能在这台电脑上直接运行的技术方案；需要依赖时装在项目里。',
-    '4. 写 README.md：一两句话说明它是什么，以及怎样安装、运行和测试。',
-    '5. 为核心逻辑写测试；运行环境允许时运行测试，直到全部通过（见最后的“运行环境”）。',
-    '6. 在本地 git 仓库提交成果（git add -A，然后 git commit）。',
-    '7. 最后把清单里的步骤全部标为 completed，并用中文简短总结：做了什么、怎么运行、还能怎么改进。',
+    `4. 先读目录里的 ${STUDIO_APP_GUIDE_FILE}：它是 Studio 应用的模板（怎样启动、地址和数据怎么处理、设计语言和动画）。做成一个能在 Studio「主页」里直接使用的网页应用，严格按它的运行约定；设计和动画也按它来，除非上面的需求明确要求别的风格或动画。`,
+    '5. 写 README.md：一两句话说明它是什么，以及怎样安装、运行和测试。',
+    '6. 为核心逻辑写测试；运行环境允许时运行测试，直到全部通过（见最后的“运行环境”）。',
+    '7. 在本地 git 仓库提交成果（git add -A，然后 git commit）。',
+    '8. 最后把清单里的步骤全部标为 completed，并用中文简短总结：做了什么、怎么运行、还能怎么改进。',
   ].join('\n');
 }
 
@@ -121,8 +124,16 @@ function continuePrompt(message: string) {
   return [
     message || '继续完成尚未完成的步骤。',
     '',
-    '（继续遵守之前的工作方式：用 TodoWrite 更新计划和进度，只在当前目录里工作，不 git push；完成后提交到本地仓库，并用中文简短总结。运行环境以最后的说明为准。）',
+    `（继续遵守之前的工作方式：用 TodoWrite 更新计划和进度，只在当前目录里工作，不 git push；改动要符合目录里 ${STUDIO_APP_GUIDE_FILE} 的运行约定、设计语言和动画，除非这次的要求明确指定别的风格；完成后提交到本地仓库，并用中文简短总结。运行环境以最后的说明为准。）`,
   ].join('\n');
+}
+
+// Puts the Studio app template into a project folder unless it already has one (the AI may have refined it).
+function writeAppGuide(directory: string) {
+  const file = path.join(directory, STUDIO_APP_GUIDE_FILE);
+  try {
+    if (!existsSync(file)) writeFileSync(file, STUDIO_APP_GUIDE, { flag: 'wx' });
+  } catch { /* The build still runs; the prompt names the file and the agent works without it. */ }
 }
 
 // The checklist reduced to what the home-screen ring needs.
@@ -319,6 +330,7 @@ export function createStudioBuildsService(deps: Dependencies) {
         mkdirSync(directory);
         createdDirectory = true;
         await initRepository(directory);
+        writeAppGuide(directory);
         const workspace = await deps.resolveWorkspace(directory);
         // Session names keep only their first four words, so the marker is glued on with full-width brackets.
         const { sessionId } = deps.createSession(workspace.path, `${name}（AI 开发）`);
@@ -341,6 +353,8 @@ export function createStudioBuildsService(deps: Dependencies) {
       if (deps.runner.inspect(row.session_id)?.running) fail('这个会话正在运行，请等它结束', 409);
       const text = message.trim();
       if (text.length > MAX_REQUEST) fail(`描述最多 ${MAX_REQUEST} 个字符`);
+      // Apps built before the template existed get it now, so every change follows the same design.
+      writeAppGuide(row.workspace_path);
       patch(id, { state: 'queued', prompt: continuePrompt(text), total: 0, completed: 0, current_task: null, error: null, started_at: null, finished_at: null });
       enqueue(id);
       return current(id);

@@ -26,6 +26,10 @@ import { createTrading212OrdersService } from './trading212-orders.service.js';
 import { createTrading212OrdersRouter } from './trading212-orders.routes.js';
 import { createLinkChecker } from './link-check.service.js';
 import { createStudioBuildsRoutes } from './builds.module.js';
+import { createStudioAppRunner } from './app-runner.service.js';
+import { createStudioAppGateway } from './app-gateway.service.js';
+import { createStudioAppSiteRouter, createStudioAppsRouter } from './apps.routes.js';
+import type { StudioAppLookup } from './apps.routes.js';
 import { createRemoteHostsService } from './remote-hosts.service.js';
 import { createRemoteHostsRouter } from './remote-hosts.routes.js';
 import { createGhRunner, resolveGhPath } from './github/github-cli.adapter.js';
@@ -288,13 +292,25 @@ export function createStudioModule() {
   // App Store-style AI builds: a new ~/projects folder, a hub project (the icon) and an unattended Claude Code
   // session per build (STUDIO_BUILDS_ROOT, STUDIO_BUILDS_MAX_PARALLEL, STUDIO_BUILD_MODEL; see builds.module.ts).
   // Name suggestions use the same DeepSeek key as the Studio chat.
-  routes.use('/builds', createStudioBuildsRoutes(hub, {
+  const buildsModule = createStudioBuildsRoutes(hub, {
     deepseekKey: userId => service.deepseekApiKey(userId),
     onBuildFailed: ({ userId, projectId, error }) => {
       void automations.handleEvent(userId, projectId, 'build-failed', error)
         .catch((failure: unknown) => console.error('[studio-automations] build-failed event failed', failure instanceof Error ? failure.message : failure));
     },
-  }));
+  });
+  routes.use('/builds', buildsModule.router);
+  // The apps those builds made run in their project's 主页: started on demand on a loopback port, reached through a
+  // token-addressed gateway (/api/studio/app-site, mounted by the server without session auth) in a sandboxed iframe.
+  const appRunner = createStudioAppRunner();
+  process.once('exit', () => appRunner.stopAll());
+  const appGateway = createStudioAppGateway({ validUser: id => Boolean(userDb.getUserById(id)) });
+  const lookupApp: StudioAppLookup = (userId, projectId) => {
+    const build = buildsModule.builds.list(userId).find(item => item.hubProjectId === projectId);
+    if (!build) throw new AppError('这个项目不是 AI 开发的应用', { statusCode: 404 });
+    return { directory: build.workspacePath, name: hub.get(userId, projectId).name };
+  };
+  routes.use('/apps', createStudioAppsRouter({ runner: appRunner, gateway: appGateway, lookup: lookupApp }));
   // ── v6 track: memory — create its service and mount its router below this line ──
   // One MCP session with the shared basic-memory server (scripts/wsl/install-memory.sh, docs/memory.md) serves the
   // 记忆 app and the DeepSeek bridge. STUDIO_MEMORY_URL overrides the endpoint; STUDIO_MEMORY_DEEPSEEK=0 keeps
@@ -335,8 +351,11 @@ export function createStudioModule() {
   return {
     routes,
     snrRoutes: createSnrGatewayRouter(gateway),
+    appSiteRoutes: createStudioAppSiteRouter({ runner: appRunner, gateway: appGateway, lookup: lookupApp }),
     mailCallbackRoutes: createProjectMailCallbackRouter(mail),
     // Used by the server entrypoint when "退出所有设备" also drops the user's SNR access cookies.
     revokeSnrAccess: (userId: number) => gateway.revoke(userId),
+    // …and every address of the user's AI-built apps.
+    revokeAppAccess: (userId: number) => appGateway.revoke(userId),
   };
 }

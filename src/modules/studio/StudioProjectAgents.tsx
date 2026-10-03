@@ -8,6 +8,7 @@ import type {
 } from '@/shared/types';
 import { StudioBrandMark } from '@/modules/studio/brandIcons';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
+import { useRefreshSpin } from '@/modules/studio/hooks/useRefreshSpin';
 import '@/modules/studio/studio-project.css';
 
 // The terminal (xterm) loads only when a remote session or the local shell is opened.
@@ -163,13 +164,9 @@ function RemoteAgents({ project }: { project: HubProject }) {
   </section>;
 }
 
-/**
- * The project's conversations: 新建会话, then its running sessions and its history (Claude Code and Codex sessions of
- * the project directory with its DeepSeek conversations, newest first). With a local directory everything opens in
- * the workbench's one chat, where the model menu chooses Claude Code, Codex or DeepSeek; without one (a remote or
- * unconfigured project) only DeepSeek conversations exist here and they open in the project's own chat (`onOpenChat`).
- */
-function ProjectSessions({ project, onOpenChat }: { project: HubProject; onOpenChat: (conversationId?: string) => void }) {
+// A project's sessions as both session lists read them: the rows (newest first) with their running state, 新建会话
+// (the workbench, or the project's DeepSeek chat without a local directory) and a row renderer that opens each one.
+function useProjectSessions(project: HubProject, onOpenChat: (conversationId?: string) => void) {
   const navigate = useNavigate();
   const local = Boolean(project.workspacePath) && !project.remoteHost;
   const deepseek = project.providers.includes('deepseek');
@@ -180,12 +177,8 @@ function ProjectSessions({ project, onOpenChat }: { project: HubProject; onOpenC
   const [rows, setRows] = useState<ProjectSessionRow[] | null>(null);
   // Ids of sessions with a run (or background work) in progress, from the server's running list.
   const [running, setRunning] = useState<Set<string>>(() => new Set());
-  // The whole history instead of its newest rows.
-  const [showAll, setShowAll] = useState(false);
   // A workbench launch in flight (新建会话 or a conversation of a not yet registered directory); blocks repeats.
   const [opening, setOpening] = useState(false);
-  // The full-screen shell on this computer, opened from the 终端 button.
-  const [terminalOpen, setTerminalOpen] = useState(false);
   // Loading or opening failures stay visible and never imply a running model.
   const [error, setError] = useState('');
 
@@ -252,9 +245,6 @@ function ProjectSessions({ project, onOpenChat }: { project: HubProject; onOpenC
 
   const runningRows = (rows ?? []).filter(row => row.kind === 'agent' && running.has(row.id));
   const historyRows = (rows ?? []).filter(row => !(row.kind === 'agent' && running.has(row.id)));
-  const shownHistory = showAll ? historyRows : historyRows.slice(0, HISTORY_PREVIEW);
-  // Remote projects run agents in their own terminals above; this section then only holds DeepSeek.
-  const heading = local ? '会话' : 'DeepSeek 对话';
 
   const row = (item: ProjectSessionRow, isRunning: boolean) => {
     const meta = PROVIDERS[item.provider];
@@ -273,6 +263,27 @@ function ProjectSessions({ project, onOpenChat }: { project: HubProject; onOpenC
     return <button type="button" className="ios-row" key={`${item.kind}:${item.id}`} disabled={opening}
       onClick={() => { if (!local) onOpenChat(item.id); else void openInWorkbench(`/${item.kind === 'deepseek' ? 'd' : 's'}/${encodeURIComponent(item.id)}`); }}>{body}</button>;
   };
+
+  return { local, deepseek, rows, runningRows, historyRows, opening, error, canStart, startNew, row, load, loadRunning };
+}
+
+/**
+ * The project's conversations: 新建会话, then its running sessions and its history (Claude Code and Codex sessions of
+ * the project directory with its DeepSeek conversations, newest first). With a local directory everything opens in
+ * the workbench's one chat, where the model menu chooses Claude Code, Codex or DeepSeek; without one (a remote or
+ * unconfigured project) only DeepSeek conversations exist here and they open in the project's own chat (`onOpenChat`).
+ */
+function ProjectSessions({ project, onOpenChat }: { project: HubProject; onOpenChat: (conversationId?: string) => void }) {
+  const { local, deepseek, rows, runningRows, historyRows, opening, error, canStart, startNew, row, load, loadRunning } = useProjectSessions(project, onOpenChat);
+  // The whole history instead of its newest rows.
+  const [showAll, setShowAll] = useState(false);
+  // The full-screen shell on this computer, opened from the 终端 button.
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  // The list's refresh button spins (whole turns) while it reads the sessions again.
+  const refreshSpin = useRefreshSpin();
+  const shownHistory = showAll ? historyRows : historyRows.slice(0, HISTORY_PREVIEW);
+  // Remote projects run agents in their own terminals above; this section then only holds DeepSeek.
+  const heading = local ? '会话' : 'DeepSeek 对话';
 
   return <>
     <section className={`ios-section project-start ${project.links.length || project.remoteHost ? '' : 'first'}`}>
@@ -299,7 +310,8 @@ function ProjectSessions({ project, onOpenChat }: { project: HubProject; onOpenC
 
     {(local || deepseek) && <section className="ios-section" aria-label="历史会话">
       <div className="ios-section-header"><h2>{runningRows.length ? '历史' : heading}</h2>
-        <button type="button" className="icon-button" title="刷新会话" aria-label="刷新会话" onClick={() => { void load(); void loadRunning(); }}><IconRefresh size={18} aria-hidden="true" /></button></div>
+        <button type="button" className={`icon-button ${refreshSpin.spinning ? 'refreshing' : ''}`} title="刷新会话" aria-label="刷新会话"
+          aria-busy={refreshSpin.spinning || undefined} onClick={() => void refreshSpin.run(() => Promise.all([load(), loadRunning()]))}><IconRefresh size={18} className="refresh-icon" aria-hidden="true" /></button></div>
       <div className="ios-list">
         {rows === null && <div className="ios-row no-icon" role="status"><StudioSpinner size={16} label="正在读取会话" /></div>}
         {shownHistory.map(item => row(item, false))}
@@ -318,7 +330,35 @@ function ProjectSessions({ project, onOpenChat }: { project: HubProject; onOpenC
 }
 
 /**
- * Used by StudioPage's project app as the AI 助手 tab, the page a project opens on: the product's website (打开网站),
+ * Used by StudioAppHome's AI sidebar (an AI-built app's 主页): 新建会话 and the project's few newest sessions, running
+ * ones first, each opening in the workbench; 全部 (`onShowAll`) goes to the AI 工坊 tab with the whole history.
+ */
+export function StudioProjectRecentSessions({ project, onOpenChat, onShowAll, limit = 3 }: {
+  project: HubProject; onOpenChat: (conversationId?: string) => void; onShowAll: () => void; limit?: number;
+}) {
+  const { local, rows, runningRows, historyRows, opening, error, canStart, startNew, row } = useProjectSessions(project, onOpenChat);
+  const recent = [...runningRows.map(item => ({ item, running: true })), ...historyRows.map(item => ({ item, running: false }))].slice(0, limit);
+  return <>
+    <button type="button" className="project-new-session app-side-new ios-press" disabled={!canStart || opening} onClick={startNew}>
+      <span className="project-new-icon" aria-hidden="true">{opening ? <StudioSpinner size={18} /> : <IconPlus size={20} strokeWidth={2.2} />}</span>
+      <span className="project-new-text"><strong>{local ? '新建会话' : '新建对话'}</strong><small>Claude、Codex 或 DeepSeek</small></span>
+    </button>
+    {error && <p className="studio-feedback error" role="alert">{error}</p>}
+    <section className="app-side-section project-home" aria-label="最近会话">
+      <div className="app-side-header"><h2>最近会话</h2>
+        <button type="button" className="app-side-link ios-press" onClick={onShowAll}>全部<IconChevronRight size={15} aria-hidden="true" /></button></div>
+      <div className="ios-list">
+        {rows === null && <div className="ios-row no-icon" role="status"><StudioSpinner size={16} label="正在读取会话" /></div>}
+        {recent.map(({ item, running }) => row(item, running))}
+        {rows !== null && !recent.length && <div className="ios-row no-icon"><span className="ios-row-body"><small>还没有会话</small></span></div>}
+      </div>
+    </section>
+  </>;
+}
+
+/**
+ * Used by StudioPage's project app as the AI 助手 tab (AI 工坊 in an AI-built app, which opens on its 主页 instead),
+ * the page a project opens on: the product's website (打开网站),
  * 新建会话 (one chat for Claude Code, Codex and DeepSeek), the running and earlier sessions of the project with
  * their official marks, a small 终端 button, and for a remote project the agents of its host. `onOpenChat` opens the
  * project's own DeepSeek chat (a new conversation, or `conversationId`) where there is no local directory.

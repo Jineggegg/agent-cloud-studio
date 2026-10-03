@@ -86,6 +86,9 @@ export default defineConfig(({ mode, command }) => {
     server: {
       host,
       port: parseInt(env.VITE_PORT) || 5173,
+      // CORS stays with the Studio server, as in production: Vite's own handler would answer the preflights of
+      // AI-built apps (sandboxed, Origin: null) itself and refuse them before they reach /api/studio/app-site.
+      cors: false,
       proxy: {
         '/api': `http://${proxyHost}:${serverPort}`,
         '/ws': {
