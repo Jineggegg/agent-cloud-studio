@@ -116,8 +116,10 @@
 .home-tile-slot.is-lifted :is(.home-label, .home-status) { opacity: 0; }
 .is-lifted .home-remove, .is-lifted .widget-resize { opacity: 0; scale: .6; transition: opacity var(--dur-fast) ease, scale var(--dur-fast) ease; }
 .home-remove, .widget-resize { transition: opacity var(--dur-fast) ease, scale var(--dur-base) var(--ease-spring); }
-/* Leaving edit mode: the badges shrink away (out of reach) while the jiggle eases to rest (settleJiggle). */
-.home-screen.edit-leaving :is(.home-remove, .home-resume) {
+/* Leaving edit mode: the badges and the widgets' resize corners shrink away (out of reach) while the jiggle eases
+   to rest (settleJiggle). They come in with the same pop (studio-pop in studio.css) when edit mode starts. */
+.home-screen.edit-leaving :is(.home-remove, .home-resume),
+.widget-grid.edit-leaving :is(.widget-remove, .widget-resize) {
   pointer-events: none; animation: home-control-out var(--motion-dur-out) var(--motion-ease) forwards;
 }
 @keyframes home-control-out { to { opacity: 0; scale: .4; } }

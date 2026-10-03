@@ -3,7 +3,11 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest';
 
 vi.mock('@/shared/context/ThemeContext', () => ({ useTheme: () => ({ isDarkMode: false, setThemeMode: vi.fn() }) }));
-vi.mock('@/modules/studio/StudioWidgets', () => ({ StudioWidgets: () => null }));
+// The widgets' own exit is tested in StudioWidgets.test.tsx; here only what the home screen tells them is kept.
+const widgetProps = vi.hoisted(() => ({ last: null as { editing: boolean; leavingEdit?: boolean } | null }));
+vi.mock('@/modules/studio/StudioWidgets', () => ({
+  StudioWidgets: (props: { editing: boolean; leavingEdit?: boolean }) => { widgetProps.last = props; return null; },
+}));
 vi.mock('@/modules/studio/StudioFluidBackground', () => ({ StudioFluidBackground: () => null }));
 
 import type { StudioHomeTile } from '@/shared/types';
@@ -148,7 +152,10 @@ test('leaving edit mode winds down: the badges and the edit bar play out before 
   // The page dots have already left the bar for the foot of the screen.
   expect(bar?.querySelector('.home-page-control')).toBeNull();
   expect(screen.getByRole('group', { name: '主屏幕页面' })).toBeTruthy();
+  // The widgets' badges and resize corners wind down with the icons'.
+  expect(widgetProps.last).toMatchObject({ editing: false, leavingEdit: true });
   act(() => { vi.advanceTimersByTime(350); });
+  expect(widgetProps.last).toMatchObject({ editing: false, leavingEdit: false });
   expect(document.querySelector('.home-edit-bar')).toBeNull();
   expect(document.querySelector('.home-remove')).toBeNull();
   expect(document.querySelector('.home-screen')?.classList.contains('edit-leaving')).toBe(false);
@@ -167,6 +174,7 @@ test('under reduced motion edit mode ends at once', () => {
   fireEvent.click(screen.getByRole('button', { name: '完成' }));
   expect(document.querySelector('.home-edit-bar')).toBeNull();
   expect(document.querySelector('.home-remove')).toBeNull();
+  expect(widgetProps.last).toMatchObject({ editing: false, leavingEdit: false });
 });
 
 test('one page shows no page control', () => {

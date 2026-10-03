@@ -267,7 +267,8 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
   const names = useHomeNames();
   // Edit mode jiggles tiles and widgets, lets them be dragged and exposes hide controls, as on the iPadOS home screen.
   const [editing, setEditing] = useState(false);
-  // Edit mode winding down after 完成 or a tap beside the icons: the badges and the edit bar shrink away and the page
+  // Edit mode winding down after 完成 or a tap beside the icons: the badges (icons' and widgets', with the widgets'
+  // resize corners) and the edit bar shrink away and the page
   // dots glide home before those controls unmount (STUDIO_MOTION_OUT_MS); never under reduced motion.
   const [leavingEdit, setLeavingEdit] = useState(false);
   // The icon or folder whose name is being typed in place.
@@ -906,7 +907,7 @@ export function StudioHomeScreen({ tiles, loading, covered, snr, onOpen, onOpenW
     const holdsAdd = range.start <= entries.length && entries.length < range.end;
     return <section key={index} className="home-page" data-home-page={index} aria-label={pageCount > 1 ? `第 ${index + 1} 页，共 ${pageCount} 页` : undefined}>
       {index === 0 && <div className="home-widgets-slot" ref={widgetsRef}>
-        <StudioWidgets editing={editing} snr={snr} paused={covered} onEnterEdit={enterEdit} onOpen={onOpenWidget}
+        <StudioWidgets editing={editing} leavingEdit={leavingEdit} snr={snr} paused={covered} onEnterEdit={enterEdit} onOpen={onOpenWidget}
           galleryOpen={widgetGalleryOpen} onGalleryClose={() => setWidgetGalleryOpen(false)} overlayContainer={dragHost} onDragActiveChange={setDragActive} />
       </div>}
       <nav className="home-grid" aria-label={index === 0 ? '应用' : `应用（第 ${index + 1} 页）`} aria-busy={index === 0 ? loading : undefined}>
