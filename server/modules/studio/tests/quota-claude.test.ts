@@ -154,16 +154,17 @@ test('usage API figures map to the 5-hour and weekly windows, cached for a minut
   }));
   try {
     const usage = createClaudeUsageReader({ credentialsFile, enabled: true, request, now: () => clock });
-    const [first, concurrent] = await Promise.all([
+    const [first, concurrent] = (await captureConsole(() => Promise.all([
       readClaudeQuota({ snapshotFile, now: clock, usage }),
       readClaudeQuota({ snapshotFile, now: clock, usage }),
-    ]);
+    ]))).result;
     assert.deepEqual(first, {
       provider: 'claude', available: true, balances: [], source: 'usage-api',
       observedAt: new Date(NOW).toISOString(), stale: false,
       windows: [
         { id: 'five_hour', label: '5 小时', usedPercent: 42, windowMinutes: 300, resetsAt: '2026-10-02T13:59:59.943Z' },
         { id: 'seven_day', label: '每周', usedPercent: 18, windowMinutes: 10080, resetsAt: null },
+        { id: 'seven_day_opus', label: '每周 · Opus', usedPercent: 3, windowMinutes: 10080, resetsAt: null, model: 'Opus' },
       ],
     });
     assert.deepEqual(concurrent, first);
@@ -182,6 +183,108 @@ test('usage API figures map to the 5-hour and weekly windows, cached for a minut
     await readClaudeQuota({ snapshotFile, now: clock, usage });
     assert.equal(calls.length, 2, 'asked again after a minute');
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('per-model windows and credit allowances are read generically from the usage answer', async () => {
+  const { directory, credentialsFile, snapshotFile } = loginFixture();
+  const weekEnd = '2026-10-05T06:00:00+00:00';
+  const { request } = fakeFetch(() => Response.json({
+    five_hour: { utilization: 9, resets_at: '2026-10-02T15:36:00+00:00' },
+    seven_day: { utilization: 4.2, resets_at: weekEnd },
+    seven_day_sonnet: { utilization: 12.5, resets_at: weekEnd },
+    seven_day_oauth_apps: null,
+    seven_day_opus: null,
+    seven_day_omelette: { utilization: 0, resets_at: null },
+    seven_day_broken: { utilization: 'high' },
+    five_hour_fable: { utilization: 1, resets_at: null },
+    limits: [
+      { kind: 'weekly_scoped', scope: { model: { display_name: 'Fable' } }, percent: 0, resets_at: weekEnd },
+      // Already listed under seven_day_sonnet.
+      { kind: 'weekly_scoped', scope: { model: { display_name: 'Sonnet' } }, percent: 99, resets_at: weekEnd },
+      { kind: 'daily_scoped', scope: { model: { display_name: 'Haiku' } }, percent: 5 },
+      { kind: 'weekly_scoped', scope: {}, percent: 5 },
+      null,
+    ],
+    cinder_cove: { utilization: 8.4, resets_at: '2026-11-05T07:59:00+00:00' },
+    extra_usage: { is_enabled: true, monthly_limit: 25000, used_credits: 2100, utilization: 8.4, currency: 'usd' },
+    iguana_necktie: null,
+  }));
+  try {
+    const usage = createClaudeUsageReader({ credentialsFile, enabled: true, request, now: () => NOW });
+    const { result: snapshot } = await captureConsole(() => readClaudeQuota({ snapshotFile, now: NOW, usage }));
+    assert.equal(snapshot.source, 'usage-api');
+    assert.deepEqual(snapshot.windows.map(({ id, label, usedPercent, windowMinutes, model }) => ({ id, label, usedPercent, windowMinutes, model })), [
+      { id: 'five_hour', label: '5 小时', usedPercent: 9, windowMinutes: 300, model: undefined },
+      { id: 'seven_day', label: '每周', usedPercent: 4.2, windowMinutes: 10080, model: undefined },
+      { id: 'five_hour_fable', label: '5 小时 · Fable', usedPercent: 1, windowMinutes: 300, model: 'Fable' },
+      { id: 'seven_day_omelette', label: '每周 · Omelette', usedPercent: 0, windowMinutes: 10080, model: 'Omelette' },
+      { id: 'seven_day_sonnet', label: '每周 · Sonnet', usedPercent: 12.5, windowMinutes: 10080, model: 'Sonnet' },
+      { id: 'weekly_scoped:fable', label: '每周 · Fable', usedPercent: 0, windowMinutes: 10080, model: 'Fable' },
+    ]);
+    assert.ok(!('model' in snapshot.windows[0]), 'plan-wide windows carry no model key');
+    assert.equal(snapshot.windows.at(-1)?.resetsAt, '2026-10-05T06:00:00.000Z');
+    assert.deepEqual(snapshot.credits, [
+      { id: 'cinder_cove', label: '云端额度', usedPercent: 8.4, currency: null, limit: null, used: null, remaining: null, endsAt: '2026-11-05T07:59:00.000Z', endKind: 'expires' },
+      { id: 'extra_usage', label: '额外用量', usedPercent: 8.4, currency: 'USD', limit: 250, used: 21, remaining: 229, endsAt: null, endKind: 'resets' },
+    ]);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('credits: extra usage that is off is skipped, amounts alone give a percentage, and credits alone are enough to show', async () => {
+  const answers = [
+    // Off: nothing to show beyond the windows, and no `credits` key at all.
+    { five_hour: { utilization: 1, resets_at: null }, extra_usage: { is_enabled: false, monthly_limit: null, used_credits: null, utilization: null } },
+    // No windows, only a credit whose percentage comes from its amounts; JPY has no minor unit.
+    { five_hour: null, seven_day: null, extra_usage: { is_enabled: true, monthly_limit: 5000, used_credits: 1250, utilization: null, currency: 'JPY' } },
+    // No cap: the spend is known, what is left is not.
+    { seven_day: { utilization: 2, resets_at: null }, extra_usage: { is_enabled: true, monthly_limit: null, used_credits: 1999, utilization: null } },
+  ];
+  const results = [];
+  for (const answer of answers) {
+    const fixture = loginFixture();
+    try {
+      const { request } = fakeFetch(() => Response.json(answer));
+      const usage = createClaudeUsageReader({ credentialsFile: fixture.credentialsFile, enabled: true, request, now: () => NOW });
+      results.push((await captureConsole(() => readClaudeQuota({ snapshotFile: fixture.snapshotFile, now: NOW, usage }))).result);
+    } finally { rmSync(fixture.directory, { recursive: true, force: true }); }
+  }
+  const [off, creditOnly, uncapped] = results;
+  assert.equal(off.available, true);
+  assert.ok(!('credits' in off));
+  assert.equal(creditOnly.available, true);
+  assert.deepEqual(creditOnly.windows, []);
+  assert.deepEqual(creditOnly.credits, [{ id: 'extra_usage', label: '额外用量', usedPercent: 25, currency: 'JPY', limit: 5000, used: 1250, remaining: 3750, endsAt: null, endKind: 'resets' }]);
+  assert.deepEqual(uncapped.credits?.map(credit => [credit.limit, credit.used, credit.remaining, credit.usedPercent]), [[null, 19.99, null, null]]);
+});
+
+test('the first successful answer logs its sorted key names once, at info level, and never a value', async () => {
+  const { directory, credentialsFile, snapshotFile } = loginFixture();
+  let clock = NOW;
+  const { calls, request } = fakeFetch(() => Response.json({
+    seven_day: { utilization: 61.5, resets_at: '2026-10-07T06:00:00+00:00' },
+    five_hour: { utilization: 33.3, resets_at: null },
+    extra_usage: { is_enabled: true, monthly_limit: 987654, used_credits: 123456, utilization: 12.5 },
+    'odd key\nInjected: 1': 'value-that-must-not-be-logged',
+  }));
+  const lines: { level: string; text: string }[] = [];
+  const methods = ['log', 'info', 'warn', 'error', 'debug'] as const;
+  const originals = methods.map(name => console[name]);
+  for (const name of methods) console[name] = (...parts: unknown[]) => { lines.push({ level: name, text: parts.map(String).join(' ') }); };
+  try {
+    const usage = createClaudeUsageReader({ credentialsFile, enabled: true, request, now: () => clock });
+    await readClaudeQuota({ snapshotFile, now: clock, usage });
+    clock += 61_000;
+    await readClaudeQuota({ snapshotFile, now: clock, usage });
+    assert.equal(calls.length, 2, 'both reads reached the API');
+  } finally {
+    methods.forEach((name, index) => { console[name] = originals[index]; });
+    rmSync(directory, { recursive: true, force: true });
+  }
+  assert.deepEqual(lines, [{ level: 'info', text: '[quota] Claude usage API answer keys: extra_usage, five_hour, seven_day (+1 other)' }]);
+  const output = lines.map(line => line.text).join('\n');
+  for (const value of ['61.5', '33.3', '987654', '123456', '12.5', '2026-10-07', 'value-that-must-not-be-logged', 'Injected', TOKEN.slice(0, 24)]) {
+    assert.ok(!output.includes(value), `no ${value} in the log`);
+  }
 });
 
 test('an expired login is not used (and never refreshed): the snapshot is shown instead', async () => {

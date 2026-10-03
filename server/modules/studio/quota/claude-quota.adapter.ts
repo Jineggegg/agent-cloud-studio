@@ -4,7 +4,7 @@ import {
   readObjectRecord,
   readSmallRegularFile,
 } from '@/shared/utils.js';
-import type { StudioQuotaSnapshot, StudioQuotaWindow } from '@/shared/types.js';
+import type { StudioQuotaCredit, StudioQuotaSnapshot, StudioQuotaWindow } from '@/shared/types.js';
 
 // The snapshot only refreshes while Claude is in use; after this it is shown but flagged.
 const OBSERVATION_STALE_MS = 6 * 60 * 60_000;
@@ -13,6 +13,23 @@ const PLAN_WINDOWS = [
   { key: 'five_hour', label: '5 小时', minutes: 300 },
   { key: 'seven_day', label: '每周', minutes: 10080 },
 ] as const;
+// The usage API also sends per-model windows as `<plan window>_<model>` (seven_day_opus, seven_day_sonnet, …).
+const MODEL_WINDOW_KEY = /^(five_hour|seven_day)_([a-z0-9]+(?:_[a-z0-9]+)*)$/;
+// Readable names for the model part of such a key; any other part is title-cased ("omelette" → "Omelette").
+const MODEL_KEY_NAMES: Record<string, string> = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable', oauth_apps: 'OAuth 应用' };
+// Newer answers list per-model weekly limits in `limits` as `{ kind: 'weekly_scoped', scope: { model: { display_name } }, percent, resets_at }`.
+const SCOPED_WEEKLY_KIND = 'weekly_scoped';
+// Credit allowances the usage API reports. Their amounts are in minor units (cents), as Claude Code itself reads them.
+const CREDIT_KEYS = [
+  // The one-time Claude Code and Cowork credit (the desktop app's "cloud session credits"); `resets_at` is its expiry.
+  { key: 'cinder_cove', label: '云端额度', endKind: 'expires' },
+  // Pay-as-you-go usage beyond the plan, capped by a monthly spend limit; only shown while turned on.
+  { key: 'extra_usage', label: '额外用量', endKind: 'resets' },
+] as const;
+// ISO 4217 currencies without minor units, whose amounts are not divided by 100.
+const ZERO_DECIMAL_CURRENCIES = new Set(['BIF', 'CLP', 'DJF', 'GNF', 'ISK', 'JPY', 'KMF', 'KRW', 'PYG', 'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF']);
+// Only key names shaped like identifiers are logged; anything else is counted, never echoed.
+const LOGGABLE_KEY = /^[A-Za-z0-9_.-]{1,64}$/;
 
 // The read-only query behind Claude Code's /usage. It accepts the claude.ai OAuth login only (not an API key).
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
@@ -49,7 +66,7 @@ const USAGE_NOTES = {
 } as const;
 
 type UsageReading =
-  | { kind: 'windows'; windows: StudioQuotaWindow[]; observedAt: number }
+  | { kind: 'windows'; windows: StudioQuotaWindow[]; credits: StudioQuotaCredit[]; observedAt: number }
   | { kind: 'skipped'; note: string };
 type Credential = { kind: 'token'; accessToken: string; expiresAt: number | null } | { kind: 'skipped'; note: string };
 type SnapshotReading =
@@ -91,23 +108,109 @@ async function readCredential(credentialsFile: string, now: number): Promise<Cre
   return { kind: 'token', accessToken, expiresAt };
 }
 
-// `{ five_hour: { utilization: 0..100, resets_at: ISO | null } | null, seven_day: …, …unknown }`.
+function finiteNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+// A percentage as the widgets show it: 0..100 with one decimal (an account over its limit reports more than 100).
+function clampPercent(value: number) {
+  return Math.min(100, Math.max(0, Math.round(value * 10) / 10));
+}
+
+function isoOrNull(value: unknown) {
+  const milliseconds = readEpochMilliseconds(value);
+  return milliseconds === null ? null : new Date(milliseconds).toISOString();
+}
+
+// "oauth_apps" → "OAuth 应用", "omelette" → "Omelette".
+function modelKeyName(part: string) {
+  return MODEL_KEY_NAMES[part] ?? part.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+}
+
+// `{ utilization: 0..100, resets_at: ISO | null }`; null (a limit the account does not have) gives no window.
+function usageWindow(value: unknown, window: Omit<StudioQuotaWindow, 'usedPercent' | 'resetsAt'>): StudioQuotaWindow | null {
+  const record = readObjectRecord(value);
+  const used = finiteNumber(record?.utilization);
+  if (!record || used === null) return null;
+  return { ...window, usedPercent: clampPercent(used), resetsAt: isoOrNull(record.resets_at) };
+}
+
+/**
+ * Every window in a usage answer: the plan-wide 5-hour and weekly ones first, then per-model ones from
+ * `<plan window>_<model>` keys (sorted by key) and from `limits` entries of kind `weekly_scoped`. A model
+ * already listed under a key is not repeated from `limits`; null and malformed entries are skipped.
+ */
 function usageWindows(payload: Record<string, unknown>): StudioQuotaWindow[] {
   const windows: StudioQuotaWindow[] = [];
   for (const { key, label, minutes } of PLAN_WINDOWS) {
-    const window = readObjectRecord(payload[key]);
-    const used = window?.utilization;
-    if (!window || typeof used !== 'number' || !Number.isFinite(used)) continue;
-    const resetsAtMs = readEpochMilliseconds(window.resets_at);
+    const window = usageWindow(payload[key], { id: key, label, windowMinutes: minutes });
+    if (window) windows.push(window);
+  }
+  for (const key of Object.keys(payload).sort()) {
+    const match = MODEL_WINDOW_KEY.exec(key);
+    if (!match) continue;
+    const plan = PLAN_WINDOWS.find(item => item.key === match[1])!;
+    const model = modelKeyName(match[2]);
+    const window = usageWindow(payload[key], { id: key, label: `${plan.label} · ${model}`, windowMinutes: plan.minutes, model });
+    if (window) windows.push(window);
+  }
+  const limits = Array.isArray(payload.limits) ? payload.limits : [];
+  for (const entry of limits) {
+    const record = readObjectRecord(entry);
+    const name = readObjectRecord(readObjectRecord(record?.scope)?.model)?.display_name;
+    const used = finiteNumber(record?.percent ?? record?.utilization);
+    if (!record || record.kind !== SCOPED_WEEKLY_KIND || typeof name !== 'string' || used === null) continue;
+    const model = name.trim().slice(0, 40);
+    const slug = model.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    if (!slug || windows.some(window => window.windowMinutes === 10080 && window.model?.toLowerCase() === model.toLowerCase())) continue;
     windows.push({
-      id: key,
-      label,
-      usedPercent: Math.min(100, Math.max(0, Math.round(used * 10) / 10)),
-      windowMinutes: minutes,
-      resetsAt: resetsAtMs === null ? null : new Date(resetsAtMs).toISOString(),
+      id: `${SCOPED_WEEKLY_KIND}:${slug}`, label: `每周 · ${model}`, usedPercent: clampPercent(used),
+      windowMinutes: 10080, resetsAt: isoOrNull(record.resets_at), model,
     });
   }
   return windows;
+}
+
+// Cents (or the currency's minor unit) to major units; null when absent.
+function majorUnits(value: unknown, currency: string) {
+  const amount = finiteNumber(value);
+  if (amount === null) return null;
+  return ZERO_DECIMAL_CURRENCIES.has(currency) ? amount : Math.round(amount) / 100;
+}
+
+/**
+ * Credit allowances in a usage answer. `extra_usage` is `{ is_enabled, monthly_limit, used_credits,
+ * utilization, currency? }` (cents; `monthly_limit` null is no cap) and is skipped while turned off.
+ * `cinder_cove` is `{ utilization, resets_at }`; amounts are read too if it ever carries them. A credit
+ * with neither a percentage nor an amount is skipped.
+ */
+function usageCredits(payload: Record<string, unknown>): StudioQuotaCredit[] {
+  const credits: StudioQuotaCredit[] = [];
+  for (const { key, label, endKind } of CREDIT_KEYS) {
+    const record = readObjectRecord(payload[key]);
+    // Extra usage always says whether it is turned on; the one-time credit has no such flag.
+    if (!record || ('is_enabled' in record && record.is_enabled !== true)) continue;
+    const currency = typeof record.currency === 'string' && /^[A-Za-z]{3}$/.test(record.currency) ? record.currency.toUpperCase() : 'USD';
+    const limit = majorUnits(record.monthly_limit ?? record.total_credits ?? record.granted_credits, currency);
+    const used = majorUnits(record.used_credits, currency);
+    const remaining = majorUnits(record.remaining_credits, currency) ?? (limit !== null && used !== null ? Math.max(0, Math.round((limit - used) * 100) / 100) : null);
+    const utilization = finiteNumber(record.utilization);
+    const usedPercent = utilization !== null ? clampPercent(utilization) : limit !== null && limit > 0 && used !== null ? clampPercent(used / limit * 100) : null;
+    if (usedPercent === null && used === null && remaining === null) continue;
+    credits.push({
+      id: key, label, usedPercent, currency: limit !== null || used !== null || remaining !== null ? currency : null,
+      limit, used, remaining, endsAt: isoOrNull(record.resets_at ?? record.expires_at), endKind,
+    });
+  }
+  return credits;
+}
+
+// "five_hour, limits, seven_day, …": the sorted top-level key names, never a value.
+function describeKeys(payload: Record<string, unknown>) {
+  const keys = Object.keys(payload);
+  const named = keys.filter(key => LOGGABLE_KEY.test(key)).sort();
+  const other = keys.length - named.length;
+  return `${named.join(', ') || '(none)'}${other ? ` (+${other} other)` : ''}`;
 }
 
 // Seconds from a 429's Retry-After, or null; an HTTP date is not worth parsing for a widget.
@@ -130,6 +233,9 @@ function retryAfterMs(response: Response) {
  *   a 5xx, a timeout (5 s), a network error or a malformed answer backs off for five minutes. A
  *   401/403 backoff ends early once the CLI has stored a different login (another expiry time).
  * - `enabled` false (STUDIO_CLAUDE_USAGE_API=off) skips every request. `read` never rejects.
+ * - The answer's shape is undocumented, so the first successful answer logs (at info level) the
+ *   sorted names of its top-level keys, once per reader; the quota service keeps one reader for the
+ *   process's lifetime, so that is once per process. Values are never logged.
  */
 export function createClaudeUsageReader(options: {
   credentialsFile: string;
@@ -139,6 +245,7 @@ export function createClaudeUsageReader(options: {
   timeoutMs?: number;
 }) {
   const timeoutMs = options.timeoutMs ?? USAGE_TIMEOUT_MS;
+  let keysLogged = false;
   let answer: { reading: UsageReading; until: number } | null = null;
   // `expiresAt` set: the backoff belongs to that login (a refused token) and ends when the login changes.
   let backoff: { until: number; note: string; login: { expiresAt: number | null } | null } | null = null;
@@ -195,8 +302,13 @@ export function createClaudeUsageReader(options: {
       if (!payload) return fail(USAGE_NOTES.unavailable, 'returned a malformed answer', null);
       const observedAt = options.now();
       backoff = null;
+      if (!keysLogged) {
+        keysLogged = true;
+        console.info(`[quota] Claude usage API answer keys: ${describeKeys(payload)}`);
+      }
       const windows = usageWindows(payload);
-      const reading: UsageReading = windows.length ? { kind: 'windows', windows, observedAt } : skipped(USAGE_NOTES.empty);
+      const credits = usageCredits(payload);
+      const reading: UsageReading = windows.length || credits.length ? { kind: 'windows', windows, credits, observedAt } : skipped(USAGE_NOTES.empty);
       answer = { reading, until: observedAt + USAGE_CACHE_MS };
       return reading;
     } catch {
@@ -282,7 +394,8 @@ async function readSnapshot(snapshotFile: string, now: number): Promise<Snapshot
  * Used by the Studio quota service to describe Claude plan usage for the home-screen widget.
  *
  * With a `usage` reader (createClaudeUsageReader), the live figures from the machine's Claude login
- * come first (`source: 'usage-api'`). When they cannot be read (signed out, expired login, API-key
+ * come first (`source: 'usage-api'`): the 5-hour and weekly windows, any per-model weekly windows
+ * (each with its `model`), and any credit allowances as `credits`. When they cannot be read (signed out, expired login, API-key
  * login, the API refusing or down, or STUDIO_CLAUDE_USAGE_API=off), the snapshot written by the
  * Claude Code statusLine script or by Studio's own Agent SDK sessions is used, and if that is missing
  * too, the note says why and how to enable one. A snapshot used as the fallback carries the reason
@@ -304,6 +417,7 @@ export async function readClaudeQuota(input: {
         available: true,
         windows: reading.windows,
         balances: [],
+        ...(reading.credits.length ? { credits: reading.credits } : {}),
         source: 'usage-api',
         observedAt: new Date(reading.observedAt).toISOString(),
         stale: reading.windows.some(window => window.resetsAt !== null && Date.parse(window.resetsAt) <= input.now),
