@@ -2,8 +2,10 @@ import { useEffect, useLayoutEffect, useRef } from 'react';
 import type { RefObject } from 'react';
 
 /**
- * Keeps the transcript on its newest line while the dock under it changes height — the run status row arriving,
- * unfolding its steps or leaving, a sheet rising. The scroller gives up that height at its bottom edge, which would
+ * Keeps the transcript on its newest line while the dock under it changes height — a permission or question sheet
+ * rising or sinking, a queued draft or recovery note appearing, the composer growing with its text or attachments.
+ * (The run status lives inside the composer's toolbar and its steps float above it, so it no longer moves the dock.)
+ * The scroller gives up that height at its bottom edge, which would
  * otherwise push the last lines out of view; a transcript the owner has scrolled up (`pinned` false) is left alone.
  * Used by WorkbenchAgentChat.
  */

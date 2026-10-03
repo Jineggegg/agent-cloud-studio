@@ -358,47 +358,61 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
 .wbc-menu-hint { font-size: 12.5px; line-height: 1.35; color: var(--wbc-label-2); }
 .wbc-menu-note { padding: 4px 12px 8px 34px; font-size: 12.5px; line-height: 1.4; color: var(--wbc-label-3); }
 
-/* ---------- Run status: the transcript's last line, above the composer ----------
- * The first thing in the dock, so it stays put while the transcript scrolls and never covers a message. The slot's
- * height is animated (carrying the dock and the transcript's bottom edge); the row inside springs in from below. */
-.wbc-run-slot { overflow: hidden; }
+/* ---------- Run status: a pill in the composer's toolbar, just left of the send/stop disc ----------
+ * It springs in with its anchor's width (so the chips beside it slide rather than jump) and names what the run is
+ * doing, its step count and its time; the steps unfold upwards in a popover anchored to the pill. The disc beside it
+ * is the one stop control. The toolbar is its own size container: as it narrows the pill sheds its words, then its
+ * step count, keeping the glyph and the time, and it shrinks before the chips do, so the bar stays on one line. */
+.wbc-composer-bar { container: wbc-bar / inline-size; }
+.wbc-run-anchor { position: relative; display: flex; justify-content: flex-end; flex: 0 8 auto; min-width: 0; }
 .wbc-run {
-  width: fit-content; max-width: 100%; margin: 2px 0 8px; overflow: hidden;
-  background: var(--wbc-surface-2);
-  border: .5px solid var(--wbc-separator);
+  display: flex; min-width: 0; max-width: 100%; overflow: hidden; border-radius: 999px;
+  background: var(--wbc-fill); transform-origin: right center;
+  transition: background-color 240ms ease;
 }
-.wbc-run.is-expanded { width: 100%; }
-.wbc-run-bar { display: flex; align-items: center; gap: 2px; padding: 3px; }
+.wbc-run.is-waiting { background: var(--wbc-orange-soft); }
+.wbc-run.is-finished { background: var(--wbc-green-soft); }
 .wbc-run-main {
-  display: flex; align-items: center; gap: 10px; flex: 0 1 auto; min-width: 0; min-height: 38px; padding: 0 12px 0 10px;
-  border-radius: 17px; font-size: 14px; font-weight: 600; text-align: left; color: var(--wbc-label);
+  display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; height: 32px; padding: 0 11px 0 8px;
+  border-radius: inherit; font-size: 13px; font-weight: 600; white-space: nowrap; text-align: left; color: var(--wbc-label);
 }
-.wbc-run.is-expanded .wbc-run-main { flex: 1; }
 .wbc-run-main:disabled { opacity: 1; cursor: default; }
-.wbc-run-main:not(:disabled):hover { background: var(--wbc-fill); }
-.wbc-run-glyph { display: grid; place-items: center; flex-shrink: 0; width: 22px; color: var(--wbc-label-2); }
+.wbc-run-main:not(:disabled):hover, .wbc-run-main[aria-expanded="true"] { background: var(--wbc-fill-pressed); }
+.wbc-run-glyph { display: grid; place-items: center; flex-shrink: 0; width: 18px; color: var(--wbc-label-2); }
 .wbc-run.is-finished .wbc-run-glyph { color: var(--wbc-green); }
-.wbc-run.is-waiting .wbc-run-glyph { color: var(--wbc-orange); }
-.wbc-run-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wbc-run.is-waiting .wbc-run-glyph, .wbc-run.is-waiting .wbc-run-text { color: var(--wbc-orange); }
+.wbc-run-text { flex: 0 1 auto; min-width: 0; max-width: 15em; overflow: hidden; text-overflow: ellipsis; }
 .wbc-run.is-composing .wbc-run-text, .wbc-run.is-finished .wbc-run-text { color: var(--wbc-label-2); }
 .wbc-run-count, .wbc-run-time {
   flex-shrink: 0; font-size: 12.5px; font-weight: 500; color: var(--wbc-label-2); font-variant-numeric: tabular-nums;
 }
-.wbc-run-count { padding: 2px 7px; border-radius: 999px; background: var(--wbc-fill); color: var(--wbc-label); font-weight: 600; }
-/* The steps unfold upwards, so the chevron points up while they are folded away and down once they are open. */
-.wbc-run-chevron { flex-shrink: 0; color: var(--wbc-label-3); transform: rotate(180deg); transition: transform 300ms var(--wbc-ease-out); }
-.wbc-run-main[aria-expanded="true"] .wbc-run-chevron { transform: rotate(0deg); }
-.wbc-run-stop {
-  position: relative; display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; margin: 0 1px 0 2px;
-  border-radius: 50%; background: var(--wbc-label); color: var(--wbc-surface);
+.wbc-run-count { padding: 1px 6px; border-radius: 999px; background: var(--wbc-fill); color: var(--wbc-label); font-weight: 600; }
+/* The steps: a glass popover rising from the pill, its right edge on the pill's, kept inside a phone's width. */
+.wbc-run-pop {
+  position: absolute; z-index: 30; right: 0; bottom: calc(100% + 12px); width: min(340px, calc(100vw - 32px));
+  padding: 12px 8px 4px; border-radius: 18px; text-align: left;
+  background: var(--wbc-glass-strong);
+  -webkit-backdrop-filter: saturate(180%) blur(28px); backdrop-filter: saturate(180%) blur(28px);
+  border: .5px solid var(--wbc-glass-edge); box-shadow: var(--wbc-shadow-float); transform-origin: bottom right;
 }
-.wbc-run-stop::before { content: ""; position: absolute; inset: -6px; }
-.wbc-run-stop:active { transform: scale(.86); transition-duration: 90ms; }
-.wbc-run-progress { height: 3px; margin: 0 14px 5px; border-radius: 3px; background: var(--wbc-fill); overflow: hidden; }
+.wbc-run-pop-head {
+  display: flex; align-items: baseline; justify-content: space-between; padding: 0 8px;
+  font-size: 13px; font-weight: 600; color: var(--wbc-label-2);
+}
+.wbc-run-pop-count { color: var(--wbc-label); font-variant-numeric: tabular-nums; }
+.wbc-run-progress { height: 3px; margin: 8px 8px 2px; border-radius: 3px; background: var(--wbc-fill); overflow: hidden; }
 .wbc-run-progress span { display: block; height: 100%; border-radius: inherit; background: var(--wbc-tint); transform-origin: left center; }
-.wbc-run-todos { padding: 0 8px; }
-.wbc-run-todos .wbc-todos { padding: 8px 0 4px; max-height: 40vh; overflow-y: auto; overscroll-behavior: contain; }
-/* The model composing: the three dots that used to stand alone at the transcript's end, now the row's glyph. */
+.wbc-run-pop .wbc-todos { padding: 6px 0 4px; max-height: min(40vh, 320px); overflow-y: auto; overscroll-behavior: contain; }
+/* Narrower toolbars (iPad portrait with panels, phones): first the words go, then the step count. */
+@container wbc-bar (max-width: 600px) {
+  .wbc-run-text { display: none; }
+  .wbc-run-main { padding: 0 10px 0 8px; }
+}
+@container wbc-bar (max-width: 430px) {
+  .wbc-run-count { display: none; }
+  .wbc-run-main { gap: 5px; padding: 0 9px 0 7px; }
+}
+/* The model composing: the three dots that used to stand alone at the transcript's end, now the pill's glyph. */
 .wbc-run-dots { display: inline-flex; align-items: center; gap: 3px; height: 16px; }
 .wbc-run-dots i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: wbc-typing 1.3s ease-in-out infinite; }
 .wbc-run-dots i:nth-child(2) { animation-delay: .16s; }
@@ -954,7 +968,6 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
   .wbc-sheet-actions:not(.is-two) .wbc-sheet-action + .wbc-sheet-action { border-left: 0; border-top: .5px solid var(--wbc-separator); }
   .wbc-sheet-actions:not(.is-two) .wbc-sheet-action.is-primary { order: -1; }
   .wbc-chip { padding: 0 9px; }
-  .wbc-run-main { gap: 8px; padding: 0 10px 0 8px; }
 }
 /* ---------- Reduced motion: keep state changes, drop travel ---------- */
 @media (prefers-reduced-motion: reduce) {

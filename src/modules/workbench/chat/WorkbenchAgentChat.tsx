@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { AnimatePresence, m } from 'motion/react';
 import { ArrowDown, AtSign, ImagePlus, Slash } from 'lucide-react';
@@ -50,7 +50,7 @@ import {
   readToolInput,
 } from '@/modules/workbench/chat/utils/workbenchToolSummary';
 
-/** What the run is blocked on, worded for the run status row: `等你允许运行 npm test`. */
+/** What the run is blocked on, worded for the run status pill: `等你允许运行 npm test`. */
 function describeWaiting(request: PendingPermissionRequest): string {
   const call = describeToolCall(request.toolName, request.input);
   if (call.kind === 'other') return `等你允许使用 ${call.verb}`;
@@ -139,8 +139,9 @@ type WorkbenchAgentChatProps = {
 
 /**
  * Used by WorkbenchChat for Claude Code and Codex chats: the inherited chat engine under a new presentation — header
- * pill, transcript with tool stacks, and the dock: run status row, inline permission and question sheets, composer. Its
- * one model menu also lists the other providers' models until the first send.
+ * pill, transcript with tool stacks, and the dock: inline permission and question sheets, then the composer with the
+ * run status pill beside its send/stop disc. Its one model menu also lists the other providers' models until the first
+ * send.
  */
 export function WorkbenchAgentChat({
   conversationKey,
@@ -209,10 +210,17 @@ export function WorkbenchAgentChat({
       : planRequest ? '等你批准计划' : null;
   const activity = waitingFor ?? describeCurrentActivity(messages) ?? sessionState.sessionActivity?.statusText ?? '正在思考';
   const lastMessage = messages[messages.length - 1];
-  // The run status row's glyph: the typing dots while the model composes, the spinner while a tool runs, a hand
+  // The run status pill's glyph: the typing dots while the model composes, the spinner while a tool runs, a hand
   // while a sheet waits on the owner.
   const toolInFlight = Boolean(lastMessage?.isToolUse && !lastMessage.toolResult && lastMessage.toolStatus !== 'completed');
   const runPhase = waitingFor !== null ? 'waiting' : toolInFlight ? 'working' : 'composing';
+  // How many times the owner has asked to stop a run here (the send disc or Esc), so the run status can say 已停止.
+  const [stopRequests, setStopRequests] = useState(0);
+  const { handleAbortSession } = composer;
+  const stopRun = useCallback(() => {
+    setStopRequests((count) => count + 1);
+    handleAbortSession();
+  }, [handleAbortSession]);
   const dockRef = useRef<HTMLDivElement>(null);
   useDockScrollPin({ dockRef, scrollRef: sessionState.scrollContainerRef, pinned: !sessionState.isUserScrolledUp });
   const conversationTurns = useMemo(() => suggestionTurns(messages), [messages]);
@@ -281,7 +289,7 @@ export function WorkbenchAgentChat({
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'Escape' || event.defaultPrevented || event.repeat || !sessionState.canAbortSession) return;
     event.preventDefault();
-    composer.handleAbortSession();
+    stopRun();
   };
 
   const modeCopy = permissionModeCopy(providerState.permissionMode);
@@ -360,17 +368,6 @@ export function WorkbenchAgentChat({
             )}
           </AnimatePresence>
 
-          {/* The transcript's last line, right above the composer (or the sheet standing in for it). */}
-          <WorkbenchRunStatus
-            active={isProcessing}
-            activity={activity}
-            phase={runPhase}
-            startedAt={sessionState.sessionActivity?.startedAt ?? null}
-            todos={todos}
-            canStop={sessionState.canAbortSession}
-            onStop={composer.handleAbortSession}
-          />
-
           {/* One sheet at a time: the answered one sinks away before the next rises. */}
           <AnimatePresence mode="wait">
             {questionRequest ? (
@@ -434,9 +431,19 @@ export function WorkbenchAgentChat({
               onSelectEffort={handleSelectEffort}
               isProcessing={isProcessing}
               canAbort={sessionState.canAbortSession}
-              onAbort={composer.handleAbortSession}
+              onAbort={stopRun}
               suggestion={nextPrompt.suggestion}
               onSuggestionUsed={nextPrompt.dismiss}
+              runStatus={(
+                <WorkbenchRunStatus
+                  active={isProcessing}
+                  activity={activity}
+                  phase={runPhase}
+                  startedAt={sessionState.sessionActivity?.startedAt ?? null}
+                  todos={todos}
+                  stopRequests={stopRequests}
+                />
+              )}
             />
           )}
         </div>

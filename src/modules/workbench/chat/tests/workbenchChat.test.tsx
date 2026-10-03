@@ -1,4 +1,5 @@
 import { createRef } from 'react';
+import type { ReactElement } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, test, vi } from 'vitest';
@@ -342,7 +343,16 @@ describe('the context usage card', () => {
   });
 });
 
-describe('the run status row', () => {
+// The chat stylesheet as text. Vitest blanks CSS imports and the frontend program has no Node types, so Node's fs is
+// loaded through a specifier TypeScript does not try to resolve (as the studio widget tests do).
+async function readChatStylesheet() {
+  const fsModule = 'node:fs';
+  const { readFileSync } = (await import(/* @vite-ignore */ fsModule)) as { readFileSync: (path: string, encoding: 'utf8') => string };
+  const testsDir = decodeURIComponent(import.meta.url.replace(/^file:\/\//, '').replace(/^\/([A-Za-z]:)/, '$1')).replace(/\/[^/]*$/, '');
+  return readFileSync(`${testsDir}/../workbench-chat.css`, 'utf8');
+}
+
+describe('the run status pill', () => {
   const SESSION = { id: 's1', kind: 'agent', provider: 'claude', title: 't', updatedAt: null } as const;
   const TODOS = [
     { content: '读代码', activeForm: '正在读代码', status: 'completed' },
@@ -350,45 +360,99 @@ describe('the run status row', () => {
     { content: '跑测试', activeForm: '正在跑测试', status: 'in_progress' },
     { content: '提交', activeForm: '正在提交', status: 'pending' },
   ];
+  const rerenderChat = (rerender: (ui: ReactElement) => void) => rerender(
+    <WorkbenchChat project={project} session={SESSION} provider="claude" hubProjectId={null} onSessionCreated={vi.fn()} onOpenFile={vi.fn()} />,
+  );
 
-  test('sits in the dock right above the composer with state, progress, time and stop; nothing floats at the top', () => {
+  test('sits in the composer toolbar right before the send/stop disc, with no row of its own above the composer', () => {
+    engine.processing = true;
+    engine.canAbort = true;
+    engine.sessionActivity = { startedAt: Date.now() - 101_000 };
+    const { container } = renderChat({ session: SESSION });
+
+    const pill = screen.getByRole('group', { name: '本轮运行状态' });
+    const bar = container.querySelector('.wbc-composer-bar');
+    expect(bar?.contains(pill)).toBe(true);
+    // The pill's anchor is the disc's immediate neighbour, on the bar's right (after the spacer).
+    const stop = screen.getByRole('button', { name: '停止' });
+    const anchor = pill.closest('.wbc-run-anchor');
+    expect(anchor?.parentElement).toBe(bar);
+    expect(anchor?.nextElementSibling).toBe(stop);
+    expect(anchor?.previousElementSibling?.classList.contains('wbc-composer-spacer')).toBe(true);
+    // Nothing between the sheets and the composer, nothing in the header or over the transcript.
+    const dock = container.querySelector('.wbc-dock');
+    expect(Array.from(dock?.children ?? []).some((child) => child.contains(pill) && !child.classList.contains('wbc-composer-wrap'))).toBe(false);
+    expect(container.querySelector('.wbc-run-slot')).toBeNull();
+    expect(container.querySelector('.wbc-header')?.contains(pill)).toBe(false);
+    expect(container.querySelector('.wbc-scroll')?.contains(pill)).toBe(false);
+    expect(container.querySelector('.wbc-island')).toBeNull();
+
+    // The model composing: 正在思考 with the typing dots as its glyph, and no separate dots in the transcript.
+    expect(within(pill).getByText('正在思考')).toBeTruthy();
+    expect(pill.querySelector('.wbc-run-dots')).toBeTruthy();
+    expect(container.querySelector('.wbc-typing')).toBeNull();
+    expect(within(pill).getByText('1 分 41 秒')).toBeTruthy();
+  });
+
+  test('has no stop button of its own: the disc beside it is the one stop control, and it marks the run 已停止', () => {
     const abort = vi.fn();
     engine.abort = abort;
     engine.processing = true;
     engine.canAbort = true;
-    engine.sessionActivity = { startedAt: Date.now() - 101_000 };
+    engine.sessionActivity = { startedAt: Date.now() - 5_000 };
+    const { rerender } = renderChat({ session: SESSION });
+
+    const pill = screen.getByRole('group', { name: '本轮运行状态' });
+    expect(within(pill).queryAllByRole('button').map((button) => button.getAttribute('aria-label'))).not.toContain('停止这一轮');
+    expect(screen.queryByRole('button', { name: '停止这一轮' })).toBeNull();
+    expect(screen.getAllByRole('button', { name: /停止/ })).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: '停止' }));
+    expect(abort).toHaveBeenCalledTimes(1);
+    engine.processing = false;
+    engine.sessionActivity = null;
+    rerenderChat(rerender);
+    const finished = screen.getByRole('group', { name: '本轮运行状态' });
+    expect(within(finished).getByText('已停止')).toBeTruthy();
+    expect(finished.className).toContain('is-finished');
+    expect(within(finished).getByText(/^\d+ 秒$/)).toBeTruthy();
+  });
+
+  test('its step count unfolds the checklist upwards as a popover anchored to the pill; Esc and a tap outside fold it', () => {
+    const abort = vi.fn();
+    engine.abort = abort;
+    engine.processing = true;
+    engine.canAbort = true;
     engine.messages = [
       { type: 'user', content: '修一下样式', timestamp: '2026-10-02T08:00:00.000Z' },
       { type: 'assistant', content: '', isToolUse: true, toolName: 'TodoWrite', toolId: 't1', toolInput: { todos: TODOS }, toolResult: { content: 'ok' }, timestamp: '2026-10-02T08:00:01.000Z' },
     ] as ChatMessage[];
     const { container } = renderChat({ session: SESSION });
 
-    const row = screen.getByRole('group', { name: '本轮运行状态' });
-    // Inside the dock, before the composer; not in the header or over the transcript.
-    const dock = container.querySelector('.wbc-dock');
-    expect(dock?.contains(row)).toBe(true);
-    expect(container.querySelector('.wbc-header')?.contains(row)).toBe(false);
-    expect(container.querySelector('.wbc-scroll')?.contains(row)).toBe(false);
-    const composer = screen.getByRole('textbox', { name: '消息' });
-    expect(row.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(container.querySelector('.wbc-island')).toBeNull();
-
-    // The model composing: 正在思考 with the typing dots as its glyph, and no separate dots in the transcript.
-    expect(within(row).getByText('正在思考')).toBeTruthy();
-    expect(row.querySelector('.wbc-run-dots')).toBeTruthy();
-    expect(container.querySelector('.wbc-typing')).toBeNull();
-    expect(within(row).getByText('2/4')).toBeTruthy();
-    expect(within(row).getByText('1 分 41 秒')).toBeTruthy();
-
-    // The step count unfolds the checklist.
-    const toggle = within(row).getByRole('button', { name: /步骤 2\/4，展开步骤/ });
+    const pill = screen.getByRole('group', { name: '本轮运行状态' });
+    expect(within(pill).getByText('2/4')).toBeTruthy();
+    const toggle = within(pill).getByRole('button', { name: /步骤 2\/4.*展开步骤/ });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    expect(within(row).getByRole('list', { name: '任务清单' })).toBeTruthy();
-    expect(within(row).getByText('正在跑测试')).toBeTruthy();
 
-    fireEvent.click(within(row).getByRole('button', { name: '停止这一轮' }));
-    expect(abort).toHaveBeenCalledTimes(1);
+    const list = screen.getByRole('list', { name: '任务清单' });
+    const popover = list.closest('.wbc-run-pop');
+    expect(popover).toBeTruthy();
+    expect(toggle.getAttribute('aria-controls')).toBe(popover?.id);
+    // Anchored to the pill (inside its anchor), not a row in the dock.
+    expect(pill.closest('.wbc-run-anchor')?.contains(popover ?? null)).toBe(true);
+    expect(within(list).getByText('正在跑测试')).toBeTruthy();
+
+    // Esc folds the steps without stopping the run.
+    fireEvent.keyDown(toggle, { key: 'Escape' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(abort).not.toHaveBeenCalled();
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.pointerDown(container.querySelector('.wbc-input') as Element);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
   });
 
   test('names the running tool, and says when the run waits on the owner', () => {
@@ -398,12 +462,12 @@ describe('the run status row', () => {
       { type: 'assistant', content: '', isToolUse: true, toolName: 'Bash', toolId: 'b1', toolInput: { command: 'npm test' }, toolResult: null, timestamp: '2026-10-02T08:00:01.000Z' },
     ] as ChatMessage[];
     const { unmount } = renderChat({ session: SESSION });
-    const row = screen.getByRole('group', { name: '本轮运行状态' });
-    expect(within(row).getByText('正在运行 npm test')).toBeTruthy();
-    expect(row.className).toContain('is-working');
-    expect(row.querySelector('.wbc-run-dots')).toBeNull();
-    // Without a way to stop there is no stop button.
-    expect(within(row).queryByRole('button', { name: '停止这一轮' })).toBeNull();
+    const pill = screen.getByRole('group', { name: '本轮运行状态' });
+    expect(within(pill).getByText('正在运行 npm test')).toBeTruthy();
+    expect(pill.className).toContain('is-working');
+    expect(pill.querySelector('.wbc-run-dots')).toBeNull();
+    // Without steps the pill is not a toggle.
+    expect((within(pill).getByRole('button') as HTMLButtonElement).disabled).toBe(true);
     unmount();
 
     engine.pending = [{ requestId: 'r1', toolName: 'Bash', input: { command: 'npm test' } } satisfies PendingPermissionRequest];
@@ -413,15 +477,46 @@ describe('the run status row', () => {
     expect(waiting.className).toContain('is-waiting');
   });
 
-  test('says the run finished once it ends', () => {
+  test('says the run finished, in the same spot, once it ends', () => {
     engine.processing = true;
-    const { rerender } = renderChat({ session: SESSION });
+    engine.sessionActivity = { startedAt: Date.now() - 3_000 };
+    const { container, rerender } = renderChat({ session: SESSION });
     expect(screen.getByRole('group', { name: '本轮运行状态' })).toBeTruthy();
     engine.processing = false;
-    rerender(
-      <WorkbenchChat project={project} session={SESSION} provider="claude" hubProjectId={null} onSessionCreated={vi.fn()} onOpenFile={vi.fn()} />,
-    );
-    expect(within(screen.getByRole('group', { name: '本轮运行状态' })).getByText('本轮完成')).toBeTruthy();
+    engine.sessionActivity = null;
+    rerenderChat(rerender);
+    const finished = screen.getByRole('group', { name: '本轮运行状态' });
+    expect(within(finished).getByText('本轮完成')).toBeTruthy();
+    expect(within(finished).getByRole('button').getAttribute('aria-label')).toMatch(/^本轮完成，用时 \d+ 秒$/);
+    expect(finished.closest('.wbc-run-anchor')?.nextElementSibling).toBe(container.querySelector('.wbc-send'));
+  });
+
+  test('narrow toolbars keep it compact (glyph and time) on one line, with its full state in its label', async () => {
+    engine.processing = true;
+    engine.sessionActivity = { startedAt: Date.now() - 12_000 };
+    engine.messages = [
+      { type: 'user', content: '修一下样式', timestamp: '2026-10-02T08:00:00.000Z' },
+      { type: 'assistant', content: '', isToolUse: true, toolName: 'TodoWrite', toolId: 't1', toolInput: { todos: TODOS }, toolResult: { content: 'ok' }, timestamp: '2026-10-02T08:00:01.000Z' },
+    ] as ChatMessage[];
+    renderChat({ session: SESSION });
+    const pill = screen.getByRole('group', { name: '本轮运行状态' });
+    // The words and count the narrow bar hides are separate pieces; the button's label still names all of it.
+    expect(pill.querySelector('.wbc-run-text')?.textContent).toBe('正在思考');
+    expect(pill.querySelector('.wbc-run-count')?.textContent).toBe('2/4');
+    expect(pill.querySelector('.wbc-run-time')?.textContent).toBe('12 秒');
+    expect(within(pill).getByRole('button').getAttribute('aria-label')).toBe('正在思考，步骤 2/4，已用 12 秒，展开步骤');
+
+    const css = (await readChatStylesheet()).replace(/\s+/g, ' ');
+    // The toolbar is the size container the pill answers to, and never wraps.
+    expect(css).toMatch(/\.wbc-composer-bar \{ container: wbc-bar \/ inline-size; \}/);
+    expect(css).not.toMatch(/\.wbc-composer-bar \{[^}]*flex-wrap: wrap/);
+    // The pill gives way before the chips (a larger shrink factor) and its words ellipsize.
+    expect(css).toMatch(/\.wbc-run-anchor \{[^}]*flex: 0 8 auto; min-width: 0;/);
+    expect(css).toMatch(/\.wbc-run-text \{[^}]*min-width: 0;[^}]*text-overflow: ellipsis;/);
+    // First the words go, then the step count; the glyph and the time stay.
+    expect(css).toMatch(/@container wbc-bar \(max-width: 600px\) \{ \.wbc-run-text \{ display: none; \}/);
+    expect(css).toMatch(/@container wbc-bar \(max-width: 430px\) \{ \.wbc-run-count \{ display: none; \}/);
+    expect(css).not.toMatch(/\.wbc-run-(glyph|time)[^{]*\{[^}]*display: none/);
   });
 });
 

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { AnimatePresence, m } from 'motion/react';
 import {
   FileText,
@@ -49,6 +50,8 @@ type WorkbenchComposerProps = {
   suggestion?: string | null;
   // Called when the suggestion is sent or filled in, so it does not show again before the next answer.
   onSuggestionUsed?: () => void;
+  // The run status pill (WorkbenchRunStatus), shown at the toolbar's right end just left of the send/stop disc.
+  runStatus?: ReactNode;
 };
 
 const POPOVER_SPRING = { type: 'spring', stiffness: 520, damping: 36, mass: 0.7 } as const;
@@ -83,7 +86,8 @@ function AttachmentTile({ file, error, onRemove }: { file: File; error?: string;
  * commands and @ file mentions, the permission-mode and model chips, the reasoning-effort control, and the spring
  * send/stop disc. All sending behaviour comes from the inherited composer hook. With the field empty, a suggested
  * next message shows faintly: Send (or Enter) sends it as it is. Once the field has text (typed or dictated) it moves to
- * a chip above the field, which fills it in or sends it; clearing the field brings back the faint one.
+ * a chip above the field, which fills it in or sends it; clearing the field brings back the faint one. While a run
+ * lasts, the chat's run status pill sits at the toolbar's right end, beside the disc that then stops the run.
  */
 export function WorkbenchComposer({
   composer,
@@ -102,6 +106,7 @@ export function WorkbenchComposer({
   onAbort,
   suggestion = null,
   onSuggestionUsed,
+  runStatus = null,
 }: WorkbenchComposerProps) {
   const {
     input,
@@ -389,6 +394,7 @@ export function WorkbenchComposer({
             />
           )}
           <span className="wbc-composer-spacer" />
+          {runStatus}
           <WorkbenchSendButton
             mode={sendMode}
             disabled={sendBlocked || (sendMode === 'send' ? !hasContent && !shownSuggestion : sendMode === 'stop' ? !canAbort : false)}
