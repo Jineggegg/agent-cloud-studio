@@ -1046,6 +1046,10 @@ html.theme-revealing::view-transition-new(root) { z-index: 2; }
 /* A 44px hit area around the 28px eye. */
 .widget-eye::after { content: ""; position: absolute; inset: -8px; }
 .widget-masked { letter-spacing: .06em; }
+/* Today's profit or loss on the Trading 212 widget: green for a gain, red for a loss (the sign and arrow say it too). */
+.widget-delta.widget-today.gain { color: var(--ios-green); }
+.widget-delta.widget-today.loss { color: var(--ios-red); }
+.widget-delta.widget-today.flat { color: var(--ios-label-2); }
 
 /* ---------- Website quick-browse ---------- */
 .links-sheet { width: min(640px, calc(100% - 32px)); }

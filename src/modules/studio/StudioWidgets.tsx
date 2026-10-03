@@ -262,10 +262,15 @@ function TradingWidget({ size, reading: { overview, points }, still, masked, onT
       : overview === 'off' ? <p className="widget-note">未接入账户</p>
         : <>
           <div className="widget-figure">
-            {masked ? <strong className="widget-masked">{money(0, overview.currency, 0).replace(/[\d.,\s]/g, '')} {MASKED}</strong>
+            {masked ? <strong className="widget-masked">{money(0, overview.currency, 0).replace(/[\d.,\s]/g, '')} {MASKED}<span className="studio-visually-hidden">金额已隐藏</span></strong>
               : <strong><NumberFlow value={overview.totalValue} format={{ style: 'currency', currency: overview.currency || 'GBP', maximumFractionDigits: size === 'small' ? 0 : 2 }} locales="zh-CN" animated={!still} /></strong>}
-            {masked ? <small>金额已隐藏</small> : change ? <small className={`widget-delta ${change.amount >= 0 ? 'gain' : 'loss'}`}>{change.amount >= 0 ? <IconArrowUpRight size={13} aria-hidden="true" /> : <IconArrowDownRight size={13} aria-hidden="true" />}
-              {change.amount >= 0 ? '+' : '−'}{Math.abs(change.amount).toFixed(2)}（{Math.abs(change.percent).toFixed(2)}%）今日</small> : <small>今日变化记录中</small>}
+            {/* Today's change: green up for a gain, red down for a loss, with its sign; hidden amounts leave only the percentage. */}
+            {change ? <small className={`widget-delta widget-today ${change.amount > 0 ? 'gain' : change.amount < 0 ? 'loss' : 'flat'}`}>
+              {change.amount > 0 ? <IconArrowUpRight size={13} aria-hidden="true" /> : change.amount < 0 ? <IconArrowDownRight size={13} aria-hidden="true" /> : null}
+              <span className="studio-visually-hidden">{change.amount > 0 ? '盈利' : change.amount < 0 ? '亏损' : '持平'}</span>
+              {masked ? `${change.amount > 0 ? '+' : change.amount < 0 ? '−' : ''}${Math.abs(change.percent).toFixed(2)}% 今日`
+                : `${change.amount >= 0 ? '+' : '−'}${Math.abs(change.amount).toFixed(2)}（${Math.abs(change.percent).toFixed(2)}%）今日`}</small>
+              : <small>{masked ? '金额已隐藏' : '今日变化记录中'}</small>}
             {size !== 'small' && <Sparkline points={points} />}
           </div>
           {/* Large adds where the money sits and the biggest positions. */}
