@@ -134,7 +134,7 @@ test('the route walk found the whole route table', (context) => {
   assert.deepEqual(unknownMounts, []);
   // Every module mounted by the entrypoint contributes routes; a broken walk would find a handful.
   assert.ok(uniqueProbes.length > 150, `only ${uniqueProbes.length} routes found`);
-  for (const mount of ['/api/auth', '/api/studio', '/api/projects', '/api/git', '/api/settings', '/api/agent', '/api/browser-use-mcp']) {
+  for (const mount of ['/api/auth', '/api/studio', '/api/projects', '/api/git', '/api/settings', '/api/agent', '/api/browser-use-mcp', '/api/task-recovery', '/api/studio/runtime']) {
     assert.ok(uniqueProbes.some((probe) => probe.path.startsWith(`${mount}/`)), `no routes found under ${mount}`);
   }
 });
