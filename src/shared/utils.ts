@@ -1,7 +1,10 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-import type { Project, ProjectSession, QuickSettingsTab, SlashCommand, StudioIngressId } from '@/shared/types';
+import type {
+  Project, ProjectSession, QuickSettingsTab, QuotaDisplayItem, QuotaDisplayMode, QuotaPreferences, SlashCommand, StudioIngressId,
+  StudioQuotaCredit, StudioQuotaSnapshot, StudioQuotaWindow,
+} from '@/shared/types';
 
 //----------------- DEPLOYMENT MODE ------------
 
@@ -355,3 +358,166 @@ export function decimalInputProblem(value: string, places: number, label: string
  */
 export const readableErrorMessage = (reason: unknown, fallback: string): string =>
   reason instanceof Error && reason.message ? reason.message : fallback;
+
+// ---------------------------
+
+//----------------- MODEL QUOTA DISPLAY ------------
+
+// The owner's clock: a weekly reset reads "周一 7:00" in London wherever the page is opened.
+const QUOTA_TIME_ZONE = 'Europe/London';
+const QUOTA_PROVIDER_NAMES: Record<StudioQuotaSnapshot['provider'], string> = { claude: 'Claude', codex: 'Codex', deepseek: 'DeepSeek' };
+// The plan-wide Claude windows, listed in Settings even before the account reports them.
+const CLAUDE_BASE_WINDOWS: { id: string; label: string; title: string }[] = [
+  { id: 'five_hour', label: '5 小时', title: 'Claude 5 小时' },
+  { id: 'seven_day', label: '每周', title: 'Claude 每周（全部模型）' },
+];
+const DEEPSEEK_BALANCE_KEY = 'deepseek:balance';
+const quotaClocks = new Map<string, Intl.DateTimeFormat>();
+
+// Formatters for the owner's time zone, made on first use; a browser without that zone falls back to its own clock.
+function quotaClock(kind: 'weekday' | 'date') {
+  let clock = quotaClocks.get(kind);
+  if (!clock) {
+    const fields: Intl.DateTimeFormatOptions = kind === 'weekday' ? { weekday: 'short' } : { month: 'numeric', day: 'numeric' };
+    const options: Intl.DateTimeFormatOptions = { ...fields, hour: 'numeric', minute: '2-digit', hourCycle: 'h23' };
+    try { clock = new Intl.DateTimeFormat('zh-CN', { ...options, timeZone: QUOTA_TIME_ZONE }); } catch { clock = new Intl.DateTimeFormat('zh-CN', options); }
+    quotaClocks.set(kind, clock);
+  }
+  return clock;
+}
+
+function quotaWindowItem(snapshot: StudioQuotaSnapshot, window: StudioQuotaWindow, shownByDefault: boolean): QuotaDisplayItem {
+  const providerName = QUOTA_PROVIDER_NAMES[snapshot.provider];
+  const base = snapshot.provider === 'claude' ? CLAUDE_BASE_WINDOWS.find(item => item.id === window.id) : undefined;
+  return {
+    key: `${snapshot.provider}:window:${window.id}`, provider: snapshot.provider, providerName, kind: 'window',
+    label: window.label, title: base?.title ?? `${providerName} ${window.label}`,
+    usedPercent: window.usedPercent, endsAt: window.resetsAt, endKind: 'resets', amount: null,
+    stale: snapshot.stale, shownByDefault, present: true,
+  };
+}
+
+function quotaCreditItem(snapshot: StudioQuotaSnapshot, credit: StudioQuotaCredit): QuotaDisplayItem {
+  return {
+    key: `claude:credit:${credit.id}`, provider: 'claude', providerName: 'Claude', kind: 'credit',
+    label: credit.label, title: `Claude ${credit.label}`,
+    usedPercent: credit.usedPercent, endsAt: credit.endsAt, endKind: credit.endKind,
+    amount: credit.currency ? { currency: credit.currency, remaining: credit.remaining, used: credit.used, limit: credit.limit } : null,
+    stale: snapshot.stale, shownByDefault: false, present: true,
+  };
+}
+
+// A Settings row for an item the account has not reported (yet): it can be switched on or off ahead of time.
+function quotaPlaceholderItem(item: Pick<QuotaDisplayItem, 'key' | 'provider' | 'kind' | 'label' | 'title'>): QuotaDisplayItem {
+  return {
+    ...item, providerName: QUOTA_PROVIDER_NAMES[item.provider], usedPercent: null, endsAt: null, endKind: 'resets',
+    amount: null, stale: false, shownByDefault: true, present: false,
+  };
+}
+
+/**
+ * Every quota figure the snapshots hold, in display order: Claude's windows (plan-wide first, then each model's),
+ * Claude's credits, Codex's windows and the DeepSeek balance. Unavailable snapshots add nothing. Defaults follow
+ * the owner's choice: Claude 5 小时 and 每周, Codex 每周 (or its first plan-wide window when it has no weekly one)
+ * and the DeepSeek balance are shown; per-model windows and credits are not. With `placeholders`, Settings also
+ * gets the Claude 5 小时 / 每周 and DeepSeek 余额 rows when those are missing (`present: false`).
+ * Used by the home quota widgets, the workbench usage panel and the quota Settings section.
+ */
+export function listQuotaItems(snapshots: StudioQuotaSnapshot[], options: { placeholders?: boolean } = {}): QuotaDisplayItem[] {
+  const available = (provider: StudioQuotaSnapshot['provider']) => snapshots.find(item => item.provider === provider && item.available);
+  const claude = available('claude');
+  let claudeItems = claude ? [
+    ...claude.windows.map(window => quotaWindowItem(claude, window, !window.model)),
+    ...(claude.credits ?? []).map(credit => quotaCreditItem(claude, credit)),
+  ] : [];
+  if (options.placeholders) {
+    const base = CLAUDE_BASE_WINDOWS.map(window => claudeItems.find(item => item.key === `claude:window:${window.id}`)
+      ?? quotaPlaceholderItem({ key: `claude:window:${window.id}`, provider: 'claude', kind: 'window', label: window.label, title: window.title }));
+    claudeItems = [...base, ...claudeItems.filter(item => !base.includes(item))];
+  }
+
+  const codex = available('codex');
+  const codexWindows = codex?.windows ?? [];
+  const codexDefault = codexWindows.find(window => !window.model && window.windowMinutes === 10080) ?? codexWindows.find(window => !window.model);
+  const codexItems = codex ? codexWindows.map(window => quotaWindowItem(codex, window, window === codexDefault)) : [];
+
+  const deepseek = available('deepseek');
+  const balance = deepseek?.balances[0];
+  const deepseekItems: QuotaDisplayItem[] = deepseek && balance ? [{
+    key: DEEPSEEK_BALANCE_KEY, provider: 'deepseek', providerName: 'DeepSeek', kind: 'balance', label: '余额', title: 'DeepSeek 余额',
+    usedPercent: null, endsAt: null, endKind: 'resets', amount: { currency: balance.currency, remaining: balance.total, used: null, limit: null },
+    stale: deepseek.stale, shownByDefault: true, present: true,
+  }] : options.placeholders
+    ? [quotaPlaceholderItem({ key: DEEPSEEK_BALANCE_KEY, provider: 'deepseek', kind: 'balance', label: '余额', title: 'DeepSeek 余额' })]
+    : [];
+  return [...claudeItems, ...codexItems, ...deepseekItems];
+}
+
+/**
+ * Whether an item is shown: the owner's explicit choice when there is one, otherwise the item's default.
+ * Used with listQuotaItems wherever quota figures are drawn.
+ */
+export function isQuotaItemShown(item: QuotaDisplayItem, preferences: QuotaPreferences): boolean {
+  return preferences.items[item.key] ?? item.shownByDefault;
+}
+
+/**
+ * The whole-number percentage to show for a used share: what was used, rounded, or what is left as
+ * 100 minus that rounded figure, so the two views always add up to 100 (used 9.6 → 已用 10 / 剩余 90).
+ * Values outside 0..100 are clamped. Used by every quota bar and ring.
+ */
+export function quotaShownPercent(usedPercent: number, mode: QuotaDisplayMode): number {
+  const used = Math.round(Math.min(100, Math.max(0, usedPercent)));
+  return mode === 'used' ? used : 100 - used;
+}
+
+/**
+ * When a quota window resets (or a credit expires, with `endKind` 'expires'), in Chinese on the owner's clock
+ * (Europe/London): "36 分钟后重置" and "3 小时 36 分后重置" within a day, "周一 7:00 重置" within a week and
+ * "11月5日 7:59 到期" beyond that; "已重置" / "已到期" once passed. Minutes round up, so a window with seconds
+ * left never reads as reset. Null when the time is unknown or unreadable. Used by the quota widgets, the
+ * workbench usage panel and Settings.
+ */
+export function quotaEndText(endsAt: string | null, now: number, endKind: 'resets' | 'expires' = 'resets'): string | null {
+  const at = endsAt ? Date.parse(endsAt) : Number.NaN;
+  if (!Number.isFinite(at)) return null;
+  const verb = endKind === 'expires' ? '到期' : '重置';
+  const minutes = Math.ceil((at - now) / 60_000);
+  if (minutes <= 0) return `已${verb}`;
+  if (minutes < 60) return `${minutes} 分钟后${verb}`;
+  if (minutes < 24 * 60) {
+    const hours = Math.floor(minutes / 60);
+    return minutes % 60 ? `${hours} 小时 ${minutes % 60} 分后${verb}` : `${hours} 小时后${verb}`;
+  }
+  const weekly = minutes < 7 * 24 * 60;
+  const parts = Object.fromEntries(quotaClock(weekly ? 'weekday' : 'date').formatToParts(new Date(at)).map(part => [part.type, part.value]));
+  const clock = `${Number(parts.hour)}:${parts.minute}`;
+  return weekly ? `${parts.weekday} ${clock} ${verb}` : `${Number(parts.month)}月${Number(parts.day)}日 ${clock} ${verb}`;
+}
+
+/**
+ * The money figure of a credit or balance item, or null when it has none. A balance is its amount ("¥253.99");
+ * a credit with a cap reads "剩余 $229 / $250" or "已用 $21 / $250" by `mode`, one without a cap "已用 $19.99",
+ * and one known only by what is left "剩余 $229". Whole amounts of a credit drop their cents, as the Claude app does.
+ * Used by the quota widgets, the workbench usage panel and Settings.
+ */
+export function quotaAmountText(item: QuotaDisplayItem, mode: QuotaDisplayMode): string | null {
+  const amount = item.amount;
+  if (!amount) return null;
+  const money = (value: number) => {
+    const digits = item.kind === 'credit' && Number.isInteger(value) ? 0 : 2;
+    try {
+      return new Intl.NumberFormat('zh-CN', {
+        style: 'currency', currency: amount.currency, currencyDisplay: 'narrowSymbol', minimumFractionDigits: digits, maximumFractionDigits: digits,
+      }).format(value);
+    } catch { return `${value.toFixed(digits)} ${amount.currency}`; }
+  };
+  if (item.kind === 'balance') return amount.remaining === null ? null : money(amount.remaining);
+  const remaining = amount.remaining ?? (amount.limit !== null && amount.used !== null ? Math.max(0, amount.limit - amount.used) : null);
+  if (amount.limit !== null) {
+    const figure = mode === 'used' ? amount.used : remaining;
+    if (figure !== null) return `${mode === 'used' ? '已用' : '剩余'} ${money(figure)} / ${money(amount.limit)}`;
+  }
+  if (amount.used !== null && (mode === 'used' || remaining === null)) return `已用 ${money(amount.used)}`;
+  return remaining === null ? null : `剩余 ${money(remaining)}`;
+}

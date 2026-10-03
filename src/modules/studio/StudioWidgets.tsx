@@ -8,7 +8,9 @@ import { DndContext, DragOverlay, useDndContext } from '@dnd-kit/core';
 import { SortableContext } from '@dnd-kit/sortable';
 
 import { api, readApiJson } from '@/shared/api';
-import type { StudioGitHubInbox, StudioQuotaSnapshot, StudioQuotaWindow, StudioSnr, T212Overview, T212Point } from '@/shared/types';
+import type { QuotaDisplayItem, QuotaDisplayMode, StudioGitHubInbox, StudioQuotaSnapshot, StudioSnr, T212Overview, T212Point } from '@/shared/types';
+import { useQuotaPreferences } from '@/shared/hooks/useQuotaPreferences';
+import { isQuotaItemShown, listQuotaItems, quotaAmountText, quotaEndText, quotaShownPercent } from '@/shared/utils';
 import { StudioTileIcon } from '@/modules/studio/StudioTileIcon';
 import { useGitHubReading } from '@/modules/studio/hooks/useGitHubReading';
 import { useHomeSortableItem, useHomeSortableList } from '@/modules/studio/hooks/useHomeSortable';
@@ -34,7 +36,7 @@ const DEFAULT_WIDGETS: WidgetConfig[] = [
   { id: 'w-t212', type: 'trading212', size: 'medium' },
 ];
 const CATALOG: { type: WidgetType; name: string; caption: string; tone: string; glyph: string }[] = [
-  { type: 'claude', name: 'Claude 额度', caption: '5 小时与每周用量、重置倒计时', tone: 'clay', glyph: 'sparkles' },
+  { type: 'claude', name: 'Claude 额度', caption: '5 小时、每周与各模型额度，重置倒计时', tone: 'clay', glyph: 'sparkles' },
   { type: 'codex', name: 'Codex 额度', caption: 'ChatGPT 套餐用量与重置时间', tone: 'graphite', glyph: 'terminal' },
   { type: 'deepseek', name: 'DeepSeek 余额', caption: 'API 账户余额', tone: 'slate', glyph: 'sparkles' },
   { type: 'trading212', name: 'Trading 212', caption: '总资产、今日盈亏与走势', tone: 'moss', glyph: 'candles' },
@@ -75,58 +77,52 @@ function useNow(interval: number) {
   return now;
 }
 
-function countdown(resetsAt: string | null, now: number) {
-  if (!resetsAt) return '重置时间未知';
-  // Rounded up, so a window with seconds left never reads as already reset.
-  const minutes = Math.max(0, Math.ceil((Date.parse(resetsAt) - now) / 60_000));
-  if (minutes <= 0) return '已重置';
-  const days = Math.floor(minutes / 1440);
-  const hours = Math.floor((minutes % 1440) / 60);
-  const rest = minutes % 60;
-  if (days) return `${days} 天 ${hours} 小时后重置`;
-  if (hours) return `${hours} 小时 ${rest} 分后重置`;
-  return `${rest} 分钟后重置`;
-}
-
 const SOURCE_LABEL: Record<StudioQuotaSnapshot['source'], string> = {
   // `usage-api` is what Claude's own /usage shows, read live with the machine's Claude login.
   official: '官方', 'usage-api': '官方', statusline: '官方快照', 'sdk-event': '会话快照', 'local-log': '本地记录', unavailable: '未接入',
 };
+const MODE_WORD: Record<QuotaDisplayMode, string> = { remaining: '剩余', used: '已用' };
+// Shown when every item of a widget was switched off in Settings.
+const ALL_HIDDEN_NOTE = '已在 设置 → 额度显示 中隐藏';
+// A window this full is drawn in the warning colour, whichever way the figures read.
+const HIGH_USED_PERCENT = 90;
+// Detail rows a large quota widget holds under its rings; with all of them in use the "更新于" line gives way.
+const LARGE_ROWS = 4;
+
+// Under a ring: when the window resets or the credit expires, or what the credit is when that is unknown.
+function ringCaption(item: QuotaDisplayItem, now: number) {
+  return quotaEndText(item.endsAt, now, item.endKind) ?? (item.kind === 'credit' ? (item.endKind === 'expires' ? '一次性额度' : '每月额度') : '重置时间未知');
+}
 
 // `still` draws a widget at its current values with no entrance animation: the copy lifted into the drag overlay
-// must look exactly like the card it was picked up from, not refill its rings from zero.
-function Ring({ window: quota, now, size = 64, still }: { window: StudioQuotaWindow; now: number; size?: number; still: boolean }) {
+// must look exactly like the card it was picked up from, not refill its rings from zero. The ring fills with
+// the share shown (what is left by default, or what was used).
+function Ring({ item, mode, now, size = 64, still }: { item: QuotaDisplayItem; mode: QuotaDisplayMode; now: number; size?: number; still: boolean }) {
   const radius = size / 2 - 5;
   const circumference = 2 * Math.PI * radius;
-  const used = Math.min(100, Math.max(0, quota.usedPercent));
-  const high = used >= 90;
-  return <div className={`quota-ring ${high ? 'is-high' : ''}`}>
+  const used = item.usedPercent ?? 0;
+  const shown = quotaShownPercent(used, mode);
+  const high = used >= HIGH_USED_PERCENT;
+  return <div className={`quota-ring ${high ? 'is-high' : ''}`} data-stale={item.stale || undefined} title={`${item.label} ${MODE_WORD[mode]} ${shown}%`}>
     <span className="quota-ring-dial" style={{ width: size, height: size }}>
     <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
       <circle className="quota-ring-track" cx={size / 2} cy={size / 2} r={radius} />
       <m.circle className="quota-ring-fill" cx={size / 2} cy={size / 2} r={radius}
         strokeDasharray={circumference} initial={still ? false : { strokeDashoffset: circumference }}
-        animate={{ strokeDashoffset: circumference * (1 - used / 100) }}
+        animate={{ strokeDashoffset: circumference * (1 - shown / 100) }}
         transition={{ type: 'spring', stiffness: 62, damping: 16 }}
         transform={`rotate(-90 ${size / 2} ${size / 2})`} />
     </svg>
-    <span className="quota-ring-value"><NumberFlow value={Math.round(used)} suffix="%" animated={!still} /></span>
+    <span className="quota-ring-value">
+      <NumberFlow value={shown} suffix="%" animated={!still} />
+      <small className="quota-ring-mode">{MODE_WORD[mode]}</small>
     </span>
-    <span className="quota-ring-label">{quota.label}</span>
-    <span className="quota-ring-reset">{high ? '接近上限 · ' : ''}{countdown(quota.resetsAt, now)}</span>
+    </span>
+    <span className="quota-ring-label">{item.label}</span>
+    <span className="quota-ring-reset">{high ? '接近上限 · ' : ''}{ringCaption(item, now)}</span>
   </div>;
 }
 
-// How long a quota window is ("5 小时", "每周"), for the large widget's detail rows.
-function windowLength(minutes: number | null) {
-  if (!minutes) return null;
-  if (minutes === 10_080) return '每周';
-  if (minutes % 1440 === 0) return `${minutes / 1440} 天`;
-  if (minutes % 60 === 0) return `${minutes / 60} 小时`;
-  return `${minutes} 分钟`;
-}
-
-const resetClock = new Intl.DateTimeFormat('zh-CN', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
 const shortClock = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' });
 
 function money(value: number, currency: string, digits = 2) {
@@ -134,9 +130,17 @@ function money(value: number, currency: string, digits = 2) {
   catch { return value.toFixed(digits); }
 }
 
-function QuotaWidget({ snapshot, size, title, tone, glyph, still }: { snapshot: StudioQuotaSnapshot | undefined; size: WidgetSize; title: string; tone: string; glyph: string; still: boolean }) {
+/**
+ * Claude or Codex: a ring for each item the owner shows (one on small, up to three otherwise), and on large a row
+ * per shown item with its reset time and figure. `items` are this provider's shown items, already filtered.
+ */
+function QuotaWidget({ snapshot, items, mode, size, title, tone, glyph, still }: {
+  snapshot: StudioQuotaSnapshot | undefined; items: QuotaDisplayItem[]; mode: QuotaDisplayMode;
+  size: WidgetSize; title: string; tone: string; glyph: string; still: boolean;
+}) {
   const now = useNow(30_000);
-  const windows = (snapshot?.windows ?? []).slice(0, size === 'small' ? 1 : 3);
+  const rings = items.filter(item => item.usedPercent !== null).slice(0, size === 'small' ? 1 : 3);
+  const reported = Boolean(snapshot?.windows.length || snapshot?.credits?.length);
   return <>
     <header className="widget-head">
       <StudioTileIcon tone={tone} glyph={glyph} size={14} variant="small" />
@@ -144,28 +148,40 @@ function QuotaWidget({ snapshot, size, title, tone, glyph, still }: { snapshot: 
       {snapshot && <span className={`widget-source ${snapshot.stale ? 'is-stale' : ''}`}>{snapshot.stale ? '可能过期' : SOURCE_LABEL[snapshot.source]}</span>}
     </header>
     {!snapshot ? <div className="widget-loading" aria-label="读取中"><span /><span /></div>
-      : !snapshot.available || !windows.length ? <p className="widget-note" title={snapshot.note}>{snapshot.note ?? '暂时没有额度数据'}</p>
-        : <>
-          <div className="widget-rings">{windows.map(window => <Ring key={window.id} window={window} now={now} size={size === 'small' ? 58 : size === 'medium' ? 64 : 76} still={still} />)}</div>
-          {/* Large: what is left in each window, how long the window is and the exact time it resets. */}
-          {size === 'large' && <ul className="widget-rows">
-            {windows.map(window => <li key={window.id}>
-              <span>{window.label}{windowLength(window.windowMinutes) ? ` · ${windowLength(window.windowMinutes)}` : ''}</span>
-              <small>{window.resetsAt ? `${resetClock.format(new Date(window.resetsAt))} 重置` : '重置时间未知'}</small>
-              <strong>剩余 {Math.max(0, 100 - Math.round(window.usedPercent))}%</strong>
-            </li>)}
-          </ul>}
-          {size === 'large' && snapshot.observedAt && <p className="widget-footnote">更新于 {shortClock.format(new Date(snapshot.observedAt))}</p>}
-        </>}
+      : !snapshot.available || !reported ? <p className="widget-note" title={snapshot.note}>{snapshot.note ?? '暂时没有额度数据'}</p>
+        : !items.length ? <p className="widget-note">{ALL_HIDDEN_NOTE}</p>
+          : <>
+            {rings.length > 0 && <div className="widget-rings">{rings.map(item => <Ring key={item.key} item={item} mode={mode} now={now} size={size === 'small' ? 58 : size === 'medium' ? 64 : 76} still={still} />)}</div>}
+            {/* Large: the shown items (as many as the card holds) with when they reset (or expire) and their figure. */}
+            {size === 'large' && <ul className="widget-rows">
+              {items.slice(0, LARGE_ROWS).map(item => {
+                const amount = quotaAmountText(item, mode);
+                return <li key={item.key}>
+                  <span>{item.label}</span>
+                  <small>{[item.kind === 'credit' ? amount : null, quotaEndText(item.endsAt, now, item.endKind)].filter(Boolean).join(' · ') || (item.kind === 'window' ? '重置时间未知' : '')}</small>
+                  <strong>{item.usedPercent !== null ? `${MODE_WORD[mode]} ${quotaShownPercent(item.usedPercent, mode)}%` : amount}</strong>
+                </li>;
+              })}
+            </ul>}
+            {/* A medium widget whose items are all amounts (a credit without a percentage) still shows them. */}
+            {size !== 'large' && !rings.length && <div className="widget-figure"><strong>{quotaAmountText(items[0], mode)}</strong><small>{items[0].label}</small></div>}
+            {size === 'large' && items.length < LARGE_ROWS && snapshot.observedAt && <p className="widget-footnote">更新于 {shortClock.format(new Date(snapshot.observedAt))}</p>}
+          </>}
   </>;
 }
 
-function DeepSeekWidget({ snapshot, size, still }: { snapshot: StudioQuotaSnapshot | undefined; size: WidgetSize; still: boolean }) {
+function DeepSeekWidget({ snapshot, shown, size, still }: {
+  snapshot: StudioQuotaSnapshot | undefined;
+  // False once the owner switched DeepSeek 余额 off in Settings.
+  shown: boolean;
+  size: WidgetSize; still: boolean;
+}) {
   const balance = snapshot?.balances[0];
   return <>
     <header className="widget-head"><StudioTileIcon tone="slate" glyph="sparkles" size={14} variant="small" /><span>DeepSeek</span></header>
     {!snapshot ? <div className="widget-loading" aria-label="读取中"><span /><span /></div>
       : !snapshot.available || !balance ? <p className="widget-note" title={snapshot.note}>{snapshot.note ?? '在设置里保存 API 密钥后显示余额'}</p>
+        : !shown ? <p className="widget-note">{ALL_HIDDEN_NOTE}</p>
         : <>
           <div className="widget-figure">
             <strong><NumberFlow value={balance.total} format={{ style: 'currency', currency: balance.currency, maximumFractionDigits: 2 }} locales="zh-CN" animated={!still} /></strong>
@@ -475,6 +491,9 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, onOpe
   });
   // Quota snapshots for Claude / Codex / DeepSeek; null until the first response.
   const [quota, setQuota] = useState<StudioQuotaSnapshot[] | null>(null);
+  // 剩余 / 已用 and the items switched on in Settings (shared with the workbench usage panel).
+  const { preferences: quotaPreferences } = useQuotaPreferences();
+  const shownQuotaItems = useMemo(() => listQuotaItems(quota ?? []).filter(item => isQuotaItemShown(item, quotaPreferences)), [quota, quotaPreferences]);
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(widgets)); } catch { /* Private mode keeps the layout for this visit only. */ }
@@ -517,10 +536,13 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, onOpe
   const find = (provider: StudioQuotaSnapshot['provider']) => quota === null ? undefined
     : quota.find(item => item.provider === provider) ?? { provider, available: false, windows: [], balances: [], source: 'unavailable', observedAt: null, stale: false, note: '额度服务暂不可用' };
   // A widget's content, for its card in the grid and for the still copy lifted into the drag overlay.
+  const itemsOf = (provider: StudioQuotaSnapshot['provider']) => shownQuotaItems.filter(item => item.provider === provider);
   const renderBody = (widget: WidgetConfig, still: boolean) => <>
-    {widget.type === 'claude' && <QuotaWidget snapshot={find('claude')} size={widget.size} title="Claude Code" tone="clay" glyph="sparkles" still={still} />}
-    {widget.type === 'codex' && <QuotaWidget snapshot={find('codex')} size={widget.size} title="Codex" tone="graphite" glyph="terminal" still={still} />}
-    {widget.type === 'deepseek' && <DeepSeekWidget snapshot={find('deepseek')} size={widget.size} still={still} />}
+    {widget.type === 'claude' && <QuotaWidget snapshot={find('claude')} items={itemsOf('claude')} mode={quotaPreferences.mode}
+      size={widget.size} title="Claude Code" tone="clay" glyph="sparkles" still={still} />}
+    {widget.type === 'codex' && <QuotaWidget snapshot={find('codex')} items={itemsOf('codex')} mode={quotaPreferences.mode}
+      size={widget.size} title="Codex" tone="graphite" glyph="terminal" still={still} />}
+    {widget.type === 'deepseek' && <DeepSeekWidget snapshot={find('deepseek')} shown={itemsOf('deepseek').length > 0} size={widget.size} still={still} />}
     {widget.type === 'trading212' && <TradingWidget size={widget.size} reading={trading} still={still} masked={masked} onToggleMask={toggleMask} />}
     {widget.type === 'snr' && <SnrWidget snr={snr} size={widget.size} />}
     {widget.type === 'github' && <GitHubWidget size={widget.size} reading={github} still={still} />}
@@ -545,7 +567,7 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, onOpe
           {SIZES.map(size => <button type="button" key={size} className="ios-button tinted" aria-label={`添加${SIZE_LABEL[size]}号 ${entry.name}`} onClick={() => add(entry.type, size)}>{SIZE_LABEL[size]}</button>)}
         </div>)}
       </div>
-      <p className="ios-section-footer">额度来自各模型的官方接口或快照；标注「可能过期」时表示最近没有新数据。</p>
+      <p className="ios-section-footer">额度来自各模型的官方接口或快照；标注「可能过期」时表示最近没有新数据。显示剩余还是已用、显示哪些额度，可在 设置 → 额度显示 中选择。</p>
     </div>
   </div>, document.body);
 

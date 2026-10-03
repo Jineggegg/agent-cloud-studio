@@ -907,7 +907,10 @@ html.theme-revealing::view-transition-new(root) { z-index: 2; }
 .quota-ring-track { stroke: var(--ios-fill-pressed); }
 .quota-ring-fill { stroke: var(--ios-tint); stroke-linecap: round; transition: stroke var(--dur-base) ease; }
 .quota-ring.is-high .quota-ring-fill { stroke: var(--chart-loss); }
-.quota-ring-value { position: relative; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.quota-ring-value { position: relative; display: flex; flex-direction: column; align-items: center; line-height: 1.05; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+/* Whether the ring reads what is left (剩余) or what was used (已用), under the figure. */
+.quota-ring-mode { font-size: 9px; font-weight: 500; letter-spacing: .02em; color: var(--ios-label-2); }
+.quota-ring[data-stale] .quota-ring-dial { opacity: .62; }
 .quota-ring-label { margin-top: 2px; font-size: 12px; font-weight: 600; }
 .quota-ring-reset { max-width: 12em; font-size: 11px; line-height: 1.25; color: var(--ios-label-2); }
 .quota-ring.is-high .quota-ring-reset { color: var(--chart-loss); }
