@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import { EyeOff, LoaderCircle, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react';
 
+import { IconEyeOff, IconLoader2, IconPencil, IconPlus, IconRotate, IconTrash } from '@/modules/studio/icons/tabler';
 import { api } from '@/shared/api';
 import type { LLMProvider, ProviderModelOption, ProviderModelsDefinition } from '@/shared/types';
 import { applyModelDefaults, MODEL_PROVIDERS, readModelDefaults, writeProviderModelPreferences } from '@/shared/modelDefaults';
@@ -163,17 +163,17 @@ export function StudioSettingsModels() {
             {option.value === defaultModel && <span className="status-badge good">默认</span>}
             {option.isCustom ? <>
               <button type="button" className="icon-button plain" aria-label={`编辑 ${option.label}`} disabled={busy}
-                onClick={() => setDraft({ recordId: option.recordId, previousId: option.value, id: option.value, name: option.label })}><Pencil size={17} aria-hidden="true" /></button>
-              <button type="button" className="icon-button danger" aria-label={`删除 ${option.label}`} disabled={busy} onClick={() => setDeleting(option)}><Trash2 size={17} aria-hidden="true" /></button>
+                onClick={() => setDraft({ recordId: option.recordId, previousId: option.value, id: option.value, name: option.label })}><IconPencil size={17} aria-hidden="true" /></button>
+              <button type="button" className="icon-button danger" aria-label={`删除 ${option.label}`} disabled={busy} onClick={() => setDeleting(option)}><IconTrash size={17} aria-hidden="true" /></button>
             </> : <button type="button" className="icon-button plain" aria-label={`隐藏 ${option.label}`} disabled={busy || visible.length <= 1} onClick={() => hide(option)}>
-              <EyeOff size={17} aria-hidden="true" /></button>}
+              <IconEyeOff size={17} aria-hidden="true" /></button>}
           </div>)}
         {visible.length > COLLAPSED_COUNT && <button type="button" className="ios-row action left no-icon" onClick={() => setExpanded(value => !value)}>
           {expanded ? '收起' : `显示全部 ${visible.length} 个`}</button>}
         {draft && draft.recordId === undefined
           ? <ModelForm draft={draft} busy={busy} onChange={setDraft} onSubmit={submitDraft} onCancel={() => setDraft(null)} />
           : <button type="button" className="ios-row action left no-icon" disabled={busy} onClick={() => setDraft({ id: '', name: '' })}>
-            <Plus size={18} aria-hidden="true" />添加模型</button>}
+            <IconPlus size={18} aria-hidden="true" />添加模型</button>}
       </div>
 
       {hiddenModels.length > 0 && <>
@@ -182,7 +182,7 @@ export function StudioSettingsModels() {
           {hiddenModels.map(option => <div className="ios-row no-icon" role="listitem" key={option.value}>
             <span className="ios-row-body"><strong>{option.label}</strong><small>{option.value}</small></span>
             <button type="button" className="ios-button tinted" aria-label={`恢复 ${option.label}`} onClick={() => restore(option)}>
-              <RotateCcw size={15} aria-hidden="true" />恢复</button>
+              <IconRotate size={15} aria-hidden="true" />恢复</button>
           </div>)}
         </div>
       </>}
@@ -210,7 +210,7 @@ function ModelForm({ draft, busy, onChange, onSubmit, onCancel }: {
     </div>
     <div className="model-form-actions">
       <button type="button" className="ios-button" onClick={onCancel}>取消</button>
-      <button className="ios-button filled" disabled={busy || !valid}>{busy && <LoaderCircle size={16} className="spin" aria-hidden="true" />}保存</button>
+      <button className="ios-button filled" disabled={busy || !valid}>{busy && <IconLoader2 size={16} className="spin" aria-hidden="true" />}保存</button>
     </div>
   </form>;
 }

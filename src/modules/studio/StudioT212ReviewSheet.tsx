@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { ScanFace } from 'lucide-react';
 
+import { IconFaceId } from '@/modules/studio/icons/tabler';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 import '@/modules/studio/studio-orders.css';
 
@@ -67,7 +67,7 @@ export function StudioT212ReviewSheet({ title, message, rows, verifying, onConfi
         </dl>
         <div className="sheet-actions">
           <button type="button" className="sheet-action t212-review-confirm" disabled={verifying || closing} onClick={onConfirm}>
-            {verifying ? <StudioSpinner size={16} /> : <ScanFace size={18} aria-hidden="true" />}用面容 ID / 触控 ID 确认
+            {verifying ? <StudioSpinner size={16} /> : <IconFaceId size={18} aria-hidden="true" />}用面容 ID / 触控 ID 确认
           </button>
           <button ref={cancelButton} type="button" className="sheet-action" disabled={verifying || closing} onClick={cancel}>取消</button>
         </div>

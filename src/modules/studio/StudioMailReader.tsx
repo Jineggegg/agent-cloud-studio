@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { m } from 'motion/react';
-import { AlertTriangle, FileText, ShieldCheck } from 'lucide-react';
 
+import { IconAlertTriangle, IconFileText, IconShieldCheck } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import type { StudioMailAccount, StudioMailMessage, StudioMailMessageDetail } from '@/shared/types';
 import { readableErrorMessage } from '@/shared/utils';
@@ -85,7 +85,7 @@ export function StudioMailReader({ message, account, summarizing, onSummarize, o
         <span className="mail-reader-actions">
           {onSummarize && <button type="button" className="ios-button tinted" disabled={!detail || summarizing}
             onClick={() => { if (detail) onSummarize(`${message.subject}\n${sender} ${message.fromAddress}\n${message.date}\n\n${detail.text}`); }}>
-            {summarizing ? <StudioSpinner size={15} /> : <FileText size={16} aria-hidden="true" />}保存摘要草稿
+            {summarizing ? <StudioSpinner size={15} /> : <IconFileText size={16} aria-hidden="true" />}保存摘要草稿
           </button>}
           <button ref={doneButton} type="button" className="ios-button filled" onClick={onClose}>完成</button>
         </span>
@@ -102,12 +102,12 @@ export function StudioMailReader({ message, account, summarizing, onSummarize, o
           {date && <time dateTime={message.date}>{date}</time>}
         </div>
         {!detail && !error && <div className="mail-reader-state" role="status"><StudioSpinner size={24} />正在读取邮件…</div>}
-        {error && <div className="mail-reader-state" role="alert"><AlertTriangle size={26} strokeWidth={1.6} aria-hidden="true" />{error}</div>}
+        {error && <div className="mail-reader-state" role="alert"><IconAlertTriangle size={26} strokeWidth={1.6} aria-hidden="true" />{error}</div>}
         {detail && <m.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.28 }}>
           <div className="mail-reader-text">{detail.text || '（这封邮件没有可显示的文字内容）'}</div>
           {detail.truncated && <p className="mail-reader-truncated">邮件较长，这里只显示前面部分；完整内容请在邮箱应用中查看。</p>}
         </m.div>}
-        <p className="mail-reader-boundary"><ShieldCheck size={14} aria-hidden="true" />邮件是外部资料：这里只显示纯文本，不打开链接、不加载图片，也不会自动发给 AI。打开邮件不会把它标记为已读。</p>
+        <p className="mail-reader-boundary"><IconShieldCheck size={14} aria-hidden="true" />邮件是外部资料：这里只显示纯文本，不打开链接、不加载图片，也不会自动发给 AI。打开邮件不会把它标记为已读。</p>
       </div>
     </m.div>
   </div>, document.body);

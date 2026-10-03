@@ -3,8 +3,8 @@ import type { FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { AnimatePresence, m } from 'motion/react';
 import { toast } from 'sonner';
-import { AlertTriangle, ChevronRight, FileText, Inbox, Info, Mail, RefreshCw, Search, SearchX } from 'lucide-react';
 
+import { IconAlertTriangle, IconChevronRight, IconFileText, IconInbox, IconInfoCircle, IconMail, IconRefresh, IconSearch, IconSearchOff } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import type { HubAgentProvider, HubMailStatus, HubProject, StudioMailAccount, StudioMailAccountFailure, StudioMailAccounts, StudioMailInbox, StudioMailMessage } from '@/shared/types';
 import { readableErrorMessage } from '@/shared/utils';
@@ -167,7 +167,7 @@ export function StudioProjectMail({ project }: { project: HubProject }) {
 
   const legacyRow = legacy?.configured && <div className="ios-list mail-legacy">
     <div className="ios-row">
-      <span className="home-icon small tone-stone" aria-hidden="true"><Mail size={17} /></span>
+      <span className="home-icon small tone-stone" aria-hidden="true"><IconMail size={17} /></span>
       <span className="ios-row-body"><strong>Google OAuth（高级）</strong><small>{legacy.connected ? `本项目已连接 ${legacy.email ?? ''}` : '服务器配置了 OAuth，也可以用 Google 授权连接本项目'}</small></span>
       <button type="button" className="ios-button tinted" onClick={() => void connectLegacy()}>{legacy.connected ? '重新连接' : '连接'}</button>
     </div>
@@ -177,10 +177,10 @@ export function StudioProjectMail({ project }: { project: HubProject }) {
 
   if (!accounts.length) {
     return <section className="ios-section first">
-      {error && <div className="mail-notice" role="alert"><AlertTriangle size={17} aria-hidden="true" /><div>{error}</div></div>}
+      {error && <div className="mail-notice" role="alert"><IconAlertTriangle size={17} aria-hidden="true" /><div>{error}</div></div>}
       {/* When the account list itself failed, the alert above explains why; no "add an account" prompt. */}
       {!error && <div className="ios-empty">
-        <Inbox size={36} strokeWidth={1.4} aria-hidden="true" />
+        <IconInbox size={36} strokeWidth={1.4} aria-hidden="true" />
         <span className="mail-empty-title">还没有连接邮箱</span>
         <span>在设置里添加 Gmail（应用专用密码）或 Outlook，所有账户的收件箱会汇总在这里。</span>
         <div className="mail-empty-actions"><Link className="ios-button filled" to={SETTINGS_PATH}>前往设置添加邮箱</Link></div>
@@ -191,12 +191,12 @@ export function StudioProjectMail({ project }: { project: HubProject }) {
 
   return <section className="ios-section first" aria-label="邮箱">
     <form className="mail-toolbar" role="search" onSubmit={submitSearch}>
-      <label className="ios-search"><Search size={17} aria-hidden="true" />
+      <label className="ios-search"><IconSearch size={17} aria-hidden="true" />
         <input type="search" aria-label="搜索邮件" placeholder={searchHint} maxLength={300} enterKeyHint="search" value={draft}
           onChange={event => { setDraft(event.target.value); if (!event.target.value && query) applyQuery(''); }} />
       </label>
       <button type="button" className={`icon-button ${loading ? 'refreshing' : ''}`} aria-label="刷新邮件" title="刷新" disabled={loading}
-        onClick={refresh}><RefreshCw size={19} aria-hidden="true" /></button>
+        onClick={refresh}><IconRefresh size={19} aria-hidden="true" /></button>
     </form>
 
     {accounts.length > 1 && <div className="mail-filter" role="group" aria-label="选择邮箱账户">
@@ -209,11 +209,11 @@ export function StudioProjectMail({ project }: { project: HubProject }) {
 
     {view.failures.map(item => (item.skipped
       ? <div className="mail-notice muted" role="status" key={item.accountId}>
-        <Info size={17} aria-hidden="true" />
+        <IconInfoCircle size={17} aria-hidden="true" />
         <div><strong>{item.email}</strong>：{item.message}</div>
       </div>
       : <div className="mail-notice" role="alert" key={item.accountId}>
-        <AlertTriangle size={17} aria-hidden="true" />
+        <IconAlertTriangle size={17} aria-hidden="true" />
         <div><strong>{item.email}</strong>：{item.message} <Link to={SETTINGS_PATH}>打开设置</Link></div>
       </div>))}
 
@@ -232,7 +232,7 @@ export function StudioProjectMail({ project }: { project: HubProject }) {
             <span className="mail-row-top">
               <span className="mail-from">{message.from || message.fromAddress || '未知发件人'}</span>
               {date && <time dateTime={message.date}>{date}</time>}
-              <ChevronRight size={15} className="chevron" aria-hidden="true" />
+              <IconChevronRight size={15} className="chevron" aria-hidden="true" />
             </span>
             <span className="mail-subject">{message.subject || '（无主题）'}</span>
             {message.snippet && <span className="mail-snippet">{message.snippet}</span>}
@@ -241,7 +241,7 @@ export function StudioProjectMail({ project }: { project: HubProject }) {
         </m.button>;
       })}
     </div> : loading ? <SkeletonRows /> : <div className="ios-empty">
-      {query && !view.allFailed ? <SearchX size={32} strokeWidth={1.5} aria-hidden="true" /> : <Inbox size={32} strokeWidth={1.5} aria-hidden="true" />}
+      {query && !view.allFailed ? <IconSearchOff size={32} strokeWidth={1.5} aria-hidden="true" /> : <IconInbox size={32} strokeWidth={1.5} aria-hidden="true" />}
       <span>{view.allFailed ? '暂时读不到邮件' : query ? '没有匹配的邮件' : '收件箱是空的'}</span>
     </div>}
 
@@ -253,7 +253,7 @@ export function StudioProjectMail({ project }: { project: HubProject }) {
       <p>只读：打开邮件不会标记已读，也不会把内容发给 AI。{query ? '' : '显示每个账户最新的邮件。'}</p>
       {canSummarize && messages.length > 0 && <button type="button" className="ios-button tinted" disabled={saving}
         onClick={() => void saveSummary(messages.map(message => `${message.subject}\n${message.from} <${message.fromAddress}>\n${message.date}\n${message.snippet}`).join('\n\n'), false)}>
-        {saving ? <StudioSpinner size={15} /> : <FileText size={16} aria-hidden="true" />}保存摘要草稿
+        {saving ? <StudioSpinner size={15} /> : <IconFileText size={16} aria-hidden="true" />}保存摘要草稿
       </button>}
     </div>
     {legacyRow}

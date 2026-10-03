@@ -1,10 +1,11 @@
 import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ChevronRight, LoaderCircle, MessagesSquare, RefreshCw, Server, SquareTerminal } from 'lucide-react';
 
+import { IconChevronRight, IconLoader2, IconRefresh, IconServer, IconTerminal2 } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
-import type { HubAgentProvider, HubProject, HubSession, StudioRemoteHost, StudioRemoteLaunch, StudioRemoteStatus, WorkbenchHubLink } from '@/shared/types';
+import type { HubAgentProvider, HubProject, HubSession, StudioBrand, StudioRemoteHost, StudioRemoteLaunch, StudioRemoteStatus, WorkbenchHubLink } from '@/shared/types';
+import { StudioBrandMark } from '@/modules/studio/brandIcons';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 
 // The terminal (xterm) loads only when a remote session or the local shell is opened.
@@ -12,19 +13,19 @@ const StudioTerminalCover = lazy(() => import('@/modules/studio/StudioTerminalCo
 // Shown while the terminal chunk downloads.
 const terminalFallback = <div className="studio-layer terminal-loading"><StudioSpinner size={28} label="正在打开终端" /></div>;
 
-// IDE agents in display order, with their muted brand-adjacent tones.
-const AGENTS: { id: HubAgentProvider; name: string; caption: string; tone: string; mark: string }[] = [
-  { id: 'claude', name: 'Claude Code', caption: 'Claude 订阅', tone: 'clay', mark: 'C' },
-  { id: 'codex', name: 'Codex', caption: 'ChatGPT 订阅', tone: 'graphite', mark: 'O' },
-  { id: 'cursor', name: 'Cursor', caption: 'Cursor Agent', tone: 'slate', mark: 'Cu' },
-  { id: 'opencode', name: 'OpenCode', caption: 'OpenCode', tone: 'stone', mark: 'Oc' },
+// IDE agents in display order, with their muted brand-adjacent tones and official marks (brandIcons).
+const AGENTS: { id: HubAgentProvider; name: string; caption: string; tone: string; brand: StudioBrand }[] = [
+  { id: 'claude', name: 'Claude Code', caption: 'Claude 订阅', tone: 'clay', brand: 'claude' },
+  { id: 'codex', name: 'Codex', caption: 'ChatGPT 订阅', tone: 'graphite', brand: 'openai' },
+  { id: 'cursor', name: 'Cursor', caption: 'Cursor Agent', tone: 'slate', brand: 'cursor' },
+  { id: 'opencode', name: 'OpenCode', caption: 'OpenCode', tone: 'stone', brand: 'opencode' },
 ];
 
 // Agents that can run on a remote host; the server builds the actual ssh/tmux command.
-const REMOTE_AGENTS: { id: 'claude' | 'codex' | 'shell'; name: string; tone: string; mark: string; tool: 'claude' | 'codex' | null }[] = [
-  { id: 'claude', name: 'Claude Code', tone: 'clay', mark: 'C', tool: 'claude' },
-  { id: 'codex', name: 'Codex', tone: 'graphite', mark: 'O', tool: 'codex' },
-  { id: 'shell', name: '终端', tone: 'stone', mark: '', tool: null },
+const REMOTE_AGENTS: { id: 'claude' | 'codex' | 'shell'; name: string; tone: string; brand?: StudioBrand; tool: 'claude' | 'codex' | null }[] = [
+  { id: 'claude', name: 'Claude Code', tone: 'clay', brand: 'claude', tool: 'claude' },
+  { id: 'codex', name: 'Codex', tone: 'graphite', brand: 'openai', tool: 'codex' },
+  { id: 'shell', name: '终端', tone: 'stone', tool: null },
 ];
 
 function RemoteAgents({ project }: { project: HubProject }) {
@@ -66,13 +67,13 @@ function RemoteAgents({ project }: { project: HubProject }) {
       <div className="ios-section-header"><h2>在 {label} 上开始</h2><span className="caption mono">{project.remoteDir || '~'}</span></div>
       <div className="ios-list">
         <div className="ios-row remote-host-row">
-          <span className="home-icon small tone-graphite" aria-hidden="true"><Server size={17} strokeWidth={1.6} /></span>
+          <span className="home-icon small tone-graphite" aria-hidden="true"><IconServer size={17} strokeWidth={1.6} /></span>
           <span className="ios-row-body"><strong>{label}</strong><small className="mono">{host?.target ?? '未在服务器上配置这台主机'}</small></span>
           <span className="remote-host-status" aria-live="polite">
             {status === null ? <StudioSpinner size={16} label="正在检查" />
               : <><span className={`status-dot ${status.online ? 'good' : ''}`} aria-hidden="true" />{status.online ? `在线 · ${status.latencyMs ?? '–'} ms` : '离线'}</>}
           </span>
-          <button type="button" className="icon-button" aria-label="重新检查" title="重新检查" disabled={status === null} onClick={() => void check()}><RefreshCw size={18} aria-hidden="true" /></button>
+          <button type="button" className="icon-button" aria-label="重新检查" title="重新检查" disabled={status === null} onClick={() => void check()}><IconRefresh size={18} aria-hidden="true" /></button>
         </div>
       </div>
       {status && !status.online && status.error && <p className="studio-feedback error">{status.error}</p>}
@@ -80,7 +81,7 @@ function RemoteAgents({ project }: { project: HubProject }) {
         {agents.map(agent => {
           const unavailable = !status?.online || (agent.tool !== null && !status.tools[agent.tool]);
           return <button type="button" key={agent.id} className="agent-card ios-press" disabled={launching !== null || unavailable} onClick={() => void launch(agent.id)}>
-            <span className={`home-icon tone-${agent.tone} agent-mark`} aria-hidden="true">{launching === agent.id ? <StudioSpinner size={22} /> : agent.mark || <SquareTerminal size={22} strokeWidth={1.6} />}</span>
+            <span className={`home-icon tone-${agent.tone} agent-mark`} aria-hidden="true">{launching === agent.id ? <StudioSpinner size={22} /> : agent.brand ? <StudioBrandMark brand={agent.brand} size={24} /> : <IconTerminal2 size={22} strokeWidth={1.6} />}</span>
             <span className="agent-card-text"><strong>{agent.name}</strong><small>{agent.tool && status?.online && !status.tools[agent.tool] ? '未安装' : `运行在 ${label}`}</small></span>
           </button>;
         })}
@@ -151,15 +152,15 @@ function LocalAgents({ project, onOpenChat }: { project: HubProject; onOpenChat:
       <div className="ios-section-header"><h2>在本项目中开始</h2><span className="caption mono">{project.workspacePath || '未设置目录'}</span></div>
       <div className="agent-grid">
         {agents.map(agent => <button type="button" key={agent.id} className="agent-card ios-press" disabled={launching !== null || !project.workspacePath} onClick={() => void launch(agent.id)}>
-          <span className={`home-icon tone-${agent.tone} agent-mark`} aria-hidden="true">{launching === agent.id ? <LoaderCircle size={22} className="spin" /> : agent.mark}</span>
+          <span className={`home-icon tone-${agent.tone} agent-mark`} aria-hidden="true">{launching === agent.id ? <IconLoader2 size={22} className="spin" /> : <StudioBrandMark brand={agent.brand} size={24} />}</span>
           <span className="agent-card-text"><strong>{agent.name}</strong><small>{agent.caption}</small></span>
         </button>)}
         {project.providers.includes('deepseek') && <button type="button" className="agent-card ios-press" onClick={onOpenChat}>
-          <span className="home-icon tone-slate agent-mark" aria-hidden="true"><MessagesSquare size={22} strokeWidth={1.6} /></span>
+          <span className="home-icon tone-slate agent-mark" aria-hidden="true"><StudioBrandMark brand="deepseek" size={24} /></span>
           <span className="agent-card-text"><strong>DeepSeek</strong><small>项目对话 · API</small></span>
         </button>}
         {project.workspacePath && <button type="button" className="agent-card ios-press" onClick={() => setTerminalOpen(true)}>
-          <span className="home-icon tone-stone agent-mark" aria-hidden="true"><SquareTerminal size={22} strokeWidth={1.6} /></span>
+          <span className="home-icon tone-stone agent-mark" aria-hidden="true"><IconTerminal2 size={22} strokeWidth={1.6} /></span>
           <span className="agent-card-text"><strong>终端</strong><small>本机 · 项目目录</small></span>
         </button>}
       </div>
@@ -170,12 +171,12 @@ function LocalAgents({ project, onOpenChat }: { project: HubProject; onOpenChat:
 
     {agents.length > 0 && <section className="ios-section">
       <div className="ios-section-header"><h2>项目会话</h2>
-        <button type="button" className="icon-button" title="刷新会话" aria-label="刷新会话" onClick={() => void load()}><RefreshCw size={18} aria-hidden="true" /></button></div>
+        <button type="button" className="icon-button" title="刷新会话" aria-label="刷新会话" onClick={() => void load()}><IconRefresh size={18} aria-hidden="true" /></button></div>
       <div className="ios-list">
         {sessions.map(session => <Link className="ios-row" key={session.id} to={sessionHref(session.id)}>
-          <span className={`home-icon small tone-${AGENTS.find(agent => agent.id === session.provider)?.tone ?? 'stone'}`} aria-hidden="true">{AGENTS.find(agent => agent.id === session.provider)?.mark ?? '·'}</span>
+          <span className={`home-icon small tone-${AGENTS.find(agent => agent.id === session.provider)?.tone ?? 'stone'}`} aria-hidden="true">{(brand => brand ? <StudioBrandMark brand={brand} size={18} /> : '·')(AGENTS.find(agent => agent.id === session.provider)?.brand)}</span>
           <span className="ios-row-body"><strong>{session.title}</strong><small>{nameOf(session.provider)}</small></span>
-          <ChevronRight size={18} className="chevron" aria-hidden="true" />
+          <IconChevronRight size={18} className="chevron" aria-hidden="true" />
         </Link>)}
         {!sessions.length && <div className="ios-row no-icon"><span className="ios-row-body"><small>还没有在这个目录里的会话</small></span></div>}
       </div>

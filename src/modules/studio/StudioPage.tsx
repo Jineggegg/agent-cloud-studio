@@ -3,8 +3,8 @@ import type { CSSProperties, UIEvent } from 'react';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AnimatePresence, LazyMotion, MotionConfig, m } from 'motion/react';
 import { Toaster, toast } from 'sonner';
-import { ChevronLeft, FolderX, Globe, LayoutGrid, RefreshCw, ShieldCheck, SquarePen, Trash2 } from 'lucide-react';
 
+import { IconChevronLeft, IconEdit, IconFolderX, IconLayoutGrid, IconRefresh, IconShieldCheck, IconTrash, IconWorld } from '@/modules/studio/icons/tabler';
 import { useAuth } from '@/modules/auth';
 import { api, readApiJson } from '@/shared/api';
 import type { HubProject, StudioBuildCreated, StudioChatSpace, StudioConversation, StudioHomeTile, T212Status } from '@/shared/types';
@@ -203,9 +203,9 @@ export function StudioPage() {
     { id: 'workspace', name: '工作台', tone: 'graphite', glyph: 'terminal', href: '/work' },
     { ...SETTINGS_TILE, status: studio.loading || configured ? undefined : '1 项待配置' },
   ];
-  // The app is revealed from the exact icon rectangle (clip-path, so content never distorts), like iOS; without an icon it fades and scales from centre.
+  // The app is revealed from the exact icon card (clip-path, so content never distorts; corners as the card's 14 px on 96), like iOS; without an icon it fades and scales from centre.
   const appStyle = (origin ? {
-    '--zoom-clip': `inset(${origin.y}px ${Math.max(0, window.innerWidth - origin.x - origin.w)}px ${Math.max(0, window.innerHeight - origin.y - origin.h)}px ${origin.x}px round ${Math.min(origin.w, origin.h) * 0.23}px)`,
+    '--zoom-clip': `inset(${origin.y}px ${Math.max(0, window.innerWidth - origin.x - origin.w)}px ${Math.max(0, window.innerHeight - origin.y - origin.h)}px ${origin.x}px round ${Math.min(origin.w, origin.h) * 14 / 96}px)`,
     '--zoom-cx': `${origin.x + origin.w / 2}px`, '--zoom-cy': `${origin.y + origin.h / 2}px`,
   } : {}) as CSSProperties;
 
@@ -238,21 +238,21 @@ export function StudioPage() {
       <main className={`studio-main ${tabs.length ? 'has-tabs' : ''}`}>
         <header className="studio-navbar" data-compact={chatContext || tabs.length > 0 || compact ? 'true' : 'false'}>
           <div className="navbar-leading">
-            {chatContext && threadOpen && <button type="button" className="navbar-back ios-press studio-phone-only" onClick={() => setThreadOpen(false)}><ChevronLeft size={26} aria-hidden="true" />{project ? 'DeepSeek' : '对话'}</button>}
-            <button type="button" className={`navbar-back ios-press ${chatContext && threadOpen ? 'studio-wide-only' : ''}`} onClick={goHome} aria-label="返回主屏幕"><ChevronLeft size={26} aria-hidden="true" /><LayoutGrid size={18} aria-hidden="true" /></button>
+            {chatContext && threadOpen && <button type="button" className="navbar-back ios-press studio-phone-only" onClick={() => setThreadOpen(false)}><IconChevronLeft size={26} aria-hidden="true" />{project ? 'DeepSeek' : '对话'}</button>}
+            <button type="button" className={`navbar-back ios-press ${chatContext && threadOpen ? 'studio-wide-only' : ''}`} onClick={goHome} aria-label="返回主屏幕"><IconChevronLeft size={26} aria-hidden="true" /><IconLayoutGrid size={18} aria-hidden="true" /></button>
           </div>
           <div className="navbar-title" aria-hidden={!(chatContext || tabs.length > 0 || compact)}>
             {navTitle}
             {chatContext && (threadOpen || studio.active) && <small>{assistant} · {studio.active?.model ?? '新建'}</small>}
           </div>
           <div className="navbar-trailing">
-            <span className="studio-private"><ShieldCheck size={15} aria-hidden="true" />私有工作空间</span>
-            {project && project.links.length > 0 && !chatContext && <button type="button" className="icon-button" aria-label="打开网站" title="网站" onClick={() => setLinksOpen(true)}><Globe size={20} aria-hidden="true" /></button>}
+            <span className="studio-private"><IconShieldCheck size={15} aria-hidden="true" />私有工作空间</span>
+            {project && project.links.length > 0 && !chatContext && <button type="button" className="icon-button" aria-label="打开网站" title="网站" onClick={() => setLinksOpen(true)}><IconWorld size={20} aria-hidden="true" /></button>}
             {chatContext ? <>
-              {studio.active && <button type="button" className="icon-button danger" aria-label="删除当前对话" title="删除当前对话" disabled={studio.sending} onClick={() => setPendingDelete(studio.active)}><Trash2 size={19} aria-hidden="true" /></button>}
-              <button type="button" className="icon-button" aria-label="新建对话" title="新建对话" disabled={studio.sending} onClick={() => { studio.startNew(); setThreadOpen(true); }}><SquarePen size={21} aria-hidden="true" /></button>
+              {studio.active && <button type="button" className="icon-button danger" aria-label="删除当前对话" title="删除当前对话" disabled={studio.sending} onClick={() => setPendingDelete(studio.active)}><IconTrash size={19} aria-hidden="true" /></button>}
+              <button type="button" className="icon-button" aria-label="新建对话" title="新建对话" disabled={studio.sending} onClick={() => { studio.startNew(); setThreadOpen(true); }}><IconEdit size={21} aria-hidden="true" /></button>
             </> : !tabs.length && <button type="button" className={`icon-button ${refreshing ? 'refreshing' : ''}`} aria-label="刷新状态" title="刷新状态"
-              disabled={studio.loading || refreshing} onClick={() => void refresh()}><RefreshCw size={19} className="refresh-icon" aria-hidden="true" /></button>}
+              disabled={studio.loading || refreshing} onClick={() => void refresh()}><IconRefresh size={19} className="refresh-icon" aria-hidden="true" /></button>}
           </div>
         </header>
 
@@ -275,7 +275,7 @@ export function StudioPage() {
               {target.kind === 'app' && target.id === 'memory' && <StudioMemory refreshing={refreshing} />}
               {target.kind === 'project' && !project && (projects === null
                 ? <div className="studio-skeleton" role="status" aria-label="正在加载项目"><div className="skeleton-block" style={{ height: 160 }} /></div>
-                : <div className="ios-empty"><FolderX size={32} strokeWidth={1.5} aria-hidden="true" /><span>这个项目不存在或已被删除</span>
+                : <div className="ios-empty"><IconFolderX size={32} strokeWidth={1.5} aria-hidden="true" /><span>这个项目不存在或已被删除</span>
                   <button type="button" className="ios-button tinted" onClick={goHome}>返回主屏幕</button></div>)}
               {projectContent()}
             </m.div>

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { ChevronDown, ExternalLink, LoaderCircle } from 'lucide-react';
 import { createPortal } from 'react-dom';
 
+import { IconChevronDown, IconExternalLink, IconLoader2 } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 
 // Matches the CSS slide-down so the cover leaves before the iframe unmounts.
@@ -34,14 +34,14 @@ export function StudioSnrView({ connected }: { connected: boolean }) {
 
   return <>
     <button type="button" className="ios-button filled" disabled={!connected || busy} onClick={() => void open()}>
-      {busy ? <LoaderCircle size={17} className="spin" aria-hidden="true" /> : <ExternalLink size={17} aria-hidden="true" />}打开实验室
+      {busy ? <IconLoader2 size={17} className="spin" aria-hidden="true" /> : <IconExternalLink size={17} aria-hidden="true" />}打开实验室
     </button>
     {error && <p className="studio-feedback error" role="alert">{error}</p>}
     {url && createPortal(
       <div className={`studio-layer ${closing ? 'closing' : ''}`} onKeyDown={event => { if (event.key === 'Escape') setClosing(true); }}>
         <div className="studio-cover" role="dialog" aria-modal="true" aria-label="SNR 图表工作台">
           <header>
-            <button type="button" className="navbar-back" onClick={() => setClosing(true)} autoFocus><ChevronDown size={22} aria-hidden="true" />完成</button>
+            <button type="button" className="navbar-back" onClick={() => setClosing(true)} autoFocus><IconChevronDown size={22} aria-hidden="true" />完成</button>
             <strong>SNR 3.0</strong>
             <span>研究实验室</span>
           </header>

@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from 'react';
 import type { FormEvent } from 'react';
-import { Minus, Plus } from 'lucide-react';
 
+import { IconMinus, IconPlus } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import type { HubModule, HubProject, HubProjectInput, HubProvider, StudioRemoteHost } from '@/shared/types';
 import { StudioIconPicker } from '@/modules/studio/StudioIconPicker';
@@ -97,10 +97,10 @@ export function StudioProjectEditor({ project, onSaved, onCancel, onDelete }: {
         {form.links.map((link, index) => <div className="ios-field link-field" key={index}>
           <input aria-label={`网站 ${index + 1} 名称`} className="link-field-label" required maxLength={40} placeholder="名称" value={link.label} onChange={event => setLink(index, { label: event.target.value })} />
           <input aria-label={`网站 ${index + 1} 地址`} className="mono" type="url" required maxLength={500} autoCapitalize="off" autoCorrect="off" spellCheck={false} placeholder="https://…" value={link.url} onChange={event => setLink(index, { url: event.target.value })} />
-          <button type="button" className="icon-button danger" aria-label={`删除网站 ${link.label || index + 1}`} onClick={() => setForm({ ...form, links: form.links.filter((_, position) => position !== index) })}><Minus size={18} aria-hidden="true" /></button>
+          <button type="button" className="icon-button danger" aria-label={`删除网站 ${link.label || index + 1}`} onClick={() => setForm({ ...form, links: form.links.filter((_, position) => position !== index) })}><IconMinus size={18} aria-hidden="true" /></button>
         </div>)}
         <button type="button" className="ios-row action no-icon" disabled={form.links.length >= MAX_LINKS} onClick={() => setForm({ ...form, links: [...form.links, { label: '', url: '' }] })}>
-          <Plus size={18} aria-hidden="true" />添加网站</button>
+          <IconPlus size={18} aria-hidden="true" />添加网站</button>
       </div>
     </section>
 

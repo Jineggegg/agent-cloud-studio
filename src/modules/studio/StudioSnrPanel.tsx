@@ -1,5 +1,5 @@
-import { ExternalLink, ShieldCheck } from 'lucide-react';
 
+import { IconExternalLink, IconShieldCheck } from '@/modules/studio/icons/tabler';
 import type { StudioSnr } from '@/shared/types';
 import { StudioSnrView } from '@/modules/studio/StudioSnrView';
 import { StudioTileIcon } from '@/modules/studio/StudioTileIcon';
@@ -25,7 +25,7 @@ export function StudioSnrPanel({ snr, remoteUrl }: { snr: StudioSnr | null; remo
     </div>
     <div className="snr-actions">
       <StudioSnrView connected={online} />
-      {remoteUrl && <a className="ios-button tinted" href={remoteUrl} target="_blank" rel="noreferrer">独立入口<ExternalLink size={16} aria-hidden="true" /></a>}
+      {remoteUrl && <a className="ios-button tinted" href={remoteUrl} target="_blank" rel="noreferrer">独立入口<IconExternalLink size={16} aria-hidden="true" /></a>}
     </div>
     {capabilities.length > 0 && <section className="ios-section">
       <div className="ios-section-header"><h2>接入能力</h2><span className="caption">来自实验室的集成清单</span></div>
@@ -41,6 +41,6 @@ export function StudioSnrPanel({ snr, remoteUrl }: { snr: StudioSnr | null; remo
         </div>)}
       </div>
     </section>
-    <p className="studio-boundary"><ShieldCheck size={16} aria-hidden="true" />规则未审批 · 不自动训练 · 不执行交易</p>
+    <p className="studio-boundary"><IconShieldCheck size={16} aria-hidden="true" />规则未审批 · 不自动训练 · 不执行交易</p>
   </div>;
 }

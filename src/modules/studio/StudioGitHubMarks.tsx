@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
-import { GitPullRequest, GitPullRequestDraft } from 'lucide-react';
 
+import { IconGitPullRequest, IconGitPullRequestDraft } from '@/modules/studio/icons/tabler';
 import type { StudioGitHubChecks, StudioGitHubPull } from '@/shared/types';
 
 type BeadState = 'failing' | 'pending' | 'passing';
@@ -64,7 +64,7 @@ export function GitHubCheckBeads({ checks, label = true }: { checks: StudioGitHu
 
 /** Used by StudioGitHub (inbox rows) and StudioGitHubSheet (header): the pull request mark, tinted by its CI outcome. */
 export function GitHubPullMark({ pull }: { pull: Pick<StudioGitHubPull, 'isDraft' | 'checks'> }) {
-  const Icon = pull.isDraft ? GitPullRequestDraft : GitPullRequest;
+  const Icon = pull.isDraft ? IconGitPullRequestDraft : IconGitPullRequest;
   return <span className={`gh-mark ci-${pull.checks.state} ${pull.isDraft ? 'is-draft' : ''}`} aria-hidden="true">
     <Icon size={19} strokeWidth={1.8} />
   </span>;

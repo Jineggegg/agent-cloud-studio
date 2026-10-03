@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
-import { ChevronDown } from 'lucide-react';
 import { createPortal } from 'react-dom';
 
+import { IconChevronDown } from '@/modules/studio/icons/tabler';
 import type { HubProject, StudioRemoteLaunch } from '@/shared/types';
 import { StandaloneShell } from '@/modules/standalone-shell';
 
@@ -41,7 +41,7 @@ export default function StudioTerminalCover(props: TerminalCoverProps) {
   return createPortal(<div className="studio-layer" onKeyDown={event => { if (event.key === 'Escape' && event.target === event.currentTarget) props.onClose(); }}>
     <div className="studio-cover terminal-cover" role="dialog" aria-modal="true" aria-label={view.label}>
       <header>
-        <button type="button" className="navbar-back ios-press" onClick={props.onClose}><ChevronDown size={22} aria-hidden="true" />完成</button>
+        <button type="button" className="navbar-back ios-press" onClick={props.onClose}><IconChevronDown size={22} aria-hidden="true" />完成</button>
         <strong>{view.heading}</strong>
         <span>{view.caption}</span>
       </header>

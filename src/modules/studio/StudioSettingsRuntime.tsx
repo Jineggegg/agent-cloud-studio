@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { GitBranch, Github, MonitorSmartphone, RefreshCw, Server } from 'lucide-react';
 
+import { IconDevices, IconGitBranch, IconRefresh, IconServer } from '@/modules/studio/icons/tabler';
 import { ApiRequestError, api, readApiJson } from '@/shared/api';
 import type { StudioBuildInfo, StudioRuntimeInfo } from '@/shared/types';
+import { StudioBrandMark } from '@/modules/studio/brandIcons';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 import '@/modules/studio/studio-runtime.css';
 
@@ -47,7 +48,7 @@ function buildLabel(build: StudioBuildInfo | null) {
 
 function BuildRow({ title, build, note }: { title: string; build: StudioBuildInfo | null; note: string }) {
   return <div className="ios-row studio-runtime-row">
-    <span className="home-icon small tone-slate" aria-hidden="true"><MonitorSmartphone size={20} /></span>
+    <span className="home-icon small tone-slate" aria-hidden="true"><IconDevices size={20} /></span>
     <span className="ios-row-body"><strong>{title}</strong><span className="mono studio-runtime-value">{buildLabel(build)}</span>
       <small>{build ? `构建于 ${dateLabel(build.builtAt)} · ${note}` : note}</small></span>
   </div>;
@@ -87,7 +88,7 @@ export function StudioSettingsRuntime() {
     <div className="ios-section-header">
       <h2 id="studio-runtime-heading">版本与运行状态</h2>
       <button type="button" className="studio-runtime-action" disabled={busy} onClick={() => void refresh()}>
-        {busy ? <StudioSpinner size={16} /> : <RefreshCw size={16} aria-hidden="true" />}刷新状态
+        {busy ? <StudioSpinner size={16} /> : <IconRefresh size={16} aria-hidden="true" />}刷新状态
       </button>
     </div>
     <div className="ios-list" aria-busy={busy}>
@@ -96,19 +97,19 @@ export function StudioSettingsRuntime() {
         <BuildRow title="已部署前端" build={info.frontend.build} note={info.frontend.reason ?? '服务器磁盘上的构建'} />
         <BuildRow title="正在运行的后台" build={info.backend.build} note={info.backend.reason ?? '后台启动时载入的构建'} />
         <div className="ios-row studio-runtime-row">
-          <span className="home-icon small tone-stone" aria-hidden="true"><GitBranch size={20} /></span>
+          <span className="home-icon small tone-stone" aria-hidden="true"><IconGitBranch size={20} /></span>
           <span className="ios-row-body"><strong>当前代码目录</strong>
             <span className="mono studio-runtime-value">{info.checkout.commit ? `${info.checkout.branch ?? '分支未记录'} · ${info.checkout.commit.slice(0, 8)}` : '无法检查'}</span>
             <small>{info.checkout.reason ?? (info.checkout.dirty === true ? '有未提交改动' : info.checkout.dirty === false ? '没有未提交改动' : '改动状态未知')} · 源码状态不代表运行版本</small></span>
         </div>
         <div className="ios-row studio-runtime-row">
-          <span className="home-icon small tone-graphite" aria-hidden="true"><Github size={20} /></span>
+          <span className="home-icon small tone-graphite" aria-hidden="true"><StudioBrandMark brand="github" size={20} /></span>
           <span className="ios-row-body"><strong>GitHub 最新提交</strong>
             <span className="mono studio-runtime-value">{info.github.commit ? `${info.github.defaultBranch} · ${info.github.commit.slice(0, 8)}` : '无法检查'}</span>
             <small>{info.github.reason ?? info.github.repository} · {info.github.checkedAt ? `检查于 ${dateLabel(info.github.checkedAt)}` : '尚未检查'}</small></span>
         </div>
         <div className="ios-row studio-runtime-row">
-          <span className="home-icon small tone-sage" aria-hidden="true"><Server size={20} /></span>
+          <span className="home-icon small tone-sage" aria-hidden="true"><IconServer size={20} /></span>
           <span className="ios-row-body"><strong>运行主机</strong><span className="studio-runtime-value">{info.host.hostname} · {info.host.platform}</span>
             <small>主机启动 {dateLabel(info.host.bootedAt)}</small><small>后台启动 {dateLabel(info.host.processStartedAt)}</small></span>
         </div>

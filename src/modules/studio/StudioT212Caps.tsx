@@ -1,8 +1,8 @@
 import { useId, useState } from 'react';
 import { browserSupportsWebAuthn, startAuthentication } from '@simplewebauthn/browser';
-import { Check, ScanFace } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { IconCheck, IconFaceId } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import { T212_ENV_LABELS } from '@/shared/constants';
 import type {
@@ -201,7 +201,7 @@ function CapsForm({ env, caps, currency, ceiling, blocker, labelledBy, busy, set
         </span>
       </div>
       <button type="submit" className="ios-row action left no-icon" disabled={!ready}>
-        {busy === 'saving' || busy === 'challenge' ? <StudioSpinner size={16} /> : direction === 'raise' ? <ScanFace size={19} aria-hidden="true" /> : <Check size={19} aria-hidden="true" />}
+        {busy === 'saving' || busy === 'challenge' ? <StudioSpinner size={16} /> : direction === 'raise' ? <IconFaceId size={19} aria-hidden="true" /> : <IconCheck size={19} aria-hidden="true" />}
         {direction === 'raise' ? '用面容 ID / 触控 ID 提高上限' : direction === 'lower' ? '降低上限' : '保存上限'}
       </button>
     </form>

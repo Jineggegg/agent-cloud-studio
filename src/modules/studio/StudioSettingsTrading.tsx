@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Globe, ScanFace, Trash2 } from 'lucide-react';
 
+import { IconFaceId, IconTrash, IconWorld } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import type { T212Passkey, T212TradingConfig } from '@/shared/types';
 import { StudioT212CapsEditor } from '@/modules/studio/StudioT212Caps';
@@ -87,13 +87,13 @@ export function StudioSettingsTrading() {
 
     {passkeys.length > 0 && <div className="ios-list t212-passkey-list" role="group" aria-label="已启用通行密钥的网址">
       {passkeys.map(passkey => <div className="ios-row" key={passkey.id}>
-        <span className="home-icon small tone-slate" aria-hidden="true">{passkey.rpId === host ? <ScanFace size={18} strokeWidth={1.6} /> : <Globe size={18} strokeWidth={1.6} />}</span>
+        <span className="home-icon small tone-slate" aria-hidden="true">{passkey.rpId === host ? <IconFaceId size={18} strokeWidth={1.6} /> : <IconWorld size={18} strokeWidth={1.6} />}</span>
         <span className="ios-row-body">
           <strong>{passkey.rpId}{passkey.rpId === host && <span className="t212-passkey-current">当前</span>}</strong>
           <small>{passkey.label ?? '设备'} · {day(passkey.createdAt)} 启用{passkey.lastUsedAt ? ` · ${day(passkey.lastUsedAt)} 用过` : ''}</small>
         </span>
         <button type="button" className="icon-button danger" aria-label={`移除 ${passkey.rpId} 的通行密钥`} onClick={() => setRemoving(passkey)}>
-          <Trash2 size={18} aria-hidden="true" />
+          <IconTrash size={18} aria-hidden="true" />
         </button>
       </div>)}
     </div>}

@@ -4,9 +4,9 @@ import { createPortal } from 'react-dom';
 import { AnimatePresence, m } from 'motion/react';
 import { startAuthentication } from '@simplewebauthn/browser';
 import type { PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/browser';
-import { ChevronLeft, ScanFace, ShieldCheck, TriangleAlert } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { IconAlertTriangle, IconChevronLeft, IconFaceId, IconShieldCheck } from '@/modules/studio/icons/tabler';
 import { api, readApiJson } from '@/shared/api';
 import { T212_MODE_LABELS } from '@/shared/constants';
 import type { T212Env, T212OrderSide, T212Position, T212TradingConfig } from '@/shared/types';
@@ -365,7 +365,7 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
       </dl>
     </section>
     {preview.warnings.length > 0 && <ul className="t212-order-warnings" aria-label="提醒">
-      {preview.warnings.map(warning => <li key={warning}><TriangleAlert size={15} aria-hidden="true" />{warning}</li>)}
+      {preview.warnings.map(warning => <li key={warning}><IconAlertTriangle size={15} aria-hidden="true" />{warning}</li>)}
     </ul>}
     <div className="t212-order-timer-row">
       <span>{expired ? '这份预览已失效，需要重新生成' : `${secondsLeft} 秒内确认有效`}</span>
@@ -373,7 +373,7 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
     </div>
     {unknownOutcome
       ? <div className="t212-order-unknown" role="alert">
-        <TriangleAlert size={18} aria-hidden="true" />
+        <IconAlertTriangle size={18} aria-hidden="true" />
         <div>
           <strong>订单状态未知</strong>
           <span>{error}</span>
@@ -391,7 +391,7 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
           </button>
           : preview.requires === 'passkey'
             ? <button type="button" className="ios-button filled t212-order-primary" disabled={busy !== null} onClick={() => void confirmWithPasskey()}>
-              {busy === 'confirm' ? <StudioSpinner size={16} /> : <ScanFace size={19} aria-hidden="true" />}用面容 ID / 触控 ID {SIDE_LABEL[preview.side]}
+              {busy === 'confirm' ? <StudioSpinner size={16} /> : <IconFaceId size={19} aria-hidden="true" />}用面容 ID / 触控 ID {SIDE_LABEL[preview.side]}
             </button>
             : <button type="button" className="ios-button t212-order-primary t212-order-danger" disabled={busy !== null} onClick={() => setConfirming(true)}>
               {busy === 'confirm' && <StudioSpinner size={16} />}{SIDE_LABEL[preview.side]}下单
@@ -401,7 +401,7 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
 
   const enroll = <m.div key="enroll" className="t212-order-step" custom={direction} variants={STEP_VARIANTS} initial="enter" animate="center" exit="exit">
     <div className="t212-order-off">
-      <ScanFace size={32} strokeWidth={1.5} aria-hidden="true" />
+      <IconFaceId size={32} strokeWidth={1.5} aria-hidden="true" />
       <strong>先为 {host} 启用面容 ID / 触控 ID</strong>
       <span>{config.requirePasskey
         ? '服务器要求每笔订单都用面容 ID / 触控 ID 确认（STUDIO_T212_REQUIRE_PASSKEY=1）。'
@@ -416,7 +416,7 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
   // Not enabled: either the server does not allow this account at all, or the user's trading mode leaves it out.
   const off = <m.div key="off" className="t212-order-step" custom={direction} variants={STEP_VARIANTS} initial="enter" animate="center" exit="exit">
     <div className="t212-order-off">
-      <ShieldCheck size={32} strokeWidth={1.5} aria-hidden="true" />
+      <IconShieldCheck size={32} strokeWidth={1.5} aria-hidden="true" />
       {serverAllows ? <>
         <strong>{env === 'live' ? '实盘' : '模拟盘'}下单已关闭</strong>
         <span>允许下单的账户目前是「{T212_MODE_LABELS[config.tradingMode.mode]}」。可以在「设置 → 交易安全」开启{env === 'live' ? '实盘' : '模拟盘'}，开启需要面容 ID / 触控 ID。</span>
@@ -437,7 +437,7 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
         <div className="t212-order-grabber" aria-hidden="true" />
         <header className="t212-order-header">
           {preview
-            ? <button type="button" className="t212-order-nav" disabled={busy !== null} onClick={back}><ChevronLeft size={22} aria-hidden="true" />修改</button>
+            ? <button type="button" className="t212-order-nav" disabled={busy !== null} onClick={back}><IconChevronLeft size={22} aria-hidden="true" />修改</button>
             : <button type="button" className="t212-order-nav" disabled={busy === 'confirm'} onClick={close}>取消</button>}
           <h2 id="t212-order-title">{preview ? '确认订单' : `交易 · ${envLabel}`}</h2>
           <span className={`t212-env-badge ${env}`}>{env === 'live' ? '实盘' : '模拟'}</span>

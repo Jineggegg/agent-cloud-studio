@@ -1,9 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { ArrowUp, Check, Copy, MessagesSquare, Square } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+import { IconArrowUp, IconCheck, IconCopy, IconMessages, IconSquare } from '@/modules/studio/icons/tabler';
 import type { StudioConversation } from '@/shared/types';
 
 // The composer grows with its text up to roughly seven lines, then scrolls.
@@ -81,7 +81,7 @@ export function StudioChat({ assistant = 'DeepSeek', tone = 'slate', active, mod
   return <section className="studio-chat" aria-label={`${assistant} 对话`}>
     <div className="studio-transcript" aria-live="polite" aria-busy={sending}>
       {!active?.messages?.length && !sending && <div className="studio-chat-empty">
-        <span className={`home-icon large tone-${tone}`} aria-hidden="true"><MessagesSquare size={30} strokeWidth={1.6} /></span>
+        <span className={`home-icon large tone-${tone}`} aria-hidden="true"><IconMessages size={30} strokeWidth={1.6} /></span>
         <h2>开始一条新对话</h2>
         <p>{assistant} · {activeModel}</p>
       </div>}
@@ -89,7 +89,7 @@ export function StudioChat({ assistant = 'DeepSeek', tone = 'slate', active, mod
         {message.role === 'assistant' && <div className="message-meta">
           <span>{assistant}</span><span className="model-tag">{active.model}</span>
           {message.status !== 'error' && <button type="button" className="icon-button plain" aria-label="复制回复" title="复制回复" onClick={() => void copy(message.id, message.content)}>
-            {copied === message.id ? <Check size={16} className="copied-pop" /> : <Copy size={16} />}
+            {copied === message.id ? <IconCheck size={16} className="copied-pop" /> : <IconCopy size={16} />}
           </button>}
         </div>}
         {message.role === 'user' && <span className="studio-visually-hidden">你：</span>}
@@ -108,8 +108,8 @@ export function StudioChat({ assistant = 'DeepSeek', tone = 'slate', active, mod
             onKeyDown={onKeyDown}
             onChange={event => setDraft(event.target.value)} />
           {sending
-            ? <button type="button" className="send-button stop" title="停止回复" aria-label="停止回复" onClick={onStop}><Square size={14} fill="currentColor" /></button>
-            : <button className="send-button" title="发送消息" aria-label="发送消息" disabled={!draft.trim()}><ArrowUp size={20} strokeWidth={2.6} /></button>}
+            ? <button type="button" className="send-button stop" title="停止回复" aria-label="停止回复" onClick={onStop}><IconSquare size={14} fill="currentColor" /></button>
+            : <button className="send-button" title="发送消息" aria-label="发送消息" disabled={!draft.trim()}><IconArrowUp size={20} strokeWidth={2.6} /></button>}
         </div>
         <div className="composer-options">
           <select aria-label="对话模型" value={activeModel} disabled={sending || Boolean(active)} onChange={event => setModel(event.target.value)}>
