@@ -28,6 +28,7 @@ import type {
   AppErrorOptions,
   NormalizedMessage,
   ProviderCurrentActiveModel,
+  ProviderModelOption,
   ProviderModelsDefinition,
   ProviderSkillSource,
   StudioCloudflareAccessConfig,
@@ -827,6 +828,59 @@ export function isPlaceholderProviderModel(model: string): boolean {
   return model.startsWith('<') && model.endsWith('>');
 }
 
+/** The `[1m]` suffix Claude Code accepts on an alias or model id to run it with the 1M-token context window. */
+const LONG_CONTEXT_MODEL_SUFFIX = /\[1m\]$/i;
+
+/**
+ * Matches a requested or stored model value to the catalog option it selects
+ * and the concrete model id to run.
+ *
+ * Exact option values win, then an option's `longContextValue`, then its
+ * legacy `aliases`. A `[1m]` suffix on a value or alias selects the option's
+ * long-context variant when it has one, and the plain option when it does not
+ * (a model without a 1M window cannot honour it). Returns `null` for a value
+ * the catalog does not know, such as a provider-native id typed by the user,
+ * which callers pass through unchanged.
+ *
+ * Used by the Claude models provider and Claude runtime (to run legacy picker
+ * values such as `opus[1m]` or `default` as the model the picker now shows,
+ * and to validate effort against that model) and by the provider-models
+ * service (so a custom model id cannot shadow a built-in option or alias).
+ */
+export function resolveProviderModelSelection(
+  definition: ProviderModelsDefinition,
+  value: string | null | undefined,
+): { option: ProviderModelOption; model: string; longContext: boolean } | null {
+  const requested = typeof value === 'string' ? value.trim() : '';
+  if (!requested) {
+    return null;
+  }
+
+  const exact = definition.OPTIONS.find((option) => option.value === requested);
+  if (exact) {
+    return { option: exact, model: exact.value, longContext: false };
+  }
+
+  const longContextExact = definition.OPTIONS.find((option) => option.longContextValue === requested);
+  if (longContextExact?.longContextValue) {
+    return { option: longContextExact, model: longContextExact.longContextValue, longContext: true };
+  }
+
+  const wantsLongContext = LONG_CONTEXT_MODEL_SUFFIX.test(requested);
+  const base = requested.replace(LONG_CONTEXT_MODEL_SUFFIX, '').trim().toLowerCase();
+  const option = definition.OPTIONS.find((candidate) => (
+    candidate.value.toLowerCase() === base
+    || (candidate.aliases ?? []).some((alias) => alias.toLowerCase() === base)
+  ));
+  if (!option) {
+    return null;
+  }
+
+  return wantsLongContext && option.longContextValue
+    ? { option, model: option.longContextValue, longContext: true }
+    : { option, model: option.value, longContext: false };
+}
+
 // ---------------------------
 //----------------- WEBSOCKET PAYLOAD PARSING UTILITIES ------------
 /**
@@ -1603,7 +1657,8 @@ export function resolveHomeRelativePath(configured: string): string {
  *
  * Used by `recordClaudeRateLimitEvent` below and by the Studio module's Claude
  * quota adapter, which both read the plan-usage snapshot named by an
- * environment variable.
+ * environment variable, and by the Codex models provider, which reads the
+ * Codex CLI's model catalog cache (`~/.codex/models_cache.json`).
  */
 export async function readSmallRegularFile(filePath: string, maxBytes: number): Promise<string> {
   // O_NONBLOCK makes opening a FIFO return at once; O_NOCTTY keeps a terminal

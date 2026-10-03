@@ -81,6 +81,20 @@ export type ProviderModelOption = {
   recordId?: number;
   /** True for user-created rows; false for immutable CloudCLI defaults. */
   isCustom?: boolean;
+  /**
+   * Earlier catalog values that now mean this option (`opus`, `default`, ...).
+   * Saved selections and session rows that still carry one resolve to this
+   * option, and a `[1m]` suffix on one selects `longContextValue`.
+   */
+  aliases?: string[];
+  /**
+   * Model id that runs this option with the 1M-token context window. Menus
+   * offer it as a toggle on the option instead of as a separate row; absent
+   * when the model has no long-context variant.
+   */
+  longContextValue?: string;
+  /** Marks the provider's recommended pick, which the menus label 推荐. */
+  recommended?: boolean;
   effort?: {
     default?: string;
     values: {

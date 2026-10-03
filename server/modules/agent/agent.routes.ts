@@ -643,7 +643,10 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    *
    * @param {string} model - (Optional) Model identifier for providers.
    *
-   *                        Claude models: 'default', 'sonnet', 'opus', 'haiku', 'sonnet[1m]', 'opus[1m]', 'fable'
+   *                        Claude models: 'claude-opus-5-5' (default), 'claude-fable-5-1', 'claude-sonnet-5-5',
+   *                                       'claude-haiku-4-5-20251001'; append '[1m]' for the 1M context window
+   *                                       (not Haiku). The older aliases ('opus', 'sonnet', 'haiku', 'fable',
+   *                                       'default', 'best', 'opus[1m]', ...) still work and run as these models.
    *                        Cursor models: 'gpt-5' (default), 'gpt-5.2', 'gpt-5.2-high', 'sonnet-4.5', 'opus-4.5',
    *                                       'composer-1', 'auto', 'gpt-5.1', 'gpt-5.1-high',
    *                                       'gpt-5.1-codex', 'gpt-5.1-codex-high', 'gpt-5.1-codex-max',

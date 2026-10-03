@@ -4,7 +4,6 @@ import { sessionsDb } from '@/modules/database/index.js';
 import type { IProviderModels } from '@/shared/interfaces.js';
 import type {
   ProviderCurrentActiveModel,
-  ProviderModelOption,
   ProviderModelsDefinition,
 } from '@/shared/types.js';
 import {
@@ -26,205 +25,71 @@ const ULTRACODE_EFFORT_OPTION = {
   description: 'Highest effort plus standing workflow orchestration.',
 };
 
+/**
+ * Effort levels every current Claude model in this catalog accepts (Haiku takes none).
+ * The list is shared so the families cannot drift apart.
+ */
+const CLAUDE_EFFORT = {
+  default: 'high',
+  values: [
+    { value: 'low' },
+    { value: 'medium' },
+    { value: 'high' },
+    { value: 'xhigh' },
+    { value: 'max' },
+    ULTRACODE_EFFORT_OPTION,
+  ],
+};
+
+/**
+ * One row per Claude family at its concrete current version, newest first.
+ *
+ * The pre-2026-10 catalog listed aliases (`default`, `best`, `opus`, `opus[1m]`, ...)
+ * beside the pinned versions; those values live on as `aliases`, so saved selections
+ * and recorded sessions resolve to (and run as) the row that replaced them. The 1M
+ * context window is a toggle on a row (`longContextValue`) rather than a row of its own.
+ *
+ * Used by the Claude provider adapter below (served to the model menus) and by the
+ * Claude runtime, which runs the default model and validates effort against it.
+ */
 export const CLAUDE_PREDEFINED_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
     {
-      value: 'default',
-      label: 'Default (recommended)',
-      description: 'Use the recommended model for your Claude account and deployment.',
-      effort: {
-        default: 'high',
-        values: [
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'max' },
-        ],
-      },
-    },
-    {
-      value: 'best',
-      label: 'Best available',
-      description: 'Use Fable when available, otherwise the latest Opus model.',
-      effort: {
-        default: 'high',
-        values: [
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'xhigh' },
-          { value: 'max' },
-          ULTRACODE_EFFORT_OPTION,
-        ],
-      },
-    },
-    {
-      value: 'fable',
-      label: 'Fable (latest)',
-      description: 'Latest Fable model, the most capable Claude model for the hardest, longest-running tasks.',
-      effort: {
-        default: 'high',
-        values: [
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'xhigh' },
-          { value: 'max' },
-          ULTRACODE_EFFORT_OPTION,
-        ],
-      },
-    },
-    {
-      value: 'sonnet',
-      label: 'Sonnet',
-      description: 'Latest Sonnet model for everyday coding tasks.',
-      effort: {
-        default: 'high',
-        values: [
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'xhigh' },
-          { value: 'max' },
-          ULTRACODE_EFFORT_OPTION,
-        ],
-      },
-    },
-    {
-      value: 'sonnet[1m]',
-      label: 'Sonnet (1M context)',
-      description: 'Latest Sonnet model with a 1M context window.',
-      effort: {
-        default: 'high',
-        values: [
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'xhigh' },
-          { value: 'max' },
-          ULTRACODE_EFFORT_OPTION,
-        ],
-      },
-    },
-    {
-      value: 'opus',
-      label: 'Opus',
-      description: 'Latest Opus model for complex reasoning and coding tasks.',
-      effort: {
-        default: 'high',
-        values: [
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'xhigh' },
-          { value: 'max' },
-          ULTRACODE_EFFORT_OPTION,
-        ],
-      },
-    },
-    {
-      value: 'opus[1m]',
-      label: 'Opus (1M context)',
-      description: 'Latest Opus model with a 1M context window.',
-      effort: {
-        default: 'high',
-        values: [
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'xhigh' },
-          { value: 'max' },
-          ULTRACODE_EFFORT_OPTION,
-        ],
-      },
-    },
-    {
-      value: 'haiku',
-      label: 'Haiku',
-      description: 'Fast and efficient Claude model for simple tasks.',
-    },
-    // Pinned versions of the current models, for sessions that must not move when an alias above is repointed.
-    {
       value: 'claude-fable-5-1',
       label: 'Fable 5.1',
-      description: 'Pinned Fable 5.1.',
-      effort: {
-        default: 'high',
-        values: [
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'xhigh' },
-          { value: 'max' },
-          ULTRACODE_EFFORT_OPTION,
-        ],
-      },
+      description: '最强的 Claude，适合最难、最长的任务',
+      aliases: ['fable', 'best'],
+      longContextValue: 'claude-fable-5-1[1m]',
+      effort: CLAUDE_EFFORT,
     },
     {
       value: 'claude-opus-5-5',
       label: 'Opus 5.5',
-      description: 'Pinned Opus 5.5.',
-      effort: {
-        default: 'high',
-        values: [
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'xhigh' },
-          { value: 'max' },
-          ULTRACODE_EFFORT_OPTION,
-        ],
-      },
+      description: '复杂推理和编码的首选，日常默认用它',
+      recommended: true,
+      // `opusplan` ran Opus while planning; it now runs Opus throughout.
+      aliases: ['opus', 'default', 'opusplan'],
+      longContextValue: 'claude-opus-5-5[1m]',
+      effort: CLAUDE_EFFORT,
     },
     {
       value: 'claude-sonnet-5-5',
       label: 'Sonnet 5.5',
-      description: 'Pinned Sonnet 5.5.',
-      effort: {
-        default: 'high',
-        values: [
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'xhigh' },
-          { value: 'max' },
-          ULTRACODE_EFFORT_OPTION,
-        ],
-      },
+      description: '速度和能力兼顾，适合日常编码',
+      aliases: ['sonnet'],
+      longContextValue: 'claude-sonnet-5-5[1m]',
+      effort: CLAUDE_EFFORT,
     },
     {
       value: 'claude-haiku-4-5-20251001',
       label: 'Haiku 4.5',
-      description: 'Pinned Haiku 4.5.',
-    },
-    {
-      value: 'opusplan',
-      label: 'Opus Plan',
-      description: 'Use Opus while planning, then switch to Sonnet for execution.',
-      effort: {
-        default: 'high',
-        values: [
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'xhigh' },
-          { value: 'max' },
-          ULTRACODE_EFFORT_OPTION,
-        ],
-      },
+      description: '最快、最省，适合简单的小任务',
+      aliases: ['haiku', 'claude-haiku-4-5'],
     },
   ],
-  DEFAULT: 'default',
+  DEFAULT: 'claude-opus-5-5',
 };
 
-export const findClaudeModelOption = (model: string | undefined | null): ProviderModelOption | null => {
-  const normalizedModel = typeof model === 'string' ? model.trim() : '';
-  if (!normalizedModel) {
-    return null;
-  }
-
-  return CLAUDE_PREDEFINED_MODELS.OPTIONS.find((option) => option.value === normalizedModel) ?? null;
-};
 type ClaudeInitEvent = {
   sessionId?: string;
   session_id?: string;

@@ -187,6 +187,37 @@ test('duplicate model ids are rejected within one provider', async () => {
   );
 });
 
+test('a custom id that is a built-in alias or 1M variant is rejected as a duplicate', async () => {
+  const service = createProviderModelsService({
+    catalog: createCatalogStore(),
+    sessions: createSessionStore(),
+    resolveProvider: () => ({
+      models: {
+        getSupportedModels: async () => ({
+          OPTIONS: [{
+            value: 'claude-opus-5-5',
+            label: 'Opus 5.5',
+            aliases: ['opus'],
+            longContextValue: 'claude-opus-5-5[1m]',
+          }],
+          DEFAULT: 'claude-opus-5-5',
+        }),
+        getCurrentActiveModel: async () => createCurrentActiveModel('claude-opus-5-5'),
+      },
+    }),
+  });
+
+  for (const id of ['opus', 'opus[1m]', 'claude-opus-5-5[1m]']) {
+    await assert.rejects(
+      () => service.createCustomModel('claude', { model: 'Shadow', id }),
+      (error) => error instanceof AppError && error.code === 'MODEL_ID_ALREADY_EXISTS',
+      id,
+    );
+  }
+  const { model } = await service.createCustomModel('claude', { model: 'Opus 4.8', id: 'claude-opus-4-8' });
+  assert.equal(model.value, 'claude-opus-4-8');
+});
+
 test('predefined models have no database record or mutation target', async () => {
   const { service, catalog } = createTestService();
   const models = await service.getProviderModels('opencode');
