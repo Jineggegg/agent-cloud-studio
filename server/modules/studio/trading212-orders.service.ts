@@ -11,11 +11,12 @@ import type Database from 'better-sqlite3';
 
 import { AppError, describePasskeyDevice } from '@/shared/utils.js';
 import type {
-  StudioRequestClient, StudioT212CapsInput, StudioT212CapsRequest, StudioT212Environment, StudioT212OrderInput,
-  StudioT212TrustedOrigin,
+  StudioRequestClient, StudioT212CapsInput, StudioT212CapsRequest, StudioT212Environment, StudioT212ModeRequest, StudioT212OrderInput,
+  StudioT212PasskeyGate, StudioT212Requester, StudioT212TradingMode, StudioT212TrustedOrigin,
 } from '@/shared/types.js';
 
 import { createTrading212CapsService } from './trading212-caps.service.js';
+import { createTrading212ModeService } from './trading212-mode.service.js';
 import type { createTrading212Service } from './trading212.service.js';
 
 type WebAuthn = {
@@ -28,7 +29,7 @@ type Trading212 = ReturnType<typeof createTrading212Service>;
 type Dependencies = {
   database: Database.Database;
   trading212: Pick<Trading212, 'overview' | 'placeOrder' | 'lastCurrency' | 'instrumentCurrency'>;
-  // STUDIO_T212_TRADING: off (default) | demo | live | both.
+  // STUDIO_T212_TRADING: off (default) | demo | live | both. The ceiling and default of each user's trading mode.
   trading?: string;
   // STUDIO_T212_MAX_ORDER_VALUE: default per-order cap in the account currency (default 500); users may edit theirs.
   maxOrderValue?: string;
@@ -79,6 +80,8 @@ const CEREMONY_TTL_MS = 5 * 60_000;
 const UNKNOWN_HOLD_MS = 5 * 60_000;
 // The daily cap covers buys placed, in flight or with an unknown outcome in the last 24 hours.
 const DAILY_WINDOW_MS = 24 * 60 * 60_000;
+// Face ID challenges (caps and trading mode together) listed in Settings.
+const STEP_UP_HISTORY_LIMIT = 20;
 const INTERRUPTED_ORDER = 'Studio 在等待 Trading 212 回应时重启，这笔订单状态未知：请在 Trading 212 核对';
 const MAX_PASSWORD_LENGTH = 1024;
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -143,11 +146,13 @@ const round2 = (value: number) => Math.round(value * 100) / 100;
 
 /**
  * Used by studio.module (through trading212-orders.routes) to place Trading 212 orders safely: environment
- * gating, per-user per-order and rolling-24-hour caps in the account currency (edited through the caps service;
- * raising needs Face ID / Touch ID), single-use 60-second previews, and a Face ID / Touch ID passkey for the
- * request's domain. The daily cap counts buys only; a confirmation is written as a pending row before the broker
- * call, so parallel confirmations, a restart or a failed outcome write cannot exceed it. A double confirmation is accepted only while the user has no passkey at all
- * (and never with STUDIO_T212_REQUIRE_PASSKEY=1). Adding or removing a passkey needs the Studio password (removal
+ * gating (STUDIO_T212_TRADING ∩ each user's trading mode, edited through the mode service; adding an account needs
+ * Face ID / Touch ID and is re-checked at confirmation), per-user per-order and rolling-24-hour caps in the account
+ * currency (edited through the caps service; raising needs Face ID / Touch ID), single-use 60-second previews, and a
+ * Face ID / Touch ID passkey for the request's domain. The daily cap counts buys only; a confirmation is written as a
+ * pending row before the broker call, so parallel confirmations, a restart or a failed outcome write cannot exceed
+ * it. A double confirmation is accepted only while the user has no passkey at all (and never with
+ * STUDIO_T212_REQUIRE_PASSKEY=1). Adding or removing a passkey needs the Studio password (removal
  * also accepts that passkey's own assertion). Every confirmation attempt is recorded in studio_t212_orders
  * without secrets; an unknown broker outcome holds back an identical order for a few minutes.
  */
@@ -155,7 +160,8 @@ export function createTrading212OrdersService(deps: Dependencies) {
   const db = deps.database;
   const now = deps.now ?? Date.now;
   const webauthn = deps.webauthn ?? DEFAULT_WEBAUTHN;
-  const allowedEnvs = allowedEnvironments(deps.trading);
+  // The server's ceiling; each user's trading mode can only narrow it.
+  const serverEnvs = allowedEnvironments(deps.trading);
   const requirePasskey = enabledFlag(deps.requirePasskey);
   const allowLocalhost = enabledFlag(deps.allowLocalhost);
   const origins = configuredOrigins(deps.origins);
@@ -184,21 +190,23 @@ export function createTrading212OrdersService(deps: Dependencies) {
   const interrupted = db.prepare(`UPDATE studio_t212_orders SET status = 'unknown', error = COALESCE(error, ?) WHERE status = 'pending'`)
     .run(INTERRUPTED_ORDER).changes;
   if (interrupted) console.warn(`[studio] ${interrupted} Trading 212 order(s) were still waiting for the broker at shutdown; marked unknown`);
-  // Caps are raised only with a passkey of the request's domain, verified here against the stored credential.
-  const caps = createTrading212CapsService({
-    database: db, now, maxOrderValue: deps.maxOrderValue, maxDailyValue: deps.maxDailyValue, ceiling: deps.capCeiling,
-    passkeys: {
-      rpIds: userId => [...new Set(passkeys(userId).map(row => row.rp_id))],
-      options: (userId, rpId, challenge, timeoutMs) => webauthn.generateAuthenticationOptions({
-        rpID: rpId, userVerification: 'required', timeout: timeoutMs, challenge,
-        allowCredentials: passkeys(userId, rpId).map(row => ({ id: row.credential_id, transports: transports(row) })),
-      }),
-      async verify(userId, rpId, assertion, challenge, origin) {
-        const row = passkeys(userId, rpId).find(item => item.credential_id === assertion.id);
-        return row && await verifyAssertion(row, assertion, challenge, origin) ? row.id : null;
-      },
+  // Raising caps and adding an account to the trading mode need a passkey of the request's domain, verified here
+  // against the stored credential (user verification required, counter advanced).
+  const passkeyGate: StudioT212PasskeyGate = {
+    rpIds: userId => [...new Set(passkeys(userId).map(row => row.rp_id))],
+    options: (userId, rpId, challenge, timeoutMs) => webauthn.generateAuthenticationOptions({
+      rpID: rpId, userVerification: 'required', timeout: timeoutMs, challenge,
+      allowCredentials: passkeys(userId, rpId).map(row => ({ id: row.credential_id, transports: transports(row) })),
+    }),
+    async verify(userId, rpId, assertion, challenge, origin) {
+      const row = passkeys(userId, rpId).find(item => item.credential_id === assertion.id);
+      return row && await verifyAssertion(row, assertion, challenge, origin) ? row.id : null;
     },
+  };
+  const caps = createTrading212CapsService({
+    database: db, now, maxOrderValue: deps.maxOrderValue, maxDailyValue: deps.maxDailyValue, ceiling: deps.capCeiling, passkeys: passkeyGate,
   });
+  const tradingMode = createTrading212ModeService({ database: db, now, ceiling: serverEnvs, passkeys: passkeyGate });
 
   const isoNow = () => new Date(now()).toISOString();
   function passkeys(userId: number, rpId?: string) {
@@ -227,10 +235,12 @@ export function createTrading212OrdersService(deps: Dependencies) {
       for (const [key, item] of pending) if (item.expiresAt <= time) pending.delete(key);
     }
   }
-  function assertAllowed(env: StudioT212Environment) {
-    if (!allowedEnvs.includes(env)) {
-      fail(`${ENV_LABEL[env]}下单未开启：在服务器 .env 设置 STUDIO_T212_TRADING=${env}（或 both）后重启 Studio`, 403, 'T212_TRADING_DISABLED');
-    }
+  // Why this user may not trade on this account now, or null: the server ceiling first, then their own trading mode.
+  // `requester` (the session and client asking) is recorded if this read pins a user's trading mode for the first time.
+  function tradingRefusal(userId: number, env: StudioT212Environment, requester?: StudioT212Requester) {
+    if (!serverEnvs.includes(env)) return `${ENV_LABEL[env]}下单未开启：在服务器 .env 设置 STUDIO_T212_TRADING=${env}（或 both）后重启 Studio`;
+    if (!tradingMode.allowed(userId, requester).includes(env)) return `${ENV_LABEL[env]}下单已在「设置 → 交易安全」关闭：重新开启需要面容 ID / 触控 ID`;
+    return null;
   }
   // The double confirmation is only a fallback for users without any passkey: once Face ID is enabled anywhere, a
   // domain without its own passkey must not become the weaker way in. STUDIO_T212_REQUIRE_PASSKEY removes it.
@@ -358,21 +368,36 @@ export function createTrading212OrdersService(deps: Dependencies) {
       return matchOrigin(header);
     },
 
-    config(userId: number) {
+    // The settings as `viewer` (the reading session) sees them; a user without a stored trading mode is pinned to the
+    // one in force by this read, so a later, wider STUDIO_T212_TRADING never widens them without Face ID.
+    config(userId: number, viewer?: StudioT212Requester) {
+      // The accounts this user may trade now: STUDIO_T212_TRADING ∩ their trading mode.
+      const mode = tradingMode.view(userId, viewer);
+      const allowedEnvs = tradingMode.allowed(userId, viewer);
       const currency = [...allowedEnvs, 'live', 'demo'].map(env => deps.trading212.lastCurrency(env as StudioT212Environment)).find(Boolean);
-      const history = caps.history(userId);
+      const history = caps.history(userId, viewer);
+      const modeHistory = tradingMode.history(userId, viewer);
       return {
-        allowedEnvs, ...(currency ? { currency } : {}),
+        allowedEnvs, tradingMode: mode, ...(currency ? { currency } : {}),
         passkeys: passkeys(userId).map(summary),
         trustedOrigins: origins, allowLocalhost, requirePasskey,
         caps: { ceiling: caps.ceiling, defaults: caps.defaults, envs: { live: capsView(userId, 'live'), demo: capsView(userId, 'demo') } },
         // Applied changes and refused raises apart, so refusals can never push an applied change out of view.
         capChanges: history.applied, capRefusals: history.refused,
+        modeChanges: modeHistory.applied, modeRefusals: modeHistory.refused,
+        // Every Face ID challenge handed out for caps or the trading mode, newest first, with the session and client
+        // that asked for it, so the owner can see who is requesting them.
+        stepUpRequests: [...caps.issued(userId, viewer), ...tradingMode.issued(userId, viewer)]
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || Number(b.id.slice(5)) - Number(a.id.slice(5))).slice(0, STEP_UP_HISTORY_LIMIT),
       };
     },
 
-    async preview(userId: number, origin: StudioT212TrustedOrigin, input: StudioT212OrderInput, options: { acknowledgeUnknown?: boolean } = {}) {
-      assertAllowed(input.env);
+    async preview(
+      userId: number, origin: StudioT212TrustedOrigin, input: StudioT212OrderInput,
+      options: { acknowledgeUnknown?: boolean; requester?: StudioT212Requester } = {},
+    ) {
+      const disabled = tradingRefusal(userId, input.env, options.requester);
+      if (disabled) fail(disabled, 403, 'T212_TRADING_DISABLED');
       prune();
       const keys = passkeys(userId, origin.rpId);
       if (!keys.length) {
@@ -446,7 +471,7 @@ export function createTrading212OrdersService(deps: Dependencies) {
       };
     },
 
-    async confirm(userId: number, origin: StudioT212TrustedOrigin, id: string, proof: Proof) {
+    async confirm(userId: number, origin: StudioT212TrustedOrigin, id: string, proof: Proof, requester?: StudioT212Requester) {
       const found = previews.get(id);
       if (!found || found.userId !== userId) fail('这笔订单预览不存在、已使用或已过期，请重新预览', 404, 'T212_PREVIEW_GONE');
       const preview: Preview = found;
@@ -459,7 +484,9 @@ export function createTrading212OrdersService(deps: Dependencies) {
       }
       if (now() >= preview.expiresAt) refuse('订单预览已超过 60 秒，请重新预览', 410, 'T212_PREVIEW_EXPIRED');
       if (origin.origin !== preview.origin) refuse('请在发起预览的同一个网址确认订单', 403);
-      if (!allowedEnvs.includes(preview.env)) refuse(`${ENV_LABEL[preview.env]}下单未开启`, 403, 'T212_TRADING_DISABLED');
+      // The account may have been taken out of the trading mode since the preview (checked again before reserving).
+      const disabledEarly = tradingRefusal(userId, preview.env, requester);
+      if (disabledEarly) refuse(`${disabledEarly}。订单没有提交`, 403, 'T212_TRADING_DISABLED');
       // A parallel preview of the same order must not slip through after the first one ended unknown.
       const unresolved = preview.acknowledgedUnknown ? null : unresolvedOrder(userId, preview);
       if (unresolved) refuse(unresolved, 409, 'T212_ORDER_UNKNOWN_PENDING');
@@ -477,9 +504,12 @@ export function createTrading212OrdersService(deps: Dependencies) {
         if (refusal) refuse(refusal, 403, 'T212_PASSKEY_REQUIRED');
       }
 
-      // Caps may have been lowered since the preview, and other buys may have used the daily allowance meanwhile.
-      // From the check to the pending row nothing awaits, so two parallel confirmations cannot both fit into the
-      // same room; the row is in the database, so the allowance stays spent even if the process dies mid-call.
+      // The trading mode may have been narrowed and caps lowered while the assertion was verified, and other buys may
+      // have used the daily allowance meanwhile. From these checks to the pending row nothing awaits, so a narrowing or
+      // a parallel confirmation cannot slip in between; the row is in the database, so the allowance stays spent even
+      // if the process dies mid-call.
+      const disabled = tradingRefusal(userId, preview.env, requester);
+      if (disabled) refuse(`${disabled}。订单没有提交`, 403, 'T212_TRADING_DISABLED');
       const limits = caps.limits(userId, preview.env);
       if (preview.estimatedValue > limits.maxOrderValue) {
         refuse(`单笔上限已改为 ${money(limits.maxOrderValue, preview.currency)}，这笔约 ${money(preview.estimatedValue, preview.currency)}，订单没有提交`, 400, 'T212_ORDER_CAP');
@@ -516,14 +546,28 @@ export function createTrading212OrdersService(deps: Dependencies) {
     },
 
     // Issues the Face ID / Touch ID challenge for raising caps, bound to exactly these values.
-    capsChallenge(userId: number, origin: StudioT212TrustedOrigin, input: StudioT212CapsInput) {
-      return caps.challenge(userId, origin, input);
+    // The reply carries the server's current caps and the new ones, for the review.
+    capsChallenge(userId: number, origin: StudioT212TrustedOrigin, input: StudioT212CapsInput, requester?: StudioT212Requester) {
+      return caps.challenge(userId, origin, input, requester);
     },
 
     // Saves caps (lowering with the session alone, raising with the bound assertion) and returns them with usage.
-    async updateCaps(userId: number, origin: StudioT212TrustedOrigin | null, request: StudioT212CapsRequest) {
-      const result = await caps.update(userId, origin, request);
+    async updateCaps(userId: number, origin: StudioT212TrustedOrigin | null, request: StudioT212CapsRequest, requester?: StudioT212Requester) {
+      const result = await caps.update(userId, origin, request, requester);
       return { ...result, caps: capsView(userId, result.env) };
+    },
+
+    // Issues the Face ID / Touch ID challenge for adding accounts to the trading mode, bound to the mode in force and
+    // exactly the new one; the reply carries both and what it adds, for the review.
+    modeChallenge(userId: number, origin: StudioT212TrustedOrigin, mode: StudioT212TradingMode, requester?: StudioT212Requester) {
+      return tradingMode.challenge(userId, origin, mode, requester);
+    },
+
+    // Saves the trading mode (narrowing or pinning with the session alone, widening with the bound assertion) and
+    // returns the accounts that may trade now. Orders previewed for an account taken out are refused at confirmation.
+    async updateMode(userId: number, origin: StudioT212TrustedOrigin | null, request: StudioT212ModeRequest, requester?: StudioT212Requester) {
+      const result = await tradingMode.update(userId, origin, request, requester);
+      return { ...result, allowedEnvs: tradingMode.allowed(userId, requester), tradingMode: tradingMode.view(userId, requester) };
     },
 
     // Starts adding a passkey for the request's domain; the password step-up comes before any challenge is issued.

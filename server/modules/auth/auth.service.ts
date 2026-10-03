@@ -137,7 +137,8 @@ function throttledError(purpose: 'login' | 'handoff' | 'step-up', retryAfterMs: 
     return new AppError('登录失败次数过多，请 10 分钟后再试', { code: 'AUTH_RATE_LIMITED', statusCode: 429 });
   }
   const minutes = retryAfterMs === null ? 10 : Math.max(1, Math.ceil(retryAfterMs / 60_000));
-  return new AppError(`密码错误次数过多，请 ${minutes} 分钟后再试`, {
+  // The budget and lock belong to this session: 退出所有设备 clears the lock, and a new sign-in starts a new budget.
+  return new AppError(`密码错误次数过多，请 ${minutes} 分钟后再试；在「设置 → 安全」里退出所有设备后重新登录，可以立即重新开始`, {
     code: purpose === 'handoff' ? 'AUTH_HANDOFF_RATE_LIMITED' : 'AUTH_STEP_UP_RATE_LIMITED',
     statusCode: 429,
     ...(retryAfterMs === null ? {} : { details: { retryAfterSeconds: Math.ceil(retryAfterMs / 1000) } }),
@@ -148,7 +149,7 @@ function throttledError(purpose: 'login' | 'handoff' | 'step-up', retryAfterMs: 
 function stepUpCapError(purpose: 'login' | 'handoff' | 'step-up', retryAfterMs: number): AppError {
   const hours = Math.max(1, Math.ceil(retryAfterMs / 3_600_000));
   return new AppError(
-    `今天输错密码确认的次数太多，约 ${hours} 小时后才能再试。如果不是你本人在尝试，请在「设置 → 安全」里退出所有设备，这也会重置这个计数`,
+    `今天输错密码确认的次数太多，约 ${hours} 小时后才能再试。在「设置 → 安全」里退出所有设备会立即清除这个限制（启用面容 ID、移除通行密钥等都会恢复）；如果不是你本人在尝试，更应该这样做`,
     {
       code: purpose === 'handoff' ? 'AUTH_HANDOFF_RATE_LIMITED' : 'AUTH_STEP_UP_RATE_LIMITED',
       statusCode: 429,

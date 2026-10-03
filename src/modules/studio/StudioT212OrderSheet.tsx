@@ -8,8 +8,9 @@ import { ChevronLeft, ScanFace, ShieldCheck, TriangleAlert } from 'lucide-react'
 import { toast } from 'sonner';
 
 import { api, readApiJson } from '@/shared/api';
+import { T212_MODE_LABELS } from '@/shared/constants';
 import type { T212Env, T212OrderSide, T212Position, T212TradingConfig } from '@/shared/types';
-import { decimalInputProblem, parseDecimalInput } from '@/shared/utils';
+import { apiErrorCode, decimalInputProblem, parseDecimalInput } from '@/shared/utils';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 import { StudioT212PasskeyEnroll } from '@/modules/studio/StudioT212Passkeys';
@@ -75,10 +76,6 @@ function exitDelay() {
 function reasonText(reason: unknown, fallback: string) {
   return reason instanceof Error && reason.message ? reason.message : fallback;
 }
-// The server's machine-readable error code (ApiRequestError.code), or '' when there is none.
-function errorCode(reason: unknown) {
-  return reason && typeof reason === 'object' && 'code' in reason && typeof reason.code === 'string' ? reason.code : '';
-}
 
 /**
  * Used by StudioTrading212 to place one Trading 212 order: form with a live estimate against the per-order cap
@@ -126,6 +123,8 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
   const mounted = useRef(true);
 
   const enabled = config.allowedEnvs.includes(env);
+  // STUDIO_T212_TRADING allows this account, so only the user's own trading mode can have left it out.
+  const serverAllows = config.tradingMode.ceiling === 'both' || config.tradingMode.ceiling === env;
   const host = window.location.hostname;
   const passkeyHere = config.passkeys.some(item => item.rpId === host);
   const otherDomains = [...new Set(config.passkeys.map(item => item.rpId))].filter(rpId => rpId !== host);
@@ -192,12 +191,12 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
       setPreview({ ...next, deadline: receivedAt + PREVIEW_WINDOW_MS });
       setSpent(false); setUnknownOutcome(false); setUnknownPendingOrder(null);
     } catch (reason) {
-      const kind = errorCode(reason);
+      const kind = apiErrorCode(reason);
       // Both refusals are handled on their own step: enabling Face ID here, or acknowledging the unknown order.
       if (kind === 'T212_PASSKEY_REQUIRED') { setPasskeyRefused(true); setPreview(null); }
       if (kind === 'T212_ORDER_UNKNOWN_PENDING') { setUnknownPendingOrder(orderKey); setPreview(null); }
-      // The caps may have changed elsewhere (Settings, another device): refresh what the form shows.
-      if (kind === 'T212_ORDER_CAP' || kind === 'T212_DAILY_CAP') void onTradingChange();
+      // The caps or the trading mode may have changed elsewhere (Settings, another device): refresh what the form shows.
+      if (kind === 'T212_ORDER_CAP' || kind === 'T212_DAILY_CAP' || kind === 'T212_TRADING_DISABLED') void onTradingChange();
       setError(reasonText(reason, '无法生成订单预览'));
     } finally { setBusy(null); }
   };
@@ -214,7 +213,7 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
       dismiss();
     } catch (reason) {
       const message = reasonText(reason, '下单失败');
-      const unknown = errorCode(reason) === 'T212_ORDER_UNKNOWN';
+      const unknown = apiErrorCode(reason) === 'T212_ORDER_UNKNOWN';
       if (!mounted.current) {
         // The sheet was unmounted anyway (for example by its parent); the outcome must still reach the user.
         toast.error(unknown ? `${SIDE_LABEL[preview.side]} ${preview.ticker} 的订单状态未知` : `${SIDE_LABEL[preview.side]} ${preview.ticker} 没有提交`, {
@@ -224,7 +223,8 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
       }
       // Previews are single use: whatever went wrong, confirming again needs a fresh preview.
       setSpent(true);
-      if (errorCode(reason) === 'T212_ORDER_CAP' || errorCode(reason) === 'T212_DAILY_CAP') void onTradingChange();
+      // A narrowed trading mode turns the sheet into its "not enabled" step once the settings are re-read.
+      if (['T212_ORDER_CAP', 'T212_DAILY_CAP', 'T212_TRADING_DISABLED'].includes(apiErrorCode(reason))) void onTradingChange();
       setUnknownOutcome(unknown);
       setError(message);
     } finally { if (mounted.current) setBusy(null); }
@@ -413,13 +413,20 @@ export function StudioT212OrderSheet({ env, config, positions, format, initialTi
     <StudioT212PasskeyEnroll again={false} onEnrolled={async () => { setPasskeyRefused(false); setError(''); await onTradingChange(); }} />
   </m.div>;
 
+  // Not enabled: either the server does not allow this account at all, or the user's trading mode leaves it out.
   const off = <m.div key="off" className="t212-order-step" custom={direction} variants={STEP_VARIANTS} initial="enter" animate="center" exit="exit">
     <div className="t212-order-off">
       <ShieldCheck size={32} strokeWidth={1.5} aria-hidden="true" />
-      <strong>{env === 'live' ? '实盘' : '模拟盘'}下单未开启</strong>
-      <span>在服务器的 .env 里设置 <code>STUDIO_T212_TRADING={env}</code>（或 <code>both</code> 同时开启实盘和模拟盘），然后重启 Studio。</span>
-      <span>单笔和每日上限默认取 <code>STUDIO_T212_MAX_ORDER_VALUE</code> 和 <code>STUDIO_T212_MAX_DAILY_VALUE</code>，可以在「设置 → 交易安全」修改（提高需要面容 ID / 触控 ID）。开启后每笔订单都要经过面容 ID / 触控 ID 或二次确认。</span>
+      {serverAllows ? <>
+        <strong>{env === 'live' ? '实盘' : '模拟盘'}下单已关闭</strong>
+        <span>允许下单的账户目前是「{T212_MODE_LABELS[config.tradingMode.mode]}」。可以在「设置 → 交易安全」开启{env === 'live' ? '实盘' : '模拟盘'}，开启需要面容 ID / 触控 ID。</span>
+      </> : <>
+        <strong>{env === 'live' ? '实盘' : '模拟盘'}下单未开启</strong>
+        <span>在服务器的 .env 里设置 <code>STUDIO_T212_TRADING={env}</code>（或 <code>both</code> 同时开启实盘和模拟盘），然后重启 Studio。</span>
+        <span>单笔和每日上限默认取 <code>STUDIO_T212_MAX_ORDER_VALUE</code> 和 <code>STUDIO_T212_MAX_DAILY_VALUE</code>，可以在「设置 → 交易安全」修改（提高需要面容 ID / 触控 ID）。开启后每笔订单都要经过面容 ID / 触控 ID 或二次确认。</span>
+      </>}
     </div>
+    {error && <p className="studio-feedback error" role="alert">{error}</p>}
     <div className="t212-order-actions"><button type="button" className="ios-button tinted t212-order-primary" onClick={close}>好</button></div>
   </m.div>;
 

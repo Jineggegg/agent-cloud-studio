@@ -1,30 +1,29 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Globe, ScanFace, Trash2 } from 'lucide-react';
 
 import { api, readApiJson } from '@/shared/api';
-import type { T212Env, T212Passkey, T212TradingConfig } from '@/shared/types';
+import type { T212Passkey, T212TradingConfig } from '@/shared/types';
 import { StudioT212CapsEditor } from '@/modules/studio/StudioT212Caps';
+import { StudioT212StepUpRequestList } from '@/modules/studio/StudioT212History';
 import { StudioT212PasskeyEnroll, StudioT212RemovePasskeySheet } from '@/modules/studio/StudioT212Passkeys';
+import { StudioT212TradingModeHistory, StudioT212TradingModeSelector } from '@/modules/studio/StudioT212TradingMode';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 import '@/modules/studio/studio-orders.css';
 
 const LOCAL_HOSTNAMES = ['localhost', '127.0.0.1', '[::1]'];
+// The Trading 212 app links here (/apps/connections#t212-trading-safety) when an account is not enabled for orders.
+const SECTION_ID = 't212-trading-safety';
 
-function environments(envs: T212Env[]) {
-  if (envs.includes('live') && envs.includes('demo')) return '实盘 + 模拟盘';
-  if (envs.includes('live')) return '仅实盘';
-  if (envs.includes('demo')) return '仅模拟盘';
-  return '已关闭';
-}
 function day(iso: string) {
   return new Date(iso).toLocaleDateString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric' });
 }
 
 /**
- * Used by StudioConnections (Settings) for Trading 212 order safety: which accounts may trade, Face ID / Touch ID
- * passkeys per domain, and the per-order and daily caps per account (lowered freely, raised only with Face ID).
- * Without any passkey every order needs a double confirmation; once one exists, each domain must enable its own
- * before it can trade. Passkey changes ask for the password.
+ * Used by StudioConnections (Settings) for Trading 212 order safety: which accounts may trade (a one-tap selector
+ * within STUDIO_T212_TRADING; adding an account needs Face ID), Face ID / Touch ID passkeys per domain, and the
+ * per-order and daily caps per account (lowered freely, raised only with Face ID). Without any passkey every order
+ * needs a double confirmation; once one exists, each domain must enable its own before it can trade. Passkey
+ * changes ask for the password.
  */
 export function StudioSettingsTrading() {
   // Server order-safety settings and this user's passkeys; null while loading.
@@ -33,8 +32,17 @@ export function StudioSettingsTrading() {
   const [loadError, setLoadError] = useState('');
   // The passkey whose removal alert (with its password or passkey step-up) is open.
   const [removing, setRemoving] = useState<T212Passkey | null>(null);
+  const section = useRef<HTMLElement>(null);
+  const loaded = config !== null;
 
-  // Re-read after registering or removing a passkey, or after saving caps.
+  // Opened from the Trading 212 app's link: bring this section into view once its rows exist.
+  useEffect(() => {
+    if (!loaded || window.location.hash !== `#${SECTION_ID}`) return;
+    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    section.current?.scrollIntoView?.({ block: 'start', behavior: reduced ? 'auto' : 'smooth' });
+  }, [loaded]);
+
+  // Re-read after registering or removing a passkey, or after saving caps or the trading mode.
   const reload = useCallback(async () => {
     try { setConfig(await readApiJson<T212TradingConfig>(await api.studio.t212Trading.config())); setLoadError(''); }
     catch (reason) { setLoadError(reason instanceof Error ? reason.message : '交易设置读取失败'); }
@@ -56,22 +64,21 @@ export function StudioSettingsTrading() {
   // This domain first, then the others alphabetically.
   const passkeys = [...(config?.passkeys ?? [])].sort((a, b) => Number(b.rpId === host) - Number(a.rpId === host) || a.rpId.localeCompare(b.rpId));
 
-  return <section className="ios-section" aria-labelledby="studio-trading-safety-heading">
+  return <section ref={section} id={SECTION_ID} className="ios-section" aria-labelledby="studio-trading-safety-heading">
     <div className="ios-section-header"><h2 id="studio-trading-safety-heading">交易安全</h2><span className="caption">Trading 212 下单</span></div>
-    <div className="ios-list">
-      {!config && !loadError && <div className="ios-row no-icon"><StudioSpinner size={16} /><span className="ios-row-body"><small>读取中</small></span></div>}
+    {!config && <div className="ios-list">
+      {!loadError && <div className="ios-row no-icon"><StudioSpinner size={16} /><span className="ios-row-body"><small>读取中</small></span></div>}
       {loadError && <div className="ios-row no-icon"><span className="ios-row-body"><small>{loadError}</small></span></div>}
-      {config && <>
-        <div className="ios-row no-icon">
-          <span className="ios-row-body"><strong>允许下单的账户</strong><small>STUDIO_T212_TRADING</small></span>
-          <span className={`status-badge ${config.allowedEnvs.includes('live') ? 'warn' : config.allowedEnvs.length ? 'good' : ''}`}>{environments(config.allowedEnvs)}</span>
-        </div>
+    </div>}
+    {config && <>
+      <StudioT212TradingModeSelector config={config} trusted={trusted} onSaved={reload} />
+      <div className="ios-list t212-origin">
         <div className="ios-row no-icon">
           <span className="ios-row-body"><strong>当前网址</strong><small className="mono">{window.location.origin}</small></span>
           <span className={`status-badge ${trusted && !blockedHere ? 'good' : 'warn'}`}>{!trusted ? '未列入白名单' : blockedHere ? '需先启用面容 ID' : '可下单'}</span>
         </div>
-      </>}
-    </div>
+      </div>
+    </>}
     {config && <StudioT212PasskeyEnroll again={enabledHere} disabled={!trusted} onEnrolled={reload} />}
     {config && !trusted && <p className="ios-section-footer">当前网址不在服务器的下单白名单里：在服务器 .env 把 STUDIO_PUBLIC_ORIGIN 或 STUDIO_TAILNET_ORIGIN 设为这个地址后重启 Studio。</p>}
     {config && trusted && blockedHere && <p className="ios-section-footer">
@@ -93,10 +100,13 @@ export function StudioSettingsTrading() {
     <p className="ios-section-footer t212-settings-note">
       还没有任何通行密钥时，每笔订单都需要二次确认；一旦在某个网址启用了面容 ID / 触控 ID，其他网址也要先启用自己的才能下单。
       通行密钥按网址区分：studio.ajarche.com 和 Tailscale 地址需要分别启用。启用或移除都要输入 Studio 登录密码，在通行密钥自己的网址也可以用它授权移除。
-      {config && !config.allowedEnvs.length && <> 下单目前关闭：在服务器 .env 设置 <code>STUDIO_T212_TRADING=demo</code>、<code>live</code> 或 <code>both</code>，然后重启 Studio。</>}
+      {config && config.tradingMode.ceiling !== 'both' && <> 服务器没有开放全部账户：在服务器 .env 设置 <code>STUDIO_T212_TRADING=demo</code>、<code>live</code> 或 <code>both</code> 并重启 Studio 后，才能在上面选择更多账户。</>}
     </p>
 
     {config && <StudioT212CapsEditor config={config} trusted={trusted} onSaved={reload} />}
+    {config && <StudioT212TradingModeHistory config={config} />}
+    {/* Who has been asking for Face ID (a stolen session shows up as 其他会话); the requests themselves change nothing. */}
+    {config && <StudioT212StepUpRequestList requests={config.stepUpRequests} />}
 
     {removing && <StudioT212RemovePasskeySheet passkey={removing} onCancel={() => setRemoving(null)}
       onRemoved={() => { setRemoving(null); void reload(); }} />}

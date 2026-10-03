@@ -2,7 +2,10 @@ import express from 'express';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 import { AppError, asyncHandler } from '@/shared/utils.js';
-import type { StudioRequestClient, StudioT212CapsInput, StudioT212CapsRequest, StudioT212OrderInput } from '@/shared/types.js';
+import type {
+  StudioRequestClient, StudioT212CapsInput, StudioT212CapsRequest, StudioT212ModeRequest, StudioT212OrderInput, StudioT212Requester,
+  StudioT212TradingMode,
+} from '@/shared/types.js';
 
 import type { createTrading212OrdersService } from './trading212-orders.service.js';
 
@@ -15,7 +18,9 @@ const MAX_PASSWORD_LENGTH = 1024;
 // Transport bound for a cap; the real limit is STUDIO_T212_CAP_CEILING, checked by the caps service.
 const MAX_CAP = 10_000_000;
 
-type AuthenticatedRequest = express.Request & { user?: { id?: number; username?: string } };
+type AuthenticatedRequest = express.Request & { user?: { id?: number; username?: string; sessionId?: unknown } };
+// How the step-up audit names the door a request came through.
+const DOOR_LABEL: Record<StudioRequestClient['door'], string> = { cloudflare: '公网', tailnet: 'Tailscale', direct: '直连' };
 
 function invalid(message: string): never {
   throw new AppError(message, { statusCode: 400, code: 'INVALID_ORDER' });
@@ -110,7 +115,29 @@ function capsRequest(body: unknown): StudioT212CapsRequest {
     throw error;
   }
 }
-// A 429 from the caps service carries its wait, which also goes out as Retry-After.
+function tradingMode(value: unknown): StudioT212TradingMode {
+  if (value !== 'off' && value !== 'demo' && value !== 'live' && value !== 'both') invalid('交易模式必须为 off、demo、live 或 both');
+  return value;
+}
+// PUT /mode, read like PUT /caps: the challenge id first and verbatim, so the service can spend it (and audit the
+// attempt) even when the rest of the body is malformed. A widening carries the challenge id and its assertion; a
+// narrowing carries neither.
+function modeRequest(body: unknown): StudioT212ModeRequest {
+  const input = record(body);
+  const named = input.challengeId !== undefined || input.assertion !== undefined;
+  const challengeId = typeof input.challengeId === 'string' ? input.challengeId.slice(0, 64) : named ? '' : undefined;
+  const spend = challengeId === undefined ? {} : { challengeId };
+  try {
+    const mode = tradingMode(input.mode);
+    if (challengeId === undefined) return { mode };
+    if (!ID.test(challengeId)) invalid('面容 ID 验证编号无效，请重新选择');
+    return { ...spend, mode, assertion: credentialJson(input.assertion) as unknown as AuthenticationResponseJSON };
+  } catch (error) {
+    if (error instanceof AppError) return { ...spend, invalid: error.message };
+    throw error;
+  }
+}
+// A 429 from the caps or trading-mode service carries its wait, which also goes out as Retry-After.
 async function withRetryAfter<T>(res: express.Response, work: () => Promise<T>) {
   try {
     return await work();
@@ -135,29 +162,45 @@ function previewId(value: unknown) {
  * Used by studio.module, mounted at /api/studio/trading212 behind authentication next to the read-only
  * router, for passkey-gated order placement and passkey management. Read paths stay on the read-only router.
  * Every passkey change needs a step-up (the Studio password, or that passkey for its own removal). Order caps are
- * lowered with the session alone; raising them needs a Face ID / Touch ID challenge for the exact new values.
+ * lowered with the session alone; raising them needs a Face ID / Touch ID challenge for the exact new values. The
+ * trading mode (which accounts may place orders, within STUDIO_T212_TRADING) works the same way: narrowing with the
+ * session, adding an account with a challenge for the exact new mode.
  */
 export function createTrading212OrdersRouter(
   service: ReturnType<typeof createTrading212OrdersService>,
   // The auth module's request classifier, so a step-up is counted for the right client.
   readClient: (req: express.Request) => StudioRequestClient,
+  // The auth module's address masking, so step-up audit rows never hold a full client address.
+  maskAddress: (address: string) => string,
 ) {
   // The signed-in user (with its session id) and the client, for the auth step-up.
   const stepUpWho = (req: express.Request) => ({ user: (req as AuthenticatedRequest).user, client: readClient(req) });
+  // The session (the token's sid, attached by authenticateToken) and masked client of a request: Face ID step-up
+  // budgets, eviction and redemption are keyed by them, and audit rows record them.
+  const requester = (req: express.Request): StudioT212Requester => {
+    const sessionId = (req as AuthenticatedRequest).user?.sessionId;
+    const client = readClient(req);
+    return {
+      sessionId: typeof sessionId === 'string' ? sessionId.slice(0, 64) : '',
+      // Budgets use the full key the auth throttles use (door + IPv4 or IPv6 /64); the masked form is only for display.
+      clientKey: `${client.door} ${client.address}`,
+      client: `${DOOR_LABEL[client.door]} ${maskAddress(client.address)}`,
+    };
+  };
   const router = express.Router();
   router.use((_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
-  router.get('/trading', (req, res) => { res.json(service.config(user(req))); });
+  router.get('/trading', (req, res) => { res.json(service.config(user(req), requester(req))); });
   router.post('/orders/preview', asyncHandler(async (req, res) => {
     const userId = user(req);
     const origin = service.trustedOrigin(req.get('origin'));
     // Only a literal true acknowledges that an identical order with an unknown outcome did not go through.
     const acknowledgeUnknown = record(req.body).acknowledgeUnknown === true;
-    res.json(await service.preview(userId, origin, orderInput(req.body), { acknowledgeUnknown }));
+    res.json(await service.preview(userId, origin, orderInput(req.body), { acknowledgeUnknown, requester: requester(req) }));
   }));
   router.post('/orders/:id/confirm', asyncHandler(async (req, res) => {
     const userId = user(req);
     const origin = service.trustedOrigin(req.get('origin'));
-    res.json(await service.confirm(userId, origin, previewId(req.params.id), proof(req.body)));
+    res.json(await service.confirm(userId, origin, previewId(req.params.id), proof(req.body), requester(req)));
   }));
   router.post('/passkey/options', asyncHandler(async (req, res) => {
     const userId = user(req);
@@ -184,14 +227,31 @@ export function createTrading212OrdersRouter(
     const userId = user(req);
     const origin = service.trustedOrigin(req.get('origin'));
     const input = capsInput(req.body);
-    res.json(await withRetryAfter(res, () => service.capsChallenge(userId, origin, input)));
+    const who = requester(req);
+    res.json(await withRetryAfter(res, () => service.capsChallenge(userId, origin, input, who)));
   }));
   router.put('/caps', asyncHandler(async (req, res) => {
     const userId = user(req);
     // Lowering works from any signed-in page; raising is refused by the service unless the origin is trusted.
     const origin = service.optionalTrustedOrigin(req.get('origin'));
     const request = capsRequest(req.body);
-    res.json(await withRetryAfter(res, () => service.updateCaps(userId, origin, request)));
+    const who = requester(req);
+    res.json(await withRetryAfter(res, () => service.updateCaps(userId, origin, request, who)));
+  }));
+  router.post('/mode/challenge', asyncHandler(async (req, res) => {
+    const userId = user(req);
+    const origin = service.trustedOrigin(req.get('origin'));
+    const mode = tradingMode(record(req.body).mode);
+    const who = requester(req);
+    res.json(await withRetryAfter(res, () => service.modeChallenge(userId, origin, mode, who)));
+  }));
+  router.put('/mode', asyncHandler(async (req, res) => {
+    const userId = user(req);
+    // Narrowing (including off) works from any signed-in page; widening is refused unless the origin is trusted.
+    const origin = service.optionalTrustedOrigin(req.get('origin'));
+    const request = modeRequest(req.body);
+    const who = requester(req);
+    res.json(await withRetryAfter(res, () => service.updateMode(userId, origin, request, who)));
   }));
   return router;
 }

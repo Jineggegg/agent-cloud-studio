@@ -21,3 +21,6 @@ export { recordSecurityEvent } from './auth.module.js';
 // readRequestClient: used by the request-guard module to key its rate limits and WebSocket
 // connection caps by the same real client (and door) the auth throttles use.
 export { readRequestClient } from './request-client.service.js';
+// maskClientAddress: used by the studio module to record where a Trading 212 Face ID step-up came from
+// (shortened, never a full address) on its audit rows, as the security event log does.
+export { maskClientAddress } from './request-client.service.js';

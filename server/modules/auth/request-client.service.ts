@@ -99,7 +99,8 @@ export function readRequestClient(
  * Shortens a client address for the security event log shown in Settings: the first two IPv4
  * octets ("198.51.*.*") or the first two IPv6 groups ("2001:db8:*", also for a "/64" key);
  * anything else is "unknown".
- * Used by security-events.service, so stored events never hold a full address.
+ * Used by security-events.service, so stored events never hold a full address, and through the auth barrel
+ * by the studio module for the Trading 212 step-up audit rows.
  */
 export function maskClientAddress(address: string): string {
   const bare = address.endsWith('/64') ? address.slice(0, -3) : address;

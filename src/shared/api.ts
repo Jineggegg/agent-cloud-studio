@@ -5,7 +5,9 @@ import {
 } from '@/shared/authToken';
 import { IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
-import type { HubAgentProvider, HubProjectInput, HubTaskInput, StudioChatSpace, StudioGitHubMergeInput, StudioIngressId, T212CapsInput, T212Env } from '@/shared/types';
+import type {
+  HubAgentProvider, HubProjectInput, HubTaskInput, StudioChatSpace, StudioGitHubMergeInput, StudioIngressId, T212CapsInput, T212Env, T212TradingMode,
+} from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -235,6 +237,11 @@ export const api = {
       // Lowering needs only the session; a raise carries the challenge id and the assertion over it.
       updateCaps: (input: T212CapsInput, proof?: { challengeId: string; assertion: unknown }) =>
         put('/api/studio/trading212/caps', proof ? { ...input, ...proof } : input),
+      // Adding accounts to the trading mode: a single-use 60 s Face ID / Touch ID challenge bound to exactly this mode.
+      modeChallenge: (mode: T212TradingMode) => post('/api/studio/trading212/mode/challenge', { mode }),
+      // Narrowing (including off) needs only the session; a widening carries the challenge id and the assertion over it.
+      updateMode: (mode: T212TradingMode, proof?: { challengeId: string; assertion: unknown }) =>
+        put('/api/studio/trading212/mode', proof ? { mode, ...proof } : { mode }),
     },
     // ── v4 track: mail — endpoints below this line ──
     // Per-user read-only mail accounts (Gmail IMAP, Outlook) and the unified inbox; secrets only travel in addImap's body.
