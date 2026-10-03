@@ -172,7 +172,13 @@ export function createSettingsService(dependencies: SettingsDependencies) {
         : {};
       const p256dh = requiredString(keys.p256dh, 'p256dh', 'PUSH_SUBSCRIPTION_REQUIRED');
       const auth = requiredString(keys.auth, 'auth', 'PUSH_SUBSCRIPTION_REQUIRED');
+      // An upsert by endpoint, so sending the same subscription again changes nothing.
       dependencies.pushSubscriptions.save(userId, endpoint, p256dh, auth);
+      // A page re-registering its existing subscription after sign-in (e.g. after "退出所有设备"
+      // removed it) must not switch Web Push back on or send the "enabled" notification.
+      if (input.resubscribe === true) {
+        return { success: true };
+      }
 
       const currentPreferences = dependencies.notifications.getPreferences(userId);
       if (!currentPreferences?.channels?.webPush) {

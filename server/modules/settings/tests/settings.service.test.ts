@@ -86,3 +86,23 @@ test('creating an API key or turning one back on needs the password step-up; tur
   assert.deepEqual(toggled, [false, true]);
   assert.deepEqual(stepUps, ['guess', 'guess', 'right', 'right']);
 });
+
+test('re-registering an existing push subscription only stores it, without switching Web Push on', () => {
+  const operations: string[] = [];
+  const service = createSettingsService(dependencies({
+    pushSubscriptions: {
+      save: (_id, endpoint) => operations.push(`save:${endpoint}`),
+      remove: () => undefined,
+    },
+    notifications: {
+      getPreferences: () => ({ channels: { webPush: false } }),
+      updatePreferences: () => { operations.push('preferences'); return {}; },
+      createEnabledEvent: () => ({ code: 'push.enabled' }),
+      notifyUser: () => { operations.push('notify'); },
+    },
+  }));
+  const input = { endpoint: 'https://push.example.test', keys: { p256dh: 'key', auth: 'auth' }, resubscribe: true };
+  service.subscribeToPush(1, input);
+  service.subscribeToPush(1, input);
+  assert.deepEqual(operations, ['save:https://push.example.test', 'save:https://push.example.test']);
+});

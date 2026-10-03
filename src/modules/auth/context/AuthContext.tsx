@@ -38,6 +38,24 @@ const AUTH_ERROR_MESSAGES = {
   passkeyFailed: 'login.errors.passkeyFailed',
 } as const;
 
+// Re-registers the Web Push subscription this browser already holds, so a device keeps getting
+// notifications after "退出所有设备" removed every subscription on the server. Only when the user
+// once allowed notifications here; the server stores it as an upsert by endpoint and, for
+// `resubscribe`, changes no preference. Failures are silent: notifications are optional.
+async function reregisterPushSubscription(): Promise<void> {
+  if (typeof window === 'undefined' || (window as { cloudcliDesktopNotifications?: unknown }).cloudcliDesktopNotifications
+    || !('Notification' in window) || Notification.permission !== 'granted' || !('serviceWorker' in navigator)) {
+    return;
+  }
+  const registration = await navigator.serviceWorker.ready;
+  const subscription = await registration.pushManager.getSubscription();
+  const json = subscription?.toJSON();
+  if (!json?.endpoint || !json.keys) {
+    return;
+  }
+  await api.settings.push.subscribe({ endpoint: json.endpoint, keys: json.keys, resubscribe: true });
+}
+
 // Outcome of the one handoff attempt of a page load: no code in the URL, a session, or a refusal.
 type HandoffOutcome = 'none' | 'redeemed' | 'failed';
 
@@ -224,6 +242,16 @@ export function AuthProvider({ children }: AuthProviderProps) {
     void hydrateUserPreferences();
     void hydrateChatDrafts();
   }, [userKey]);
+
+  // After every sign-in (and token change) the browser's existing push subscription is sent again.
+  useEffect(() => {
+    if (IS_PLATFORM || !userKey || !token) {
+      return;
+    }
+    void reregisterPushSubscription().catch((caughtError: unknown) => {
+      console.warn('[Auth] Push subscription could not be re-registered:', caughtError);
+    });
+  }, [token, userKey]);
 
   const checkOnboardingStatus = useCallback(async () => {
     try {

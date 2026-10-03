@@ -635,7 +635,9 @@ export const api = {
 
     push: {
       vapidPublicKey: () => get('/api/settings/push/vapid-public-key'),
-      subscribe: (subscription: { endpoint?: string; keys?: unknown }) =>
+      // `resubscribe` re-registers a subscription this browser already has (after sign-in): the
+      // server stores it again without switching Web Push on or announcing it.
+      subscribe: (subscription: { endpoint?: string; keys?: unknown; resubscribe?: boolean }) =>
         post('/api/settings/push/subscribe', subscription),
       unsubscribe: (endpoint: string) => post('/api/settings/push/unsubscribe', { endpoint }),
     },
