@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,10 +11,17 @@ const mocks = vi.hoisted(() => ({
   api: { list: vi.fn(), create: vi.fn(), update: vi.fn(), launch: vi.fn(), launchRemote: vi.fn(), sessions: vi.fn() },
   remote: { hosts: vi.fn(), status: vi.fn() },
   workbench: { hubLinks: vi.fn() },
+  conversations: vi.fn(),
+  projectSessions: vi.fn(),
+  runningSessions: vi.fn(),
   writeSelectedProvider: vi.fn(),
 }));
 vi.mock('@/shared/api', () => ({
-  api: { studio: { projects: mocks.api, remote: mocks.remote, workbench: mocks.workbench } },
+  api: {
+    studio: { projects: mocks.api, remote: mocks.remote, workbench: mocks.workbench, conversations: mocks.conversations },
+    projectSessions: mocks.projectSessions,
+    runningSessions: mocks.runningSessions,
+  },
   readApiJson: async (response: Response) => {
     const value = await response.json();
     if (!response.ok) throw Error(value.error);
@@ -36,49 +43,97 @@ const project: HubProject = {
 
 afterEach(cleanup);
 
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+
+function renderLanding(target: HubProject = project, openChat = vi.fn()) {
+  render(<MemoryRouter initialEntries={['/projects/professor']}><Routes>
+    <Route path="/projects/:id" element={<StudioProjectAgents project={target} onOpenChat={openChat} />} />
+    <Route path="/work/:projectId" element={<div>Workbench new chat</div>} />
+    <Route path="/work/:projectId/d/:conversationId" element={<div>Workbench DeepSeek conversation</div>} />
+  </Routes></MemoryRouter>);
+  return { openChat };
+}
+
 describe('Studio projects', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.api.sessions.mockResolvedValue(Response.json([{ id: 's1', provider: 'claude', title: '课程大纲' }]));
     mocks.remote.hosts.mockImplementation(async () => Response.json([{ name: 'aj', label: 'AJ 服务器', target: 'sp-remote' }]));
     mocks.workbench.hubLinks.mockImplementation(async () => Response.json([{ hubId: 'professor', projectId: 'native' }]));
+    // The directory's sessions as the workbench lists them; a Cursor one from before Cursor was hidden is among them.
+    mocks.projectSessions.mockImplementation(async () => Response.json({ sessions: [
+      { id: 's1', provider: 'claude', summary: '课程大纲', lastActivity: minutesAgo(60) },
+      { id: 's2', provider: 'codex', summary: '修登录页', lastActivity: minutesAgo(5) },
+      { id: 's3', provider: 'cursor', summary: '旧的 Cursor 会话', lastActivity: minutesAgo(1) },
+    ] }));
+    mocks.conversations.mockImplementation(async () => Response.json([{ id: 'c1', title: '招生文案', model: 'deepseek-flash', updated_at: minutesAgo(30) }]));
+    mocks.runningSessions.mockImplementation(async () => Response.json({ success: true, data: { sessions: [{ sessionId: 's2' }] } }));
   });
 
-  it('starts an agent inside the project directory and chooses its provider before the workbench mounts', async () => {
-    mocks.api.launch.mockResolvedValue(Response.json({ url: '/work/native?new=codex' }));
-    const openChat = vi.fn();
-    render(<MemoryRouter initialEntries={['/projects/professor']}><Routes>
-      <Route path="/projects/:id" element={<StudioProjectAgents project={project} onOpenChat={openChat} />} />
-      <Route path="/work/:projectId" element={<div>Workbench opened</div>} />
-    </Routes></MemoryRouter>);
-    expect(await screen.findByText('课程大纲')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Cursor/ })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /DeepSeek/ }));
-    expect(openChat).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole('button', { name: /Codex/ }));
-    expect(await screen.findByText('Workbench opened')).toBeTruthy();
-    expect(mocks.api.launch).toHaveBeenCalledWith('professor', 'codex');
-    expect(mocks.writeSelectedProvider).toHaveBeenCalledWith('codex');
+  it('opens on running and earlier sessions: Claude, Codex and DeepSeek together, newest first, with official marks', async () => {
+    renderLanding();
+    const running = await screen.findByRole('region', { name: '正在运行的会话' });
+    const live = await within(running).findByRole('link', { name: /修登录页/ });
+    expect(live.getAttribute('href')).toBe('/work/native/s/s2');
+    expect(live.textContent).toContain('运行中');
+    expect(live.querySelector('svg[data-brand="openai"]')).toBeTruthy();
+
+    const history = screen.getByRole('region', { name: '历史会话' });
+    const rows = within(history).getAllByRole('link');
+    expect(rows.map(row => row.querySelector('strong')?.textContent)).toEqual(['招生文案', '课程大纲']);
+    expect(rows.map(row => row.getAttribute('href'))).toEqual(['/work/native/d/c1', '/work/native/s/s1']);
+    expect(rows.map(row => row.querySelector('svg[data-brand]')?.getAttribute('data-brand'))).toEqual(['deepseek', 'claude']);
+    expect(mocks.projectSessions).toHaveBeenCalledWith('native', { limit: 50, offset: 0 });
+    expect(mocks.conversations).toHaveBeenCalledWith('project:professor');
+
+    // No provider cards any more, and nothing of Cursor or OpenCode.
+    expect(screen.queryByText('在本项目中开始')).toBeNull();
+    expect(screen.queryByText(/Cursor|OpenCode/)).toBeNull();
   });
 
-  it('links existing sessions straight to the workbench, or through the /session redirect while the project is unknown', async () => {
-    const view = render(<MemoryRouter><StudioProjectAgents project={project} onOpenChat={vi.fn()} /></MemoryRouter>);
-    const row = await screen.findByRole('link', { name: /课程大纲/ });
-    await waitFor(() => expect(row.getAttribute('href')).toBe('/work/native/s/s1'));
-    view.unmount();
+  it('新建会话 opens one new chat in the workbench, registering the directory first when needed', async () => {
     mocks.workbench.hubLinks.mockImplementation(async () => Response.json([{ hubId: 'professor', projectId: null }]));
-    // A Response body reads once, so the second render gets a fresh one.
-    mocks.api.sessions.mockImplementation(async () => Response.json([{ id: 's1', provider: 'claude', title: '课程大纲' }]));
-    render(<MemoryRouter><StudioProjectAgents project={project} onOpenChat={vi.fn()} /></MemoryRouter>);
-    expect((await screen.findByRole('link', { name: /课程大纲/ })).getAttribute('href')).toBe('/session/s1');
+    mocks.api.launch.mockResolvedValue(Response.json({ url: '/work/native' }));
+    renderLanding();
+    await screen.findByText('招生文案');
+    // Without an IDE project there are no agent sessions yet, only the project's DeepSeek conversations.
+    expect(mocks.projectSessions).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /新建会话/ }));
+    expect(await screen.findByText('Workbench new chat')).toBeTruthy();
+    // No provider: the chat opens with the device's last choice, and its model menu picks Claude, Codex or DeepSeek.
+    expect(mocks.api.launch).toHaveBeenCalledWith('professor');
   });
 
-  it('agents stay disabled until the project has a directory', async () => {
-    render(<MemoryRouter><StudioProjectAgents project={{ ...project, workspacePath: '' }} onOpenChat={vi.fn()} /></MemoryRouter>);
-    expect((await screen.findByRole('button', { name: /Claude Code/ }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText(/填写项目目录/)).toBeTruthy();
-    // Without a directory there is nowhere to open a shell either.
+  it('a DeepSeek conversation of a directory not yet in the workbench opens there after registering it', async () => {
+    mocks.workbench.hubLinks.mockImplementation(async () => Response.json([{ hubId: 'professor', projectId: null }]));
+    mocks.api.launch.mockResolvedValue(Response.json({ url: '/work/native' }));
+    renderLanding();
+    fireEvent.click(await screen.findByRole('button', { name: /招生文案/ }));
+    expect(await screen.findByText('Workbench DeepSeek conversation')).toBeTruthy();
+  });
+
+  it('shows the product website first, opening it and its other pages in a new tab', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    renderLanding({ ...project, links: [{ label: '超级教授', url: 'https://professor.example/' }, { label: '登录', url: 'https://professor.example/login' }] });
+    const site = screen.getByRole('link', { name: '打开网站：超级教授' });
+    expect(site.getAttribute('href')).toBe('https://professor.example/');
+    expect(site.getAttribute('target')).toBe('_blank');
+    expect(screen.getByText('professor.example')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '打开网站：登录' }));
+    expect(open).toHaveBeenCalledWith('https://professor.example/login', '_blank', 'noopener,noreferrer');
+    open.mockRestore();
+    await screen.findByText('招生文案');
+  });
+
+  it('without a directory, 新建对话 and the DeepSeek history open the project chat; no shell is offered', async () => {
+    const { openChat } = renderLanding({ ...project, workspacePath: '' });
+    expect(await screen.findByText(/填写项目目录/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: /终端/ })).toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: /招生文案/ }));
+    expect(openChat).toHaveBeenLastCalledWith('c1');
+    fireEvent.click(screen.getByRole('button', { name: /新建对话/ }));
+    expect(openChat).toHaveBeenLastCalledWith();
+    expect(mocks.api.launch).not.toHaveBeenCalled();
+    expect(mocks.projectSessions).not.toHaveBeenCalled();
   });
 
   it('opens a full-screen shell on this computer in the project directory', async () => {
@@ -137,7 +192,9 @@ describe('Studio projects', () => {
     mocks.api.launchRemote.mockResolvedValue(Response.json({ command: 'ssh sp-remote tmux new-session -A', title: 'Claude Code · AJ 服务器' }));
     render(<MemoryRouter><StudioProjectAgents project={{ ...project, remoteHost: 'aj', remoteDir: '~/projects/super-professor' }} onOpenChat={vi.fn()} /></MemoryRouter>);
     expect(await screen.findByText('在线 · 42 ms')).toBeTruthy();
-    expect(mocks.api.sessions).not.toHaveBeenCalled();
+    expect(mocks.projectSessions).not.toHaveBeenCalled();
+    // Its DeepSeek conversations stay reachable below the host's agents.
+    expect(await screen.findByText('招生文案')).toBeTruthy();
     const codex = screen.getByRole('button', { name: /Codex/ }) as HTMLButtonElement;
     expect(codex.disabled).toBe(true);
     expect(codex.textContent).toContain('未安装');

@@ -1,0 +1,62 @@
+/*
+ * The project app's AI 助手 page (StudioProjectAgents): the website card, 新建会话 with the small 终端 button, and the
+ * session rows with their official marks. Built from the Studio tokens in studio.css; light and dark follow them.
+ */
+
+/* ---------- Website ---------- */
+.project-site-card {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 14px 14px 16px; border-radius: var(--radius-card, 18px);
+  background: var(--ios-surface); box-shadow: var(--ios-shadow);
+}
+.project-site-icon { --icon: 46px; flex-shrink: 0; }
+.project-site-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.project-site-text strong { font-size: 17px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-site-text small { font-size: 13px; color: var(--ios-label-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.studio .project-site-open { flex-shrink: 0; text-decoration: none; }
+.project-site-links { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 2px 0; }
+.project-site-chip {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 6px 14px; border-radius: 999px;
+  font-size: 15px; font-weight: 500; color: var(--ios-tint); background: var(--ios-tint-soft);
+}
+
+/* ---------- 新建会话 and 终端 ---------- */
+.project-start-row { display: flex; align-items: stretch; gap: 10px; }
+.project-new-session {
+  display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0; min-height: 68px; padding: 12px 18px 12px 14px;
+  border-radius: var(--radius-card, 18px); text-align: left; color: var(--ios-on-tint); background: var(--ios-tint);
+  box-shadow: 0 1px 2px rgba(30, 25, 15, .12), 0 10px 24px -12px color-mix(in srgb, var(--ios-tint) 80%, transparent);
+}
+.project-new-session:disabled { opacity: .45; box-shadow: none; }
+.project-new-icon {
+  display: grid; place-items: center; flex-shrink: 0; width: 40px; height: 40px; border-radius: 12px;
+  background: color-mix(in srgb, var(--ios-on-tint) 14%, transparent);
+}
+.project-new-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.project-new-text strong { font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+.project-new-text small { font-size: 13px; opacity: .78; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-terminal {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; flex-shrink: 0;
+  width: 76px; border-radius: var(--radius-card, 18px); font-size: 12px; font-weight: 500;
+  color: var(--ios-label-2); background: var(--ios-surface); box-shadow: var(--ios-shadow);
+}
+
+/* ---------- Session rows ---------- */
+.project-home .ios-row { text-decoration: none; }
+.project-session-mark { flex-shrink: 0; }
+.project-session-mark[data-running] { animation: project-breathe 2.4s ease-in-out infinite; }
+@keyframes project-breathe {
+  0%, 100% { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .28), 0 0 0 0 color-mix(in srgb, var(--ios-green) 0%, transparent); }
+  50% { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .28), 0 0 0 4px color-mix(in srgb, var(--ios-green) 32%, transparent); }
+}
+.project-session-time { flex-shrink: 0; font-size: 13px; color: var(--ios-label-3); font-variant-numeric: tabular-nums; }
+.project-show-all { justify-content: center; min-height: 46px; font-size: 15px; font-weight: 500; color: var(--ios-tint); }
+
+@media (max-width: 699px) {
+  .project-site-card { flex-wrap: wrap; }
+  .studio .project-site-open { width: 100%; }
+  .project-terminal { width: 64px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .project-session-mark[data-running] { animation: none; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .28), 0 0 0 2px color-mix(in srgb, var(--ios-green) 40%, transparent); }
+}
