@@ -9,6 +9,7 @@ import { useAuth } from '@/modules/auth';
 import { api, readApiJson } from '@/shared/api';
 import type { HubProject, StudioBuildCreated, StudioChatSpace, StudioConversation, StudioHomeTile, T212Status } from '@/shared/types';
 import { STUDIO_AJ_EXIT_TILE_ID } from '@/shared/constants';
+import { reloadIfNewBuild } from '@/shared/hooks/useFrontendUpdateWatcher';
 import { applyModelDefaults } from '@/shared/modelDefaults';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
 import { useStudio } from '@/modules/studio/hooks/useStudio';
@@ -166,7 +167,11 @@ export function StudioPage() {
   };
   const refresh = async () => {
     setRefreshing(true);
-    try { await Promise.all([studio.refresh(), loadProjects(), loadT212()]); } finally { setRefreshing(false); }
+    try {
+      // A newer deploy is loaded right away (the page reloads), so the button also updates the app itself.
+      if (await reloadIfNewBuild()) return;
+      await Promise.all([studio.refresh(), loadProjects(), loadT212()]);
+    } finally { setRefreshing(false); }
   };
   const onScroll = (event: UIEvent<HTMLDivElement>) => setCompact(event.currentTarget.scrollTop > LARGE_TITLE_COLLAPSE_AT);
 

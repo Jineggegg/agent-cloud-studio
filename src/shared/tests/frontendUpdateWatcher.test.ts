@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
-import { startFrontendUpdateWatcher } from '@/shared/hooks/useFrontendUpdateWatcher';
+import { reloadIfNewBuild, startFrontendUpdateWatcher } from '@/shared/hooks/useFrontendUpdateWatcher';
 
 /**
  * A page left open across a deploy (the iPad home-screen app) kept running its old bundle against the new
@@ -261,5 +261,36 @@ test('stopping removes every trigger', async () => {
   await comeBack();
   await vi.advanceTimersByTimeAsync(10 * 60_000);
   await settle();
+  assert.equal(fetchMock.mock.calls.length, 0);
+});
+
+// The home's refresh button: an explicit tap loads a newer deploy at once, otherwise the data refresh goes ahead.
+test('reloadIfNewBuild loads a newer served build at once and says so', async () => {
+  served = builtIndexHtml('index-NEW.js');
+  const result = reloadIfNewBuild(reload);
+  await settle();
+  assert.equal(await result, true);
+  assert.equal(reload.mock.calls.length, 1);
+  const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+  assert.equal(init.cache, 'no-store');
+});
+
+test('reloadIfNewBuild leaves the page alone when the build is current or the answer is unusable', async () => {
+  assert.equal(await reloadIfNewBuild(reload), false, 'same build');
+  fetchMock.mockImplementation(async () => htmlResponse('<html><body>请登录</body></html>'));
+  assert.equal(await reloadIfNewBuild(reload), false, 'a page without a hashed entry');
+  fetchMock.mockImplementation(async () => { throw new TypeError('offline'); });
+  assert.equal(await reloadIfNewBuild(reload), false, 'offline');
+  fetchMock.mockImplementation(() => new Promise(() => {}));
+  const hanging = reloadIfNewBuild(reload);
+  await vi.advanceTimersByTimeAsync(10_000);
+  assert.equal(await hanging, false, 'no answer within ten seconds');
+  assert.equal(reload.mock.calls.length, 0);
+});
+
+test('reloadIfNewBuild does nothing on a development page', async () => {
+  document.head.innerHTML = '<script type="module" src="/src/main.tsx"></script>';
+  served = builtIndexHtml('index-NEW.js');
+  assert.equal(await reloadIfNewBuild(reload), false);
   assert.equal(fetchMock.mock.calls.length, 0);
 });
