@@ -156,9 +156,8 @@ export function WorkbenchShell() {
   const requestedProvider = newProvider ?? lastProvider;
   const chatProvider: WorkbenchNewProvider = session ? parseNewProvider(session.provider) ?? lastProvider
     : resolveNewChatProvider(requestedProvider, hubProjectId);
-  // What "+ 新会话" offers here: the shared rule, with Cursor / OpenCode where the Studio project enables them.
-  const hubProviders = current?.hub?.providers;
-  const newChoices = useMemo(() => newChatChoices(hubProjectId, hubProviders ?? []), [hubProjectId, hubProviders]);
+  // What "+ 新会话" offers here: the shared rule (DeepSeek only with a Studio project).
+  const newChoices = useMemo(() => newChatChoices(hubProjectId), [hubProjectId]);
   const chatKey = project ? `${project.projectId}:${session && session.id !== adoptedId ? `${session.kind}:${session.id}` : `new:${chatEpoch}`}` : '';
 
   useEffect(() => { if (project) writeStored(LAST_PROJECT_KEY, project.projectId); }, [project]);

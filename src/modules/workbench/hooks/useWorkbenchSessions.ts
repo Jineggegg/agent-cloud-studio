@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, readApiJson } from '@/shared/api';
 import { useWebSocket } from '@/shared/context/WebSocketContext';
 import type { StudioConversation, WorkbenchSessionItem } from '@/shared/types';
-import { toAgentItem, toDeepSeekItem } from '@/modules/workbench/utils/workbenchRoutes';
+import { isListedAgentSession, toAgentItem, toDeepSeekItem } from '@/modules/workbench/utils/workbenchRoutes';
 import { sortSessionsByRecency } from '@/modules/workbench/utils/workbenchSessionGroups';
 
 // Enough history for a working week in one request; older pages load on demand.
@@ -78,8 +78,10 @@ export function useWorkbenchSessions(projectId: string | null, hubProjectId: str
       if (!response.ok) throw new Error(`会话加载失败（${response.status}）`);
       const page = await response.json() as SessionsPage;
       if (currentScope.current !== requested) return;
-      const rows = (page.sessions ?? []).map(toAgentItem);
-      pagedCount.current = rows.length;
+      const pageRows = page.sessions ?? [];
+      // The offset counts every server row, hidden Cursor / OpenCode ones included, so pages never overlap.
+      pagedCount.current = pageRows.length;
+      const rows = pageRows.filter(isListedAgentSession).map(toAgentItem);
       setAgentItems(rows);
       setHasMore(Boolean(page.sessionMeta?.hasMore));
       setError('');
@@ -97,7 +99,7 @@ export function useWorkbenchSessions(projectId: string | null, hubProjectId: str
     if (event.kind === 'websocket_reconnected') { void reload(); return; }
     if (event.kind !== 'session_upserted' || !projectId) return;
     const frame = event as SessionUpsertFrame;
-    if (frame.project?.projectId !== projectId || !frame.sessionId) return;
+    if (frame.project?.projectId !== projectId || !frame.sessionId || !isListedAgentSession(frame)) return;
     const item = toAgentItem({ id: frame.sessionId, provider: frame.provider, summary: frame.session?.summary, lastActivity: frame.session?.lastActivity });
     // A frame naming the canonical id replaces the provider-id row it was merged from.
     setAgentItems(previous => previous === null ? previous : upsertRow(previous, item, frame.providerSessionId));
@@ -119,10 +121,11 @@ export function useWorkbenchSessions(projectId: string | null, hubProjectId: str
       if (!response.ok) throw new Error(`更早的会话加载失败（${response.status}）`);
       const page = await response.json() as SessionsPage;
       if (currentScope.current !== requested) return;
-      const rows = (page.sessions ?? []).map(toAgentItem);
-      pagedCount.current += rows.length;
+      const pageRows = page.sessions ?? [];
+      pagedCount.current += pageRows.length;
+      const rows = pageRows.filter(isListedAgentSession).map(toAgentItem);
       setAgentItems(previous => [...(previous ?? []), ...rows.filter(row => !(previous ?? []).some(existing => existing.id === row.id))]);
-      setHasMore(Boolean(page.sessionMeta?.hasMore) && rows.length > 0);
+      setHasMore(Boolean(page.sessionMeta?.hasMore) && pageRows.length > 0);
     } finally {
       setLoadingMore(false);
     }

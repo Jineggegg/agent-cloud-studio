@@ -82,6 +82,7 @@ vi.mock('@/modules/standalone-shell', () => ({
     }}>print urls</button></div>,
 }));
 vi.mock('@/modules/studio', () => ({
+  StudioBrandMark: ({ brand }: { brand: string }) => <svg data-brand={brand} />,
   StudioSpinner: ({ label }: { label?: string }) => <span role={label ? 'status' : undefined}>{label}</span>,
   StudioTileIcon: () => <span />,
   StudioConfirmSheet: ({ title, confirmLabel, onConfirm, onCancel }: { title: string; confirmLabel: string; onConfirm: () => void; onCancel: () => void }) =>
@@ -409,15 +410,17 @@ test('the chat header is the only title bar: it carries the shell controls, and 
   expect(screen.getAllByRole('button', { name: '终端' })).toHaveLength(1);
 });
 
-test('Cursor and OpenCode launches open a chat with that agent, and the menu offers what the project enables', async () => {
+test('Cursor and OpenCode are hidden: their links open the default agent and the menu never offers them', async () => {
   renderShell('/work/p1?new=cursor');
-  await waitFor(() => expect(chatState()).toBe('p1|new|cursor|professor'));
+  await waitFor(() => expect(chatState()).toBe('p1|new|claude|professor'));
   fireEvent.click(screen.getByRole('button', { name: '新会话' }));
   const menu = await screen.findByRole('menu', { name: '选择助手' });
-  expect(within(menu).getAllByRole('menuitem').map(item => item.querySelector('strong')?.firstChild?.textContent)).toEqual(['Claude Code', 'Codex', 'DeepSeek', 'Cursor']);
+  expect(within(menu).getAllByRole('menuitem').map(item => item.querySelector('strong')?.firstChild?.textContent)).toEqual(['Claude Code', 'Codex', 'DeepSeek']);
+  // Each row carries the provider's official mark.
+  expect(Array.from(menu.querySelectorAll('svg[data-brand]')).map(mark => mark.getAttribute('data-brand'))).toEqual(['claude', 'openai', 'deepseek']);
   cleanup();
   renderShell('/work/p2?new=opencode');
-  await waitFor(() => expect(chatState()).toBe('p2|new|opencode|null'));
+  await waitFor(() => expect(chatState()).toBe('p2|new|claude|null'));
 });
 
 test('DeepSeek is offered but disabled in a directory without a Studio project, with the reason', async () => {

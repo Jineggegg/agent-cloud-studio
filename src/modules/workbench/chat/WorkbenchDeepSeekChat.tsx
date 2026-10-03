@@ -1,19 +1,25 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { AnimatePresence, m } from 'motion/react';
-import { Activity, AlertTriangle, KeyRound, X } from 'lucide-react';
+import { Activity, AlertTriangle, KeyRound, Sparkle, X } from 'lucide-react';
+import { toast } from 'sonner';
 
 import { LazyMessageRow, useLazyRowObserver } from '@/modules/chat';
+import { writeDeviceModelChoice } from '@/shared/modelDefaults';
 import type {
-  ChatMessage, Project, ProviderModelOption, StudioConversation, WorkbenchChatChrome, WorkbenchNewChatChoice, WorkbenchNewProvider,
-  WorkbenchSessionItem,
+  ChatMessage, Project, ProviderModelOption, StudioConversation, WorkbenchChatChrome, WorkbenchModelCatalogs, WorkbenchNewChatChoice,
+  WorkbenchNewProvider, WorkbenchSessionItem,
 } from '@/shared/types';
 import { useDeepSeekConversation } from '@/modules/workbench/chat/hooks/useDeepSeekConversation';
+import { useSpeechDictation } from '@/modules/workbench/chat/hooks/useSpeechDictation';
 import { WorkbenchChatHeader } from '@/modules/workbench/chat/WorkbenchChatHeader';
+import { WorkbenchMenu } from '@/modules/workbench/chat/WorkbenchMenu';
 import { WorkbenchAssistantMessage, WorkbenchTurnLabel, WorkbenchUserMessage } from '@/modules/workbench/chat/WorkbenchMessageRow';
+import { WorkbenchMicButton } from '@/modules/workbench/chat/WorkbenchMicButton';
 import { WorkbenchProviderMark } from '@/modules/workbench/WorkbenchProviderMark';
 import { WorkbenchSendButton } from '@/modules/workbench/chat/WorkbenchSendButton';
 import { WorkbenchSpinner } from '@/modules/workbench/chat/WorkbenchSpinner';
+import { menuProvidersFor, oneModelMenuSections } from '@/modules/workbench/chat/utils/workbenchModelMenu';
 
 // Used until the connector reports its models, matching the Studio DeepSeek app.
 const FALLBACK_MODELS = ['deepseek-flash', 'deepseek-v4-pro'];
@@ -28,8 +34,13 @@ type WorkbenchDeepSeekChatProps = {
   conversationId: string | null;
   title: string | null;
   hubProjectId: string | null;
-  // Agents a new chat may switch to before its first send; null once the shell has a conversation open.
+  // Providers a new chat may switch to before its first send; null once the shell has a conversation open.
   providerChoices: WorkbenchNewChatChoice[] | null;
+  // The Claude Code and Codex models for the one model menu.
+  catalogs: WorkbenchModelCatalogs;
+  // The DeepSeek model a new conversation sends with (picked here or in the agent view); null: the first offered.
+  draftModel: string | null;
+  onDraftModelChange: (model: string) => void;
   onSelectProvider: (provider: WorkbenchNewProvider) => void;
   onSessionCreated: (item: WorkbenchSessionItem) => void;
   // The shell's controls and project name for the title bar.
@@ -64,9 +75,10 @@ function ThinkingRow({ since }: { since: number | null }) {
 }
 
 /**
- * Used by WorkbenchChat for DeepSeek: the same column (header pill, prose transcript, composer) over Studio's
- * conversation API in the project's space, or the general DeepSeek space when the project has no hub entry.
- * Replies arrive whole, so a thinking line with elapsed time stands in for streaming.
+ * Used by WorkbenchChat for DeepSeek: the same column (header pill, prose transcript, composer with the one model
+ * menu and dictation) over Studio's conversation API in the project's space, or the general DeepSeek space when the
+ * project has no hub entry. Until the first send the model menu also offers Claude Code and Codex models, which
+ * switch the chat to that agent. Replies arrive whole, so a thinking line with elapsed time stands in for streaming.
  */
 export function WorkbenchDeepSeekChat({
   project,
@@ -74,6 +86,9 @@ export function WorkbenchDeepSeekChat({
   title,
   hubProjectId,
   providerChoices,
+  catalogs,
+  draftModel,
+  onDraftModelChange,
   onSelectProvider,
   onSessionCreated,
   chrome,
@@ -93,8 +108,6 @@ export function WorkbenchDeepSeekChat({
 
   // Draft text; restored when a send fails so nothing typed is lost.
   const [draft, setDraft] = useState('');
-  // Model for a new conversation; a started conversation keeps the model it was created with.
-  const [draftModel, setDraftModel] = useState(FALLBACK_MODELS[0]);
   // Sharing SNR's health summary is an explicit per-message opt-in, as in the Studio DeepSeek app.
   const [includeSnr, setIncludeSnr] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -105,9 +118,25 @@ export function WorkbenchDeepSeekChat({
 
   const models = chat.status?.deepseek.models?.length ? chat.status.deepseek.models : FALLBACK_MODELS;
   const modelOptions = useMemo<ProviderModelOption[]>(() => models.map((value) => ({ value, label: value })), [models]);
-  const activeModel = chat.conversation?.model ?? (models.includes(draftModel) ? draftModel : models[0]);
+  const activeModel = chat.conversation?.model ?? (draftModel && models.includes(draftModel) ? draftModel : models[0]);
   const started = Boolean(chat.conversation) || chat.sending;
   const configured = chat.status ? chat.status.deepseek.configured : true;
+  const dictation = useSpeechDictation({ text: draft, onText: setDraft, onError: (message) => toast.error(message) });
+
+  // Claude Code or Codex picked before the first send: that agent starts on this device with the chosen model.
+  const switchProvider = (target: WorkbenchNewProvider, model: string | null) => {
+    if (target !== 'deepseek' && model) writeDeviceModelChoice(target, model);
+    onSelectProvider(target);
+  };
+  const menuSections = oneModelMenuSections({
+    providers: menuProvidersFor({ choices: started ? null : providerChoices, current: 'deepseek', currentOptions: modelOptions, catalogs }),
+    current: 'deepseek',
+    currentModel: activeModel,
+    locked: started || providerChoices === null,
+    onSelectModel: started ? undefined : onDraftModelChange,
+    onSwitch: switchProvider,
+  });
+  const pickable = menuSections.some((section) => section.items.length > 0);
 
   const messages = useMemo<ChatMessage[]>(() => (chat.conversation?.messages ?? []).map((message) => ({
     type: message.role === 'user' ? 'user' : 'assistant',
@@ -157,7 +186,7 @@ export function WorkbenchDeepSeekChat({
       <WorkbenchProviderMark provider="deepseek" size={60} />
       <h2 className="wbc-empty-title">{project.displayName}</h2>
       <p className="wbc-empty-sub">DeepSeek · {activeModel} · {hubProjectId ? '保存在这个项目里' : '保存在 DeepSeek 应用里'}</p>
-      <p className="wbc-empty-note">适合提问、写作和整理思路；它看不到项目文件，也不会运行命令。</p>
+      <p className="wbc-empty-note">适合提问、写作和整理思路；它看不到项目文件，也不会运行命令。{providerChoices && '发送第一条消息前，可以在模型菜单里换成 Claude Code 或 Codex。'}</p>
     </div>
   ) : (
     <div className="wbc-empty">
@@ -173,11 +202,7 @@ export function WorkbenchDeepSeekChat({
         provider="deepseek"
         modelLabel={activeModel}
         title={title}
-        providerChoices={started ? null : providerChoices}
-        onSelectProvider={onSelectProvider}
-        models={modelOptions}
-        currentModel={activeModel}
-        onSelectModel={started ? undefined : setDraftModel}
+        menuSections={menuSections}
         chrome={chrome}
       />
 
@@ -236,6 +261,7 @@ export function WorkbenchDeepSeekChat({
               onCompositionEnd={() => { composingRef.current = false; compositionEndedAtRef.current = performance.now(); }}
             />
             <div className="wbc-composer-bar">
+              {dictation.supported && <WorkbenchMicButton listening={dictation.listening} disabled={chat.sending} onToggle={dictation.toggle} />}
               <button
                 type="button"
                 role="switch"
@@ -248,6 +274,20 @@ export function WorkbenchDeepSeekChat({
                 <Activity size={13} strokeWidth={2.2} aria-hidden="true" />
                 <span>附上 SNR 状态</span>
               </button>
+              {pickable ? (
+                <WorkbenchMenu
+                  label={`模型 ${activeModel}`}
+                  triggerClassName="wbc-chip"
+                  placement="up"
+                  width={320}
+                  trigger={<><Sparkle size={13} strokeWidth={2.2} aria-hidden="true" /><span>{activeModel}</span></>}
+                  sections={menuSections}
+                />
+              ) : (
+                <span className="wbc-chip is-static" aria-label={`模型 ${activeModel}（已固定）`}>
+                  <Sparkle size={13} strokeWidth={2.2} aria-hidden="true" /><span>{activeModel}</span>
+                </span>
+              )}
               <span className="wbc-composer-spacer" />
               <WorkbenchSendButton
                 mode={chat.sending ? 'stop' : 'send'}

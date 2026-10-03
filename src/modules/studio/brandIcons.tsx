@@ -20,7 +20,8 @@ const BRAND_PATHS: Record<StudioBrand, string> = {
 
 /**
  * Used by StudioTileIcon, StudioProjectAgents, StudioMemory, StudioSettingsMail and StudioSettingsRuntime in place of
- * a line icon: one product's official mark in currentColor. Tabler glyphs leave a 2-unit margin inside their 24-unit
+ * a line icon, and by the workbench module (WorkbenchProviderMark) for the Claude, Codex and DeepSeek badges of its
+ * history, menus and chat: one product's official mark in currentColor. Tabler glyphs leave a 2-unit margin inside their 24-unit
  * box, so the padded viewBox gives the marks the same optical size.
  */
 export function StudioBrandMark({ brand, size }: { brand: StudioBrand; size: number }) {

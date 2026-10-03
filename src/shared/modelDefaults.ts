@@ -57,6 +57,15 @@ export function applyModelDefaults(provider: LLMProvider) {
 }
 
 /**
+ * Makes `model` the model this device's chat composer next starts `provider` with, as picking it in the composer
+ * would. Used by the workbench chat when a DeepSeek chat switches to Claude Code or Codex through the model menu,
+ * before that agent's composer exists to record the pick itself.
+ */
+export function writeDeviceModelChoice(provider: LLMProvider, model: string) {
+  try { localStorage.setItem(`${provider}-model`, model); } catch { /* Storage blocked: the composer keeps its own choice. */ }
+}
+
+/**
  * The catalog the model menus show: hidden models removed (never all of them) and the saved default, when still
  * visible, as the default. A default saved under a legacy value (`opus[1m]`, `default`) counts as the row that
  * replaced it, 1M variant included.

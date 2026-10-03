@@ -48,18 +48,17 @@ test('/workspace with a project and provider opens a new workbench chat with tha
   expect(mocks.writeSelectedProvider).toHaveBeenCalledWith('codex');
 });
 
-test('/workspace alone opens the workbench; Cursor and OpenCode links keep their agent, anything else is dropped', async () => {
+test('/workspace alone opens the workbench; hidden Cursor and OpenCode links and anything else drop the agent', async () => {
   renderAt('/workspace');
   await waitFor(() => expect(location()).toBe('/work'));
   cleanup();
   renderAt('/workspace?projectId=p1&provider=cursor');
-  await waitFor(() => expect(location()).toBe('/work/p1?new=cursor'));
-  expect(mocks.writeSelectedProvider).toHaveBeenCalledWith('cursor');
+  await waitFor(() => expect(location()).toBe('/work/p1'));
   cleanup();
   renderAt('/workspace?projectId=p1&provider=opencode');
-  await waitFor(() => expect(location()).toBe('/work/p1?new=opencode'));
+  await waitFor(() => expect(location()).toBe('/work/p1'));
+  expect(mocks.writeSelectedProvider).not.toHaveBeenCalled();
   cleanup();
-  mocks.writeSelectedProvider.mockClear();
   renderAt('/workspace?projectId=p1&provider=rm%20-rf');
   await waitFor(() => expect(location()).toBe('/work/p1'));
   expect(mocks.writeSelectedProvider).not.toHaveBeenCalled();

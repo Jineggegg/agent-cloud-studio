@@ -2261,9 +2261,12 @@ export type StudioMailDevicePoll = { status: 'pending' | 'connected' | 'expired'
 // ---------------------------
 
 //----------------- STUDIO V6: WORKBENCH, GITHUB, AI BUILDS, MEMORY ------------
-/** One row of the workbench sidebar: a Claude Code / Codex session or a DeepSeek conversation of the current project. */
+/**
+ * One row of the workbench sidebar (and the Studio project's session list): a Claude Code / Codex session or a
+ * DeepSeek conversation of the current project. Cursor and OpenCode sessions are never listed.
+ */
 export type WorkbenchSessionItem = {
-  id: string; kind: 'agent' | 'deepseek'; provider: 'claude' | 'codex' | 'cursor' | 'opencode' | 'deepseek';
+  id: string; kind: 'agent' | 'deepseek'; provider: 'claude' | 'codex' | 'deepseek';
   title: string; updatedAt: string | null; running?: boolean;
 };
 /** What the workbench shell hands its chat column (src/modules/workbench/chat/WorkbenchChat). */
@@ -2272,8 +2275,8 @@ export type WorkbenchChatProps = {
   project: Project;
   // The open session, or null for a new chat.
   session: WorkbenchSessionItem | null;
-  // Provider preselected for a new chat. Cursor and OpenCode come from the Studio project app's launch cards.
-  provider: 'claude' | 'codex' | 'cursor' | 'opencode' | 'deepseek';
+  // Provider preselected for a new chat; the chat's model menu can still switch it before the first message.
+  provider: 'claude' | 'codex' | 'deepseek';
   // The Studio hub project with this path, if any (DeepSeek project space, memory scope, icon).
   hubProjectId: string | null;
   // Called once a new chat has a real session id, so the shell can list and route to it.
@@ -2332,10 +2335,24 @@ export type WorkbenchMenuItem = {
   kind?: 'radio' | 'toggle';
   onSelect: () => void;
 };
-/** A titled group of WorkbenchMenu rows; `note` is shown under it, e.g. why its rows are locked. */
+/**
+ * The models of the providers a workbench chat is not using, read so its one model menu can list Claude Code, Codex
+ * and DeepSeek models side by side before the first message. Each part is null until read (or when the read failed).
+ * Read by WorkbenchChat (useWorkbenchModelCatalogs) and handed to its agent and DeepSeek views.
+ */
+export type WorkbenchModelCatalogs = {
+  claude: ProviderModelOption[] | null;
+  codex: ProviderModelOption[] | null;
+  deepseek: { configured: boolean; models: string[] } | null;
+};
+/**
+ * A titled group of WorkbenchMenu rows; `note` is shown under it, e.g. why its rows are locked. `icon` is drawn
+ * before the title, e.g. the provider's mark over that provider's models in the one model menu.
+ */
 export type WorkbenchMenuSection = {
   key: string;
   title?: string;
+  icon?: ReactNode;
   note?: string;
   items: WorkbenchMenuItem[];
 };

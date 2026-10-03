@@ -3,12 +3,13 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { MessageSquareOff } from 'lucide-react';
 
 import { StudioSpinner } from '@/modules/studio';
+import { OFFERED_AGENT_PROVIDERS } from '@/shared/constants';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
 import type { LLMProvider } from '@/shared/types';
 import { parseNewProvider, resolveLegacySessionPath, workbenchPath } from '@/modules/workbench/utils/workbenchRoutes';
 
-// Agents the old /workspace deep link could name; the workbench starts a new chat with any of them.
-const LEGACY_AGENTS: readonly string[] = ['claude', 'codex', 'cursor', 'opencode'];
+// Agents an old /workspace deep link may name; a hidden Cursor or OpenCode one starts the default agent instead.
+const LEGACY_AGENTS: readonly string[] = OFFERED_AGENT_PROVIDERS;
 
 /**
  * Used by WorkbenchRoute for the inherited IDE's addresses: `/workspace?projectId=&provider=` becomes

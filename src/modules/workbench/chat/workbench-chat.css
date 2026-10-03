@@ -799,7 +799,9 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
 }
 .wbc .wbc-input::placeholder { color: var(--wbc-label-3) !important; -webkit-text-fill-color: var(--wbc-label-3) !important; opacity: 1 !important; }
 .wbc .wbc-input:disabled { opacity: .6; }
-.wbc-composer-bar { display: flex; align-items: center; gap: 4px; padding: 4px 8px 8px; min-width: 0; }
+.wbc-composer-bar { display: flex; align-items: center; gap: 6px; padding: 4px 8px 8px; min-width: 0; }
+/* The attachment and microphone buttons sit together like an iOS toolbar pair. */
+.wbc-composer-bar > .wbc-tool-button + .wbc-tool-button { margin-left: -4px; }
 .wbc-composer-spacer { flex: 1; min-width: 4px; }
 .wbc-tool-button {
   position: relative; display: grid; place-items: center; flex-shrink: 0; width: 36px; height: 36px; border-radius: 50%; color: var(--wbc-label-2);
@@ -900,4 +902,30 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
   .wbc .wbc-spinner { animation-duration: 1.6s !important; animation-iteration-count: infinite !important; }
   .wbc .wbc-skel::after, .wbc .wbc-breathe { animation: none !important; }
   .wbc :active { transform: none !important; }
+}
+
+/* ---------- One model menu and dictation ----------
+ * The model menu's sections are titled with each provider's official mark; the microphone turns red while it
+ * listens; a model chip that cannot change (a started DeepSeek conversation) does not react to hover. */
+.wbc-menu-title.has-icon {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px 4px 10px;
+  font-size: 12.5px; color: var(--wbc-label-2); letter-spacing: 0;
+}
+.wbc-menu-title.has-icon .wb-mark { box-shadow: none; }
+.wbc-menu-section .wbc-menu-note:only-child { padding-left: 12px; }
+
+.wbc-mic { transition: background-color 200ms ease, color 200ms ease; }
+.wbc-mic.is-listening, .wbc-mic.is-listening:hover { background: var(--wbc-red); color: #fff; }
+.wbc-mic.is-listening::after {
+  content: ""; position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--wbc-red) 45%, transparent);
+  animation: wbc-mic-pulse 1.6s ease-out infinite;
+}
+@keyframes wbc-mic-pulse { to { box-shadow: 0 0 0 10px color-mix(in srgb, var(--wbc-red) 0%, transparent); } }
+
+.wbc-chip.is-static { cursor: default; }
+.wbc-chip.is-static:hover { background: var(--wbc-fill); color: var(--wbc-label-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .wbc-mic.is-listening::after { animation: none !important; box-shadow: 0 0 0 3px color-mix(in srgb, var(--wbc-red) 30%, transparent); }
 }
