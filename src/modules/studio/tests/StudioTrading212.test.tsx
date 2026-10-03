@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ status: vi.fn(), overview: vi.fn(), history: vi.fn(), activity: vi.fn() }));
@@ -41,8 +42,14 @@ const accountCaps = (dailyUsed = 0) => ({
   maxOrderValue: 500, dailyLimit: 2000, custom: false, updatedAt: null, dailyUsed, dailyRemaining: 2000 - dailyUsed, currency: 'GBP',
 });
 const CAPS = { ceiling: 10_000, defaults: { maxOrderValue: 500, dailyLimit: 2000 }, envs: { live: accountCaps(), demo: accountCaps() } };
-const TRADING_OFF = { allowedEnvs: [], caps: CAPS, capChanges: [], capRefusals: [], passkeys: [], trustedOrigins: [], allowLocalhost: true, requirePasskey: false };
-const TRADING_LIVE = { ...TRADING_OFF, allowedEnvs: ['live'], currency: 'GBP' };
+// The trading mode as GET /trading reports it: in force, and the STUDIO_T212_TRADING ceiling.
+const modeState = (mode: string, ceiling = mode) => ({ mode, ceiling, custom: mode !== ceiling, updatedAt: null });
+const TRADING_OFF = {
+  allowedEnvs: [], tradingMode: modeState('off'), modeChanges: [], modeRefusals: [],
+  caps: CAPS, capChanges: [], capRefusals: [], passkeys: [], trustedOrigins: [], allowLocalhost: true, requirePasskey: false,
+};
+const TRADING_LIVE = { ...TRADING_OFF, allowedEnvs: ['live'], tradingMode: modeState('live'), currency: 'GBP' };
+const TRADING_BOTH = { ...TRADING_LIVE, allowedEnvs: ['live', 'demo'], tradingMode: modeState('both') };
 const PREVIEW = {
   id: '0b7c6f1e-1d2a-4c55-9f0e-6a1b2c3d4e5f', env: 'live', ticker: 'AAPL_US_EQ', side: 'buy', type: 'market', quantity: 1,
   estimatedValue: 400, currency: 'GBP', maxOrderValue: 500, dailyLimit: 2000, dailyUsed: 300, dailyRemaining: 1700,
@@ -67,8 +74,15 @@ function account(config: unknown, overview: unknown = OVERVIEW) {
   trading.config.mockImplementation(json(config));
 }
 
+// The view links to Settings → 交易安全, so it renders inside a router as in StudioPage.
+function renderView() {
+  return render(<MemoryRouter><StudioTrading212 /></MemoryRouter>);
+}
+// The trading-mode badge beside the account switch; on phones its "下单 · " prefix is visually hidden.
+const modeBadge = () => screen.getByTitle('允许下单的账户，在「设置 → 交易安全」修改');
+
 async function openOrder(name = '买入 Apple') {
-  render(<StudioTrading212 />);
+  renderView();
   fireEvent.click(await screen.findByRole('button', { name }));
   return screen.findByRole('dialog', { name: /交易/ });
 }
@@ -93,14 +107,14 @@ afterEach(cleanup);
 test('without a key file the view explains setup and never calls the broker', async () => {
   mocks.status.mockResolvedValue(Response.json([{ env: 'live', configured: false, source: null }, { env: 'demo', configured: false, source: null }]));
   trading.config.mockImplementation(json(TRADING_OFF));
-  render(<StudioTrading212 />);
+  renderView();
   expect(await screen.findByText('尚未接入 Trading 212')).toBeTruthy();
   expect(mocks.overview).not.toHaveBeenCalled();
 });
 
 test('shows balance, signed day change, curve and positions, with no order controls while trading is off', async () => {
   account(TRADING_OFF);
-  render(<StudioTrading212 />);
+  renderView();
   const hero = await screen.findByRole('region', { name: '总资产' });
   expect(within(hero).getByText('£1,234.50')).toBeTruthy();
   expect(within(hero).getByText(/−£12\.30/)).toBeTruthy();
@@ -108,20 +122,75 @@ test('shows balance, signed day change, curve and positions, with no order contr
   expect(screen.getByText('Apple')).toBeTruthy();
   expect(screen.getByText('记录不足', { exact: false })).toBeTruthy();
   expect(mocks.overview).toHaveBeenCalledWith('live');
-  expect(screen.getByText(/只读 · 实盘/)).toBeTruthy();
-  expect(screen.queryByRole('button', { name: /买入|卖出|下单/ })).toBeNull();
+  expect(modeBadge().textContent).toBe('下单 · 关闭');
+  expect(screen.queryByRole('button', { name: /交易|买入|卖出|下单/ })).toBeNull();
+  expect(screen.getByText(/实盘没有开启下单：这里只读/)).toBeTruthy();
   fireEvent.click(screen.getByRole('radio', { name: '1周' }));
   expect(await screen.findByText('Apple')).toBeTruthy();
 });
 
-test('with trading off, 交易 explains which server setting enables it', async () => {
+test('an account outside the trading mode has no 交易, only a link to Settings → 交易安全', async () => {
   account(TRADING_OFF);
-  render(<StudioTrading212 />);
-  fireEvent.click(await screen.findByRole('button', { name: '交易' }));
-  const sheet = await screen.findByRole('dialog', { name: /交易/ });
-  expect(within(sheet).getByText('实盘下单未开启')).toBeTruthy();
-  expect(within(sheet).getByText('STUDIO_T212_TRADING=live')).toBeTruthy();
+  renderView();
+  const link = await screen.findByRole('link', { name: '实盘未开启下单，去设置开启' });
+  expect(link.getAttribute('href')).toBe('/apps/connections#t212-trading-safety');
+  expect(screen.queryByRole('button', { name: '交易' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '买入 Apple' })).toBeNull();
   expect(trading.preview).not.toHaveBeenCalled();
+});
+
+test('the mode in force is shown next to the account switch, and only enabled accounts can trade', async () => {
+  // Live only: the demo account shows the Settings link instead of 交易.
+  account({ ...TRADING_BOTH, allowedEnvs: ['live'], tradingMode: modeState('live', 'both') });
+  mocks.status.mockImplementation(json([{ env: 'live', configured: true, source: 'live' }, { env: 'demo', configured: true, source: 'demo' }]));
+  mocks.overview.mockImplementation((env: string) => json({ ...OVERVIEW, env })());
+  renderView();
+  const toolbar = (await screen.findByRole('radiogroup', { name: '账户' })).parentElement as HTMLElement;
+  expect(toolbar.contains(modeBadge())).toBe(true);
+  expect(modeBadge().textContent).toBe('下单 · 实盘');
+  expect(await screen.findByRole('button', { name: '交易' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: '买入 Apple' })).toBeTruthy();
+
+  fireEvent.click(screen.getByRole('radio', { name: '模拟' }));
+  expect(await screen.findByRole('link', { name: '模拟盘未开启下单，去设置开启' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: '交易' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '买入 Apple' })).toBeNull();
+  expect(toolbar.contains(modeBadge())).toBe(true);
+  expect(modeBadge().textContent).toBe('下单 · 实盘');
+});
+
+test('an order whose account was taken out of the trading mode is refused at confirmation and the sheet says why', async () => {
+  account(TRADING_LIVE);
+  trading.config
+    .mockImplementationOnce(json(TRADING_LIVE))
+    .mockImplementation(json({ ...TRADING_LIVE, allowedEnvs: [], tradingMode: modeState('off', 'live') }));
+  trading.preview.mockImplementation(json(PREVIEW));
+  trading.confirm.mockImplementation(json('实盘下单已在「设置 → 交易安全」关闭：重新开启需要面容 ID / 触控 ID。订单没有提交', 403, 'T212_TRADING_DISABLED'));
+  const sheet = await openBuyApple();
+  await confirmOneApple(sheet);
+
+  // The settings are re-read, so the sheet turns into its "not enabled" step and keeps the refusal visible.
+  expect(await within(sheet).findByText('实盘下单已关闭')).toBeTruthy();
+  expect(within(sheet).getByText(/允许下单的账户目前是「关闭」/)).toBeTruthy();
+  expect(within(sheet).getByRole('alert').textContent).toContain('订单没有提交');
+  expect(trading.config).toHaveBeenCalledTimes(2);
+  expect(toast.success).not.toHaveBeenCalled();
+  fireEvent.click(within(sheet).getByRole('button', { name: '好' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(await screen.findByRole('link', { name: '实盘未开启下单，去设置开启' })).toBeTruthy();
+});
+
+test('with trading off on the server, an open sheet explains which server setting enables it', async () => {
+  // The settings changed while the sheet was open: the server no longer allows live at all.
+  account(TRADING_LIVE);
+  trading.config.mockImplementationOnce(json(TRADING_LIVE)).mockImplementation(json(TRADING_OFF));
+  trading.preview.mockImplementation(json('实盘下单未开启：在服务器 .env 设置 STUDIO_T212_TRADING=live（或 both）后重启 Studio', 403, 'T212_TRADING_DISABLED'));
+  const sheet = await openBuyApple();
+  fireEvent.change(within(sheet).getByLabelText('数量'), { target: { value: '1' } });
+  fireEvent.click(within(sheet).getByRole('button', { name: '下一步' }));
+  expect(await within(sheet).findByText('实盘下单未开启')).toBeTruthy();
+  expect(within(sheet).getByText('STUDIO_T212_TRADING=live')).toBeTruthy();
+  expect(trading.confirm).not.toHaveBeenCalled();
 });
 
 test('the estimate is checked against the cap before any preview is requested', async () => {
@@ -186,7 +255,7 @@ test('a limit sell at a token price is still valued at what the shares are worth
 test('an unheld ticker is not blocked by a cap in the wrong currency; the server converts it', async () => {
   account(TRADING_LIVE);
   trading.preview.mockImplementation(json({ ...PREVIEW, ticker: 'VODl_EQ', type: 'limit', quantity: 100, limitPrice: 150, estimatedValue: 150 }));
-  render(<StudioTrading212 />);
+  renderView();
   fireEvent.click(await screen.findByRole('button', { name: '交易' }));
   const sheet = await screen.findByRole('dialog', { name: /交易/ });
   fireEvent.change(within(sheet).getByLabelText('代码'), { target: { value: 'VODl_EQ' } });
@@ -376,11 +445,11 @@ test('a refused order keeps the error visible and needs a fresh preview', async 
 });
 
 test('switching between live and demo never shows or trades the other account’s positions', async () => {
-  account({ ...TRADING_LIVE, allowedEnvs: ['live', 'demo'] });
+  account(TRADING_BOTH);
   mocks.status.mockImplementation(json([{ env: 'live', configured: true, source: 'live' }, { env: 'demo', configured: true, source: 'demo' }]));
   const demoOverview = deferred<Response>();
   mocks.overview.mockImplementation((env: string) => (env === 'live' ? json(OVERVIEW)() : demoOverview.promise));
-  render(<StudioTrading212 />);
+  renderView();
   expect(await screen.findByRole('button', { name: '卖出 Apple' })).toBeTruthy();
 
   fireEvent.click(screen.getByRole('radio', { name: '模拟' }));

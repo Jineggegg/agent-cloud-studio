@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowDownRight, ArrowUpRight, Minus, RefreshCw, ShieldCheck } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ArrowDownRight, ArrowUpRight, ChevronRight, Minus, RefreshCw, ShieldCheck } from 'lucide-react';
 
 import { api, readApiJson } from '@/shared/api';
+import { T212_MODE_LABELS } from '@/shared/constants';
 import type { T212Activity, T212Change, T212Env, T212OrderSide, T212Overview, T212Point, T212Status, T212TradingConfig } from '@/shared/types';
 import { StudioEquityChart } from '@/modules/studio/StudioEquityChart';
 import { StudioT212OrderSheet } from '@/modules/studio/StudioT212OrderSheet';
 import '@/modules/studio/studio-orders.css';
 
 const RANGES = [{ days: 7, label: '1周' }, { days: 30, label: '1月' }, { days: 90, label: '3月' }, { days: 0, label: '全部' }];
+// Settings → 交易安全, where the trading mode (which accounts may place orders) is chosen.
+const SETTINGS_TRADING_PATH = '/apps/connections#t212-trading-safety';
 
 function money(currency: string, digits = 2) {
   try {
@@ -32,7 +36,9 @@ function Delta({ change, format, label }: { change: T212Change | null; format: (
 
 /**
  * Used by StudioPage's project app as the Trading 212 view: balances, curve, positions and activity, plus order
- * placement through StudioT212OrderSheet when the server allows trading for the selected account.
+ * placement through StudioT212OrderSheet when the trading mode (STUDIO_T212_TRADING ∩ the user's choice in Settings)
+ * enables the selected account. The mode is shown next to the account switch; for an account that is not enabled,
+ * 交易 and the position actions give way to a link to Settings → 交易安全.
  */
 export function StudioTrading212() {
   // Server-side key files per environment; the keys themselves never reach the browser.
@@ -117,13 +123,24 @@ export function StudioTrading212() {
   const format = money(current?.currency ?? 'GBP');
   const total = current?.positions.reduce((sum, position) => sum + position.value, 0) || 1;
   const tradable = Boolean(trading?.allowedEnvs.includes(env));
+  const envLabel = env === 'live' ? '实盘' : '模拟盘';
+  const mode = trading?.tradingMode.mode;
   return <div className="t212 studio-stagger">
     <div className="t212-toolbar">
       {configured.length > 1 && <div className="segmented" role="radiogroup" aria-label="账户">
         {configured.map(item => <button key={item.env} type="button" role="radio" aria-checked={env === item.env} onClick={() => switchEnv(item.env)}>{item.env === 'live' ? '实盘' : '模拟'}</button>)}
       </div>}
-      <span className={`status-badge ${tradable ? (env === 'live' ? 'warn' : 'good') : ''}`}><ShieldCheck size={14} aria-hidden="true" />{tradable ? '可交易' : '只读'} · {env === 'live' ? '实盘' : '模拟'}</span>
-      {trading && current && <button type="button" className="ios-button tinted t212-trade-button" onClick={() => setOrderSheet({})}>交易</button>}
+      {/* Which accounts may place orders (Settings → 交易安全); without trading settings the view is read-only. */}
+      {mode
+        ? <span className={`status-badge ${mode === 'off' ? '' : mode === 'demo' ? 'good' : 'warn'}`} title="允许下单的账户，在「设置 → 交易安全」修改">
+          <ShieldCheck size={14} aria-hidden="true" /><span><span className="t212-phone-hidden">下单 · </span>{T212_MODE_LABELS[mode]}</span>
+        </span>
+        : <span className="status-badge"><ShieldCheck size={14} aria-hidden="true" />只读 · {env === 'live' ? '实盘' : '模拟'}</span>}
+      {trading && current && (tradable
+        ? <button type="button" className="ios-button tinted t212-trade-button" onClick={() => setOrderSheet({})}>交易</button>
+        : <Link to={SETTINGS_TRADING_PATH} className="ios-button t212-trade-button t212-enable-link" aria-label={`${envLabel}未开启下单，去设置开启`}>
+          <span>去设置<span className="t212-phone-hidden">开启</span></span><ChevronRight size={16} aria-hidden="true" />
+        </Link>)}
       <button type="button" className={`icon-button ${loading ? 'refreshing' : ''}`} aria-label="刷新" title="刷新" disabled={loading} onClick={() => void load(env)}><RefreshCw size={18} className="refresh-icon" aria-hidden="true" /></button>
     </div>
 
@@ -203,7 +220,7 @@ export function StudioTrading212() {
       </section>}
       <p className="ios-section-footer">数据来自 Trading 212 公共 API（Beta），{new Date(current.fetchedAt).toLocaleTimeString('zh-CN')} 更新。{tradable && trading
         ? `每笔订单都要经过面容 ID / 触控 ID 或二次确认，单笔上限 ${format(trading.caps.envs[env].maxOrderValue)}，今日还可买入 ${format(trading.caps.envs[env].dailyRemaining)}（每日买入上限 ${format(trading.caps.envs[env].dailyLimit)}）。`
-        : '当前账户只读，不会下单或修改账户。'}</p>
+        : `${envLabel}没有开启下单：这里只读，不会下单或修改账户。可以在「设置 → 交易安全」选择允许下单的账户。`}</p>
     </>}
 
     {orderSheet && trading && current && <StudioT212OrderSheet env={env} config={trading} positions={current.positions} format={format}

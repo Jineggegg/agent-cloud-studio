@@ -1,6 +1,7 @@
 import type { TFunction } from 'i18next';
 import type { CSSProperties, ReactNode } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
+import type { PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/browser';
 
 //----------------- LLM PROVIDER MODEL CATALOG ------------
 
@@ -2108,10 +2109,40 @@ export type T212CapChange = {
   id: number; env: T212Env | null; direction: 'raise' | 'lower'; method: 'passkey' | 'session'; status: 'applied' | 'refused';
   from: T212CapLimits | null; to: T212CapLimits | null; reason: string | null; origin: string | null; createdAt: string;
 };
+/**
+ * Which Trading 212 accounts may place orders: none, demo only, live only, or both. STUDIO_T212_TRADING on the server
+ * is the ceiling; the user's own choice in Settings → 交易安全 can only narrow it (adding an account needs Face ID).
+ */
+export type T212TradingMode = 'off' | 'demo' | 'live' | 'both';
+/**
+ * The trading mode as GET /trading and PUT /mode report it: `mode` is in force (the ceiling ∩ the user's choice),
+ * `ceiling` is STUDIO_T212_TRADING, `custom` is false until the user chose (then the ceiling applies).
+ */
+export type T212TradingModeState = { mode: T212TradingMode; ceiling: T212TradingMode; custom: boolean; updatedAt: string | null };
+/**
+ * One audited trading-mode entry in Settings → 交易安全, newest first. `applied`: a saved change (narrowing with the
+ * session, widening with Face ID / Touch ID). `refused`: a widening attempt that was turned down, with its reason;
+ * `method` is 'passkey' when it named a challenge. Modes are null only for a malformed attempt naming no challenge.
+ */
+export type T212ModeChange = {
+  id: number; direction: 'widen' | 'narrow'; method: 'passkey' | 'session'; status: 'applied' | 'refused';
+  from: T212TradingMode | null; to: T212TradingMode | null; reason: string | null; origin: string | null; createdAt: string;
+};
+/**
+ * A single-use, 60-second Face ID / Touch ID challenge from POST /caps/challenge or POST /mode/challenge, bound to the
+ * exact values being approved; `authentication` goes to startAuthentication and the assertion back with `challengeId`.
+ */
+export type T212StepUpChallenge = { challengeId: string; expiresAt: string; authentication: PublicKeyCredentialRequestOptionsJSON };
 /** Server order-safety settings shared by the order sheet and Settings: tradable accounts, per-user caps and passkeys. */
 export type T212TradingConfig = {
-  // Accounts STUDIO_T212_TRADING allows to trade; empty means trading is off.
+  // Accounts this user may trade now: STUDIO_T212_TRADING ∩ their trading mode; empty means trading is off.
   allowedEnvs: T212Env[];
+  // The trading mode in force, the server ceiling, and whether the user has chosen one.
+  tradingMode: T212TradingModeState;
+  // This user's latest applied trading-mode changes, newest first; refused widenings are listed apart.
+  modeChanges: T212ModeChange[];
+  // This user's latest refused widening attempts, newest first.
+  modeRefusals: T212ModeChange[];
   // Per-account caps; `defaults` come from STUDIO_T212_MAX_ORDER_VALUE / _MAX_DAILY_VALUE, nothing exceeds `ceiling`.
   caps: { ceiling: number; defaults: T212CapLimits; envs: Record<T212Env, T212AccountCaps> };
   // This user's latest applied cap changes, newest first; refused raises are listed apart so they cannot crowd them out.
