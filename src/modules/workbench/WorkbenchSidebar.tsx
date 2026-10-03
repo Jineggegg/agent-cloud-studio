@@ -27,7 +27,9 @@ type WorkbenchSidebarProps = {
   onArchiveProject: (entry: WorkbenchProjectEntry) => void;
   onDeleteProject: (entry: WorkbenchProjectEntry) => void;
   onNewChat: (provider: WorkbenchNewProvider) => void;
-  onHome: () => void;
+  // The Studio app the back control returns to (the workbench was opened from inside it), or null for home.
+  backTitle: string | null;
+  onBack: () => void;
   onHide: () => void;
   onOpenSettings: () => void;
 };
@@ -38,12 +40,13 @@ type WorkbenchSidebarProps = {
  */
 export function WorkbenchSidebar({
   viewport, modifier, entries, current, newChatChoices, lastProvider, query, searchRef, quota, list,
-  onQueryChange, onSelectProject, onArchiveProject, onDeleteProject, onNewChat, onHome, onHide, onOpenSettings,
+  onQueryChange, onSelectProject, onArchiveProject, onDeleteProject, onNewChat, backTitle, onBack, onHide, onOpenSettings,
 }: WorkbenchSidebarProps) {
   return <div className="wb-sidebar">
     <header className="wb-sidebar-head">
-      <button type="button" className="navbar-back ios-press" onClick={onHome} aria-label="返回 Studio 主屏幕">
-        <ChevronLeft size={24} aria-hidden="true" /><LayoutGrid size={17} aria-hidden="true" />
+      <button type="button" className="navbar-back ios-press" onClick={onBack} aria-label={backTitle ? `返回 ${backTitle}` : '返回 Studio 主屏幕'}>
+        <ChevronLeft size={24} aria-hidden="true" />
+        {backTitle ? <span className="wb-back-title">{backTitle}</span> : <LayoutGrid size={17} aria-hidden="true" />}
       </button>
       <span className="wb-sidebar-title">工作台</span>
       <button type="button" className="icon-button plain" onClick={onHide}

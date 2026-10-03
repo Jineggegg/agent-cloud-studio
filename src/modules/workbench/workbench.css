@@ -50,6 +50,7 @@ body.wb-resizing iframe { pointer-events: none; }
 }
 
 .wb-sidebar-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 4px; min-height: 52px; padding: 0 6px 0 8px; }
+.wb-back-title { max-width: 6.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wb-sidebar-title { font-size: 17px; font-weight: 600; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* minmax(0, 1fr): a long project name must ellipsize, never widen the column past the sidebar. */
 .wb-sidebar-top { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 2px 12px 10px; }

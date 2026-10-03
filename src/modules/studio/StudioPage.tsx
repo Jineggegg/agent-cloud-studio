@@ -56,6 +56,11 @@ const prefersReducedMotion = () => Boolean(window.matchMedia?.('(prefers-reduced
 
 type Target = { kind: 'project'; id: string } | { kind: 'app'; id: keyof typeof SYSTEM_TITLES } | null;
 type Tab = { id: string; label: string };
+// History state of an app's entries. `fromHome`: the entry behind the app's root is the home screen. `appTrail`: the
+// app's earlier views behind this entry (tab ids, or `chat`), nearest last. Every in-app step (a tab, 全部, a DeepSeek conversation) is
+// pushed with one more, and replace navigations keep the state, so the trail always matches the entries behind it:
+// the top-left back walks it with history, like a UINavigationController, and leaves the app only from its root.
+type AppEntryState = { fromHome?: boolean; appTrail?: string[] } | null;
 
 // Integrations lead (SNR opens on its K-line lab), then AI, then housekeeping. An app Studio's AI built opens on
 // 主页 (the app itself) and calls its AI tab AI 工坊: the workshop where the owner and the AI keep improving it.
@@ -129,7 +134,7 @@ export function StudioPage() {
     const timer = window.setTimeout(() => {
       if (transition === 'closing') {
         // Return along history when the app was opened from home, so Back never loops.
-        if ((location.state as { fromHome?: boolean } | null)?.fromHome) navigate(-1); else navigate('/');
+        if ((location.state as AppEntryState)?.fromHome) navigate(-1); else navigate('/');
       }
       setTransition(null);
     }, reduced ? 0 : transition === 'opening' ? STUDIO_MOTION_IN_MS : STUDIO_MOTION_OUT_MS);
@@ -197,7 +202,16 @@ export function StudioPage() {
   // `chat` is AI 助手's own DeepSeek conversation view, used where the workbench cannot run (no local directory).
   const tab = searchParams.get('tab') === 'chat' && project?.providers.includes('deepseek') ? 'chat'
     : tabs.find(item => item.id === searchParams.get('tab'))?.id ?? tabs[0]?.id;
-  const setTab = (id: string) => { setThreadOpen(false); setCompact(false); setSearchParams({ tab: id }, { replace: true, state: location.state }); };
+  const appTrail = (location.state as AppEntryState)?.appTrail ?? [];
+  // Opening another view of the app (a tab, 全部, a DeepSeek conversation) is a step the top-left back returns from.
+  // Going to the view just behind is that step back, so switching between two tabs never piles up history.
+  const setTab = (id: string) => {
+    setThreadOpen(false);
+    setCompact(false);
+    if (id === tab) return;
+    if (appTrail.at(-1) === id) { navigate(-1); return; }
+    navigate({ search: `?tab=${encodeURIComponent(id)}` }, { state: { appTrail: [...appTrail, tab ?? ''] } });
+  };
   const chatContext = (target?.kind === 'app' && target.id === 'deepseek') || (Boolean(project) && tab === 'chat');
   // An app's 主页 fills the page under the chrome with the app and its AI sidebar, scrolling inside the app.
   const appHome = Boolean(project && appBuild) && tab === 'app';
@@ -212,6 +226,21 @@ export function StudioPage() {
     setSearchParams(page ? { tab: page } : {}, { replace: true, state: location.state });
   };
   const title = target?.kind === 'app' ? SYSTEM_TITLES[target.id] : project?.name ?? (projects ? '项目不存在' : '');
+  // The app's root is its first tab: the top-left back leaves for the home screen only from there. A deeper view
+  // reached without history (a deep link, a reload in a new tab) steps back to the root first.
+  const rootTab = tabs[0]?.id;
+  const atAppRoot = !project || tab === rootTab;
+  const backView = appTrail.at(-1) ?? (atAppRoot ? null : rootTab ?? null);
+  // The project's DeepSeek chat lives under AI 助手, so a step back into it is named after that tab. While the
+  // project still loads, a step back is only a step back.
+  const backLabel = backView === null ? null : tabs.find(item => item.id === (backView === 'chat' ? 'ai' : backView))?.label ?? '上一页';
+  const goBack = () => {
+    setThreadOpen(false);
+    setCompact(false);
+    if (appTrail.length) navigate(-1);
+    else if (!atAppRoot) navigate({ pathname: location.pathname, search: '' }, { replace: true, state: location.state });
+    else goHome();
+  };
   const navTitle = chatContext && (threadOpen || studio.active) ? studio.active?.title ?? '新对话'
     : settingsPushed && settingsPage ? SETTINGS_PAGES[settingsPage].title : title;
   const assistant = project ? `${project.name} · DeepSeek` : 'DeepSeek';
@@ -279,7 +308,9 @@ export function StudioPage() {
             {chatContext && threadOpen && <button type="button" className="navbar-back ios-press studio-phone-only" onClick={() => setThreadOpen(false)}><IconChevronLeft size={26} aria-hidden="true" />{project ? 'DeepSeek' : '对话'}</button>}
             {settingsPushed ? <button type="button" className="navbar-back ios-press" onClick={() => openSettingsPage(settingsParent)}>
               <IconChevronLeft size={26} aria-hidden="true" />{settingsParent ? SETTINGS_PAGES[settingsParent].title : '设置'}</button>
-              : <button type="button" className={`navbar-back ios-press ${chatContext && threadOpen ? 'studio-wide-only' : ''}`} onClick={goHome} aria-label="返回主屏幕"><IconChevronLeft size={26} aria-hidden="true" /><IconLayoutGrid size={18} aria-hidden="true" /></button>}
+              : backLabel ? <button type="button" className={`navbar-back ios-press ${chatContext && threadOpen ? 'studio-wide-only' : ''}`} onClick={goBack} aria-label={`返回 ${backLabel}`}>
+                <IconChevronLeft size={26} aria-hidden="true" />{backLabel}</button>
+              : <button type="button" className={`navbar-back ios-press ${chatContext && threadOpen ? 'studio-wide-only' : ''}`} onClick={goBack} aria-label="返回主屏幕"><IconChevronLeft size={26} aria-hidden="true" /><IconLayoutGrid size={18} aria-hidden="true" /></button>}
           </div>
           <div className="navbar-title" aria-hidden={!(chatContext || tabs.length > 0 || compact || (settingsOpen && settingsSplit))}>
             {navTitle}

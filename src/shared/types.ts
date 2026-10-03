@@ -2341,6 +2341,12 @@ export type WorkbenchViewport = 'phone' | 'tablet' | 'desktop';
 /** A local hub project and the IDE project registered for its directory (null until the first launch registers one). */
 export type WorkbenchHubLink = { hubId: string; projectId: string | null };
 /**
+ * History state of a workbench page opened from inside a Studio app (its sessions, 新建会话 or its 主页): the app's
+ * own location (path and query) and its title. The workbench sidebar's back control returns there instead of to the
+ * home screen: along history while the entry behind is still that app, else by opening its path again.
+ */
+export type StudioReturnState = { studioReturn?: { path: string; title: string } };
+/**
  * One agent a new workbench chat can start with, as the sidebar's new-session menu and the chat header's provider
  * menu list it. `unavailableReason` (short Chinese) is set when the agent cannot run here, e.g. DeepSeek in a
  * directory without a Studio project; both menus show it disabled with that reason.
