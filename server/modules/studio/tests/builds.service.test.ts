@@ -93,6 +93,9 @@ test('a build creates a folder, a git repository, an agents project and a Claude
     assert.match(turn.content, /README/);
     assert.match(turn.content, new RegExp(directory.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     assert.match(turn.content, /不 git push/);
+    // Every app starts from the Studio app template (how it runs in 主页, its design and motion).
+    assert.ok(existsSync(path.join(directory, 'STUDIO_DESIGN.md')));
+    assert.match(turn.content, /STUDIO_DESIGN\.md/);
 
     // Progress follows the checklist; the current task is the in-progress step's present-tense wording.
     turn.onChecklist([
@@ -222,6 +225,7 @@ test('continue sends a wrapped follow-up in the same session; running builds and
     assert.equal(f.fake.starts[1].input.sessionId, build.sessionId);
     assert.match(f.fake.starts[1].input.content, /再加深色模式/);
     assert.match(f.fake.starts[1].input.content, /TodoWrite/);
+    assert.match(f.fake.starts[1].input.content, /STUDIO_DESIGN\.md/);
 
     f.fake.starts[1].resolve({ started: false, success: false, error: null });
     await flush();

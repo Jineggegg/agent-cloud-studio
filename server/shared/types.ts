@@ -2154,6 +2154,23 @@ export type StudioBuildRecord = {
   error: string | null;
 };
 
+/** Whether an AI-built app is running in Studio (app-runner.service): starting, running, failed to start, or stopped. */
+export type StudioAppRunState = 'starting' | 'running' | 'failed' | 'stopped';
+
+/**
+ * An AI-built app's run status as `/api/studio/apps/:projectId` returns it. `log` holds the last lines the app
+ * printed, only when it failed; `kind` is how it starts (npm start, node main, or static files), null until known.
+ * `url` (open only) is the gateway address the 主页 loads in its sandboxed iframe while the app runs.
+ */
+export type StudioAppStatus = {
+  state: StudioAppRunState;
+  error: string | null;
+  log: string[];
+  startedAt: string | null;
+  kind: 'npm' | 'node' | 'static' | null;
+  url?: string | null;
+};
+
 /**
  * How one build turn ended, as the build runner reports it to the builds service.
  *

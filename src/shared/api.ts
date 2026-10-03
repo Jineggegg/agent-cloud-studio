@@ -329,6 +329,13 @@ export const api = {
       // A short name for the app a description asks for (DeepSeek, or the server's local rule); aborted by newer input.
       suggestName: (prompt: string, signal?: AbortSignal) => post('/api/studio/builds/suggest-name', { prompt }, { signal }),
     },
+    // The apps those builds made, run in their 主页: open starts one if needed (restart: afresh) and returns its
+    // sandboxed address; status and stop read and end the run.
+    apps: {
+      open: (projectId: string, restart = false) => post(`/api/studio/apps/${encodeURIComponent(projectId)}/open`, { restart }),
+      status: (projectId: string) => get(`/api/studio/apps/${encodeURIComponent(projectId)}`),
+      stop: (projectId: string) => post(`/api/studio/apps/${encodeURIComponent(projectId)}/stop`),
+    },
     // ── v6 track: memory — endpoints below this line ──
     // The shared basic-memory server (Claude Code, Codex, DeepSeek) through Studio's MCP client; ids are permalinks.
     memory: {

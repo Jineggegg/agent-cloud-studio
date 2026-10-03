@@ -147,6 +147,7 @@ export function createStudioServer(): { app: express.Express; server: http.Serve
         webSockets: closeUserWebSockets(userId),
         apiKeys: apiKeysDb.deactivateAllForUser(userId),
         snrAccess: studioModule.revokeSnrAccess(userId),
+        appAccess: studioModule.revokeAppAccess(userId),
         pushSubscriptions: pushSubscriptionsDb.deletePushSubscriptionsForUser(userId),
     }));
 
@@ -185,6 +186,8 @@ export function createStudioServer(): { app: express.Express; server: http.Serve
     // The SNR gateway checks its own short-lived cookie; the Gmail OAuth callback is a GET whose
     // state binds it to a signed-in user and project.
     app.use('/api/studio/snr-site', gatewayBodies, studioModule.snrRoutes);
+    // AI-built apps: the token in the path is the credential and bodies stream to the app unparsed (apps.routes.ts).
+    app.use('/api/studio/app-site', studioModule.appSiteRoutes);
     app.use('/api/studio/gmail/callback', studioModule.mailCallbackRoutes);
     app.use('/api/studio', protectedRoute, studioModule.routes);
 
