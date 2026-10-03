@@ -166,20 +166,33 @@ body.wb-resizing iframe { pointer-events: none; }
   50% { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .3), 0 0 0 4px color-mix(in srgb, var(--ios-green) 32%, transparent); }
 }
 
-/* Quota gauges */
+/* Usage panel (bottom-left, like the Claude app's) */
 .wb-quota {
-  display: grid; gap: 8px; width: 100%; padding: 10px 16px calc(12px + var(--wb-safe-bottom));
+  display: grid; gap: 8px; width: 100%; padding: 8px 16px calc(12px + var(--wb-safe-bottom));
   border-top: .5px solid var(--ios-separator); text-align: left; color: var(--ios-label);
-  background: color-mix(in srgb, var(--wb-sidebar-bg) 60%, var(--ios-surface)); transition: background-color 200ms ease;
+  background: color-mix(in srgb, var(--wb-sidebar-bg) 60%, var(--ios-surface));
 }
-@media (hover: hover) { .wb-quota:hover { background: color-mix(in srgb, var(--wb-sidebar-bg) 30%, var(--ios-surface)); } }
-.studio .wb-quota:active { background: var(--ios-fill-pressed); transition-duration: 0s; }
-.wb-quota-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 600; letter-spacing: .04em; color: var(--ios-label-3); }
+.wb-quota[data-collapsed] { padding-bottom: calc(8px + var(--wb-safe-bottom)); }
+.wb-quota-head { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; font-weight: 600; letter-spacing: .04em; color: var(--ios-label-3); }
+.wb-quota-toggle {
+  flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 4px; min-height: 28px; margin-left: -6px; padding: 0 6px;
+  border-radius: 8px; color: inherit; font: inherit; letter-spacing: inherit; text-align: left;
+}
+@media (hover: hover) { .wb-quota-toggle:hover { background: var(--ios-fill); } }
+.studio .wb-quota-toggle:active { background: var(--ios-fill-pressed); }
+.wb-quota-chevron { flex-shrink: 0; transition: transform var(--dur-fast, 160ms) ease; }
+.wb-quota[data-collapsed] .wb-quota-chevron { transform: rotate(-90deg); }
+.wb-quota-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; letter-spacing: 0; color: var(--ios-label-2); font-variant-numeric: tabular-nums; }
+.wb-quota-stale { flex-shrink: 0; padding: 1px 6px; border-radius: 6px; font-size: 10px; font-weight: 600; letter-spacing: 0; color: var(--chart-loss); background: color-mix(in srgb, var(--chart-loss) 12%, transparent); }
+.studio .wb-quota-mode { flex-shrink: 0; padding: 1px; border-radius: 7px; }
+.studio .wb-quota-mode button { min-height: 22px; padding: 0 7px; border-radius: 6px; font-size: 11px; letter-spacing: 0; }
+.wb-quota-settings { flex-shrink: 0; width: 28px; height: 28px; margin-right: -6px; }
+.wb-quota-body { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
 .wb-quota-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; column-gap: 8px; row-gap: 5px; font-size: 12px; }
 .wb-quota-label { min-width: 0; color: var(--ios-label-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wb-quota-meta { display: inline-flex; align-items: center; gap: 7px; color: var(--ios-label-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .wb-quota-meta strong { font-weight: 600; color: var(--ios-label); }
-.wb-quota-reset { display: inline-flex; align-items: center; gap: 2px; }
+.wb-quota-reset { display: inline-flex; align-items: center; gap: 2px; font-size: 11px; }
 .wb-quota-track { grid-column: 1 / -1; height: 4px; overflow: hidden; border-radius: 2px; background: var(--ios-fill-pressed); }
 .wb-quota-fill { display: block; height: 100%; border-radius: inherit; transform-origin: left center; background: var(--wb-claude); }
 .wb-quota-line.is-codex .wb-quota-fill { background: var(--wb-codex); }
