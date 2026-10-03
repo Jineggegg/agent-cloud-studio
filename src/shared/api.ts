@@ -733,6 +733,14 @@ export const api = {
   system: {
     update: () => post('/api/system/update'),
   },
+
+  // The web client itself, outside /api. Public like the page, so no token is sent.
+  webClient: {
+    // The served index.html, bypassing every cache: useFrontendUpdateWatcher compares the entry bundles it names
+    // with the ones this page booted with. `basePath` is the deployment prefix ('' at the domain root).
+    indexHtml: (basePath: string, signal?: AbortSignal) =>
+      fetch(`${basePath}/index.html`, { cache: 'no-store', credentials: 'same-origin', signal }),
+  },
 };
 
 // ---------------------------

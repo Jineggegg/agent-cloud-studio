@@ -89,7 +89,8 @@ function countdown(resetsAt: string | null, now: number) {
 }
 
 const SOURCE_LABEL: Record<StudioQuotaSnapshot['source'], string> = {
-  official: '官方', statusline: '官方快照', 'sdk-event': '会话快照', 'local-log': '本地记录', unavailable: '未接入',
+  // `usage-api` is what Claude's own /usage shows, read live with the machine's Claude login.
+  official: '官方', 'usage-api': '官方', statusline: '官方快照', 'sdk-event': '会话快照', 'local-log': '本地记录', unavailable: '未接入',
 };
 
 // `still` draws a widget at its current values with no entrance animation: the copy lifted into the drag overlay

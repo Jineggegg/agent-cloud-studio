@@ -1,10 +1,21 @@
 // Service Worker for CloudCLI PWA
-// Cache only manifest (needed for PWA install). HTML and JS are never pre-cached
-// so a rebuild + refresh always picks up the latest assets.
-const CACHE_NAME = 'claude-ui-v2';
+// Pre-caches only the manifest (needed for PWA install). HTML is never cached, by this worker or
+// for it: navigations and fetches of /index.html always go to the network, so a rebuild + refresh
+// always picks up the latest build (the page's update check, useFrontendUpdateWatcher, relies on it).
+// Hashed /assets/ files are kept after their first successful load; their names change with every
+// build, so a cached one can never be stale.
+// v3: v2 also stored failed /assets/ answers (a 404 during a deploy), which then stuck for good.
+const CACHE_NAME = 'claude-ui-v3';
 const urlsToCache = [
   '/manifest.json'
 ];
+// Old builds' assets pile up across deploys; past this many entries the oldest are dropped.
+const MAX_CACHED_ASSETS = 300;
+
+async function trimAssetCache(cache) {
+  const keys = await cache.keys();
+  await Promise.all(keys.slice(0, Math.max(0, keys.length - MAX_CACHED_ASSETS)).map(key => cache.delete(key)));
+}
 
 // Install event
 self.addEventListener('install', event => {
@@ -36,14 +47,25 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Hashed assets (JS/CSS in /assets/) — cache-first since filenames change per build
+  // Hashed assets (JS/CSS in /assets/) — cache-first since filenames change per build. Only a
+  // complete same-origin success is stored: an error page kept under a bundle's name would break
+  // every later launch.
   if (url.includes('/assets/')) {
     event.respondWith(
       caches.match(event.request).then(cached => {
         if (cached) return cached;
         return fetch(event.request).then(response => {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+          if (response.ok && response.status === 200 && response.type === 'basic') {
+            const clone = response.clone();
+            const stored = caches.open(CACHE_NAME)
+              .then(cache => cache.put(event.request, clone).then(() => trimAssetCache(cache)))
+              .catch(() => {});
+            try {
+              event.waitUntil(stored);
+            } catch {
+              // The worker's lifetime could not be extended; the store still runs while it lives.
+            }
+          }
           return response;
         });
       })
@@ -51,7 +73,8 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Everything else — network-first
+  // Everything else (including the page's own no-store fetch of /index.html) — network-first, and
+  // nothing is stored, so the cache fallback can only ever answer with the pre-cached manifest.
   event.respondWith(
     fetch(event.request).catch(() => caches.match(event.request))
   );
