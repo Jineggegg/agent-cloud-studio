@@ -282,6 +282,14 @@ export const STUDIO_MOTION_IN_MS = 380;
  */
 export const STUDIO_MOTION_OUT_MS = 300;
 
+/**
+ * After an orientation change, when the home screen reads its layout again: once iOS has laid out the new orientation,
+ * and once more after its rotation animation. StudioHomeScreen re-splits the icons into pages and useHomePager puts
+ * the track back on the current page at the new width at both moments, so the two always agree.
+ */
+export const STUDIO_HOME_ROTATION_REMEASURE_MS = 400;
+export const STUDIO_HOME_ROTATION_LATE_REMEASURE_MS = 1000;
+
 // ---------------------------
 
 //----------------- TRADING 212 TRADING MODE ------------

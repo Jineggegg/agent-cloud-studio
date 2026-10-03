@@ -139,7 +139,7 @@ describe('WorkbenchTranscript', () => {
       />,
     );
     expect(screen.getByText('空')).toBeTruthy();
-    // The run's state (typing dots included) lives in the run status row above the composer, not in the transcript.
+    // The run's state (typing dots included) lives in the run status pill in the composer, not in the transcript.
     expect(screen.queryByRole('status', { name: '正在回复' })).toBeNull();
   });
 
