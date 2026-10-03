@@ -8,6 +8,7 @@ import { createProject } from '@/modules/projects/index.js';
 import { providerRuntimeService, sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 
+import { createBuildNameSuggester } from './build-name.service.js';
 import { createClaudeBuildRunner, detectBuildEnvironment } from './build-runner.service.js';
 import { createStudioBuildsService } from './builds.service.js';
 import { createStudioBuildsRouter } from './builds.routes.js';
@@ -49,9 +50,14 @@ function readGitIdentity(): { name: string; email: string } | null {
  *   docs/ai-builds.md on this machine.
  * - STUDIO_BUILD_EXTRA_DOMAINS: comma-separated registry hosts sandboxed builds may reach besides npm and PyPI
  *   (for example a registry mirror).
+ * - STUDIO_BUILD_NAME_MODEL: the DeepSeek chat model that suggests app names (default deepseek-chat); names come
+ *   from the user's DeepSeek key (`deepseekKey`), or from the local rule without one.
  * The permission policy for these unattended turns is documented in build-runner.service.ts and docs/ai-builds.md.
  */
-export function createStudioBuildsRoutes(hub: ReturnType<typeof createProjectHubService>) {
+export function createStudioBuildsRoutes(
+  hub: ReturnType<typeof createProjectHubService>,
+  options: { deepseekKey?: (userId: number) => string | null } = {},
+) {
   const home = os.homedir();
   const root = process.env.STUDIO_BUILDS_ROOT?.trim() || path.join(home, 'projects');
   const extraDomains = (process.env.STUDIO_BUILD_EXTRA_DOMAINS ?? '').split(',').map(entry => entry.trim()).filter(Boolean);
@@ -98,5 +104,9 @@ export function createStudioBuildsRoutes(hub: ReturnType<typeof createProjectHub
       : environment.available ? '; the OS sandbox is available but off: run the sandbox checks in docs/ai-builds.md, then set STUDIO_BUILD_SANDBOX=on' : '';
     console.warn(`[studio-builds] AI builds run in restricted mode (no installs, no tests)${next}`);
   }
-  return createStudioBuildsRouter(builds);
+  const names = createBuildNameSuggester({
+    deepseekKey: options.deepseekKey ?? (() => null),
+    model: process.env.STUDIO_BUILD_NAME_MODEL?.trim() || undefined,
+  });
+  return createStudioBuildsRouter(builds, names);
 }

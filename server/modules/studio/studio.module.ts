@@ -228,7 +228,8 @@ export function createStudioModule() {
   // ── v6 track: builder — create its service and mount its router below this line ──
   // App Store-style AI builds: a new ~/projects folder, a hub project (the icon) and an unattended Claude Code
   // session per build (STUDIO_BUILDS_ROOT, STUDIO_BUILDS_MAX_PARALLEL, STUDIO_BUILD_MODEL; see builds.module.ts).
-  routes.use('/builds', createStudioBuildsRoutes(hub));
+  // Name suggestions use the same DeepSeek key as the Studio chat.
+  routes.use('/builds', createStudioBuildsRoutes(hub, { deepseekKey: userId => service.deepseekApiKey(userId) }));
   // ── v6 track: memory — create its service and mount its router below this line ──
   // One MCP session with the shared basic-memory server (scripts/wsl/install-memory.sh, docs/memory.md) serves the
   // 记忆 app and the DeepSeek bridge. STUDIO_MEMORY_URL overrides the endpoint; STUDIO_MEMORY_DEEPSEEK=0 keeps

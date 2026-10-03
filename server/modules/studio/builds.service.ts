@@ -63,7 +63,9 @@ type Dependencies = {
   resumeDelayMs?: number;
 };
 
-const MAX_REQUEST = 8000;
+// Limits of a build's name and description; the name suggester (build-name.service) keeps to the same ones.
+export const MAX_REQUEST = 8000;
+export const MAX_NAME = 80;
 const SLUG_MAX = 40;
 const INTERRUPTED = '服务器重启，开发中断了。点开图标可以在会话里继续。';
 const CANCELLED = '已取消';
@@ -288,7 +290,7 @@ export function createStudioBuildsService(deps: Dependencies) {
     async create(userId: number, input: StudioBuildInput): Promise<{ build: StudioBuildRecord; project: StudioProjectRecord }> {
       const name = input.name.trim();
       const request = input.prompt.trim();
-      if (!name || name.length > 80) fail('名称须为 1 到 80 个字符');
+      if (!name || name.length > MAX_NAME) fail(`名称须为 1 到 ${MAX_NAME} 个字符`);
       if (!request) fail('请描述想做什么');
       if (request.length > MAX_REQUEST) fail(`描述最多 ${MAX_REQUEST} 个字符`);
       if (!path.isAbsolute(deps.root)) fail('STUDIO_BUILDS_ROOT 必须是绝对路径', 500);

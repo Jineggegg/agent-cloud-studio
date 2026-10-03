@@ -283,6 +283,8 @@ export const api = {
       create: (input: { name: string; tone: string; glyph: string; prompt: string }) => post('/api/studio/builds', input),
       resume: (id: string, message = '') => post(`/api/studio/builds/${encodeURIComponent(id)}/continue`, { message }),
       cancel: (id: string) => post(`/api/studio/builds/${encodeURIComponent(id)}/cancel`),
+      // A short name for the app a description asks for (DeepSeek, or the server's local rule); aborted by newer input.
+      suggestName: (prompt: string, signal?: AbortSignal) => post('/api/studio/builds/suggest-name', { prompt }, { signal }),
     },
     // ── v6 track: memory — endpoints below this line ──
     // The shared basic-memory server (Claude Code, Codex, DeepSeek) through Studio's MCP client; ids are permalinks.

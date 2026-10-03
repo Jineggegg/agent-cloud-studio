@@ -14,6 +14,7 @@ import { AppError } from '@/shared/utils.js';
 import { createProjectHubService } from '../project-hub.service.js';
 import { createStudioBuildsService } from '../builds.service.js';
 import { createStudioBuildsRouter } from '../builds.routes.js';
+import { createBuildNameSuggester } from '../build-name.service.js';
 
 test('build routes validate transport input and ownership and return the build with its project', async () => {
   const database = new Database(':memory:');
@@ -82,5 +83,63 @@ test('build routes validate transport input and ownership and return the build w
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     database.close();
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('suggest-name needs a signed-in user and a string description and always answers with a name', async () => {
+  const database = new Database(':memory:');
+  const runner: StudioBuildRunner = {
+    start: () => new Promise(() => {}), abort: async () => true, inspect: () => null, readChecklist: async () => null,
+    environment: () => ({ mode: 'restricted', missing: [], available: false }),
+  };
+  const hub = createProjectHubService({
+    database, resolveWorkspace: async () => ({ projectId: 'unused', path: '/' }), listSessions: () => [], pendingSchedules: () => 0, schedule: () => ({ id: 'x' }),
+  });
+  const builds = createStudioBuildsService({
+    database, root: os.tmpdir(), hub, runner, resumeDelayMs: 0, initRepository: async () => {},
+    resolveWorkspace: async folder => ({ projectId: 'ide-project', path: folder }), createSession: () => ({ sessionId: 'app-session' }),
+  });
+  // Only user 1 has a DeepSeek key; the fake endpoint answers like a chat completion.
+  const keysAskedFor: number[] = [];
+  const names = createBuildNameSuggester({
+    deepseekKey: userId => { keysAskedFor.push(userId); return userId === 1 ? 'test-deepseek-key-0000' : null; },
+    request: (async () => Response.json({ choices: [{ message: { content: '「喝水打卡」' } }] })) as unknown as typeof fetch,
+  });
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    const id = Number(req.get('x-test-user'));
+    if (id) (req as express.Request & { user?: { id: number } }).user = { id };
+    next();
+  });
+  app.use('/builds', createStudioBuildsRouter(builds, names));
+  app.use('/local-builds', createStudioBuildsRouter(builds));
+  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    res.status(error instanceof AppError ? error.statusCode : 500).json({ error: error instanceof Error ? error.message : 'error' });
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const suggest = (body: unknown, user = '1', mount = 'builds') => fetch(`${origin}/${mount}/suggest-name`, {
+    method: 'POST', headers: { 'x-test-user': user, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  try {
+    assert.equal((await suggest({ prompt: '一个记录每天喝水的网页' }, '')).status, 401);
+    assert.equal((await suggest({ prompt: 42 })).status, 400);
+    assert.equal((await suggest({})).status, 400);
+    assert.equal((await suggest({ prompt: '喝'.repeat(8001) })).status, 400);
+    assert.deepEqual(keysAskedFor, []);
+
+    const named = await suggest({ prompt: '一个记录每天喝水的网页' });
+    assert.equal(named.status, 200);
+    assert.equal(named.headers.get('Cache-Control'), 'no-store');
+    assert.deepEqual(await named.json(), { name: '喝水打卡', source: 'deepseek' });
+    assert.deepEqual(await (await suggest({ prompt: '一个记录每天喝水的网页' }, '2')).json(), { name: '记录每天喝水', source: 'local' });
+    assert.deepEqual(keysAskedFor, [1, 2]);
+    // A router mounted without a suggester still names apps, with the local rule.
+    assert.deepEqual(await (await suggest({ prompt: '帮我做一个番茄钟，25 分钟一轮' }, '1', 'local-builds')).json(), { name: '番茄钟', source: 'local' });
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    database.close();
   }
 });
