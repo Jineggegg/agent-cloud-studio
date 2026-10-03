@@ -32,7 +32,10 @@ function fixture(configured = true, failed = false, env: Record<string, string |
     database, vaultDirectory: directory, request,
     project(userId, id) {
       if (userId !== 1 || id !== 'project-one') throw Error('项目不存在');
-      return { id, updatedAt: '', name: '测试项目', description: '', workspacePath: '', modules: ['mail'], providers: ['claude'], tone: 'rose', glyph: 'mail', links: [], remoteHost: '', remoteDir: '' };
+      return {
+        id, updatedAt: '', name: '测试项目', description: '', workspacePath: '', modules: ['mail'], providers: ['claude'], tone: 'rose', glyph: 'mail', links: [], remoteHost: '', remoteDir: '',
+        product: 'mail', automation: { notify: true, mailAccountId: '', morningTime: '08:00' },
+      };
     },
     clientId: configured ? 'fake-client-id' : undefined,
     clientSecret: configured ? 'fake-client-secret' : undefined,

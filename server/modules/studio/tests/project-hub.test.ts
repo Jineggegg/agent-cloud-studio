@@ -155,3 +155,62 @@ test('links and remote hosts are validated; remote projects launch only server-b
     assert.deepEqual(commands, [['aj', '~/projects/app', 'claude'], ['aj', '~/projects/app', 'shell']]);
   } finally { database.close(); }
 });
+
+test('each project knows its product, and product-specific modules can only be switched on in their product', () => {
+  const f = fixture();
+  try {
+    const [snr, professor, trading] = f.service.list(1);
+    assert.deepEqual([snr.product, professor.product, trading.product], ['snr', 'professor', 'trading212']);
+    // 超级教授 cannot gain the K-line lab, stock analysis or mail; SNR and Trading 212 keep theirs.
+    assert.throws(() => f.service.update(1, professor.id, { ...professor, modules: [...professor.modules, 'snr-lab'] }), /K 线实验室」不属于这个项目/);
+    assert.throws(() => f.service.update(1, professor.id, { ...professor, modules: [...professor.modules, 'trading212'] }), /股票分析/);
+    assert.throws(() => f.service.update(1, professor.id, { ...professor, modules: [...professor.modules, 'mail'] }), /邮箱/);
+    assert.throws(() => f.service.update(1, snr.id, { ...snr, modules: [...snr.modules, 'trading212'] }), /股票分析/);
+    // Switching the integration off keeps the product, so it can be switched back on.
+    const labOff = f.service.update(1, snr.id, { ...snr, modules: ['agents', 'automations'] });
+    assert.equal(labOff.product, 'snr');
+    assert.deepEqual(f.service.update(1, snr.id, { ...labOff, modules: ['agents', 'snr-lab'] }).modules, ['agents', 'snr-lab']);
+    // New projects are ordinary ones unless they enable an integration; a mail-only project is the 邮件 product.
+    assert.equal(f.service.create(1, input).product, 'custom');
+    const mail = f.service.create(1, { ...input, name: '邮件', modules: ['mail'], providers: [] });
+    assert.equal(mail.product, 'mail');
+    assert.throws(() => f.service.update(1, mail.id, { ...mail, modules: ['mail', 'trading212'] }), /股票分析/);
+    assert.equal(trading.product, 'trading212');
+  } finally { f.database.close(); }
+});
+
+test('projects saved before products existed are recognised once and keep that product', () => {
+  const f = fixture();
+  try {
+    const legacy = (name: string, modules: string[], workspacePath = '') => {
+      const id = `legacy-${name}`;
+      f.database.prepare('INSERT INTO studio_projects VALUES (?, 1, ?, ?)').run(id, JSON.stringify({ ...input, name, modules, workspacePath }), '2026-01-01T00:00:00.000Z');
+      return id;
+    };
+    f.service.list(1);
+    const ids = [legacy('超级教授', ['agents', 'mail']), legacy('教学网站', ['agents'], '/home/me/projects/super-professor'), legacy('收件箱', ['mail']), legacy('K 线', ['snr-lab']), legacy('随便', ['agents'])];
+    assert.deepEqual(ids.map(id => f.service.get(1, id).product), ['professor', 'professor', 'mail', 'snr', 'custom']);
+    // Stored without touching the edit time, so the order and “updated” stay as they were.
+    const stored = f.database.prepare('SELECT config, updated_at FROM studio_projects WHERE id = ?').get(ids[3]) as { config: string; updated_at: string };
+    assert.equal(JSON.parse(stored.config).product, 'snr');
+    assert.equal(stored.updated_at, '2026-01-01T00:00:00.000Z');
+    // A legacy project may still switch off a module that no longer belongs to it.
+    const professor = f.service.get(1, ids[0]);
+    assert.deepEqual(f.service.update(1, professor.id, { ...professor, modules: ['agents'] }).modules, ['agents']);
+    assert.throws(() => f.service.update(1, professor.id, { ...professor, modules: ['agents', 'mail'] }), /邮箱/);
+  } finally { f.database.close(); }
+});
+
+test('notification and automation defaults are validated, saved, and kept when an older client omits them', () => {
+  const f = fixture();
+  try {
+    const professor = f.professor();
+    assert.deepEqual(professor.automation, { notify: true, mailAccountId: '', morningTime: '08:00' });
+    const saved = f.service.update(1, professor.id, { ...professor, automation: { notify: false, mailAccountId: 'gmail-1', morningTime: '07:30' } });
+    assert.deepEqual(saved.automation, { notify: false, mailAccountId: 'gmail-1', morningTime: '07:30' });
+    const { automation: _omitted, ...olderClient } = saved;
+    assert.deepEqual(f.service.update(1, professor.id, olderClient).automation, { notify: false, mailAccountId: 'gmail-1', morningTime: '07:30' });
+    assert.throws(() => f.service.update(1, professor.id, { ...professor, automation: { notify: true, mailAccountId: '', morningTime: '7点' } }), /HH:MM/);
+    assert.throws(() => f.service.update(1, professor.id, { ...professor, automation: { notify: true, mailAccountId: '../x', morningTime: '08:00' } }), /默认邮箱/);
+  } finally { f.database.close(); }
+});

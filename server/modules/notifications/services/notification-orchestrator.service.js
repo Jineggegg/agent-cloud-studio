@@ -207,6 +207,52 @@ function sendWebPushPayload(userId, payload) {
   });
 }
 
+/**
+ * Whether the user's Web Push channel is on and how many browsers are subscribed.
+ *
+ * Used by Studio automations to show the notification check in a project's 自动化 tab.
+ */
+function getStudioPushStatus(userId) {
+  const preferences = notificationPreferencesDb.getPreferences(userId);
+  return {
+    enabled: Boolean(preferences?.channels?.webPush),
+    devices: pushSubscriptionsDb.getSubscriptions(userId).length
+  };
+}
+
+/**
+ * Sends one Studio automation notification ({ title, body, tag, url }) to every Web Push subscription of the user,
+ * as written: no provider prefix, no agent-event preferences or dedupe (the automation decides when to send).
+ * Nothing is sent while the Web Push channel is switched off. Subscriptions the push service reports gone are
+ * removed, like agent notifications. Resolves with the status and how many browsers accepted the message.
+ *
+ * Used by Studio automations (the notify action, mail digests and the test notification).
+ */
+async function sendStudioPushNotification(userId, { title, body, tag, url }) {
+  const status = getStudioPushStatus(userId);
+  if (!status.enabled || !status.devices) {
+    return { ...status, delivered: 0 };
+  }
+  const subscriptions = pushSubscriptionsDb.getSubscriptions(userId);
+  const payload = JSON.stringify({ title, body, data: { code: 'studio.automation', tag, url } });
+  const results = await Promise.allSettled(subscriptions.map((sub) => webPush.sendNotification(
+    { endpoint: sub.endpoint, keys: { p256dh: sub.keys_p256dh, auth: sub.keys_auth } },
+    payload
+  )));
+  let delivered = 0;
+  results.forEach((result, index) => {
+    if (result.status === 'fulfilled') {
+      delivered += 1;
+      return;
+    }
+    const statusCode = result.reason?.statusCode;
+    if (statusCode === 410 || statusCode === 404) {
+      pushSubscriptionsDb.removeSubscription(subscriptions[index].endpoint);
+    }
+  });
+  return { ...status, delivered };
+}
+
 const notificationChannels = [
   {
     id: 'webPush',
@@ -306,5 +352,7 @@ export {
   notifyUserIfEnabled,
   notifyRunStopped,
   notifyRunFailed,
-  notifyBackgroundWorkCompleted
+  notifyBackgroundWorkCompleted,
+  getStudioPushStatus,
+  sendStudioPushNotification
 };

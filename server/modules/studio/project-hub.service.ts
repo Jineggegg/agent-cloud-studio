@@ -4,7 +4,8 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 
 import type {
-  StudioAgentProvider, StudioLinkStatus, StudioProjectInput, StudioProjectLink, StudioProjectRecord, StudioRemoteLaunch, StudioTaskInput,
+  StudioAgentProvider, StudioLinkStatus, StudioProductKind, StudioProjectAutomationDefaults, StudioProjectInput, StudioProjectLink,
+  StudioProjectModule, StudioProjectRecord, StudioRemoteLaunch, StudioTaskInput,
 } from '@/shared/types.js';
 import { AppError, isSafeRemoteDirectory } from '@/shared/utils.js';
 
@@ -39,9 +40,40 @@ const AGENTS: StudioAgentProvider[] = ['claude', 'codex', 'cursor', 'opencode'];
 const PROVIDERS = [...AGENTS, 'deepseek'];
 const TONES = ['sage', 'clay', 'slate', 'graphite', 'sand', 'stone', 'moss', 'rose'];
 const GLYPHS = ['activity', 'graduation', 'candles', 'mail', 'folder', 'terminal', 'sparkles', 'book', 'chart', 'globe'];
+const PRODUCTS: StudioProductKind[] = ['snr', 'professor', 'trading212', 'mail', 'custom'];
+// Every project may use these; each product adds its own. A module a project already has stays allowed, so an
+// older project can still switch it off.
+const GENERIC_MODULES: StudioProjectModule[] = ['agents', 'automations'];
+const PRODUCT_MODULES: Record<StudioProductKind, StudioProjectModule[]> = {
+  snr: ['snr-lab'], professor: [], trading212: ['trading212'], mail: ['mail'], custom: [],
+};
+const MODULE_NAMES: Record<StudioProjectModule, string> = {
+  agents: 'AI 助手', automations: '自动化', 'snr-lab': 'K 线实验室', trading212: '股票分析', mail: '邮箱',
+};
+const DEFAULT_AUTOMATION: StudioProjectAutomationDefaults = { notify: true, mailAccountId: '', morningTime: '08:00' };
+const CLOCK_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+const MAIL_ACCOUNT_ID = /^[A-Za-z0-9-]{1,100}$/;
 
 function fail(message: string, statusCode = 400): never {
   throw new AppError(message, { statusCode, code: 'PROJECT_HUB_ERROR' });
+}
+
+// Projects saved before products existed: the built-ins are recognised by their integration module, or for
+// 超级教授 by its name or its conventional folder; a project whose only integration is mail is the 邮件 product.
+function inferProduct(config: StudioProjectInput): StudioProductKind {
+  if (config.modules.includes('snr-lab')) return 'snr';
+  if (config.modules.includes('trading212')) return 'trading212';
+  const folder = path.posix.basename((config.workspacePath || config.remoteDir || '').replace(/\/+$/, ''));
+  if (config.name.trim() === '超级教授' || folder === 'super-professor') return 'professor';
+  if (config.modules.includes('mail')) return 'mail';
+  return 'custom';
+}
+
+// A product-specific module may only be switched on in its own product (or kept where it is already on).
+function assertProductModules(product: StudioProductKind, modules: StudioProjectModule[], current: StudioProjectModule[]) {
+  const allowed = new Set<StudioProjectModule>([...GENERIC_MODULES, ...PRODUCT_MODULES[product], ...current]);
+  const foreign = modules.find(module => !allowed.has(module));
+  if (foreign) fail(`「${MODULE_NAMES[foreign]}」不属于这个项目，只能在对应的产品里开启`);
 }
 
 const MAX_LINKS = 8;
@@ -71,6 +103,13 @@ function validate(input: StudioProjectInput, remoteHosts: string[]) {
   } else if (input.remoteDir) {
     fail('未选择远程主机时不能设置远程目录');
   }
+  if (input.automation !== undefined) {
+    const defaults = input.automation;
+    if (!defaults || typeof defaults !== 'object' || typeof defaults.notify !== 'boolean' ||
+        typeof defaults.mailAccountId !== 'string' || typeof defaults.morningTime !== 'string') fail('通知与自动化设置无效');
+    if (defaults.mailAccountId && !MAIL_ACCOUNT_ID.test(defaults.mailAccountId)) fail('默认邮箱无效');
+    if (!CLOCK_TIME.test(defaults.morningTime)) fail('“早上”的时间格式应为 HH:MM');
+  }
 }
 
 /** Used by studio.module and tests for per-user projects (the home-screen icons), drafts and explicit scheduling. */
@@ -87,17 +126,29 @@ export function createProjectHubService(deps: Dependencies) {
   function owned(userId: number, id: string): StudioProjectRecord {
     const row = db.prepare('SELECT config, updated_at FROM studio_projects WHERE id = ? AND user_id = ?').get(id, userId) as { config: string; updated_at: string } | undefined;
     if (!row) fail('项目不存在', 404);
-    // Projects saved before icons, links or remote hosts existed get neutral defaults.
-    return { tone: 'stone', glyph: 'folder', links: [], remoteHost: '', remoteDir: '', ...JSON.parse(row.config), id, updatedAt: row.updated_at };
+    // Projects saved before icons, links, remote hosts or automation defaults existed get neutral defaults.
+    const stored = { tone: 'stone', glyph: 'folder', links: [], remoteHost: '', remoteDir: '', ...JSON.parse(row.config) } as StudioProjectInput & { product?: StudioProductKind };
+    let product = stored.product;
+    if (!product || !PRODUCTS.includes(product)) {
+      // Decided once and stored (without touching updated_at), so switching a module off later never changes it.
+      product = inferProduct(stored);
+      db.prepare('UPDATE studio_projects SET config = ? WHERE id = ?').run(JSON.stringify({ ...JSON.parse(row.config), product }), id);
+    }
+    return { ...stored, automation: { ...DEFAULT_AUTOMATION, ...stored.automation }, product, id, updatedAt: row.updated_at };
   }
   const remoteHosts = () => deps.remoteHosts?.() ?? [];
-  function save(userId: number, id: string, input: StudioProjectInput) {
+  // `product` is fixed when a project is created; `automation` keeps the stored values when an older client omits it.
+  function save(userId: number, id: string, input: StudioProjectInput, product: StudioProductKind, previous?: StudioProjectAutomationDefaults) {
     validate(input, remoteHosts());
-    const config: StudioProjectInput = {
+    const config: StudioProjectInput & { product: StudioProductKind } = {
       name: input.name.trim(), description: input.description, workspacePath: input.workspacePath.trim(),
       modules: input.modules, providers: input.providers, tone: input.tone, glyph: input.glyph,
       links: input.links.map(link => ({ label: link.label.trim(), url: link.url.trim() })),
       remoteHost: input.remoteHost, remoteDir: input.remoteHost ? input.remoteDir : '',
+      automation: input.automation
+        ? { notify: input.automation.notify, mailAccountId: input.automation.mailAccountId, morningTime: input.automation.morningTime }
+        : previous ?? DEFAULT_AUTOMATION,
+      product,
     };
     db.prepare('INSERT INTO studio_projects VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET config = excluded.config, updated_at = excluded.updated_at')
       .run(id, userId, JSON.stringify(config), new Date().toISOString());
@@ -118,17 +169,18 @@ export function createProjectHubService(deps: Dependencies) {
   // Built-in products seeded once for a new user, in home-screen order.
   function seed(userId: number) {
     const models: StudioProjectInput['providers'] = ['claude', 'codex', 'deepseek'];
-    const defaults: StudioProjectInput[] = [
-      { name: 'SNR 3.0', description: 'K 线回放 · HPA / EL / AOI 研究实验室', workspacePath: deps.snrPath ?? '', modules: ['agents', 'snr-lab'], providers: models, tone: 'sage', glyph: 'activity', links: [], remoteHost: '', remoteDir: '' },
-      { name: '超级教授', description: '医疗器械 AI 教学网站', workspacePath: deps.professorPath ?? '', modules: ['agents', 'automations'], providers: models, tone: 'clay', glyph: 'graduation', links: deps.professorLinks ?? [], remoteHost: '', remoteDir: '' },
-      { name: 'Trading 212', description: '股票分析 Studio · 盈亏、曲线与持仓', workspacePath: deps.trading212Path ?? '', modules: ['agents', 'trading212'], providers: models, tone: 'moss', glyph: 'candles', links: [], remoteHost: '', remoteDir: '' },
-      // Each configured remote host with a default directory becomes its own icon (e.g. AJ).
+    const defaults: (StudioProjectInput & { product: StudioProductKind })[] = [
+      { name: 'SNR 3.0', description: 'K 线回放 · HPA / EL / AOI 研究实验室', workspacePath: deps.snrPath ?? '', modules: ['agents', 'snr-lab'], providers: models, tone: 'sage', glyph: 'activity', links: [], remoteHost: '', remoteDir: '', product: 'snr' },
+      { name: '超级教授', description: '医疗器械 AI 教学网站', workspacePath: deps.professorPath ?? '', modules: ['agents', 'automations'], providers: models, tone: 'clay', glyph: 'graduation', links: deps.professorLinks ?? [], remoteHost: '', remoteDir: '', product: 'professor' },
+      { name: 'Trading 212', description: '股票分析 Studio · 盈亏、曲线与持仓', workspacePath: deps.trading212Path ?? '', modules: ['agents', 'trading212'], providers: models, tone: 'moss', glyph: 'candles', links: [], remoteHost: '', remoteDir: '', product: 'trading212' },
+      // Each configured remote host with a default directory becomes its own icon (e.g. AJ), an ordinary project.
       ...(deps.remoteSeeds?.() ?? []).map(seed => ({
         name: seed.label, description: `远程主机 · ${seed.dir}`, workspacePath: '', modules: ['agents'] as StudioProjectInput['modules'],
         providers: ['claude', 'codex', 'deepseek'] as StudioProjectInput['providers'], tone: 'graphite', glyph: 'globe', links: [], remoteHost: seed.host, remoteDir: seed.dir,
+        product: 'custom' as const,
       })),
     ];
-    db.transaction(() => { for (const input of defaults) save(userId, randomUUID(), input); })();
+    db.transaction(() => { for (const { product, ...input } of defaults) save(userId, randomUUID(), input, product); })();
   }
   return {
     list(userId: number) {
@@ -138,7 +190,11 @@ export function createProjectHubService(deps: Dependencies) {
       return ids.map(({ id }) => owned(userId, id));
     },
     get: owned,
-    create(userId: number, input: StudioProjectInput) { return save(userId, randomUUID(), input); },
+    // A new project is the product its modules make it (an ordinary project unless it enables an integration).
+    create(userId: number, input: StudioProjectInput) {
+      validate(input, remoteHosts());
+      return save(userId, randomUUID(), input, inferProduct(input));
+    },
     update(userId: number, id: string, input: StudioProjectInput) {
       const previous = owned(userId, id);
       validate(input, remoteHosts());
@@ -149,7 +205,8 @@ export function createProjectHubService(deps: Dependencies) {
       if (executionChanged && executionLocked(userId, previous)) {
         fail('请先取消此项目的待执行任务，再更改工作目录、助手或执行模块', 409);
       }
-      return save(userId, id, input);
+      assertProductModules(previous.product, input.modules, previous.modules);
+      return save(userId, id, input, previous.product, previous.automation);
     },
     remove(userId: number, id: string) {
       const project = owned(userId, id);
