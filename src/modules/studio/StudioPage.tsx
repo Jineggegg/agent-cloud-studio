@@ -8,6 +8,7 @@ import { ChevronLeft, FolderX, Globe, LayoutGrid, RefreshCw, ShieldCheck, Square
 import { useAuth } from '@/modules/auth';
 import { api, readApiJson } from '@/shared/api';
 import type { HubProject, StudioBuildCreated, StudioChatSpace, StudioConversation, StudioHomeTile, T212Status } from '@/shared/types';
+import { STUDIO_AJ_EXIT_TILE_ID } from '@/shared/constants';
 import { applyModelDefaults } from '@/shared/modelDefaults';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
 import { useStudio } from '@/modules/studio/hooks/useStudio';
@@ -45,6 +46,8 @@ const APP_CLOSE_MS = 420;
 const LARGE_TITLE_COLLAPSE_AT = 28;
 const SYSTEM_TITLES = { deepseek: 'DeepSeek', connections: '设置', github: 'GitHub', memory: '记忆' } as const;
 const isSystemApp = (value: string | undefined): value is keyof typeof SYSTEM_TITLES => Boolean(value && value in SYSTEM_TITLES);
+// Studio's settings app, also opened by the home screen's gear (zooming out of the button).
+const SETTINGS_TILE: StudioHomeTile = { id: 'connections', name: '设置', tone: 'stone', glyph: 'settings' };
 
 type Target = { kind: 'project'; id: string } | { kind: 'app'; id: keyof typeof SYSTEM_TITLES } | null;
 type Tab = { id: string; label: string };
@@ -194,9 +197,11 @@ export function StudioPage() {
     // ── v6 track: memory — home tile below this line ──
     // The shared memory of Claude Code, Codex and DeepSeek: a notebook, in warm paper.
     { id: 'memory', name: '记忆', tone: 'sand', glyph: 'book' },
+    // Switches this device's traffic to the Tailscale exit node on AJ's server; the home screen runs it (useAjExit).
+    { id: STUDIO_AJ_EXIT_TILE_ID, name: 'AJ 出口', tone: 'ink', glyph: 'globe' },
     { id: 'deepseek', name: 'DeepSeek', tone: 'slate', glyph: 'sparkles', status: studio.loading || configured ? undefined : '待配置' },
     { id: 'workspace', name: '工作台', tone: 'graphite', glyph: 'terminal', href: '/work' },
-    { id: 'connections', name: '设置', tone: 'stone', glyph: 'settings', status: studio.loading || configured ? undefined : '1 项待配置' },
+    { ...SETTINGS_TILE, status: studio.loading || configured ? undefined : '1 项待配置' },
   ];
   // The app is revealed from the exact icon rectangle (clip-path, so content never distorts), like iOS; without an icon it fades and scales from centre.
   const appStyle = (origin ? {
@@ -224,7 +229,8 @@ export function StudioPage() {
 
     {/* The home screen stays mounted under an open app so its entrance animation and edit state persist. */}
     <div className={`home-layer ${target && !transition ? 'is-covered' : ''}`} aria-hidden={target ? true : undefined}>
-      <StudioHomeScreen tiles={tiles} loading={projects === null} covered={Boolean(target && !transition)} snr={studio.snr} onOpen={openTile} onOpenWidget={(type, card) => void openWidget(type, card)} onCreate={() => setCreating(true)}
+      <StudioHomeScreen tiles={tiles} loading={projects === null} covered={Boolean(target && !transition)} snr={studio.snr} onOpen={openTile} onOpenWidget={(type, card) => void openWidget(type, card)}
+        onOpenSettings={gear => openTile(SETTINGS_TILE, gear)} onCreate={() => setCreating(true)}
         onRefresh={() => void refresh()} onSignOut={signOut} refreshing={refreshing} onBuildAction={(tile, action) => builds.act(tile.id.slice(8), action)} />
     </div>
 

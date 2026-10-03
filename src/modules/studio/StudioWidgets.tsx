@@ -429,26 +429,30 @@ const SortableWidget = forwardRef<HTMLDivElement, {
 /**
  * The lifted widget, drawn above the grid while it is dragged and following the pointer. It is a still copy of
  * the card (no entrance animations, no controls, hidden from screen readers, which keep the real card).
+ * The overlay is a fixed box; inside the home screen's sliding pages (a transformed ancestor) a fixed box is
+ * placed against the pages, not the screen, so it is portaled into `container` when one is given.
  */
-function WidgetDragOverlay({ widgets, cardRef, renderBody }: {
+function WidgetDragOverlay({ widgets, cardRef, renderBody, container }: {
   widgets: WidgetConfig[]; cardRef: RefObject<HTMLElement>;
   renderBody: (widget: WidgetConfig, still: boolean) => ReactNode;
+  container: Element | null;
 }) {
   const { active } = useDndContext();
   const widget = active ? widgets.find(item => item.id === active.id) : undefined;
   // No dnd-kit drop animation: on drop the real card glides from here into its slot (useHomeSortableList).
-  return <DragOverlay dropAnimation={null} className="widget-drag-overlay">
+  const overlay = <DragOverlay dropAnimation={null} className="widget-drag-overlay">
     {widget && <article ref={cardRef} className={`widget widget-${widget.size} is-lifted`} aria-hidden="true">{renderBody(widget, true)}</article>}
   </DragOverlay>;
+  return container ? createPortal(overlay, container) : overlay;
 }
 
 /**
- * Used by StudioHomeScreen for the customizable widget row above the app icons. Long-pressing a widget lifts it
+ * Used by StudioHomeScreen for the customizable widget row above the app icons, on the first page. Long-pressing a widget lifts it
  * and asks the home screen to enter edit mode; in edit mode widgets jiggle, drag to a new place (the grid
  * reflows live, so what you see while dragging is where the widget lands, or move with the keyboard) and resize
  * between small, medium and large by dragging their corner.
  */
-export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, onOpen, galleryOpen, onGalleryClose }: {
+export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, onOpen, galleryOpen, onGalleryClose, overlayContainer = null, onDragActiveChange }: {
   editing: boolean; snr: StudioSnr | null; paused?: boolean;
   // Called when a widget is tapped outside edit mode, with the card's rectangle for the zoom.
   onOpen: (type: WidgetType, card: DOMRect) => void;
@@ -456,6 +460,10 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, onOpe
   onEnterEdit: () => void;
   // The widget gallery is opened from the home screen's edit-mode toolbar, as on iPadOS.
   galleryOpen: boolean; onGalleryClose: () => void;
+  // Where the lifted card is drawn while dragged: outside the home screen's sliding pages (see WidgetDragOverlay).
+  overlayContainer?: Element | null;
+  // Told when a widget drag starts and ends, so the home screen does not turn pages under it.
+  onDragActiveChange?: (active: boolean) => void;
 }) {
   // The widgets this device shows, in order, with their sizes.
   const [widgets, setWidgets] = useState<WidgetConfig[]>(readWidgets);
@@ -500,7 +508,7 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, onOpe
     return next.length === previous.length ? next : previous;
   }), []);
   const { containerRef, overlayRef, glide, moveMessage, dndProps, sortableProps } = useHomeSortableList({
-    ids, editing, onEnterEdit, onReorder: reorder, labelOf,
+    ids, editing, onEnterEdit, onReorder: reorder, labelOf, onDragActiveChange,
     // Widgets of three sizes share one grid, so only a real reorder previews where a drop lands.
     reorderWhileDragging: true,
   });
@@ -553,7 +561,7 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, onOpe
         </AnimatePresence>
       </SortableContext>
     </section>
-    <WidgetDragOverlay widgets={widgets} cardRef={overlayRef} renderBody={renderBody} />
+    <WidgetDragOverlay widgets={widgets} cardRef={overlayRef} renderBody={renderBody} container={overlayContainer} />
     <p className="studio-visually-hidden" aria-live="polite">{moveMessage}</p>
     {gallery}
   </DndContext>;
