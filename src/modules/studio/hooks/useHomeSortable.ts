@@ -145,7 +145,7 @@ const orderKey = (ids: string[]) => ids.join('\n');
  * and announce `moveMessage` in a polite live region. When the lifted item rides in a DragOverlay (required with
  * `reorderWhileDragging`), attach `overlayRef` to it, so a drop glides the real item down from there.
  */
-export function useHomeSortableList({ ids, editing, onEnterEdit, onReorder, labelOf, reorderWhileDragging = false, onDragActiveChange, visibleArea, holdStill = false, interceptDrop }: {
+export function useHomeSortableList({ ids, editing, onEnterEdit, onReorder, labelOf, reorderWhileDragging = false, onDragActiveChange, visibleArea, interceptDrop }: {
   ids: string[];
   editing: boolean;
   // Called when a long press lifts an item while the home screen is not yet in edit mode.
@@ -161,9 +161,6 @@ export function useHomeSortableList({ ids, editing, onEnterEdit, onReorder, labe
   onDragActiveChange?: (active: boolean) => void;
   // The part of the list in view (the visible page): drops and keyboard moves go to items there. Must be stable.
   visibleArea?: () => DOMRect | null;
-  // While true the neighbours stay where they are instead of sliding aside (an icon held over another one, about to
-  // make a folder, keeps that icon under it).
-  holdStill?: boolean;
   // Asked first when a drag ends; returning true means the drop was handled (it made or filled a folder, or left an
   // open folder) and the list is not reordered. Runs inside the drop glide, so the other items settle with a spring.
   interceptDrop?: (event: DragEndEvent) => boolean;
@@ -344,7 +341,7 @@ export function useHomeSortableList({ ids, editing, onEnterEdit, onReorder, labe
       onDragCancel,
       accessibility: { announcements, screenReaderInstructions: SCREEN_READER_INSTRUCTIONS },
     },
-    sortableProps: { items: ids, strategy: reorderWhileDragging || holdStill ? NO_DISPLACEMENT : rectSortingStrategy },
+    sortableProps: { items: ids, strategy: reorderWhileDragging ? NO_DISPLACEMENT : rectSortingStrategy },
   };
 }
 

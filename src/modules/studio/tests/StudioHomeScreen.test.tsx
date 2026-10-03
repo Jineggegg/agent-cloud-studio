@@ -91,6 +91,12 @@ test('labels and hidden tiles are customised in edit mode and remembered on this
   expect(within(library).queryByText(/Outlook|未接入|规划中/)).toBeNull(); // Outlook mail is built; nothing is planned.
   fireEvent.click(within(library).getByRole('button', { name: '添加到主屏幕' }));
   expect(screen.getByRole('button', { name: 'DeepSeek' })).toBeTruthy();
+  // 完成 lets the sheet go the way it came (out of reach meanwhile) before it unmounts.
+  vi.useFakeTimers();
+  fireEvent.click(within(library).getByRole('button', { name: '完成' }));
+  expect(library.closest('.studio-layer')?.classList.contains('closing')).toBe(true);
+  act(() => { vi.advanceTimersByTime(350); });
+  expect(screen.queryByRole('dialog', { name: 'App 资源库' })).toBeNull();
 });
 
 test('a long press lifts an icon into edit mode without also opening the app', () => {
@@ -329,6 +335,23 @@ test('a folder shows its apps, opens them, and gives them back to the home scree
   expect(shownOrder()).toEqual(['project:snr', 'workspace', 'deepseek', 'project:prof']);
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(JSON.parse(localStorage.getItem('studio-home-layout-v1') ?? '{}').folders).toEqual([]);
+});
+
+test('a folder shows only its name: no text piles up under it, on the grid or opened in edit mode', () => {
+  localStorage.setItem('studio-home-layout-v1', JSON.stringify({
+    hidden: [], labels: true, large: false, order: ['folder:tools', 'project:snr', 'project:prof'],
+    folders: [{ id: 'tools', name: '工具', items: ['deepseek', 'workspace'] }],
+  }));
+  renderHome();
+  fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
+  const icon = screen.getByRole('button', { name: '文件夹「工具」，2 个应用' });
+  expect(icon.closest('.home-tile-slot')?.textContent).toBe('工具');
+  fireEvent.click(icon);
+  const folder = screen.getByRole('dialog');
+  // Its name (a field in edit mode) and its apps, nothing else: no hint or caption under the panel.
+  expect((within(folder).getByRole('textbox', { name: '文件夹名称' }) as HTMLInputElement).value).toBe('工具');
+  expect(Array.from(folder.querySelectorAll('p')).filter(text => !text.classList.contains('studio-visually-hidden'))).toEqual([]);
+  expect(folder.querySelector('.home-folder-panel')?.nextElementSibling?.classList.contains('studio-visually-hidden')).toBe(true);
 });
 
 test('a folder is renamed in edit mode and dissolves back into its place', () => {

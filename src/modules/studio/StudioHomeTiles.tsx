@@ -109,13 +109,16 @@ export function HomeNameField({ value, defaultName, label, onDone }: {
     onPointerDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()} />;
 }
 
+// A control shown only while edit mode winds down: out of the tab order and hidden from assistive technology.
+const LEAVING_CONTROL = { tabIndex: -1, 'aria-hidden': true } as const;
+
 type Badge = { kind: 'hide' | 'stop' | 'dissolve' | 'out'; label: string; onClick: () => void };
 
 /**
  * One sortable item on the home screen or in an open folder: an app or a folder. The slot moves (with its badges),
  * the tile itself is what is pressed and dragged. In edit mode a tap on the name renames it in place.
  */
-export function SortableEntry({ id, name, defaultName, label, title, href, face, index, last, editing, renaming, badge, slotClass = '', onResume, onActivate, onMove, onRenameStart, onRename }: {
+export function SortableEntry({ id, name, defaultName, label, title, href, face, index, last, editing, leavingEdit = false, renaming, badge, slotClass = '', onResume, onActivate, onMove, onRenameStart, onRename }: {
   id: string;
   // The name shown (and edited), the one it goes back to, and the accessible name of the tile (with its status).
   name: string; defaultName: string; label: string;
@@ -127,6 +130,8 @@ export function SortableEntry({ id, name, defaultName, label, title, href, face,
   // Whether this is the last item, where its 后移 button has nowhere to go.
   last: boolean;
   editing: boolean;
+  // Edit mode winding down: the badges stay a moment longer, out of reach, while they shrink away (studio-home.css).
+  leavingEdit?: boolean;
   renaming: boolean;
   badge?: Badge;
   // Extra classes on the slot (an icon another one is held over, about to become a folder).
@@ -156,10 +161,11 @@ export function SortableEntry({ id, name, defaultName, label, title, href, face,
       ? <MotionLink to={href} draggable={false} {...shared} onClick={onActivate}>{face}</MotionLink>
       : <m.button type="button" {...shared} onClick={onActivate}>{face}</m.button>}
     {renaming && <HomeNameField value={name} defaultName={defaultName} label={`${defaultName} 的名称`} onDone={onRename} />}
-    {editing && badge && <button type="button" className={`home-remove ${badge.kind === 'stop' ? 'build-stop' : ''}`} aria-label={badge.label} onClick={badge.onClick}>
+    {(editing || leavingEdit) && badge && <button type="button" className={`home-remove ${badge.kind === 'stop' ? 'build-stop' : ''}`} aria-label={badge.label}
+      {...(editing ? { onClick: badge.onClick } : LEAVING_CONTROL)}>
       <BadgeIcon size={14} strokeWidth={3} aria-hidden="true" /></button>}
-    {editing && onResume && <button type="button" className="home-resume" aria-label={`继续开发 ${name}`}
-      onClick={onResume}><IconRotate size={14} strokeWidth={2.6} aria-hidden="true" /></button>}
+    {(editing || leavingEdit) && onResume && <button type="button" className="home-resume" aria-label={`继续开发 ${name}`}
+      {...(editing ? { onClick: onResume } : LEAVING_CONTROL)}><IconRotate size={14} strokeWidth={2.6} aria-hidden="true" /></button>}
     {/* VoiceOver and Switch Control cannot drag or tap a name, so edit mode also offers move and rename buttons. They
         stay out of sight (the grid keeps its clean iPadOS look) until focused, when they appear under the icon.
         aria-disabled, not disabled, keeps a button focused when its icon reaches an end. They move across pages too. */}

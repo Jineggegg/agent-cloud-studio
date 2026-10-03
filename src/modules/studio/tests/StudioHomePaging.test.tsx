@@ -15,10 +15,13 @@ import { installPointerEvent } from '@/modules/studio/tests/sortableTestHelpers'
 const PAGE_WIDTH = 1000;
 const PAGE_HEIGHT = 230;
 const CELL = { width: 250, height: 100 };
+// The pager's current height: a test shrinks it the way Spotlight or a keyboard briefly shrinks the web app.
+let pagerHeight = PAGE_HEIGHT;
 
 beforeAll(installPointerEvent);
 beforeEach(() => {
   localStorage.clear();
+  pagerHeight = PAGE_HEIGHT;
   vi.useFakeTimers();
   layOutPages();
 });
@@ -49,7 +52,7 @@ function layOutPages() {
     return this.classList.contains('home-pager') || this.classList.contains('home-grid') ? PAGE_WIDTH : 0;
   });
   vi.spyOn(Element.prototype, 'clientHeight', 'get').mockImplementation(function (this: Element) {
-    return this.classList.contains('home-pager') ? PAGE_HEIGHT : 0;
+    return this.classList.contains('home-pager') ? pagerHeight : 0;
   });
   vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
     return this.classList.contains('home-tile-slot') ? CELL.width : 0;
@@ -58,7 +61,7 @@ function layOutPages() {
     return this.classList.contains('home-tile-slot') ? CELL.height : 0;
   });
   vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
-    if (this.classList.contains('home-pager')) return box(0, 100, PAGE_WIDTH, PAGE_HEIGHT);
+    if (this.classList.contains('home-pager')) return box(0, 100, PAGE_WIDTH, pagerHeight);
     const page = this.closest<HTMLElement>('[data-home-page]');
     if (this instanceof HTMLElement && this.dataset.sortId && page) {
       const cell = Array.from(page.querySelectorAll('[data-sort-id]')).indexOf(this);
@@ -104,6 +107,66 @@ test('icons that do not fit on the first page flow onto the next, with + at the 
   expect(within(second).getAllByRole('button').map(button => button.getAttribute('aria-label'))).toEqual(['App 9', 'App 10', 'App 11', 'App 12', '新建项目']);
   expect(dots().getAllByRole('button').map(dot => dot.getAttribute('aria-label'))).toEqual(['第 1 页', '第 2 页']);
   expect(currentPage()).toBe(1);
+});
+
+test('a screen shortened only for a moment (a search, a keyboard) moves no icon; a lasting change glides them to new pages', () => {
+  renderHome(12);
+  const first = () => within(screen.getByRole('navigation', { name: '应用' })).getAllByRole('button', { name: /^App / }).map(button => button.getAttribute('aria-label'));
+  const app8 = screen.getByRole('button', { name: 'App 8' });
+  // Room for one row only while it lasts; iOS reports it with a resize when the web app comes back.
+  pagerHeight = 170;
+  act(() => { window.dispatchEvent(new Event('pageshow')); });
+  act(() => { vi.advanceTimersByTime(450); });
+  expect(first()).toHaveLength(8);
+  pagerHeight = PAGE_HEIGHT;
+  act(() => { window.dispatchEvent(new Event('pageshow')); });
+  act(() => { vi.advanceTimersByTime(1500); });
+  // Nothing moved, and the icons are the very same nodes: nothing remounted, so nothing flashes.
+  expect(first()).toHaveLength(8);
+  expect(screen.getByRole('button', { name: 'App 8' })).toBe(app8);
+
+  pagerHeight = 170;
+  act(() => { window.dispatchEvent(new Event('pageshow')); });
+  act(() => { vi.advanceTimersByTime(450); });
+  act(() => { vi.advanceTimersByTime(1000); });
+  expect(first()).toEqual(['App 1', 'App 2', 'App 3', 'App 4']);
+});
+
+test('leaving edit mode winds down: the badges and the edit bar play out before they unmount, the dots go home', () => {
+  renderHome(12);
+  fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
+  expect(document.querySelectorAll('.home-remove').length).toBeGreaterThan(0);
+  fireEvent.click(screen.getByRole('button', { name: '完成' }));
+  // Edit mode is over at once (taps open apps again), but its controls are still on their way out.
+  expect(document.querySelector('.home-screen')?.classList.contains('editing')).toBe(false);
+  expect(document.querySelector('.home-screen')?.classList.contains('edit-leaving')).toBe(true);
+  const bar = document.querySelector('.home-edit-bar');
+  expect(bar?.classList.contains('is-leaving')).toBe(true);
+  expect(bar?.hasAttribute('inert')).toBe(true);
+  expect(document.querySelectorAll('.home-remove').length).toBeGreaterThan(0);
+  expect(screen.queryByRole('button', { name: /从主屏幕隐藏/ })).toBeNull();
+  // The page dots have already left the bar for the foot of the screen.
+  expect(bar?.querySelector('.home-page-control')).toBeNull();
+  expect(screen.getByRole('group', { name: '主屏幕页面' })).toBeTruthy();
+  act(() => { vi.advanceTimersByTime(350); });
+  expect(document.querySelector('.home-edit-bar')).toBeNull();
+  expect(document.querySelector('.home-remove')).toBeNull();
+  expect(document.querySelector('.home-screen')?.classList.contains('edit-leaving')).toBe(false);
+
+  // Back into edit mode midway, nothing lingers.
+  fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
+  fireEvent.click(screen.getByRole('button', { name: '完成' }));
+  fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
+  expect(document.querySelector('.home-edit-bar')?.classList.contains('is-leaving')).toBe(false);
+});
+
+test('under reduced motion edit mode ends at once', () => {
+  vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query.includes('reduce'), media: query, onchange: null, addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn() }) as unknown as MediaQueryList);
+  renderHome(12);
+  fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
+  fireEvent.click(screen.getByRole('button', { name: '完成' }));
+  expect(document.querySelector('.home-edit-bar')).toBeNull();
+  expect(document.querySelector('.home-remove')).toBeNull();
 });
 
 test('one page shows no page control', () => {
@@ -367,6 +430,73 @@ test('an icon held at the side of the last page makes a new page and begins it w
   const saved = JSON.parse(localStorage.getItem('studio-home-layout-v1') ?? '{}');
   expect(saved.order.at(-1)).toBe('project:p2');
   expect(saved.pageBreaks).toEqual(['project:p2']);
+});
+
+// The slot of the icon with this accessible name, and how far dnd-kit has slid it aside (0 when it holds still).
+const slotOf = (name: string) => screen.getByRole('button', { name }).closest<HTMLElement>('.home-tile-slot')!;
+const shiftOf = (name: string) => Number(/translate3d\((-?[\d.]+)px/.exec(slotOf(name).style.transform)?.[1] ?? 0);
+const mouse = (clientX: number, clientY: number) => ({ pointerId: 1, pointerType: 'mouse', clientX, clientY });
+
+test('an icon held on the middle of another makes a folder: the target holds still, grows, and takes it on release', () => {
+  renderHome(5);
+  fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
+  fireEvent.pointerDown(screen.getByRole('button', { name: 'App 1' }), { ...mouse(125, 150), button: 0, isPrimary: true });
+  fireEvent.pointerMove(document, mouse(140, 150));
+  // On the middle of App 2's icon card (the cell's top 70 px, centred: centre 375, 135).
+  fireEvent.pointerMove(document, mouse(370, 140));
+  fireEvent.pointerMove(document, mouse(375, 135));
+  expect(slotOf('App 2').classList.contains('is-merge-target')).toBe(true);
+  // Past the time a reflow would take, App 2 has not dodged aside: the grid holds still under a merge.
+  act(() => { vi.advanceTimersByTime(250); });
+  expect(shiftOf('App 2')).toBe(0);
+  expect(slotOf('App 2').classList.contains('is-merge-ready')).toBe(false);
+  act(() => { vi.advanceTimersByTime(150); });
+  expect(slotOf('App 2').classList.contains('is-merge-ready')).toBe(true);
+  expect(document.querySelector('.home-drag-overlay .is-lifted.is-merging')).not.toBeNull();
+  fireEvent.pointerUp(document, mouse(375, 135));
+  settle();
+  const saved = JSON.parse(localStorage.getItem('studio-home-layout-v1') ?? '{}');
+  expect(saved.folders).toEqual([{ id: expect.any(String), name: '项目', items: ['project:p2', 'project:p1'] }]);
+  expect(saved.order[0]).toBe(`folder:${saved.folders[0].id}`);
+  expect(screen.getByRole('button', { name: '文件夹「项目」，2 个应用' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'App 1' })).toBeNull();
+});
+
+test('dropped on an icon that already is a folder, an icon joins it', () => {
+  localStorage.setItem('studio-home-layout-v1', JSON.stringify({
+    hidden: [], labels: true, large: false, order: ['project:p3', 'folder:tools', 'project:p4'],
+    folders: [{ id: 'tools', name: '工具', items: ['project:p1', 'project:p2'] }],
+  }));
+  renderHome(4);
+  fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
+  fireEvent.pointerDown(screen.getByRole('button', { name: 'App 3' }), { ...mouse(125, 150), button: 0, isPrimary: true });
+  fireEvent.pointerMove(document, mouse(140, 150));
+  fireEvent.pointerMove(document, mouse(375, 135));
+  act(() => { vi.advanceTimersByTime(400); });
+  fireEvent.pointerUp(document, mouse(375, 135));
+  settle();
+  const saved = JSON.parse(localStorage.getItem('studio-home-layout-v1') ?? '{}');
+  expect(saved.folders).toEqual([{ id: 'tools', name: '工具', items: ['project:p1', 'project:p2', 'project:p3'] }]);
+  expect(saved.order).toEqual(['folder:tools', 'project:p4']);
+});
+
+test('held between icons, the grid makes room after a short dwell, and a release lands there', () => {
+  renderHome(5);
+  fireEvent.click(screen.getByRole('button', { name: '编辑主屏幕' }));
+  fireEvent.pointerDown(screen.getByRole('button', { name: 'App 1' }), { ...mouse(125, 150), button: 0, isPrimary: true });
+  fireEvent.pointerMove(document, mouse(140, 150));
+  // Under App 3's icon, over its name: not its middle.
+  fireEvent.pointerMove(document, mouse(625, 192));
+  expect(shiftOf('App 3')).toBe(0);
+  act(() => { vi.advanceTimersByTime(250); });
+  // App 2 and App 3 slide one slot back to make room.
+  expect(shiftOf('App 2')).toBe(-250);
+  expect(shiftOf('App 3')).toBe(-250);
+  expect(document.querySelector('.is-merge-target')).toBeNull();
+  fireEvent.pointerUp(document, mouse(625, 192));
+  settle();
+  expect(JSON.parse(localStorage.getItem('studio-home-layout-v1') ?? '{}').order.slice(0, 3)).toEqual(['project:p2', 'project:p3', 'project:p1']);
+  expect(JSON.parse(localStorage.getItem('studio-home-layout-v1') ?? '{}').folders).toEqual([]);
 });
 
 test('an icon dragged out of an open folder closes it and carries on as a drag on the home screen', () => {

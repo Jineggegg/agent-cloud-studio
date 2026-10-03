@@ -1,6 +1,7 @@
 import { createPortal } from 'react-dom';
 
 import { STUDIO_AJ_EXIT_SHORTCUTS } from '@/shared/constants';
+import { useSheetClose } from '@/modules/studio/hooks/useSheetClose';
 
 // The Tailscale exit node on AJ's server.
 const AJ_EXIT_NODE = 'aryan-Lenovo-ideapad-330-15ICH';
@@ -44,8 +45,10 @@ export function StudioAjExitSheet({ ready, on, supported, onClose, onFinishSetup
   supported: boolean;
   onClose: () => void; onFinishSetup: () => void; onResetSetup: () => void;
 }) {
-  return createPortal(<div className="studio-layer" onKeyDown={event => { if (event.key === 'Escape') onClose(); }}>
-    <div className="sheet-scrim" aria-hidden="true" onClick={onClose} />
+  // The sheet sinks away before StudioHomeScreen unmounts it.
+  const sheet = useSheetClose(onClose);
+  return createPortal(<div className={`studio-layer ${sheet.closing ? 'closing' : ''}`} onKeyDown={event => { if (event.key === 'Escape') sheet.close(); }}>
+    <div className="sheet-scrim" aria-hidden="true" onClick={sheet.close} />
     <div className="library-sheet aj-sheet" role="dialog" aria-modal="true" aria-labelledby="studio-aj-exit-title">
       <div className="library-grabber" aria-hidden="true" />
       <header>
@@ -56,7 +59,7 @@ export function StudioAjExitSheet({ ready, on, supported, onClose, onFinishSetup
       <div className="aj-sheet-actions">
         {!ready && supported && <button type="button" className="ios-button filled" autoFocus onClick={onFinishSetup}>已经建好，开启 AJ 出口</button>}
         {ready && <button type="button" className="ios-button tinted" onClick={onResetSetup}>重新设置</button>}
-        <button type="button" className="ios-button" autoFocus={ready || !supported} onClick={onClose}>{ready ? '完成' : supported ? '以后再说' : '知道了'}</button>
+        <button type="button" className="ios-button" autoFocus={ready || !supported} onClick={sheet.close}>{ready ? '完成' : supported ? '以后再说' : '知道了'}</button>
       </div>
     </div>
   </div>, document.body);

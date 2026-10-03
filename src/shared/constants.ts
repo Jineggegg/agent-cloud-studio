@@ -270,6 +270,18 @@ export const STUDIO_AJ_EXIT_TILE_ID = 'aj-exit';
  */
 export const STUDIO_AJ_EXIT_SHORTCUTS = { on: 'Studio AJ 出口 开', off: 'Studio AJ 出口 关' } as const;
 
+/**
+ * How long a Studio view takes to come in (an app zooming from its icon, a sheet, a folder, edit mode), the
+ * --motion-dur token in studio.css. StudioPage and StudioHomeScreen time the end of their CSS transitions with it.
+ */
+export const STUDIO_MOTION_IN_MS = 380;
+
+/**
+ * How long a Studio view takes to go back (an app shrinking into its icon, a sheet or folder closing, edit mode
+ * winding down), the --motion-dur-out token in studio.css; the view is unmounted after it.
+ */
+export const STUDIO_MOTION_OUT_MS = 300;
+
 // ---------------------------
 
 //----------------- TRADING 212 TRADING MODE ------------

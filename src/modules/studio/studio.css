@@ -54,6 +54,13 @@
   --dur-fast: 200ms;
   --dur-base: 380ms;
   --dur-slow: 560ms;
+  /* The one timing every home and app transition shares, like UIKit's default spring: --motion-ease (no overshoot)
+     moves whole views (an app opening from its icon, sheets, folders, edit mode), --motion-spring (a hint of
+     overshoot) settles small things into place; --motion-dur in, --motion-dur-out back. */
+  --motion-ease: cubic-bezier(.32, .72, 0, 1);
+  --motion-spring: cubic-bezier(.3, 1.16, .48, 1);
+  --motion-dur: 380ms;
+  --motion-dur-out: 300ms;
   --radius-card: 22px;
   --serif: ui-serif, "New York", "Songti SC", "Noto Serif SC", Georgia, serif;
   color: var(--ios-label);
@@ -190,10 +197,12 @@
 /* ---------- Home screen ---------- */
 .home-layer { position: absolute; inset: 0; z-index: 1; }
 .home-layer.is-covered { visibility: hidden; }
-.studio[data-transition="opening"] .home-layer { animation: home-recede var(--dur-slow) var(--ease-out) forwards; }
-.studio[data-transition="closing"] .home-layer { animation: home-return 420ms var(--ease-out) backwards; }
-@keyframes home-recede { to { transform: scale(1.05); opacity: .35; } }
-@keyframes home-return { from { transform: scale(1.05); opacity: .35; } }
+/* While an app grows out of its icon the home screen recedes a touch behind it, and comes back as the app shrinks
+   into its icon again (the same timing as the app, see the next section). */
+.studio[data-transition="opening"] .home-layer { animation: home-recede var(--motion-dur) var(--motion-ease) forwards; }
+.studio[data-transition="closing"] .home-layer { animation: home-return var(--motion-dur-out) var(--motion-ease) backwards; }
+@keyframes home-recede { to { transform: scale(1.04); opacity: .5; } }
+@keyframes home-return { from { transform: scale(1.04); opacity: .5; } }
 
 /* The header stays put; below it the pages slide sideways edge to edge (studio-home.css), each with these gutters. */
 .home-screen {
@@ -356,10 +365,15 @@
 .library-sheet {
   position: absolute; left: 50%; top: 50%; width: min(560px, calc(100% - 32px)); max-height: min(720px, 86dvh); overflow-y: auto;
   transform: translate(-50%, -50%); padding: 10px 20px 24px; border-radius: 28px; background: var(--ios-bg); box-shadow: var(--ios-shadow-float);
-  animation: sheet-in var(--dur-slow) var(--ease-out) backwards;
+  animation: sheet-in var(--motion-dur) var(--motion-ease) backwards;
 }
 @keyframes sheet-in { from { opacity: 0; transform: translate(-50%, -46%) scale(.97); } }
 @keyframes sheet-up { from { transform: translate(-50%, 100%); } }
+/* Closing (useSheetClose): the sheet goes the way it came while the scrim clears; it takes no taps meanwhile. */
+.studio-layer.closing { pointer-events: none; }
+.studio-layer.closing .library-sheet { animation: sheet-out var(--motion-dur-out) var(--motion-ease) forwards; }
+@keyframes sheet-out { to { opacity: 0; transform: translate(-50%, -48%) scale(.97); } }
+@keyframes sheet-down { to { transform: translate(-50%, 100%); } }
 .library-grabber { display: none; }
 .library-sheet header { display: flex; align-items: center; justify-content: space-between; padding: 8px 0 6px; }
 .library-sheet h2 { font-family: var(--serif); font-size: 26px; font-weight: 400; }
@@ -370,29 +384,23 @@
 .library-sheet .ios-section-footer { padding: 12px 4px 0; }
 
 /* ---------- Apps: open from the tapped icon, close back into it ----------
- * Tapped from an icon, the app opens through the launch star's window (StudioAppLaunch,
- * studio-loading.css); without one (a new project) it fades up. Closing, an app opened from an
- * icon (`has-origin`) shrinks back through a clip down to the icon's exact rounded rectangle,
- * the content settling to a slight scale under the card's neutral surface; otherwise it fades. */
+ * The whole view zooms, like iPadOS, never a logo: it fades in as it grows a little about the tapped icon's centre
+ * (--zoom-cx/--zoom-cy from StudioPage; the screen's centre without one), and closing it shrinks back towards that
+ * icon as it fades while the home screen returns. Opacity runs a little ahead of the scale, so the app is solid well
+ * before it settles and nothing flashes. Under reduced motion StudioPage skips both. */
 .studio-app {
   position: absolute; inset: 0; z-index: 2; display: flex; overflow: hidden; background: var(--ios-bg);
   transform-origin: var(--zoom-cx, 50%) var(--zoom-cy, 50%);
 }
-.studio-app.opening { animation: app-open var(--dur-slow) cubic-bezier(.2, .9, .2, 1) both; }
-.studio-app.closing { animation: app-close 420ms cubic-bezier(.4, 0, .2, 1) forwards; pointer-events: none; }
-@keyframes app-open { from { transform: scale(.92); opacity: 0; } }
-@keyframes app-close { to { transform: scale(.92); opacity: 0; } }
-.studio-app.has-origin.closing { animation: app-conceal 420ms cubic-bezier(.4, 0, .2, 1) forwards; }
-.studio-app.has-origin.closing > * { animation: app-content-out 420ms cubic-bezier(.4, 0, .2, 1) forwards; transform-origin: var(--zoom-cx) var(--zoom-cy); }
-.studio-app.has-origin::after {
-  content: ""; position: absolute; inset: 0; z-index: 40; pointer-events: none; opacity: 0;
-  /* The card it shrinks into is neutral, so the app dissolves into that surface colour. */
-  background: var(--ios-surface);
+.studio-app.opening { animation: app-zoom-in var(--motion-dur) var(--motion-ease) both, app-fade-in 220ms ease-out both; }
+.studio-app.closing {
+  pointer-events: none;
+  animation: app-zoom-out var(--motion-dur-out) var(--motion-ease) forwards, app-fade-out var(--motion-dur-out) cubic-bezier(.4, 0, 1, 1) forwards;
 }
-.studio-app.has-origin.closing::after { animation: app-tone-in 420ms ease-in forwards; }
-@keyframes app-conceal { from { clip-path: inset(0 0 0 0 round 0px); } to { clip-path: var(--zoom-clip); } }
-@keyframes app-content-out { to { transform: scale(.86); } }
-@keyframes app-tone-in { 0%, 35% { opacity: 0; } to { opacity: 1; } }
+@keyframes app-zoom-in { from { transform: scale(.86); border-radius: 32px; } }
+@keyframes app-fade-in { from { opacity: 0; } }
+@keyframes app-zoom-out { to { transform: scale(.86); border-radius: 32px; } }
+@keyframes app-fade-out { to { opacity: 0; } }
 
 /* --chrome-top is the height of the glass chrome (navigation bar, plus the tab bar in projects). */
 .studio-main { --chrome-top: calc(52px + env(safe-area-inset-top)); position: relative; min-width: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -705,6 +713,7 @@ article.studio-message:nth-last-of-type(-n+2) { animation: studio-bubble-in var(
   .home-tile { width: 100%; gap: 7px; }
   .home-status { font-size: 11px; margin-top: -4px; }
   .library-sheet { top: auto; bottom: 0; width: 100%; max-height: 88dvh; transform: translateX(-50%); border-radius: 28px 28px 0 0; padding-bottom: calc(24px + env(safe-area-inset-bottom)); animation-name: sheet-up; }
+  .studio-layer.closing .library-sheet { animation-name: sheet-down; }
   .library-grabber { display: block; width: 36px; height: 5px; margin: 0 auto 6px; border-radius: 3px; background: var(--ios-fill-pressed); }
   .studio-content { padding: var(--chrome-top) 16px calc(32px + env(safe-area-inset-bottom)); }
   .studio-large-title h1 { font-size: 34px; }

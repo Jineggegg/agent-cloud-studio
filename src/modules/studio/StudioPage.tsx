@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { CSSProperties, UIEvent } from 'react';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AnimatePresence, LazyMotion, MotionConfig, m } from 'motion/react';
@@ -8,7 +8,7 @@ import { IconChevronLeft, IconEdit, IconFolderX, IconLayoutGrid, IconRefresh, Ic
 import { useAuth } from '@/modules/auth';
 import { api, readApiJson } from '@/shared/api';
 import type { HubProject, StudioBuildCreated, StudioChatSpace, StudioConversation, StudioHomeTile, T212Status } from '@/shared/types';
-import { STUDIO_AJ_EXIT_TILE_ID } from '@/shared/constants';
+import { STUDIO_AJ_EXIT_TILE_ID, STUDIO_MOTION_IN_MS, STUDIO_MOTION_OUT_MS } from '@/shared/constants';
 import { reloadIfNewBuild } from '@/shared/hooks/useFrontendUpdateWatcher';
 import { applyModelDefaults } from '@/shared/modelDefaults';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
@@ -18,9 +18,7 @@ import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { StudioCreateSheet } from '@/modules/studio/StudioCreateSheet';
 import { StudioHomeScreen } from '@/modules/studio/StudioHomeScreen';
 import { lazyStudioPanel } from '@/modules/studio/lazyStudioPanel';
-import { StudioPanelLoadContext, StudioPanelPending } from '@/modules/studio/StudioPanelFallback';
-import { StudioAppLaunch, appLaunchOrigin } from '@/modules/studio/StudioAppLaunch';
-import type { StudioLaunchOrigin } from '@/modules/studio/StudioAppLaunch';
+import { StudioPanelPending } from '@/modules/studio/StudioPanelFallback';
 import { StudioLinksSheet } from '@/modules/studio/StudioLinksSheet';
 import { SETTINGS_PAGES, readSettingsPage, useSettingsSplit } from '@/modules/studio/settingsPages';
 import type { SettingsPageId } from '@/modules/studio/settingsPages';
@@ -45,9 +43,6 @@ const StudioGitHub = lazyStudioPanel(() => import('@/modules/studio/StudioGitHub
 const loadMotionFeatures = () => import('@/modules/studio/motionFeatures').then(module => module.default);
 // iOS-like default spring (response ~0.5 s, no visible overshoot).
 const SPRING = { type: 'spring', stiffness: 158, damping: 25 } as const;
-// Durations match the zoom keyframes in studio.css (an app opened without an icon, and every close).
-const APP_OPEN_MS = 560;
-const APP_CLOSE_MS = 420;
 // Scrolling past the large title collapses it into the glass navigation bar.
 const LARGE_TITLE_COLLAPSE_AT = 28;
 const SYSTEM_TITLES = { deepseek: 'DeepSeek', connections: '设置', github: 'GitHub', memory: '记忆' } as const;
@@ -89,26 +84,11 @@ export function StudioPage() {
   const [projectsError, setProjectsError] = useState('');
   // Whether Trading 212 has a key file, for the tile's status line.
   const [t212, setT212] = useState<T212Status[] | null>(null);
-  // Opening and closing an app: `launching` is the star launch from a tapped icon (StudioAppLaunch), which ends the
-  // phase itself; `opening` (no icon, or reduced motion) and `closing` are the timed zooms in studio.css.
-  const [transition, setTransition] = useState<'launching' | 'opening' | 'closing' | null>(null);
-  // Box of the tapped icon: the app shrinks back into it when it closes.
-  const [origin, setOrigin] = useState<{ x: number; y: number; w: number; h: number; tone: string } | null>(null);
-  // The star launch under way: where it opens from and the app's name (for its 正在打开 announcement).
-  const [launch, setLaunch] = useState<{ origin: StudioLaunchOrigin; name: string } | null>(null);
-  // The open app's panel, which the star launch reveals through its window.
-  const appRef = useRef<HTMLDivElement>(null);
-  // How many of the open app's sub-apps are still loading (their placeholders report in); the launch star turns meanwhile.
-  const [pendingPanels, setPendingPanels] = useState(0);
-  const trackPanelLoad = useCallback(() => {
-    setPendingPanels(count => count + 1);
-    let ended = false;
-    return () => {
-      if (ended) return;
-      ended = true;
-      setPendingPanels(count => count - 1);
-    };
-  }, []);
+  // Opening and closing an app: the timed zooms in studio.css (the whole view grows from, or shrinks back into, the
+  // tapped icon while the home screen recedes or returns); null once it has settled.
+  const [transition, setTransition] = useState<'opening' | 'closing' | null>(null);
+  // Centre of the tapped icon (or widget card, or gear): the app zooms out of it and back into it.
+  const [origin, setOrigin] = useState<{ x: number; y: number } | null>(null);
   // The website quick-browse sheet for the open project.
   const [linksOpen, setLinksOpen] = useState(false);
   // Phones push from the conversation list to a thread; wider layouts show both side by side.
@@ -138,7 +118,7 @@ export function StudioPage() {
   useEffect(() => { void loadProjects(); void loadT212(); }, [loadProjects, loadT212]);
 
   useEffect(() => {
-    if (!transition || transition === 'launching') return;
+    if (!transition) return;
     const reduced = prefersReducedMotion();
     const timer = window.setTimeout(() => {
       if (transition === 'closing') {
@@ -146,27 +126,20 @@ export function StudioPage() {
         if ((location.state as { fromHome?: boolean } | null)?.fromHome) navigate(-1); else navigate('/');
       }
       setTransition(null);
-    }, reduced ? 0 : transition === 'opening' ? APP_OPEN_MS : APP_CLOSE_MS);
+    }, reduced ? 0 : transition === 'opening' ? STUDIO_MOTION_IN_MS : STUDIO_MOTION_OUT_MS);
     return () => window.clearTimeout(timer);
   }, [transition, navigate, location.state]);
 
-  // The star launch ends itself once its window has opened over the whole screen.
-  const finishLaunch = useCallback(() => setTransition(current => current === 'launching' ? null : current), []);
-  // Back (or any navigation) away from an app that is still launching leaves nothing to launch.
-  const hasTarget = Boolean(target);
-  useEffect(() => { if (!hasTarget) finishLaunch(); }, [hasTarget, finishLaunch]);
-
   const signOut = () => { void api.studio.closeSnr().finally(logout).catch(() => {}); };
-  // An app opens from what was tapped (an icon, a widget card or the gear): the star is drawn there and opens into
-  // a window onto the app. Without a box it fades up (studio.css); under reduced motion it simply appears.
+  // An app opens from what was tapped (an icon, a widget card or the gear): the whole view fades in as it grows a
+  // little from there, like iPadOS, while the home screen recedes behind it. Without a box it grows from the centre;
+  // under reduced motion it simply appears.
   const openTile = (tile: StudioHomeTile, icon: DOMRect | null) => {
     if (transition || tile.href) return;
-    const starLaunch = icon && !prefersReducedMotion() ? { origin: appLaunchOrigin(icon), name: tile.name } : null;
-    setOrigin(icon ? { x: icon.left, y: icon.top, w: icon.width, h: icon.height, tone: tile.tone } : null);
-    setLaunch(starLaunch);
+    setOrigin(icon ? { x: icon.left + icon.width / 2, y: icon.top + icon.height / 2 } : null);
     setThreadOpen(false);
     setCompact(false);
-    setTransition(starLaunch ? 'launching' : 'opening');
+    setTransition(prefersReducedMotion() ? null : 'opening');
     navigate(tile.id.startsWith('project:') ? `/projects/${encodeURIComponent(tile.id.slice(8))}` : `/apps/${tile.id}`, { state: { fromHome: true } });
   };
   // A widget opens the app it summarises. Claude and Codex start a new session in the workbench directory with the
@@ -255,13 +228,8 @@ export function StudioPage() {
     { id: 'workspace', name: '工作台', tone: 'graphite', glyph: 'terminal', href: '/work' },
     { ...SETTINGS_TILE, status: studio.loading || configured ? undefined : '1 项待配置' },
   ];
-  // Closing, the app shrinks back into the exact icon card (clip-path, so content never distorts; corners as the card's 14 px on 96), like iOS; without an icon it fades and scales to centre.
-  const appStyle = (origin ? {
-    '--zoom-clip': `inset(${origin.y}px ${Math.max(0, window.innerWidth - origin.x - origin.w)}px ${Math.max(0, window.innerHeight - origin.y - origin.h)}px ${origin.x}px round ${Math.min(origin.w, origin.h) * 14 / 96}px)`,
-    '--zoom-cx': `${origin.x + origin.w / 2}px`, '--zoom-cy': `${origin.y + origin.h / 2}px`,
-  } : {}) as CSSProperties;
-  // The launch star keeps turning while a sub-app's code or the project list is still loading.
-  const appLoading = pendingPanels > 0 || (target?.kind === 'project' && projects === null);
+  // The app zooms about the tapped icon's centre, so it grows out of the icon and shrinks back towards it.
+  const appStyle = (origin ? { '--zoom-cx': `${origin.x}px`, '--zoom-cy': `${origin.y}px` } : {}) as CSSProperties;
 
   const projectContent = () => {
     if (!project) return null;
@@ -291,8 +259,7 @@ export function StudioPage() {
         onRefresh={() => void refresh()} onSignOut={signOut} refreshing={refreshing} onBuildAction={(tile, action) => builds.act(tile.id.slice(8), action)} />
     </div>
 
-    {target && <div ref={appRef} className={`studio-app ${transition ?? ''} ${origin ? `has-origin tone-${origin.tone}` : ''}`} style={appStyle} role="region" aria-label={title || '应用'}>
-      <StudioPanelLoadContext.Provider value={trackPanelLoad}>
+    {target && <div className={`studio-app ${transition ?? ''}`} style={appStyle} role="region" aria-label={title || '应用'}>
       <main className={`studio-main ${tabs.length ? 'has-tabs' : ''}`}>
         <header className="studio-navbar" data-compact={chatContext || tabs.length > 0 || compact || (settingsOpen && settingsSplit) ? 'true' : 'false'}>
           <div className="navbar-leading">
@@ -335,7 +302,7 @@ export function StudioPage() {
               {target.kind === 'app' && target.id === 'github' && <StudioGitHub refreshing={refreshing} />}
               {/* ── v6 track: memory — app content below this line ── */}
               {target.kind === 'app' && target.id === 'memory' && <StudioMemory refreshing={refreshing} />}
-              {/* While the project list loads, the launch star stands in (and an opening app's launch waits for it). */}
+              {/* While the project list loads, the activity indicator stands in. */}
               {target.kind === 'project' && !project && (projects === null
                 ? <StudioPanelPending />
                 : <div className="ios-empty"><IconFolderX size={32} strokeWidth={1.5} aria-hidden="true" /><span>这个项目不存在或已被删除</span>
@@ -345,12 +312,7 @@ export function StudioPage() {
             </AnimatePresence>
           </div>}
       </main>
-      </StudioPanelLoadContext.Provider>
     </div>}
-
-    {/* Opening from an icon: the star drawn over it, turning while the app loads, then the window the app opens through. */}
-    {transition === 'launching' && launch && target && <StudioAppLaunch origin={launch.origin} name={launch.name} loading={appLoading}
-      app={appRef} onOpened={finishLaunch} />}
 
     {creating && <StudioCreateSheet onClose={() => setCreating(false)}
       build={<StudioBuildComposer onCancel={() => setCreating(false)} onStarted={startBuild} />}
@@ -359,8 +321,7 @@ export function StudioPage() {
         setCreating(false);
         toast.success(`已创建「${saved.name}」`);
         setOrigin(null);
-        setLaunch(null);
-        setTransition('opening');
+        setTransition(prefersReducedMotion() ? null : 'opening');
         navigate(`/projects/${encodeURIComponent(saved.id)}`, { state: { fromHome: true } });
       }} />} />}
 

@@ -14,6 +14,7 @@ import { isQuotaItemShown, listQuotaItems, quotaAgeText, quotaAmountText, quotaE
 import { StudioTileIcon } from '@/modules/studio/StudioTileIcon';
 import { useGitHubReading } from '@/modules/studio/hooks/useGitHubReading';
 import { useHomeSortableItem, useHomeSortableList } from '@/modules/studio/hooks/useHomeSortable';
+import { useSheetClose } from '@/modules/studio/hooks/useSheetClose';
 import '@/modules/studio/studio-home.css';
 import '@/modules/studio/studio-github.css';
 
@@ -497,6 +498,8 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, onOpe
   // Told when a widget drag starts and ends, so the home screen does not turn pages under it.
   onDragActiveChange?: (active: boolean) => void;
 }) {
+  // The gallery sheet plays its way out before it unmounts.
+  const gallerySheet = useSheetClose(onGalleryClose);
   // The widgets this device shows, in order, with their sizes.
   const [widgets, setWidgets] = useState<WidgetConfig[]>(readWidgets);
   const [masked, setMasked] = useState(() => { try { return localStorage.getItem(MASK_STORAGE_KEY) === '1'; } catch { return false; } });
@@ -564,17 +567,17 @@ export function StudioWidgets({ editing, snr, paused = false, onEnterEdit, onOpe
   </>;
   const add = (type: WidgetType, size: WidgetSize) => {
     setWidgets(previous => [...previous, { id: newWidgetId(type), type, size }]);
-    onGalleryClose();
+    gallerySheet.close();
   };
   // Removing or resizing reflows the grid; the neighbours glide into their new places.
   const remove = (id: string) => glide(() => setWidgets(previous => previous.filter(item => item.id !== id)));
   const resize = (id: string, size: WidgetSize) => glide(() => setWidgets(previous => previous.map(item => item.id === id ? { ...item, size } : item)));
 
-  const gallery = galleryOpen && createPortal(<div className="studio-layer" onKeyDown={event => { if (event.key === 'Escape') onGalleryClose(); }}>
-    <div className="sheet-scrim" aria-hidden="true" onClick={onGalleryClose} />
+  const gallery = galleryOpen && createPortal(<div className={`studio-layer ${gallerySheet.closing ? 'closing' : ''}`} onKeyDown={event => { if (event.key === 'Escape') gallerySheet.close(); }}>
+    <div className="sheet-scrim" aria-hidden="true" onClick={gallerySheet.close} />
     <div className="library-sheet" role="dialog" aria-modal="true" aria-labelledby="studio-widget-gallery">
       <div className="library-grabber" aria-hidden="true" />
-      <header><h2 id="studio-widget-gallery">小组件</h2><button type="button" className="ios-button tinted" autoFocus onClick={onGalleryClose}>完成</button></header>
+      <header><h2 id="studio-widget-gallery">小组件</h2><button type="button" className="ios-button tinted" autoFocus onClick={gallerySheet.close}>完成</button></header>
       <div className="ios-list">
         {CATALOG.map(entry => <div className="ios-row" key={entry.type}>
           <StudioTileIcon tone={entry.tone} glyph={entry.glyph} product={entry.type} size={17} variant="small" />

@@ -45,8 +45,7 @@ function scheduleWarmup() {
 /**
  * Used by StudioPage to code-split its sub-apps (chat, Trading 212, mail, SNR, agents, tasks, settings,
  * project editor) out of the home screen's entry bundle. Returns a drop-in component with the same
- * props: a cold chunk loads through React.lazy behind an iOS-style skeleton (inside an open app, behind the launch
- * star instead: StudioPanelPlaceholder reports the load to StudioPage, whose app launch waits for it), and every chunk is warmed
+ * props: a cold chunk loads through React.lazy behind an iOS-style skeleton, and every chunk is warmed
  * in the background once the home screen is idle, so opening an app afterwards renders immediately.
  * A chunk that failed to download is fetched again the next time the app opens or when the user taps
  * 重试, without reloading the Studio.

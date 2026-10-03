@@ -116,6 +116,11 @@
 .home-tile-slot.is-lifted :is(.home-label, .home-status) { opacity: 0; }
 .is-lifted .home-remove, .is-lifted .widget-resize { opacity: 0; scale: .6; transition: opacity var(--dur-fast) ease, scale var(--dur-fast) ease; }
 .home-remove, .widget-resize { transition: opacity var(--dur-fast) ease, scale var(--dur-base) var(--ease-spring); }
+/* Leaving edit mode: the badges shrink away (out of reach) while the jiggle eases to rest (settleJiggle). */
+.home-screen.edit-leaving :is(.home-remove, .home-resume) {
+  pointer-events: none; animation: home-control-out var(--motion-dur-out) var(--motion-ease) forwards;
+}
+@keyframes home-control-out { to { opacity: 0; scale: .4; } }
 
 /* A dragged widget leaves its slot empty (the grid reflows around the gap where it will land) and rides in
    dnd-kit's DragOverlay, a fixed box the size of the card, growing a little as it lifts. */
@@ -147,6 +152,9 @@
 
 /* ---------- Edit-mode toolbar ---------- */
 .home-actions .glass-button { white-space: nowrap; }
+/* Entering or leaving edit mode, the other set of toolbar buttons fades in rather than popping into place. */
+.home-actions > * { animation: home-action-in var(--motion-dur) var(--motion-ease) backwards; }
+@keyframes home-action-in { from { opacity: 0; scale: .92; } }
 @media (max-width: 699px) {
   /* On phones the labels hide (studio-wide-only) and these become circles like the regular toolbar icons. */
   .home-actions .glass-button.home-action-compact { min-width: 40px; width: 40px; height: 40px; padding: 0; border-radius: 20px; }
@@ -161,9 +169,12 @@
   align-items: center; padding: 6px 22px; box-shadow: var(--ios-shadow-float);
   -webkit-backdrop-filter: saturate(170%) blur(24px); backdrop-filter: saturate(170%) blur(24px);
   background: var(--ios-glass-strong);
-  animation: home-edit-bar-in var(--dur-slow) var(--ease-spring) backwards;
+  animation: home-edit-bar-in var(--motion-dur) var(--motion-ease) backwards;
 }
 @keyframes home-edit-bar-in { from { opacity: 0; transform: translateY(24px) scale(.96); } }
+/* Leaving edit mode the bar sinks and fades (its page dots have already glided back to the foot of the screen). */
+.home-screen .home-edit-bar.is-leaving { pointer-events: none; animation: home-edit-bar-out var(--motion-dur-out) var(--motion-ease) forwards; }
+@keyframes home-edit-bar-out { to { opacity: 0; transform: translateY(16px) scale(.96); } }
 .home-edit-bar .home-page-control {
   position: static; translate: none; padding: 0; border: 0; background: none;
   -webkit-backdrop-filter: none; backdrop-filter: none;
@@ -185,6 +196,7 @@
   top: auto; bottom: 0; width: min(560px, 100%); max-height: 88dvh; transform: translateX(-50%);
   border-radius: 28px 28px 0 0; padding: 10px 22px calc(24px + env(safe-area-inset-bottom)); animation-name: sheet-up;
 }
+.studio-layer.closing .library-sheet.aj-sheet { animation-name: sheet-down; }
 .aj-sheet .library-grabber { display: block; width: 36px; height: 5px; margin: 0 auto 6px; border-radius: 3px; background: var(--ios-fill-pressed); }
 .aj-sheet > p { margin-top: 10px; font-size: 15px; line-height: 1.55; color: var(--ios-label-2); }
 .aj-sheet > p.aj-note { font-size: 13px; line-height: 1.5; color: var(--ios-label-3); }
@@ -230,24 +242,29 @@
 .home-folder-grid > .home-icon.mini::before, .home-folder-grid > .home-icon.mini::after { display: none; }
 .home-folder-grid > .home-icon.mini > svg { width: 64%; height: 64%; opacity: .8; filter: none; }
 
-/* An icon held over another: the other grows a folder's backdrop (and holds still) once the hold is long enough. */
-.home-tile-slot.is-merge-target .home-icon { transition: transform 260ms var(--ease-spring), box-shadow 260ms ease; }
+/* An icon held over the middle of another (homeDragIntent.ts): the other stops jiggling and holds its place at once;
+   held long enough, it grows a little under a folder's backdrop, and the lifted icon eases down, ready to go in. A
+   folder a drop has just made (or filled) settles back from that size. */
+.home-tile-slot.is-merge-target { animation: none !important; }
+.home-tile-slot.is-merge-target .home-icon { transition: transform var(--motion-dur) var(--motion-spring), box-shadow var(--motion-dur) ease; }
 .home-tile-slot.is-merge-ready .home-icon {
-  transform: scale(1.14);
+  transform: scale(1.12);
   box-shadow: 0 0 0 calc(var(--icon) * .1) color-mix(in srgb, var(--home-card) 92%, transparent), var(--home-card-lift);
 }
-.home-tile-slot.is-merge-ready { animation: none !important; }
+.home-drag-overlay > .home-tile-slot.is-lifted.is-merging { scale: 1; opacity: .9; transition: scale var(--motion-dur) var(--motion-ease), opacity var(--motion-dur) ease; }
+.home-tile-slot.is-folder-formed .home-icon { animation: home-folder-formed 520ms var(--motion-spring); }
+@keyframes home-folder-formed { from { transform: scale(1.12); } }
 
 /* Open: a frosted panel of the folder's icons under its large name, grown out of the folder icon. */
 .home-folder-layer { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 24px; }
 .home-folder-scrim {
   position: absolute; inset: 0; background: color-mix(in srgb, var(--ios-scrim) 70%, transparent);
   -webkit-backdrop-filter: blur(26px) saturate(150%); backdrop-filter: blur(26px) saturate(150%);
-  animation: studio-fade var(--dur-base) ease backwards;
+  animation: studio-fade var(--motion-dur) ease backwards;
 }
 .home-folder {
   position: relative; display: flex; flex-direction: column; align-items: center; gap: 18px; width: min(640px, 100%);
-  animation: home-folder-open 420ms cubic-bezier(.2, .9, .25, 1.06) backwards;
+  animation: home-folder-open var(--motion-dur) var(--motion-spring) backwards;
 }
 @keyframes home-folder-open {
   from { opacity: 0; transform: translate(var(--folder-from-x, 0), var(--folder-from-y, 0)) scale(.18); }
@@ -268,13 +285,12 @@
 .home-folder-panel .home-grid.home-folder-grid-open { margin: 0 auto; gap: 24px 22px; }
 /* Closing: the panel shrinks back into the folder icon while the wallpaper clears, and takes no taps meanwhile. */
 .home-folder-layer.is-closing { pointer-events: none; }
-.home-folder-layer.is-closing .home-folder-scrim { animation: home-folder-scrim-out 300ms ease forwards; }
-.home-folder-layer.is-closing .home-folder { animation: home-folder-close 300ms cubic-bezier(.4, 0, .7, .2) forwards; }
+.home-folder-layer.is-closing .home-folder-scrim { animation: home-folder-scrim-out var(--motion-dur-out) ease forwards; }
+.home-folder-layer.is-closing .home-folder { animation: home-folder-close var(--motion-dur-out) var(--motion-ease) forwards; }
 @keyframes home-folder-close {
   to { opacity: 0; transform: translate(var(--folder-from-x, 0), var(--folder-from-y, 0)) scale(.18); }
 }
 @keyframes home-folder-scrim-out { to { opacity: 0; } }
-.home-folder-hint { font-size: 13px; color: var(--ios-label-2); text-shadow: var(--home-label-shadow); }
 @media (max-width: 699px) {
   .home-folder-title { font-size: 28px; }
   .home-folder-panel { padding: 20px 12px; border-radius: 30px; }
@@ -282,6 +298,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .home-folder { animation: none; }
+  .home-actions > *, .home-tile-slot.is-folder-formed .home-icon { animation: none; }
   .home-folder-layer.is-closing { display: none; }
   .home-screen.editing .home-tile-slot[data-sort-id], .widget-grid.editing .widget-slot > .widget { animation: none !important; }
   .home-drag-overlay > .home-tile-slot.is-lifted, .widget-drag-overlay > .widget.is-lifted { scale: 1.02; animation: none; }
