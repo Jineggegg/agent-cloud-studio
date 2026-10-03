@@ -2268,6 +2268,9 @@ export type StudioMailDevicePoll = { status: 'pending' | 'connected' | 'expired'
 export type WorkbenchSessionItem = {
   id: string; kind: 'agent' | 'deepseek'; provider: 'claude' | 'codex' | 'deepseek';
   title: string; updatedAt: string | null; running?: boolean;
+  // Set by the workbench shell on a history row that needs the owner: one of its sessions finished or asked for
+  // permission while another was open (useWorkbenchAttention). The row shows a red dot until it is opened.
+  attention?: boolean;
   // Set on a history row that stands for a conversation handed between providers: the row is its latest session.
   thread?: WorkbenchThread;
 };
