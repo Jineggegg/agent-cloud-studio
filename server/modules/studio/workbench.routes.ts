@@ -2,6 +2,7 @@ import express from 'express';
 
 import { AppError, asyncHandler } from '@/shared/utils.js';
 
+import type { createWorkbenchActivityService } from './workbench-activity.service.js';
 import type { createWorkbenchService } from './workbench.service.js';
 import type { createWorkbenchThreadsService } from './workbench-threads.service.js';
 
@@ -50,15 +51,23 @@ function segment(value: unknown, field: string) {
 
 /**
  * Used by studio.module, mounted at /api/studio/workbench behind authentication, for the workbench shell: the hub
- * links, and (with the threads service) conversations handed between providers — the handoff summary, the link
+ * links, the project switcher's running / needs-you marks (with the activity service), and (with the threads service) conversations handed between providers — the handoff summary, the link
  * between the sessions, renaming and forgetting a chain.
  */
 export function createWorkbenchRouter(
   service: ReturnType<typeof createWorkbenchService>,
   threads?: ReturnType<typeof createWorkbenchThreadsService>,
+  activity?: Pick<ReturnType<typeof createWorkbenchActivityService>, 'snapshot'>,
 ) {
   const router = express.Router();
   router.get('/hub-links', asyncHandler(async (req, res) => { res.json(service.hubLinks(user(req))); }));
+  // The project switcher's marks: { projects: { [ideProjectId]: { running, attention, attentionSessionIds } } }.
+  if (activity) {
+    router.get('/activity', asyncHandler(async (req, res) => {
+      res.set('Cache-Control', 'no-store');
+      res.json(await activity.snapshot(user(req)));
+    }));
+  }
   if (!threads) return router;
 
   router.get('/threads', asyncHandler(async (req, res) => {

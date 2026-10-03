@@ -7,7 +7,7 @@ import test from 'node:test';
 import express from 'express';
 
 import { closeConnection, getConnection, initializeDatabase, taskRunsDb } from '@/modules/database/index.js';
-import { initializeTaskRecovery, taskRecoveryRouter } from '@/modules/task-recovery/index.js';
+import { announceInterruptedRuns, initializeTaskRecovery, taskRecoveryRouter } from '@/modules/task-recovery/index.js';
 
 function input(requestId: string, changes: Record<string, unknown> = {}) {
   return {
@@ -94,6 +94,11 @@ test('durable task receipts and authenticated recovery', async (t) => {
       closeConnection();
       await initializeDatabase();
       assert.equal(initializeTaskRecovery(), 2);
+      // Both unfinished runs belong to one session: the owner hears about it once, and only once.
+      const announced: string[] = [];
+      assert.equal(announceInterruptedRuns(run => announced.push(run.sessionId)), 1);
+      assert.deepEqual(announced, ['session-1']);
+      assert.equal(announceInterruptedRuns(run => announced.push(run.runId)), 0);
       assert.equal(initializeTaskRecovery(), 0);
       assert.equal(taskRunsDb.getByRunId(pending.runId)?.state, 'interrupted');
       assert.ok(taskRunsDb.getByRunId(running.runId)?.startedAt);

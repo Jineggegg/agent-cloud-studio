@@ -311,3 +311,36 @@ test('startRun rejects a second concurrent run for the same session', async () =
     assert.ok(third);
   });
 });
+
+test('observers hear a run start, ask for approval, end once and settle', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-run-activity', 'claude', '/workspace/demo');
+    const heard: string[] = [];
+    const stop = chatRunRegistry.onActivity((event) => heard.push(`${event.sessionId}:${event.change}`));
+    // A throwing observer never breaks the run or the other observers.
+    const stopBroken = chatRunRegistry.onActivity(() => { throw new Error('observer bug'); });
+    try {
+      const run = chatRunRegistry.startRun({
+        appSessionId: 'app-run-activity', provider: 'claude', providerSessionId: null, connection: new FakeConnection(), userId: 1,
+      });
+      assert.ok(run);
+      run.writer.send({ kind: 'text', provider: 'claude', sessionId: 'native', content: 'working' });
+      run.writer.send({ kind: 'permission_request', provider: 'claude', sessionId: 'native', requestId: 'r1', toolName: 'Bash' });
+      run.writer.send({ kind: 'permission_resolved', provider: 'claude', sessionId: 'native', requestId: 'r1' });
+      run.writer.sendComplete({ exitCode: 0 });
+      // The killed runtime's own late complete is dropped, so the end is heard once.
+      run.writer.sendComplete({ exitCode: 0 });
+      chatRunRegistry.reportSettled('app-run-activity');
+    } finally {
+      stop();
+      stopBroken();
+    }
+    assert.deepEqual(heard, [
+      'app-run-activity:started',
+      'app-run-activity:permission',
+      'app-run-activity:permission',
+      'app-run-activity:ended',
+      'app-run-activity:settled',
+    ]);
+  });
+});

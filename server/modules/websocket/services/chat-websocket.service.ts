@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type { WebSocket } from 'ws';
 
 import { getConnection, sessionsDb, taskRunsDb } from '@/modules/database/index.js';
+import { forgetSessionPresence, reportSessionPresence } from '@/modules/notifications/index.js';
 import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
@@ -366,6 +367,8 @@ async function dispatchRun(
         : failure || activeRun.failure ? 'failed' : activeRun.terminalState ?? 'completed',
       error: failure ?? activeRun.failure ?? undefined,
     });
+    // A failure is on record only now; observers (the workbench activity) re-read it.
+    chatRunRegistry.reportSettled(sessionId);
   }
 
   return { started: true, error: failure ?? activeRun.failure ?? (activeRun.terminalState === 'failed' ? 'Provider run failed.' : null) };
@@ -658,6 +661,7 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
  * - `chat.stop-task`           { sessionId, taskId }
  * - `chat.subscribe`           { sessions: [{ sessionId, lastSeq? }] }
  * - `chat.permission-response` { requestId, allow, updatedInput?, message?, rememberEntry? }
+ * - `workbench.presence`       { sessionIds, visible } — the open conversation and whether the page is visible
  *
  * Outbound protocol (server to client): every frame is `kind`-based — either
  * a provider `NormalizedMessage` (with `seq`) or a gateway event
@@ -779,6 +783,11 @@ export function handleChatConnection(
         case 'chat.permission-response':
           handlePermissionResponse(data, dependencies);
           return;
+        case 'workbench.presence':
+          // What this page shows and whether it is visible: no notification for a session in view, and a
+          // finished run counts as seen once its session is viewed.
+          reportSessionPresence(ws, { userId, sessionIds: data.sessionIds, visible: data.visible });
+          return;
         default:
           sendProtocolError(ws, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type "${messageType}".`);
           return;
@@ -793,5 +802,6 @@ export function handleChatConnection(
   ws.on('close', () => {
     console.log('[INFO] Chat client disconnected');
     connectedClients.delete(ws);
+    forgetSessionPresence(ws);
   });
 }

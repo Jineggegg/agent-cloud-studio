@@ -11,7 +11,7 @@ import {
     initializeSessionsWatcher,
     providerRuntimeService,
 } from '@/modules/providers/index.js';
-import { initializeTaskRecovery } from '@/modules/task-recovery/index.js';
+import { announceInterruptedRuns, initializeTaskRecovery } from '@/modules/task-recovery/index.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
 
@@ -92,6 +92,8 @@ async function startServer() {
 
         // Configure Web Push (VAPID keys)
         configureWebPush();
+        // The runs the previous process left unfinished need the owner: one notification per session.
+        announceInterruptedRuns();
 
         // Check if running in production mode (dist folder exists)
         const distIndexPath = path.join(APP_ROOT, 'dist', 'index.html');

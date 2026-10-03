@@ -16,8 +16,14 @@ import {
 
 import {
   buildNotificationPayload,
+  createNotificationEvent,
+  notifyRunFailed,
+  notifyRunInterrupted,
+  notifyRunStopped,
+  notifyUserIfEnabled,
   sendStudioPushNotification,
 } from '../services/notification-orchestrator.service.js';
+import { forgetSessionPresence, reportSessionPresence } from '../services/session-presence.service.js';
 
 async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
@@ -106,6 +112,58 @@ test('a Studio push carries its page, and anything but a same-origin path falls 
       assert.equal(sent[0].data.tag, 'automation:a1');
     } finally {
       webPush.sendNotification = original;
+    }
+  });
+});
+
+test('agent notifications skip the session on screen and go out once per event otherwise', async () => {
+  await withIsolatedDatabase(async () => {
+    const userId = Number(userDb.createUser('viewer', 'hash').id);
+    notificationPreferencesDb.updatePreferences(userId, { channels: { webPush: true }, events: { actionRequired: true, stop: true, error: true } });
+    pushSubscriptionsDb.saveSubscription(userId, 'https://push.example.test/device-2', 'p256dh', 'auth');
+    const webPushSpecifier = 'web-push';
+    const webPush = ((await import(webPushSpecifier)) as { default: { sendNotification: (subscription: unknown, payload: string) => Promise<unknown> } }).default;
+    const sent: { body: string; data: { sessionId: string | null; code: string; url: string } }[] = [];
+    const original = webPush.sendNotification;
+    webPush.sendNotification = async (_subscription, payload) => {
+      sent.push(JSON.parse(payload));
+      return { statusCode: 201, body: '', headers: {} };
+    };
+    const page = {};
+    try {
+      // The open, visible conversation (both stretches of a handed-over one) never notifies.
+      reportSessionPresence(page, { userId, sessionIds: ['seen-a', 'seen-b'], visible: true });
+      notifyRunStopped({ userId, provider: 'claude', sessionId: 'seen-a' });
+      notifyUserIfEnabled({ userId, event: createNotificationEvent({
+        provider: 'claude', sessionId: 'seen-b', kind: 'action_required', code: 'permission.required', meta: { toolName: 'Bash' },
+        dedupeKey: 'claude:permission:seen-b:r1',
+      }) });
+      assert.equal(sent.length, 0);
+
+      // Another session's finished run notifies once; the same event again is not repeated.
+      notifyRunStopped({ userId, provider: 'codex', sessionId: 'elsewhere' });
+      notifyRunStopped({ userId, provider: 'codex', sessionId: 'elsewhere' });
+      assert.deepEqual(sent.map(payload => payload.data.sessionId), ['elsewhere']);
+
+      // Once the page is hidden (or closed) the open session notifies too.
+      reportSessionPresence(page, { userId, sessionIds: ['seen-a'], visible: false });
+      notifyRunFailed({ userId, provider: 'claude', sessionId: 'seen-a', error: 'boom' });
+      reportSessionPresence(page, { userId, sessionIds: ['seen-b'], visible: true });
+      forgetSessionPresence(page);
+      notifyRunInterrupted({ userId, provider: 'claude', sessionId: 'seen-b', runId: 'run-1' });
+      notifyRunInterrupted({ userId, provider: 'claude', sessionId: 'seen-b', runId: 'run-1' });
+      assert.deepEqual(sent.map(payload => `${payload.data.sessionId}:${payload.data.code}`), [
+        'elsewhere:run.stopped', 'seen-a:run.failed', 'seen-b:run.interrupted',
+      ]);
+      assert.match(sent[2].body, /中断/);
+
+      // A DeepSeek reply opens its own workbench page.
+      notifyRunStopped({ userId, provider: 'deepseek', sessionId: 'conversation-1', sessionName: '周报', url: '/work/p1/d/conversation-1' });
+      assert.equal(sent[3].data.url, '/work/p1/d/conversation-1');
+      assert.match(sent[3].body, /^DeepSeek:/);
+    } finally {
+      webPush.sendNotification = original;
+      forgetSessionPresence(page);
     }
   });
 });

@@ -2,6 +2,7 @@ import webPush from 'web-push';
 
 import { notificationPreferencesDb, projectsDb, pushSubscriptionsDb, sessionsDb } from '@/modules/database/index.js';
 import { sendDesktopNotification as sendDesktopNotificationToClients } from '@/modules/notifications/services/desktop-notification-clients.service.js';
+import { isSessionInView } from '@/modules/notifications/services/session-presence.service.js';
 
 const KIND_TO_PREF_KEY = {
   action_required: 'actionRequired',
@@ -13,6 +14,7 @@ const PROVIDER_LABELS = {
   claude: 'Claude',
   cursor: 'Cursor',
   codex: 'Codex',
+  deepseek: 'DeepSeek',
   system: 'System'
 };
 
@@ -179,6 +181,8 @@ function safeNotificationPath(value) {
  * `/session/:id` address (which the app resolves) when its project is unknown, or the home screen without a session.
  */
 function sessionNotificationPath(event) {
+  // A conversation the sessions table does not hold (a Studio DeepSeek chat) names its own page.
+  if (typeof event.meta?.url === 'string') return event.meta.url;
   if (!event.sessionId) return '/';
   const row = event.provider && event.provider !== 'system' ? resolveSessionRow(event.sessionId, event.provider) : null;
   const project = row?.project_path ? projectsDb.getProjectPath(row.project_path) : null;
@@ -197,6 +201,7 @@ function buildNotificationPayload(event) {
     'run.stopped': normalizedEvent.meta?.stopReason || 'Run Stopped: The run has stopped',
     'run.background_completed': 'Background work finished',
     'run.failed': normalizedEvent.meta?.error ? `Run Failed: ${normalizedEvent.meta.error}` : 'Run Failed: The run encountered an error',
+    'run.interrupted': '任务被中断：服务重启时它还没有完成，打开会话可以续接',
     'agent.notification': normalizedEvent.meta?.message ? String(normalizedEvent.meta.message) : 'You have a new notification',
     'push.enabled': 'Push notifications are now enabled!'
   };
@@ -317,6 +322,10 @@ function notifyUserIfEnabled({ userId, event }) {
   }
 
   const normalizedEvent = normalizeNotificationSession(event);
+  // The owner is looking at this session on a visible page: the chat already shows what happened.
+  if (normalizedEvent.sessionId && isSessionInView(normalizedEvent.sessionId, userId)) {
+    return;
+  }
   const preferences = notificationPreferencesDb.getPreferences(userId);
   if (!isNotificationEventEnabled(preferences, normalizedEvent)) {
     return;
@@ -336,7 +345,14 @@ function notifyUserIfEnabled({ userId, event }) {
   }
 }
 
-function notifyRunStopped({ userId, provider, sessionId = null, stopReason = 'completed', sessionName = null }) {
+/**
+ * `url` is only for a conversation outside the sessions table (a Studio DeepSeek chat): the page a tap opens.
+ * Agent sessions leave it out and open their workbench session.
+ *
+ * @param {{ userId: unknown, provider: string, sessionId?: string | null, stopReason?: string,
+ *   sessionName?: string | null, url?: string }} input
+ */
+function notifyRunStopped({ userId, provider, sessionId = null, stopReason = 'completed', sessionName = null, url = undefined }) {
   notifyUserIfEnabled({
     userId,
     event: createNotificationEvent({
@@ -344,7 +360,7 @@ function notifyRunStopped({ userId, provider, sessionId = null, stopReason = 'co
       sessionId,
       kind: 'stop',
       code: 'run.stopped',
-      meta: { stopReason, sessionName },
+      meta: { stopReason, sessionName, ...(typeof url === 'string' ? { url } : {}) },
       severity: 'info',
       dedupeKey: `${provider}:run:stop:${sessionId || 'none'}:${stopReason}`
     })
@@ -389,12 +405,34 @@ function notifyRunFailed({ userId, provider, sessionId = null, error, sessionNam
   });
 }
 
+/**
+ * Reports a run the server cut off when it stopped (found unfinished at startup and marked interrupted).
+ * Rides the "error" preference, like a failed run; one notification per session and restart.
+ *
+ * @param {{ userId: unknown, provider: string, sessionId?: string | null, runId?: string | null }} input
+ */
+function notifyRunInterrupted({ userId, provider, sessionId = null, runId = null }) {
+  notifyUserIfEnabled({
+    userId,
+    event: createNotificationEvent({
+      provider,
+      sessionId,
+      kind: 'error',
+      code: 'run.interrupted',
+      meta: {},
+      severity: 'error',
+      dedupeKey: `${provider}:run:interrupted:${sessionId || 'none'}:${runId || 'unknown'}`
+    })
+  });
+}
+
 export {
   buildNotificationPayload,
   createNotificationEvent,
   notifyUserIfEnabled,
   notifyRunStopped,
   notifyRunFailed,
+  notifyRunInterrupted,
   notifyBackgroundWorkCompleted,
   getStudioPushStatus,
   sendStudioPushNotification

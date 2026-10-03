@@ -4,6 +4,7 @@ import { sessionsDb } from '@/modules/database/index.js';
 import { ChatSessionWriter } from '@/modules/websocket/services/chat-session-writer.service.js';
 import { broadcastSessionUpserted } from '@/modules/websocket/services/session-upsert-broadcast.service.js';
 import type {
+  ChatRunActivityEvent,
   LLMProvider,
   NormalizedMessage,
   RealtimeClientConnection,
@@ -72,6 +73,23 @@ const runs = new Map<string, ChatRun>();
  * subscribes meanwhile needs the run to attach to.
  */
 let retainCompletedRun: (appSessionId: string) => boolean = () => false;
+
+/** In-process observers of run lifecycle changes (chatRunRegistry.onActivity). */
+const activityListeners = new Set<(event: ChatRunActivityEvent) => void>();
+
+/** Tells every observer about one change; an observer that throws never breaks the run. */
+function announceActivity(sessionId: string, change: ChatRunActivityEvent['change']): void {
+  for (const listener of activityListeners) {
+    try {
+      listener({ sessionId, change });
+    } catch (error) {
+      console.error('[ChatRunRegistry] Activity observer failed', error instanceof Error ? error.message : error);
+    }
+  }
+}
+
+// Frames that change whether a session waits for the owner's answer.
+const PERMISSION_KINDS = new Set(['permission_request', 'permission_resolved', 'permission_cancelled']);
 
 /**
  * Schedules one run's eviction. The timer is bound to the run it was armed
@@ -147,6 +165,9 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     run.events.splice(0, run.events.length - MAX_BUFFERED_EVENTS_PER_RUN);
   }
 
+  if (message.kind === 'complete') announceActivity(run.appSessionId, 'ended');
+  else if (PERMISSION_KINDS.has(message.kind)) announceActivity(run.appSessionId, 'permission');
+
   return outbound;
 }
 
@@ -201,6 +222,24 @@ export const chatRunRegistry = {
   },
 
   /**
+   * Observes run lifecycle changes (started, approval asked or answered, ended, settled) for every
+   * session. Used by the Studio module's workbench activity, which tells the project switcher which
+   * projects are running or need the owner. Returns the unsubscribe function.
+   */
+  onActivity(listener: (event: ChatRunActivityEvent) => void): () => void {
+    activityListeners.add(listener);
+    return () => { activityListeners.delete(listener); };
+  },
+
+  /**
+   * Announces that a run's durable record was written. Used by this module's chat gateway right
+   * after `taskRunsDb.settle`, because a failure is only on record from then on.
+   */
+  reportSettled(appSessionId: string): void {
+    announceActivity(appSessionId, 'settled');
+  },
+
+  /**
    * Starts tracking a run and returns it, or `null` when a run is already in
    * progress for the session (callers must reject the duplicate send).
    */
@@ -250,12 +289,14 @@ export const chatRunRegistry = {
     });
 
     runs.set(input.appSessionId, run);
+    announceActivity(input.appSessionId, 'started');
     return run;
   },
 
   /** Rolls back a memory reservation if durable acceptance could not commit. */
   discardRun(run: ChatRun): void {
     if (runs.get(run.appSessionId) === run) runs.delete(run.appSessionId);
+    announceActivity(run.appSessionId, 'settled');
   },
 
   getRun(appSessionId: string): ChatRun | undefined {

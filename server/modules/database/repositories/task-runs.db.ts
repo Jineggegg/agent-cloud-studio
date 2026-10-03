@@ -209,6 +209,13 @@ export const taskRunsDb = {
       WHERE state IN ('accepted', 'running')`).run(new Date().toISOString()).changes;
   },
 
+  /** Runs still accepted or running: at startup, the ones the previous server process left unfinished. */
+  listUnfinished(): TaskRunRecord[] {
+    const rows = getConnection().prepare(`SELECT * FROM task_runs WHERE state IN ('accepted', 'running')
+      ORDER BY created_at ASC, run_id ASC`).all() as TaskRunRow[];
+    return rows.map(toRecord);
+  },
+
   /** Recovery includes failed turns so a claimed queued or continued task cannot disappear on failure. */
   listInterrupted(userId: string | number | null, filters: TaskRecoveryFilters = {}): TaskRunRecord[] {
     const clauses = ["user_key = ?", "state IN ('interrupted', 'failed')", 'resolved_at IS NULL', 'claimed_by_run_id IS NULL'];
