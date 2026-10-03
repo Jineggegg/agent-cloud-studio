@@ -37,7 +37,12 @@ import {
   notifyUserIfEnabled
 } from '@/modules/notifications/index.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
-import { createCompleteMessage, createNormalizedMessage, recordClaudeRateLimitEvent } from '@/shared/utils.js';
+import {
+  createCompleteMessage,
+  createNormalizedMessage,
+  recordClaudeRateLimitEvent,
+  resolveProviderModelSelection
+} from '@/shared/utils.js';
 
 const activeSessions = new Map();
 // Outstanding background tasks per live session, keyed like activeSessions. An
@@ -84,7 +89,8 @@ const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode'])
 const ULTRACODE_SDK_EFFORT = 'xhigh';
 
 function resolveClaudeEffort(model, effort, modelsDefinition = CLAUDE_PREDEFINED_MODELS) {
-  const selectedModel = modelsDefinition?.OPTIONS?.find((option) => option.value === model) || null;
+  // Through the catalog's aliases and 1M variants, so `opus[1m]` validates against Opus.
+  const selectedModel = resolveProviderModelSelection(modelsDefinition, model)?.option || null;
   const allowedEfforts = selectedModel?.effort?.values
     ?.map((value) => value.value) || [];
   return typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
@@ -276,13 +282,13 @@ function mapCliOptionsToSDK(options = {}) {
 
   sdkOptions.disallowedTools = settings.disallowedTools || [];
 
-  sdkOptions.model = options.model || CLAUDE_PREDEFINED_MODELS.DEFAULT;
+  const modelsDefinition = options.effortModels || CLAUDE_PREDEFINED_MODELS;
+  const requestedModel = options.model || CLAUDE_PREDEFINED_MODELS.DEFAULT;
+  // A legacy picker value (`opus`, `default`, `opus[1m]`, ...) runs as the concrete model the
+  // picker now shows for it; ids the catalog does not know (custom models) pass through.
+  sdkOptions.model = resolveProviderModelSelection(modelsDefinition, requestedModel)?.model || requestedModel;
 
-  applyClaudeEffort(sdkOptions, resolveClaudeEffort(
-    sdkOptions.model,
-    effort,
-    options.effortModels || CLAUDE_PREDEFINED_MODELS,
-  ));
+  applyClaudeEffort(sdkOptions, resolveClaudeEffort(sdkOptions.model, effort, modelsDefinition));
 
   sdkOptions.systemPrompt = {
     type: 'preset',

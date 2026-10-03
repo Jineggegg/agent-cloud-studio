@@ -5,10 +5,13 @@ const providers = vi.hoisted(() => ({ models: vi.fn(), createModel: vi.fn(), upd
 vi.mock('@/shared/api', () => ({ api: { providers, user: { preferences: vi.fn(), savePreferences: vi.fn(async () => Response.json({})) } } }));
 
 const { StudioSettingsModels } = await import('@/modules/studio/StudioSettingsModels');
-const { readModelDefaults } = await import('@/shared/modelDefaults');
+const { readModelDefaults, writeProviderModelPreferences } = await import('@/shared/modelDefaults');
 const { resetUserPreferences } = await import('@/shared/userSettings');
 
-type Option = { value: string; label: string; effort?: { default: string; values: { value: string }[] }; isCustom?: boolean; recordId?: number };
+type Option = {
+  value: string; label: string; description?: string; aliases?: string[]; longContextValue?: string; recommended?: boolean;
+  effort?: { default: string; values: { value: string }[] }; isCustom?: boolean; recordId?: number;
+};
 const EFFORT = { default: 'high', values: [{ value: 'low' }, { value: 'high' }, { value: 'max' }] };
 const BUILT_IN: Option[] = [
   { value: 'default', label: 'Default (recommended)', effort: EFFORT },
@@ -81,4 +84,34 @@ test('each CLI has its own list', async () => {
   fireEvent.click(screen.getByRole('radio', { name: 'Codex' }));
   expect(await screen.findByRole('option', { name: 'GPT-6 Sol' })).toBeTruthy();
   expect(providers.models).toHaveBeenLastCalledWith('codex');
+});
+
+test('the Claude list shows one row per family with its description, and a legacy default keeps its 1M switch', async () => {
+  claudeOptions = [
+    { value: 'claude-fable-5-1', label: 'Fable 5.1', description: '最强的 Claude', aliases: ['fable', 'best'], longContextValue: 'claude-fable-5-1[1m]', effort: EFFORT },
+    { value: 'claude-opus-5-5', label: 'Opus 5.5', description: '复杂推理和编码的首选', recommended: true, aliases: ['opus', 'default'], longContextValue: 'claude-opus-5-5[1m]', effort: EFFORT },
+    { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', description: '最快、最省', aliases: ['haiku'] },
+  ] as Option[];
+  writeProviderModelPreferences('claude', { model: 'opus[1m]', effort: 'max' });
+  render(<StudioSettingsModels />);
+
+  const model = await screen.findByLabelText('默认模型') as HTMLSelectElement;
+  expect(model.value).toBe('claude-opus-5-5');
+  expect((screen.getByLabelText('推理强度') as HTMLSelectElement).value).toBe('max');
+  const longContext = screen.getByRole('switch', { name: '1M 上下文' }) as HTMLInputElement;
+  expect(longContext.checked).toBe(true);
+  const list = screen.getByRole('list', { name: 'Claude Code 模型' });
+  expect(within(list).getByText('复杂推理和编码的首选')).toBeTruthy();
+  expect(within(list).queryByText('claude-opus-5-5')).toBeNull();
+
+  fireEvent.click(longContext);
+  expect(readModelDefaults().claude).toEqual({ model: 'claude-opus-5-5', effort: 'max' });
+  fireEvent.click(screen.getByRole('switch', { name: '1M 上下文' }));
+  expect(readModelDefaults().claude?.model).toBe('claude-opus-5-5[1m]');
+  // Switching family keeps the 1M window where the new default has one; Haiku has none, so no switch.
+  fireEvent.change(model, { target: { value: 'claude-fable-5-1' } });
+  expect(readModelDefaults().claude?.model).toBe('claude-fable-5-1[1m]');
+  fireEvent.change(model, { target: { value: 'claude-haiku-4-5-20251001' } });
+  expect(readModelDefaults().claude?.model).toBe('claude-haiku-4-5-20251001');
+  expect(screen.queryByRole('switch', { name: '1M 上下文' })).toBeNull();
 });

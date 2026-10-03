@@ -10,7 +10,7 @@ import type {
   ProviderModelsDefinition,
   ProviderSessionModel,
 } from '@/shared/types.js';
-import { AppError } from '@/shared/utils.js';
+import { AppError, resolveProviderModelSelection } from '@/shared/utils.js';
 
 /** Session-row access the service needs, narrowed so tests can stub it. */
 type ProviderModelsSessionStore = {
@@ -116,7 +116,8 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     modelId: string,
     currentRecordId?: number,
   ): void => {
-    if (predefined.OPTIONS.some((option) => option.value === modelId)) {
+    // Built-in aliases (`opus`, `default`) and 1M variants count as taken too: they already select a built-in row.
+    if (resolveProviderModelSelection(predefined, modelId)) {
       throw new AppError(`A ${provider} model with this ID already exists.`, {
         code: 'MODEL_ID_ALREADY_EXISTS',
         statusCode: 409,

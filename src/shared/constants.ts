@@ -60,10 +60,29 @@ export const SETTINGS_MAIN_TABS: SettingsMainTabMeta[] = [
 //----------------- CHAT REASONING EFFORT ------------
 
 /**
- * Sentinel effort value meaning "use whatever the model defaults to". The composer's model
- * menu renders it as the first choice and the provider state treats it as "no explicit effort".
+ * Sentinel effort value meaning "use whatever the model defaults to". The classic composer's model
+ * menu offers it as the first choice, the workbench effort control shows it on the model's
+ * recommended stop, and the provider state treats it as "no explicit effort".
  */
 export const DEFAULT_EFFORT_VALUE = 'default';
+
+/**
+ * Reasoning effort levels in plain Chinese, the same words in the workbench composer's effort control and Studio's
+ * model settings. Levels not listed (a provider's own) are shown as they come.
+ */
+export const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
+  default: '默认',
+  none: '不思考',
+  minimal: '极少',
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '极高',
+  max: '最高',
+  ultra: '超高',
+  ultracode: 'Ultracode',
+  thinking: '思考',
+};
 
 // ---------------------------
 

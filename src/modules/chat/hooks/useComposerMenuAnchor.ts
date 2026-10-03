@@ -1,18 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
-import type { ComposerMenuAnchor } from '@/shared/types';
-
-
-const VIEWPORT_MARGIN = 8;
-const MENU_GAP = 8;
+import type { AnchoredMenuPlacement } from '@/shared/types';
+import { placeAnchoredMenu, readMenuBounds, sameMenuPlacement } from '@/shared/utils';
 
 /**
- * Positions a composer popover above its trigger and right-aligned to it.
- *
- * Anchoring with `right`/`bottom` rather than `left`/`top` lets the menu grow
- * upward and leftward without measuring itself first, so it never paints in the
- * wrong spot for a frame. The same anchor works on phones because `maxWidth`
- * shrinks the menu instead of letting it run off the left edge.
+ * Positions a composer popover against its trigger: above it and right-aligned by default (the composer sits at the
+ * bottom), flipping below when there is no room above, always inside the visible viewport. Once the menu has
+ * rendered its natural height decides the flip, so it never opens on a side where it would have to scroll needlessly.
+ * Used by chat's ComposerModelMenu, ComposerPermissionMenu and ScheduleMessagePopover.
  */
 export function useComposerMenuAnchor(
   isOpen: boolean,
@@ -21,7 +16,8 @@ export function useComposerMenuAnchor(
 ) {
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const [anchor, setAnchor] = useState<ComposerMenuAnchor | null>(null);
+  // Where the open menu sits; null while closed or before the trigger has been measured.
+  const [anchor, setAnchor] = useState<AnchoredMenuPlacement | null>(null);
 
   const updateAnchor = useCallback(() => {
     const rect = triggerRef.current?.getBoundingClientRect();
@@ -29,14 +25,23 @@ export function useComposerMenuAnchor(
       return;
     }
 
-    const right = Math.max(VIEWPORT_MARGIN, window.innerWidth - rect.right);
-    setAnchor({
-      right,
-      bottom: window.innerHeight - rect.top + MENU_GAP,
-      maxHeight: Math.max(160, rect.top - MENU_GAP - VIEWPORT_MARGIN),
-      maxWidth: Math.max(200, Math.min(preferredWidth, window.innerWidth - right - VIEWPORT_MARGIN)),
+    const next = placeAnchoredMenu(rect, {
+      bounds: readMenuBounds(),
+      viewportHeight: window.innerHeight,
+      width: preferredWidth,
+      preferredSide: 'above',
+      align: 'end',
+      contentHeight: menuRef.current?.scrollHeight,
     });
+    setAnchor((current) => (sameMenuPlacement(current, next) ? current : next));
   }, [preferredWidth]);
+
+  // Re-placed once the panel exists, with its real height; `sameMenuPlacement` stops this at one extra pass.
+  useLayoutEffect(() => {
+    if (isOpen && anchor) {
+      updateAnchor();
+    }
+  }, [anchor, isOpen, updateAnchor]);
 
   useEffect(() => {
     if (!isOpen) {

@@ -7,13 +7,11 @@ import type { LLMProvider, ProviderModelOption, ProviderModelsDefinition } from 
 import { applyModelDefaults, MODEL_PROVIDERS, readModelDefaults, writeProviderModelPreferences } from '@/shared/modelDefaults';
 import type { ProviderModelPreferences } from '@/shared/modelDefaults';
 import { subscribeToUserPreferences } from '@/shared/userSettings';
+import { reasoningEffortLabel, resolveModelChoice } from '@/shared/utils';
 import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { StudioSpinner } from '@/modules/studio/StudioSpinner';
 
 const NAMES: Record<LLMProvider, string> = { claude: 'Claude Code', codex: 'Codex', cursor: 'Cursor', opencode: 'OpenCode' };
-const EFFORT_LABELS: Record<string, string> = {
-  none: '不推理', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '很高', max: '最高', ultra: 'Ultra', ultracode: 'Ultracode', thinking: '思考',
-};
 // Long catalogs (OpenCode lists over a hundred models) show this many until expanded.
 const COLLAPSED_COUNT = 12;
 
@@ -66,21 +64,32 @@ export function StudioSettingsModels() {
   const hidden = new Set(choice.hidden ?? []);
   const visible = catalog?.OPTIONS.filter(option => !hidden.has(option.value)) ?? [];
   const hiddenModels = catalog?.OPTIONS.filter(option => hidden.has(option.value)) ?? [];
-  const isVisible = (value: string | undefined) => Boolean(value && visible.some(option => option.value === value));
-  const defaultModel = [choice.model, catalog?.DEFAULT].find(isVisible) ?? visible[0]?.value ?? '';
-  const efforts = visible.find(option => option.value === defaultModel)?.effort?.values ?? [];
+  // The saved default as a row of today's catalog: one saved as `opus[1m]` or `default` lands on its row (and switch).
+  const defaultChoice = resolveModelChoice(visible, choice.model) ?? resolveModelChoice(visible, catalog?.DEFAULT)
+    ?? (visible[0] ? resolveModelChoice(visible, visible[0].value) : null);
+  const defaultModel = defaultChoice?.option.value ?? '';
+  const longContextValue = defaultChoice?.option.longContextValue;
+  const efforts = defaultChoice?.option.effort?.values ?? [];
   const effort = efforts.some(item => item.value === choice.effort) ? choice.effort! : 'default';
   const shown = expanded ? visible : visible.slice(0, COLLAPSED_COUNT);
 
   // Saving also makes the choice this device's starting point in the chat composer.
   const save = (change: ProviderModelPreferences) => { writeProviderModelPreferences(provider, change); applyModelDefaults(provider); };
   const chooseModel = (value: string) => {
-    const keepsEffort = visible.find(option => option.value === value)?.effort?.values.some(item => item.value === choice.effort);
-    save({ model: value, effort: keepsEffort ? choice.effort : undefined });
+    const option = visible.find(candidate => candidate.value === value);
+    const keepsEffort = option?.effort?.values.some(item => item.value === choice.effort);
+    // The 1M switch is a setting: it stays on when the new default has a 1M window too.
+    const model = defaultChoice?.longContext && option?.longContextValue ? option.longContextValue : value;
+    save({ model, effort: keepsEffort ? choice.effort : undefined });
+  };
+  const setLongContext = (enabled: boolean) => {
+    if (!defaultChoice || !longContextValue) return;
+    save({ model: enabled ? longContextValue : defaultChoice.option.value, effort: choice.effort });
   };
   const hide = (option: ProviderModelOption) => save({
     hidden: [...hidden, option.value],
-    ...(choice.model === option.value ? { model: undefined, effort: undefined } : {}),
+    // The saved default may name this row by a legacy alias or its 1M variant.
+    ...(resolveModelChoice([option], choice.model) ? { model: undefined, effort: undefined } : {}),
   });
   const restore = (option: ProviderModelOption) => save({ hidden: [...hidden].filter(value => value !== option.value) });
 
@@ -123,14 +132,19 @@ export function StudioSettingsModels() {
         <div className="ios-field">
           <label htmlFor="studio-default-model">默认模型</label>
           <select id="studio-default-model" value={defaultModel} onChange={event => chooseModel(event.target.value)}>
-            {visible.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+            {visible.map(option => <option key={option.value} value={option.value}>{option.label}{option.recommended ? '（推荐）' : ''}</option>)}
           </select>
         </div>
+        {longContextValue && <label className="ios-row no-icon switch-row">
+          <span className="ios-row-body"><strong>1M 上下文</strong><small>适合超长会话和大型仓库，用量更高</small></span>
+          <input type="checkbox" role="switch" className="ios-switch" aria-label="1M 上下文" checked={Boolean(defaultChoice?.longContext)}
+            onChange={event => setLongContext(event.target.checked)} />
+        </label>}
         <div className="ios-field">
           <label htmlFor="studio-default-effort">推理强度</label>
           <select id="studio-default-effort" value={effort} disabled={!efforts.length} onChange={event => save({ effort: event.target.value === 'default' ? undefined : event.target.value })}>
             <option value="default">{efforts.length ? '模型默认' : '这个模型不支持调节'}</option>
-            {efforts.map(item => <option key={item.value} value={item.value}>{EFFORT_LABELS[item.value] ?? item.value}</option>)}
+            {efforts.map(item => <option key={item.value} value={item.value}>{reasoningEffortLabel(item.value)}</option>)}
           </select>
         </div>
       </>}
@@ -143,7 +157,9 @@ export function StudioSettingsModels() {
         {shown.map(option => draft?.recordId !== undefined && draft.recordId === option.recordId
           ? <ModelForm key={option.value} draft={draft} busy={busy} onChange={setDraft} onSubmit={submitDraft} onCancel={() => setDraft(null)} />
           : <div className="ios-row no-icon" role="listitem" key={option.value}>
-            <span className="ios-row-body"><strong>{option.label}</strong><small>{option.value}{option.isCustom ? ' · 自定义' : ''}</small></span>
+            <span className="ios-row-body"><strong>{option.label}</strong>
+              <small>{option.isCustom ? `${option.value} · 自定义` : option.description ?? option.value}</small></span>
+            {option.recommended && option.value !== defaultModel && <span className="status-badge">推荐</span>}
             {option.value === defaultModel && <span className="status-badge good">默认</span>}
             {option.isCustom ? <>
               <button type="button" className="icon-button plain" aria-label={`编辑 ${option.label}`} disabled={busy}

@@ -14,23 +14,26 @@ import type { ChatMessage, NormalizedMessage } from '@/shared/types';
 // The model ids that actually appear on assistant rows in real Claude Code
 // transcripts, taken from a ~86k-row sample of this machine's `~/.claude`.
 describe('the label a reported model is shortened to', () => {
-  it('names the family for a dated or undated id', () => {
-    expect(formatAnsweringModelLabel('claude-opus-5')).toBe('Opus');
-    expect(formatAnsweringModelLabel('claude-sonnet-5')).toBe('Sonnet');
-    expect(formatAnsweringModelLabel('claude-haiku-4-5-20251001')).toBe('Haiku');
-    expect(formatAnsweringModelLabel('claude-fable-5-1')).toBe('Fable');
+  it('names the model as the model menus do, version included', () => {
+    expect(formatAnsweringModelLabel('claude-opus-5')).toBe('Opus 5');
+    expect(formatAnsweringModelLabel('claude-opus-5-5')).toBe('Opus 5.5');
+    expect(formatAnsweringModelLabel('claude-sonnet-5-5')).toBe('Sonnet 5.5');
+    expect(formatAnsweringModelLabel('claude-haiku-4-5-20251001')).toBe('Haiku 4.5');
+    expect(formatAnsweringModelLabel('claude-fable-5-1')).toBe('Fable 5.1');
     expect(formatAnsweringModelLabel('opus')).toBe('Opus');
+    expect(formatAnsweringModelLabel('gpt-6-sol')).toBe('GPT-6 Sol');
   });
 
   it('keeps a 1M-context id distinct from the base model if one is ever reported', () => {
     // Claude Code writes the base id on assistant rows today, so this guards
-    // the mapping rather than describing current transcripts: the same family
+    // the mapping rather than describing current transcripts: the same model
     // at a different context window and price must not read as the base.
-    expect(formatAnsweringModelLabel('claude-opus-5[1m]')).toBe('Opus 1M');
-    expect(formatAnsweringModelLabel('claude-opus-5')).toBe('Opus');
+    expect(formatAnsweringModelLabel('claude-opus-5-5[1m]')).toBe('Opus 5.5 1M');
+    expect(formatAnsweringModelLabel('claude-opus-5-5')).toBe('Opus 5.5');
   });
 
-  it('shows an unrecognized id verbatim rather than dropping it', () => {
+  it('falls back to the family for other spellings, and shows an unknown id verbatim', () => {
+    expect(formatAnsweringModelLabel('us.anthropic.claude-opus-4-8-v1:0')).toBe('Opus');
     expect(formatAnsweringModelLabel('grok-4.6')).toBe('grok-4.6');
   });
 
@@ -78,7 +81,7 @@ describe('the model label in the message footer', () => {
 
     const label = container.querySelector('[title="Answered by claude-opus-5"]');
     assert.ok(label, 'the footer must carry the model the provider reported');
-    assert.equal(label?.textContent, 'Opus');
+    assert.equal(label?.textContent, 'Opus 5');
   });
 
   it('shows nothing for a reply the provider reported no model for', () => {

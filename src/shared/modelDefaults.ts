@@ -1,5 +1,6 @@
 import type { LLMProvider, ProviderModelsDefinition } from '@/shared/types';
 import { readUserPreference, writeUserPreference } from '@/shared/userSettings';
+import { resolveModelChoice } from '@/shared/utils';
 
 /**
  * Per-CLI model choices made in Studio settings and synced through the user's preferences: the model and
@@ -55,13 +56,15 @@ export function applyModelDefaults(provider: LLMProvider) {
 
 /**
  * The catalog the model menus show: hidden models removed (never all of them) and the saved default, when still
- * visible, as the default.
+ * visible, as the default. A default saved under a legacy value (`opus[1m]`, `default`) counts as the row that
+ * replaced it, 1M variant included.
  */
 export function visibleModelCatalog(catalog: ProviderModelsDefinition, choice: ProviderModelPreferences | undefined): ProviderModelsDefinition {
   const hidden = new Set(choice?.hidden ?? []);
   const options = catalog.OPTIONS.filter(option => !hidden.has(option.value));
   if (!options.length) return catalog;
-  const visible = (value: string | undefined) => Boolean(value && options.some(option => option.value === value));
-  const preferred = [choice?.model, catalog.DEFAULT].find(visible) ?? options[0].value;
+  const preferred = [choice?.model, catalog.DEFAULT]
+    .map(value => resolveModelChoice(options, value)?.value)
+    .find(Boolean) ?? options[0].value;
   return { OPTIONS: options, DEFAULT: preferred };
 }

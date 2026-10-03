@@ -239,6 +239,14 @@
     "answeredBy": "由 {{model}} 回答"
   },
   "composer": {
+    "reasoning": "思考强度",
+    "model": "模型",
+    "effortDefault": "默认",
+    "loadingModels": "正在读取模型…",
+    "modelMenu": "选择模型和思考强度",
+    "recommended": "推荐",
+    "longContext": "1M 上下文",
+    "longContextHint": "适合超长会话和大型仓库，用量更高",
     "editing": {
       "title": "正在替换先前的消息",
       "filesNotReverted": "已修改的文件不会被还原",

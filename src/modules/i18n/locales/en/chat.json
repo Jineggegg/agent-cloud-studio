@@ -145,6 +145,9 @@
     "loadingModels": "Loading models…",
     "modelMenu": "Select model and reasoning effort",
     "permissionHeading": "How should {{provider}} actions be approved?",
+    "recommended": "Recommended",
+    "longContext": "1M context",
+    "longContextHint": "For very long sessions and large repos; uses more quota",
     "editing": {
       "title": "Replacing an earlier message",
       "filesNotReverted": "files the agent already changed are not reverted",
