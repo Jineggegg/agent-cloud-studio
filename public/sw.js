@@ -107,8 +107,9 @@ self.addEventListener('push', event => {
 
   const options = {
     body: payload.body || '',
-    icon: '/logo-256.png',
-    badge: '/logo-128.png',
+    // The Studio's logo (public/studio-icon.svg, rendered by scripts/generate-studio-icons.mjs).
+    icon: '/icons/studio-192.png?v=57f6ad94',
+    badge: '/icons/studio-96.png?v=57f6ad94',
     data: payload.data || {},
     tag: payload.data?.tag || `${payload.data?.sessionId || 'global'}:${payload.data?.code || 'default'}`,
     renotify: true

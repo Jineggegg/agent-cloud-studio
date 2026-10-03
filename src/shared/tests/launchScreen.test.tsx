@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest';
 
-import { LaunchErrorBoundary, LaunchScreen, LaunchSplashRelease } from '@/shared/ui/LaunchScreen';
+import { LaunchErrorBoundary, LaunchMark, LaunchScreen, LaunchSplashRelease } from '@/shared/ui/LaunchScreen';
 
 // index.html sits at the repository root, outside the @/ source root, so it is read from disk rather than
 // imported. The frontend program has no Node types, so fs is loaded through a specifier TypeScript does not
@@ -224,6 +224,14 @@ test('the in-app launch screen announces what is loading and draws the same turn
   const gradient = star?.querySelector('linearGradient')?.id;
   expect(gradient).toMatch(/^acs-star-[\w-]+$/);
   expect(star?.querySelector('.acs-star-spark path')?.getAttribute('stroke')).toBe(`url(#${gradient})`);
+});
+
+test('the sign-in and error mark is the current logo, the spark in its halo on its tile, not the old cloud', () => {
+  const { container } = render(<LaunchMark />);
+  const mark = container.querySelector('.acs-launch-mark');
+  expect(mark?.querySelectorAll('svg.acs-star .acs-star-halo path')).toHaveLength(2);
+  expect(mark?.querySelectorAll('svg.acs-star .acs-star-spark path')).toHaveLength(1);
+  expect(container.querySelector('path[d^="M165 345"]')).toBeNull();
 });
 
 // The build loads the entry stylesheet as a preload that becomes a stylesheet on load (vite.config.js).

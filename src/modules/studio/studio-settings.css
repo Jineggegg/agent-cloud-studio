@@ -73,3 +73,9 @@
 @media (max-width: 699px) {
   .settings-quick .ios-row-body small { display: none; }
 }
+
+/* 关于本机: the platform logo and name above the facts, like the device on iOS's About page. */
+.settings-about-head { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 18px 16px 6px; text-align: center; }
+.settings-about-logo { width: 76px; height: 76px; margin-bottom: 8px; }
+.settings-about-head strong { font-size: 20px; font-weight: 600; color: var(--ios-label); }
+.settings-about-head > span:last-child { font-size: 14px; color: var(--ios-label-2); }

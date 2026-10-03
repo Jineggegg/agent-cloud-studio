@@ -1,18 +1,25 @@
 import { IconGitBranch, IconInfoCircle, IconShieldCheck } from '@/modules/studio/icons/tabler';
 import { browserBuild } from '@/modules/studio/settingsPages';
 import { SettingsExternalRow, SettingsLinkRow, SettingsValueRow } from '@/modules/studio/StudioSettingsRows';
+import { LaunchMark } from '@/shared/ui/LaunchScreen';
 
 function dateLabel(value: string) {
   return Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('zh-CN', { hour12: false, timeZone: 'Europe/London' }) : '未记录';
 }
 
 /**
- * Used by Settings → 关于本机, like iOS's About: the plain facts of the build in front of the owner, then rows one
+ * Used by Settings → 关于本机, like iOS's About: the logo and name, the plain facts of the build in front of the owner, then rows one
  * level further in — the full version and runtime check (StudioSettingsRuntime), the source and the upstream licence.
  */
 export function StudioSettingsAbout({ onOpenRuntime }: { onOpenRuntime: () => void }) {
   const build = browserBuild();
   return <>
+    {/* The platform logo heads the page, as iOS's About shows the device. */}
+    <header className="settings-about-head">
+      <span className="settings-about-logo" aria-hidden="true"><LaunchMark /></span>
+      <strong>Agent Cloud Studio</strong>
+      <span>{build ? `v${build.version}` : '开发模式'}</span>
+    </header>
     <section className="ios-section first" aria-label="本机信息">
       <div className="ios-list">
         <SettingsValueRow title="名称" value="Agent Cloud Studio" />
