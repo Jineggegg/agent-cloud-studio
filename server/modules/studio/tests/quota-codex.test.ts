@@ -40,6 +40,9 @@ test('official app-server limits map to labelled windows and win over local logs
           rateLimitsByLimitId: {
             spark: { limitId: 'spark', limitName: 'Codex Spark', primary: { usedPercent: 5, windowDurationMins: 120, resetsAt: null }, secondary: null },
             codex: main,
+            // Known only by its id, as the account's gpt-reserve bucket is.
+            'gpt-reserve': { limitId: 'gpt-reserve', limitName: null, primary: null, secondary: { usedPercent: 0, windowDurationMins: 10080, resetsAt: null } },
+            'gpt-5-codex': { limitId: 'gpt-5-codex', limitName: 'gpt-5-codex', primary: { usedPercent: 1, windowDurationMins: 1440, resetsAt: null }, secondary: null },
           },
           ordinaryUsageAllowed: true,
         };
@@ -52,7 +55,10 @@ test('official app-server limits map to labelled windows and win over local logs
       windows: [
         { id: 'codex:primary', label: '5 小时', usedPercent: 42.4, windowMinutes: 300, resetsAt: new Date(NOW + 3_600_000).toISOString() },
         { id: 'codex:secondary', label: '每周', usedPercent: 18, windowMinutes: 10080, resetsAt: new Date(NOW + 86_400_000).toISOString() },
-        { id: 'spark:primary', label: '2 小时 · Codex Spark', usedPercent: 5, windowMinutes: 120, resetsAt: null },
+        // Extra buckets after the main one, by limit id; each names the model or limit it applies to.
+        { id: 'gpt-5-codex:primary', label: '每天 · GPT-5 Codex', usedPercent: 1, windowMinutes: 1440, resetsAt: null, model: 'GPT-5 Codex' },
+        { id: 'gpt-reserve:secondary', label: '每周 · GPT Reserve', usedPercent: 0, windowMinutes: 10080, resetsAt: null, model: 'GPT Reserve' },
+        { id: 'spark:primary', label: '2 小时 · Codex Spark', usedPercent: 5, windowMinutes: 120, resetsAt: null, model: 'Codex Spark' },
       ],
     });
   } finally { rmSync(root, { recursive: true, force: true }); }

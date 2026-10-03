@@ -7,6 +7,12 @@ vi.mock('@/shared/api', () => ({
   api: { studio: { quota: mocks.quota, trading212: mocks.trading212 } },
   readApiJson: async (response: Response) => response.json(),
 }));
+// jsdom never upgrades NumberFlow's custom element, so a figure that changes (剩余 → 已用) would throw there;
+// this stand-in prints the formatted figure.
+vi.mock('@number-flow/react', () => ({
+  default: ({ value, suffix = '', format, locales }: { value: number; suffix?: string; format?: Intl.NumberFormatOptions; locales?: string }) =>
+    <span>{`${format ? new Intl.NumberFormat(locales, format).format(value) : value}${suffix}`}</span>,
+}));
 
 import { StudioWidgets } from '@/modules/studio/StudioWidgets';
 import { installPointerEvent, layOutSortablesInARow, layOutSortablesInGrid, moveOnePlaceWithKeyboard } from '@/modules/studio/tests/sortableTestHelpers';
@@ -313,4 +319,63 @@ test('the eye on the Trading 212 widget hides every amount, is remembered on thi
   cleanup();
   renderWidgets(false);
   expect(await screen.findByRole('button', { name: '显示金额' })).toBeTruthy();
+});
+
+// ── Quota widgets: 剩余 / 已用 and the items chosen in Settings (studio-quota-display-v1) ──
+
+const QUOTA_PREFERENCES_KEY = 'studio-quota-display-v1';
+const QUOTA_SNAPSHOTS = [
+  { provider: 'claude', available: true, balances: [], source: 'usage-api', observedAt: new Date().toISOString(), stale: false,
+    windows: [
+      { id: 'five_hour', label: '5 小时', usedPercent: 9, windowMinutes: 300, resetsAt: new Date(Date.now() + 2 * 3_600_000).toISOString() },
+      { id: 'seven_day', label: '每周', usedPercent: 4, windowMinutes: 10080, resetsAt: null },
+      { id: 'weekly_scoped:fable', label: '每周 · Fable', usedPercent: 0, windowMinutes: 10080, resetsAt: null, model: 'Fable' },
+    ],
+    credits: [{ id: 'cinder_cove', label: '云端额度', usedPercent: 8.4, currency: 'USD', limit: 250, used: 21, remaining: 229, endsAt: null, endKind: 'expires' }] },
+  { provider: 'codex', available: false, windows: [], balances: [], source: 'unavailable', observedAt: null, stale: false, note: '暂无 Codex 用量' },
+  { provider: 'deepseek', available: true, windows: [], balances: [{ currency: 'CNY', total: 253.99, granted: 0, toppedUp: 253.99 }], source: 'official', observedAt: new Date().toISOString(), stale: false },
+];
+
+function placeQuotaWidgets(claudeSize: 'medium' | 'large') {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify([{ id: 'w-claude', type: 'claude', size: claudeSize }, { id: 'w-deepseek', type: 'deepseek', size: 'small' }]));
+  mocks.quota.mockImplementation(async () => Response.json(QUOTA_SNAPSHOTS));
+}
+
+test('quota rings show what is left by default and follow a change of 剩余 / 已用 and of the chosen items at once', async () => {
+  placeQuotaWidgets('medium');
+  renderWidgets(false);
+  const session = await screen.findByTitle('5 小时 剩余 91%');
+  expect(session.textContent).toContain('剩余');
+  expect(session.textContent).toContain('2 小时后重置');
+  expect(screen.getByTitle('每周 剩余 96%')).toBeTruthy();
+  // Per-model windows and credits are off until chosen.
+  expect(screen.queryByTitle(/Fable|云端额度/)).toBeNull();
+  expect(card('w-deepseek').textContent).toContain('253.99');
+
+  // Settings (here, another tab) flips to 已用, hides 5 小时 and the DeepSeek balance, and adds Fable.
+  localStorage.setItem(QUOTA_PREFERENCES_KEY, JSON.stringify({
+    mode: 'used', items: { 'claude:window:five_hour': false, 'claude:window:weekly_scoped:fable': true, 'deepseek:balance': false },
+  }));
+  act(() => { window.dispatchEvent(new StorageEvent('storage', { key: QUOTA_PREFERENCES_KEY })); });
+  expect(screen.getByTitle('每周 已用 4%')).toBeTruthy();
+  expect(screen.getByTitle('每周 · Fable 已用 0%')).toBeTruthy();
+  expect(screen.queryByTitle(/5 小时/)).toBeNull();
+  expect(card('w-deepseek').textContent).toContain('已在 设置 → 额度显示 中隐藏');
+  expect(card('w-deepseek').textContent).not.toContain('253.99');
+});
+
+test('a large quota widget lists every chosen item, credits with their amounts, and says when all are hidden', async () => {
+  localStorage.setItem(QUOTA_PREFERENCES_KEY, JSON.stringify({ mode: 'remaining', items: { 'claude:credit:cinder_cove': true } }));
+  placeQuotaWidgets('large');
+  renderWidgets(false);
+  await screen.findByTitle('云端额度 剩余 92%');
+  const rows = card('w-claude').querySelectorAll('.widget-rows li');
+  expect(Array.from(rows).map(row => row.querySelector('span')?.textContent)).toEqual(['5 小时', '每周', '云端额度']);
+  expect(rows[2].textContent).toContain('剩余 $229 / $250');
+  expect(rows[2].querySelector('strong')?.textContent).toBe('剩余 92%');
+
+  cleanup();
+  localStorage.setItem(QUOTA_PREFERENCES_KEY, JSON.stringify({ mode: 'remaining', items: { 'claude:window:five_hour': false, 'claude:window:seven_day': false } }));
+  renderWidgets(false);
+  expect(await screen.findByText('已在 设置 → 额度显示 中隐藏')).toBeTruthy();
 });

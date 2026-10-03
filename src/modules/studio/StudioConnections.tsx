@@ -9,6 +9,7 @@ import { StudioConfirmSheet } from '@/modules/studio/StudioConfirmSheet';
 import { StudioSettingsMail } from '@/modules/studio/StudioSettingsMail';
 import { StudioSettingsModels } from '@/modules/studio/StudioSettingsModels';
 import { StudioSettingsNetwork } from '@/modules/studio/StudioSettingsNetwork';
+import { StudioSettingsQuota } from '@/modules/studio/StudioSettingsQuota';
 import { StudioSettingsRuntime } from '@/modules/studio/StudioSettingsRuntime';
 import { StudioSettingsSecurity } from '@/modules/studio/StudioSettingsSecurity';
 import { StudioSettingsTrading } from '@/modules/studio/StudioSettingsTrading';
@@ -158,6 +159,8 @@ export function StudioConnections({ status, onChange }: { status: StudioStatus |
     </section>
 
     <StudioSettingsModels />
+
+    <StudioSettingsQuota />
 
     <section className="ios-section" aria-labelledby="studio-t212-heading">
       <div className="ios-section-header"><h2 id="studio-t212-heading">Trading 212</h2><span className="caption">密钥文件</span></div>

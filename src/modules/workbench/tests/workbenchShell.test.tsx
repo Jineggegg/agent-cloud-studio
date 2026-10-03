@@ -56,6 +56,10 @@ vi.mock('@/shared/api', async original => ({
     },
   },
 }));
+// jsdom never upgrades NumberFlow's custom element, so a figure that changes (剩余 → 已用) would throw there.
+vi.mock('@number-flow/react', () => ({
+  default: ({ value, suffix = '' }: { value: number; suffix?: string }) => <span>{`${value}${suffix}`}</span>,
+}));
 vi.mock('@/shared/context/WebSocketContext', () => ({
   useWebSocket: () => ({ subscribe: (listener: (event: ServerEvent) => void) => { mocks.listeners.push(listener); return () => { mocks.listeners = mocks.listeners.filter(item => item !== listener); }; } }),
 }));
@@ -269,16 +273,66 @@ test('deleting asks first and archiving removes the row; both leave an open sess
   await waitFor(() => expect(screen.queryByRole('link', { name: /重构侧栏/ })).toBeNull());
 });
 
-test('quota bars show the Claude windows with their reset countdown and open Studio Settings', async () => {
+test('the usage panel shows what is left by default, flips to 已用 everywhere, folds, and opens Studio Settings', async () => {
   renderShell('/work/p1');
-  const quota = await screen.findByRole('button', { name: '模型额度，打开设置' });
-  await within(quota).findByTitle(/Claude 5 小时 已用 42%，2小时1[34]分后重置/);
-  const weekly = within(quota).getByTitle(/Claude 每周 已用 93%/);
+  const panel = await screen.findByRole('region', { name: '模型用量' });
+  const session = await within(panel).findByTitle(/^Claude 5 小时 剩余 58%，2 小时 1[1-4] 分后重置$/);
+  expect(within(session).getByText(/2 小时 1[1-4] 分后重置/)).toBeTruthy();
+  // 93 % used leaves 7 %: still drawn in the warning colour.
+  const weekly = within(panel).getByTitle(/^Claude 每周 剩余 7%，/);
   expect(weekly.getAttribute('data-high')).toBe('true');
-  expect(within(quota).getByText('未接入')).toBeTruthy();
-  expect(within(quota).getByText(/12\.30/)).toBeTruthy();
-  fireEvent.click(quota);
+  expect(within(panel).getByText('未接入')).toBeTruthy();
+  expect(within(panel).getByText(/12\.30/)).toBeTruthy();
+  expect(within(panel).queryByText('可能过期')).toBeNull();
+
+  fireEvent.click(within(panel).getByRole('radio', { name: '已用' }));
+  expect(within(panel).getByTitle(/^Claude 5 小时 已用 42%，/)).toBeTruthy();
+  expect(JSON.parse(localStorage.getItem('studio-quota-display-v1') ?? '{}').mode).toBe('used');
+
+  const fold = within(panel).getByRole('button', { name: /用量/ });
+  expect(fold.getAttribute('aria-expanded')).toBe('true');
+  fireEvent.click(fold);
+  expect(fold.getAttribute('aria-expanded')).toBe('false');
+  expect(within(panel).queryByTitle(/Claude 每周/)).toBeNull();
+  expect(within(fold).getByText('5 小时 42%')).toBeTruthy();
+  expect(localStorage.getItem('workbench-quota-collapsed')).toBe('1');
+
+  fireEvent.click(within(panel).getByRole('button', { name: '额度显示设置' }));
   expect(await screen.findByText('studio settings')).toBeTruthy();
+});
+
+test('the usage panel shows only the items switched on, flags stale readings and lists per-model windows when chosen', async () => {
+  localStorage.setItem('studio-quota-display-v1', JSON.stringify({
+    mode: 'remaining', items: { 'claude:window:five_hour': false, 'claude:window:seven_day_opus': true, 'claude:credit:cinder_cove': true, 'deepseek:balance': false },
+  }));
+  mocks.quota.mockImplementation(() => json([
+    { provider: 'claude', available: true, windows: [
+      { id: 'five_hour', label: '5 小时', usedPercent: 9, windowMinutes: 300, resetsAt: null },
+      { id: 'seven_day', label: '每周', usedPercent: 4.4, windowMinutes: 10080, resetsAt: null },
+      { id: 'seven_day_opus', label: '每周 · Opus', usedPercent: 9.6, windowMinutes: 10080, resetsAt: null, model: 'Opus' },
+      { id: 'seven_day_sonnet', label: '每周 · Sonnet', usedPercent: 1, windowMinutes: 10080, resetsAt: null, model: 'Sonnet' },
+    ], credits: [
+      { id: 'cinder_cove', label: '云端额度', usedPercent: 8.4, currency: 'USD', limit: 250, used: 21, remaining: 229, endsAt: null, endKind: 'expires' },
+    ], balances: [], source: 'usage-api', observedAt: iso(0), stale: true },
+    { provider: 'codex', available: true, windows: [
+      { id: 'codex:secondary', label: '每周', usedPercent: 29, windowMinutes: 10080, resetsAt: null },
+      { id: 'gpt-reserve:secondary', label: '每周 · GPT Reserve', usedPercent: 0, windowMinutes: 10080, resetsAt: null, model: 'GPT Reserve' },
+    ], balances: [], source: 'official', observedAt: iso(0), stale: false },
+    { provider: 'deepseek', available: true, windows: [], balances: [{ currency: 'CNY', total: 253.99, granted: 0, toppedUp: 253.99 }], source: 'official', observedAt: iso(0), stale: false },
+  ]));
+  renderShell('/work/p1');
+  const panel = await screen.findByRole('region', { name: '模型用量' });
+  await within(panel).findByTitle(/^Claude 每周 剩余 96%/);
+  expect(within(panel).getByTitle(/^Claude 每周 · Opus 剩余 90%/)).toBeTruthy();
+  expect(within(panel).getByTitle(/^Claude 云端额度 剩余 92%，剩余 \$229 \/ \$250/)).toBeTruthy();
+  expect(within(panel).getByText('剩余 $229 / $250')).toBeTruthy();
+  expect(within(panel).getByTitle(/^Codex 每周 剩余 71%/)).toBeTruthy();
+  for (const hidden of [/Claude 5 小时/, /Sonnet/, /GPT Reserve/, /DeepSeek/]) expect(within(panel).queryByTitle(hidden)).toBeNull();
+  expect(within(panel).queryByText(/DeepSeek/)).toBeNull();
+  // The Claude reading is stale: its rows are dimmed and the header says so.
+  expect(within(panel).getByTitle(/^Claude 每周 剩余 96%/).getAttribute('data-stale')).toBe('true');
+  expect(within(panel).getByTitle(/^Codex 每周/).getAttribute('data-stale')).toBeNull();
+  expect(within(panel).getByText('可能过期')).toBeTruthy();
 });
 
 test('the inspector opens on a tool, toggles with ⌘J, remembers itself and collects preview addresses', async () => {

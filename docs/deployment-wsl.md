@@ -69,13 +69,16 @@ bash scripts/wsl/install-studio-service.sh
 
 ## 6. 首页的模型额度小组件（可选）
 
-主屏幕的额度小组件显示 Claude、Codex 的 5 小时 / 每周用量和 DeepSeek 余额，每分钟最多刷新一次。数据来源不同，可信度也不同，小组件会标出来源和「可能已过期」：
+主屏幕的额度小组件和工作台左下角的「用量」面板显示 Claude、Codex 的 5 小时 / 每周（以及各模型的每周）用量、Claude 云端额度和 DeepSeek 余额，每分钟最多刷新一次。数据来源不同，可信度也不同，小组件会标出来源和「可能已过期」：
 
-- **Codex**：自动读取。优先用 Codex 官方接口（`codex app-server` 的 `account/rateLimits/read`，需要 Codex 已登录 ChatGPT 账号）；失败时退回到最近几个 Codex 会话日志（默认 `~/.codex/sessions`，可用 `STUDIO_CODEX_SESSIONS_DIRS` 指定多个目录，用 `:` 分隔）。日志只在你使用 Codex 时更新，超过 15 分钟会标为过期。
+- **显示方式**：默认显示剩余（如「剩余 91%」，进度条也表示剩余），可在 设置 → 额度显示 或工作台用量面板顶部切换为「已用」；剩余 = 100 − 四舍五入后的已用。重置时间按 Europe/London 时区显示（「3 小时 36 分后重置」「周一 7:00 重置」）。
+- **显示哪些项目**：设置 → 额度显示 里每一项都有开关。默认打开 Claude 5 小时、Claude 每周、Codex 每周和 DeepSeek 余额；各模型的每周额度、Claude 云端额度等在账号返回后出现，默认关闭。选择和主屏幕布局一样保存在这台设备的浏览器里。
+- **Codex**：自动读取，显示它返回的所有窗口（5 小时、每周、gpt-reserve 这类单独计数的额度）。优先用 Codex 官方接口（`codex app-server` 的 `account/rateLimits/read`，需要 Codex 已登录 ChatGPT 账号）；失败时退回到最近几个 Codex 会话日志（默认 `~/.codex/sessions`，可用 `STUDIO_CODEX_SESSIONS_DIRS` 指定多个目录，用 `:` 分隔）。日志只在你使用 Codex 时更新，超过 15 分钟会标为过期。
 - **DeepSeek**：用你在「连接」中保存的密钥查询官方余额接口，不需要额外配置。
 - **Claude**：自动读取，不需要配置。Studio 用服务器上这台机器的 Claude 登录（也就是 Studio 自己的 Claude 会话用的那个）发出和 Claude Code `/usage` 相同的只读查询（`GET https://api.anthropic.com/api/oauth/usage`），小组件标为「官方」。
   - 登录凭据默认读 `~/.claude/.credentials.json`（设置了 `CLAUDE_CONFIG_DIR` 时读那个目录下的同名文件），可用 `STUDIO_CLAUDE_CREDENTIALS_FILE` 改位置。Studio 只在每次查询时读出其中的访问令牌放进这一个请求，不记日志、不返回给浏览器、不写盘，也从不续期——令牌过期时这次就不查，等 Claude CLI 下次运行时自己续期。
   - 每分钟最多查一次，同一时间只有一个请求，5 秒超时；被拒绝（401/403）、限流（429）、服务出错、超时或答复格式不对时，5 分钟内不再查（Claude 重新登录后会立刻重试）。
+  - 除 5 小时 / 每周外，答复里的 `seven_day_<模型>` 和 `limits` 中的各模型每周额度显示为「每周 · <模型>」，一次性的 Claude Code / Cowork 额度（`cinder_cove`）显示为「云端额度」，开启了额外用量时 `extra_usage` 显示为「额外用量」（金额按美分换算）。这个答复的格式没有公开文档，所以每个进程第一次读到时会在日志（info 级别）里记一行它的顶层字段名（`[quota] Claude usage API answer keys: …`），只有字段名，不含任何数值或令牌，可用 `journalctl` 核对。
   - 不想让 Studio 调用这个接口时设 `STUDIO_CLAUDE_USAGE_API=off`。
   - 读不到时（未登录、登录已过期、用 API 密钥登录、接口暂时不可用或已关闭），退回到下面的快照文件，小组件的提示会说明原因。
 

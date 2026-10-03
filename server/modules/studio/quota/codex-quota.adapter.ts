@@ -61,22 +61,42 @@ function windowLabel(minutes: number | null) {
   if (minutes === null) return '用量';
   if (minutes === 300) return '5 小时';
   if (minutes === 10080) return '每周';
+  if (minutes === 1440) return '每天';
+  if (minutes % 1440 === 0) return `${minutes / 1440} 天`;
   return `${Number((minutes / 60).toFixed(1))} 小时`;
+}
+
+// A limit known only by its id ("gpt-reserve", "gpt-5-codex") reads as "GPT Reserve", "GPT-5 Codex";
+// a real name ("Codex Spark") is kept as it is.
+const LIMIT_ID_SHAPE = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
+const LIMIT_ACRONYMS = new Set(['gpt', 'api', 'ai']);
+function readableLimitName(name: string) {
+  if (!LIMIT_ID_SHAPE.test(name)) return name;
+  let readable = '';
+  let previous = '';
+  for (const word of name.split(/[-_]/)) {
+    const shown = LIMIT_ACRONYMS.has(word) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1);
+    // A version number stays attached to the acronym before it, as in "GPT-5".
+    readable += !readable ? shown : LIMIT_ACRONYMS.has(previous) && /^\d/.test(word) ? `-${shown}` : ` ${shown}`;
+    previous = word;
+  }
+  return readable;
 }
 
 function quotaWindows(buckets: RateBucket[]): StudioQuotaWindow[] {
   const windows: StudioQuotaWindow[] = [];
   buckets.forEach((bucket, index) => {
+    // The first bucket is the account's main Codex allowance; extra buckets (a model with its own limit) are named.
+    const model = index === 0 ? null : readableLimitName(bucket.name ?? bucket.id);
     for (const [slot, window] of [['primary', bucket.primary], ['secondary', bucket.secondary]] as const) {
       if (!window) continue;
-      // The first bucket is the account's main Codex allowance; extra buckets (a model with its own limit) are named.
-      const suffix = index === 0 ? '' : ` · ${bucket.name ?? bucket.id}`;
       windows.push({
         id: `${bucket.id}:${slot}`,
-        label: `${windowLabel(window.windowMinutes)}${suffix}`,
+        label: `${windowLabel(window.windowMinutes)}${model ? ` · ${model}` : ''}`,
         usedPercent: window.usedPercent,
         windowMinutes: window.windowMinutes,
         resetsAt: window.resetsAtMs === null ? null : new Date(window.resetsAtMs).toISOString(),
+        ...(model ? { model } : {}),
       });
     }
   });

@@ -1627,19 +1627,45 @@ export type StudioRemoteLaunch = { command: string; title: string };
 /** Live check of a project link: whether it answers and whether it can be shown in an iframe. */
 export type StudioLinkStatus = { url: string; ok: boolean; status: number | null; latencyMs: number | null; frameable: boolean };
 
-/** One usage window of a model plan, e.g. the 5-hour or weekly limit. */
-export type StudioQuotaWindow = { id: string; label: string; usedPercent: number; windowMinutes: number | null; resetsAt: string | null };
+/**
+ * One usage window of a model plan, e.g. the 5-hour or weekly limit. `id` is stable across reads (the
+ * client keys the owner's show/hide choice on it). `model` is present only on a window that applies to
+ * one model or limit (Claude's weekly Opus or Fable window, Codex's gpt-reserve bucket); plan-wide
+ * windows leave it out.
+ */
+export type StudioQuotaWindow = { id: string; label: string; usedPercent: number; windowMinutes: number | null; resetsAt: string | null; model?: string };
+
+/**
+ * A credit allowance on a Claude account, read from Claude's usage API: the one-time Claude Code and
+ * Cowork (cloud session) credit, or the monthly extra-usage spend limit. Amounts are in major units of
+ * `currency` (dollars, not cents) and null when the API gave none; `limit` null on extra usage means
+ * no monthly cap. `endsAt` is when a one-time credit expires (`endKind: 'expires'`) or the allowance
+ * starts over (`'resets'`).
+ */
+export type StudioQuotaCredit = {
+  id: string;
+  label: string;
+  usedPercent: number | null;
+  currency: string | null;
+  limit: number | null;
+  used: number | null;
+  remaining: number | null;
+  endsAt: string | null;
+  endKind: 'expires' | 'resets';
+};
 
 /**
  * What the home-screen widgets know about one provider's quota; `source` says how trustworthy it is.
  * `usage-api` is Claude's account usage read live with the machine's Claude login (what `/usage` shows);
- * `statusline` and `sdk-event` are Claude snapshots written while Claude was in use.
+ * `statusline` and `sdk-event` are Claude snapshots written while Claude was in use. `credits` is only
+ * filled for Claude from the usage API, and left out when there are none.
  */
 export type StudioQuotaSnapshot = {
   provider: 'claude' | 'codex' | 'deepseek';
   available: boolean;
   windows: StudioQuotaWindow[];
   balances: { currency: string; total: number; granted: number; toppedUp: number }[];
+  credits?: StudioQuotaCredit[];
   source: 'official' | 'usage-api' | 'statusline' | 'sdk-event' | 'local-log' | 'unavailable';
   observedAt: string | null;
   stale: boolean;

@@ -1902,21 +1902,76 @@ export type StudioRemoteStatus = {
 export type StudioRemoteLaunch = { command: string; title: string };
 /** Live check of a project link. */
 export type StudioLinkStatus = { url: string; ok: boolean; status: number | null; latencyMs: number | null; frameable: boolean };
-/** One usage window of a model plan, e.g. the 5-hour or weekly limit. */
-export type StudioQuotaWindow = { id: string; label: string; usedPercent: number; windowMinutes: number | null; resetsAt: string | null };
+/**
+ * One usage window of a model plan, e.g. the 5-hour or weekly limit. `id` is stable across reads; `model`
+ * is set only on a window for one model or limit (Claude's weekly Opus or Fable, Codex's gpt-reserve).
+ */
+export type StudioQuotaWindow = { id: string; label: string; usedPercent: number; windowMinutes: number | null; resetsAt: string | null; model?: string };
+/**
+ * A credit allowance on the Claude account (the one-time cloud session credit or the extra-usage spend limit).
+ * Amounts are in major units of `currency` and null when unknown; `endsAt` is its expiry or monthly reset.
+ */
+export type StudioQuotaCredit = {
+  id: string;
+  label: string;
+  usedPercent: number | null;
+  currency: string | null;
+  limit: number | null;
+  used: number | null;
+  remaining: number | null;
+  endsAt: string | null;
+  endKind: 'expires' | 'resets';
+};
 /**
  * What the home-screen widgets know about one provider's quota; `source` says how trustworthy it is.
  * `usage-api` is Claude's account usage read live by the server with its Claude login (what `/usage` shows).
+ * `credits` is only sent for Claude, and only when the account has any.
  */
 export type StudioQuotaSnapshot = {
   provider: 'claude' | 'codex' | 'deepseek';
   available: boolean;
   windows: StudioQuotaWindow[];
   balances: { currency: string; total: number; granted: number; toppedUp: number }[];
+  credits?: StudioQuotaCredit[];
   source: 'official' | 'usage-api' | 'statusline' | 'sdk-event' | 'local-log' | 'unavailable';
   observedAt: string | null;
   stale: boolean;
   note?: string;
+};
+/** Whether quota figures show what is left (剩余, the default) or what has been used (已用); one choice per device. */
+export type QuotaDisplayMode = 'remaining' | 'used';
+/**
+ * The owner's quota display choices, kept per device like the home-screen layout (useQuotaPreferences).
+ * `items` holds only explicit show/hide choices keyed by QuotaDisplayItem.key; an item without one uses its default.
+ */
+export type QuotaPreferences = { mode: QuotaDisplayMode; items: Record<string, boolean> };
+/**
+ * One figure the home quota widgets, the workbench usage panel and Settings can show or hide: a usage window,
+ * a Claude credit or the DeepSeek balance, built from the snapshots by listQuotaItems.
+ */
+export type QuotaDisplayItem = {
+  // Stable key for the show/hide choice, e.g. `claude:window:five_hour`, `codex:window:codex:secondary`, `deepseek:balance`.
+  key: string;
+  provider: StudioQuotaSnapshot['provider'];
+  // 'Claude', 'Codex' or 'DeepSeek'.
+  providerName: string;
+  kind: 'window' | 'credit' | 'balance';
+  // Short label within the provider ('5 小时', '每周 · Opus', '云端额度', '余额').
+  label: string;
+  // Full name for the Settings switch ('Claude 每周（全部模型）').
+  title: string;
+  // 0..100, null for a balance or a credit known only by its amounts.
+  usedPercent: number | null;
+  // When the window resets or the credit expires; null when unknown.
+  endsAt: string | null;
+  endKind: 'resets' | 'expires';
+  // Money figures for credits and balances, in major units; null for plain windows.
+  amount: { currency: string; remaining: number | null; used: number | null; limit: number | null } | null;
+  stale: boolean;
+  // Shown when the owner has made no choice: Claude 5 小时 and 每周, Codex 每周, DeepSeek 余额.
+  shownByDefault: boolean;
+  // False for a Settings placeholder of an item the account has not reported yet.
+  present: boolean;
 };
 //----------------- STUDIO PROJECT CONTRACTS ------------
 /** A coding agent that runs in the inherited IDE inside the project's directory. */
