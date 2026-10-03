@@ -882,6 +882,70 @@ export function resolveProviderModelSelection(
 }
 
 // ---------------------------
+//----------------- CLAUDE CONTEXT WINDOW UTILITIES ------------
+/** Context window of a current Claude model run without its long-context variant. */
+const CLAUDE_STANDARD_CONTEXT_WINDOW = 200_000;
+
+/** Context window of a Claude model run as its long-context (`[1m]`) variant. */
+const CLAUDE_LONG_CONTEXT_WINDOW = 1_000_000;
+
+/** A strictly positive whole number read from `value`, or null for anything else. */
+function readPositiveContextWindow(value: unknown): number | null {
+  const parsed = typeof value === 'string' ? Number.parseInt(value, 10) : Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
+}
+
+/**
+ * The context window, in tokens, that one Claude session's usage is measured
+ * against. In order of precedence:
+ *
+ * 1. `configuredContextWindow` — the `CONTEXT_WINDOW` environment variable,
+ *    an explicit operator override. Ignored unless it is a positive integer.
+ * 2. `reportedContextWindow` — the window the provider itself reported (the
+ *    Agent SDK's `result.modelUsage[model].contextWindow`).
+ * 3. Derived from `models`, every model id known for the session (the one the
+ *    run asked for, the one the CLI announced, the one stored for the session):
+ *    any carrying the `[1m]` suffix means the 1,000,000-token window, otherwise
+ *    the 200,000-token window of current Claude models. A prompt already larger
+ *    than the standard window can only have been served by the long-context
+ *    variant, so `usedTokens` above it also selects 1,000,000 — this rescues
+ *    sessions whose recorded model id lost its suffix.
+ *
+ * Used by the Claude runtime (the live `token_budget` status) and by the
+ * provider token-usage service (usage read back from a stored transcript), so
+ * the composer ring reads the same window whichever path filled it.
+ */
+export function resolveClaudeContextWindow({
+  configuredContextWindow,
+  reportedContextWindow,
+  models = [],
+  usedTokens = 0,
+}: {
+  configuredContextWindow?: string | null;
+  reportedContextWindow?: unknown;
+  models?: ReadonlyArray<string | null | undefined>;
+  usedTokens?: number;
+}): number {
+  const configured = readPositiveContextWindow(configuredContextWindow);
+  if (configured) {
+    return configured;
+  }
+
+  const reported = readPositiveContextWindow(reportedContextWindow);
+  if (reported) {
+    return reported;
+  }
+
+  const runsLongContext = models.some((model) => (
+    typeof model === 'string' && LONG_CONTEXT_MODEL_SUFFIX.test(model.trim())
+  ));
+  if (runsLongContext || usedTokens > CLAUDE_STANDARD_CONTEXT_WINDOW) {
+    return CLAUDE_LONG_CONTEXT_WINDOW;
+  }
+  return CLAUDE_STANDARD_CONTEXT_WINDOW;
+}
+
+// ---------------------------
 //----------------- WEBSOCKET PAYLOAD PARSING UTILITIES ------------
 /**
  * Parses one websocket message payload into a plain JSON object record.
