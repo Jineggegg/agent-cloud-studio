@@ -816,6 +816,16 @@ button.wbc-pill[aria-expanded="true"] .wbc-pill-chevron { transform: rotate(180d
 .wbc-chip.is-mode-bypassPermissions { background: var(--wbc-red-soft); color: var(--wbc-red); }
 .wbc-chip.is-mode-plan, .wbc-chip.is-mode-acceptEdits, .wbc-chip.is-on { background: var(--wbc-tint-soft); color: var(--wbc-tint); }
 .wbc-chip.is-mode-auto { background: var(--wbc-green-soft); color: var(--wbc-green); }
+/* The chips' menu anchors shrink with the bar, so the send button never leaves a narrow composer. */
+.wbc-composer-bar > .wbc-menu-anchor { min-width: 0; flex-shrink: 1; }
+.wbc-composer-bar > .wbc-menu-anchor > .wbc-chip { max-width: 100%; }
+/* Phones: the permission chip keeps only its shield (its colour still tells the mode), the others tighten. */
+@media (max-width: 480px) {
+  .wbc-composer-bar { gap: 2px; padding-inline: 6px; }
+  .wbc-composer-bar .wbc-chip { padding: 0 9px; gap: 4px; }
+  .wbc-composer-bar .wbc-chip[class*="is-mode-"] { width: 32px; padding: 0; justify-content: center; }
+  .wbc-composer-bar .wbc-chip[class*="is-mode-"] > span { display: none; }
+}
 
 .wbc-send {
   position: relative; display: grid; place-items: center; flex-shrink: 0; width: 38px; height: 38px; border-radius: 50%;

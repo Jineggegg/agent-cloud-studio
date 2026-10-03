@@ -272,10 +272,12 @@ export function WorkbenchShell() {
   const dock = useRef<HTMLDivElement>(null);
   useEffect(() => { if (dock.current) dock.current.inert = !sidebarVisible; }, [sidebarVisible, sidebarDocked]);
 
-  // /work opens the project used last on this device, or the first one, keeping a requested agent (?new=).
+  // /work opens the project used last on this device, else the first Studio project, else the first one, keeping a
+  // requested agent (?new=). Studio projects come before the rest because any folder a CLI ran in is listed too.
   if (!projectId && entries?.length) {
     const remembered = readStored(LAST_PROJECT_KEY);
-    const destination = entries.find(entry => entry.project.projectId === remembered) ?? entries[0];
+    const destination = entries.find(entry => entry.project.projectId === remembered)
+      ?? entries.find(entry => entry.hub) ?? entries[0];
     return <Navigate to={workbenchPath(destination.project.projectId, null, newProvider)} replace />;
   }
 
